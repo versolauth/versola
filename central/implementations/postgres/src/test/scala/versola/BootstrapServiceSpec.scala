@@ -20,7 +20,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
-import versola.util.theme.{ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Mode, ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
@@ -89,7 +89,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
-    test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
+    test("seeds default as a visual theme on the versola base with the light scheme fixed and no CSS when it is absent") {
       val themes = stub[ThemeRepository]
       for
         _ <- themes.getAll.succeedsWith(Vector.empty)
@@ -97,7 +97,15 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- BootstrapService.seedDefaultTheme(themes)
         created = themes.create.calls
         updates = themes.update.times
-      yield assertTrue(created == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), updates == 0)
+      yield assertTrue(
+        created == List(ThemeRecord(
+          "default",
+          "",
+          None,
+          Some(ThemeTokens("versola", overrides = Some(ThemeOverrides.empty.copy(mode = Some(Mode.light))))),
+        )),
+        updates == 0,
+      )
     },
     test("converts a stylesheet default (tokens NULL) to the visual theme, keeping its tenant") {
       val themes = stub[ThemeRepository]
@@ -107,7 +115,15 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- BootstrapService.seedDefaultTheme(themes)
         updated = themes.update.calls
         creates = themes.create.times
-      yield assertTrue(updated == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), creates == 0)
+      yield assertTrue(
+        updated == List(ThemeRecord(
+          "default",
+          "",
+          None,
+          Some(ThemeTokens("versola", overrides = Some(ThemeOverrides.empty.copy(mode = Some(Mode.light))))),
+        )),
+        creates == 0,
+      )
     },
     test("leaves a token default alone: the administrator may have changed its base or overrides") {
       val themes = stub[ThemeRepository]

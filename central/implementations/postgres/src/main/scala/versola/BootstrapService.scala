@@ -63,7 +63,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
-import versola.util.theme.{ThemePresets, ThemeTokens}
+import versola.util.theme.{Mode, ThemeOverrides, ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -925,14 +925,15 @@ object BootstrapService:
     * and nothing is lost; a token row is the administrator's and is left alone.
     */
   private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
-    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None))
+    // The light scheme is fixed on purpose: the default look is the white card on the brand-coloured page, on a dark device too.
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = Some(ThemeOverrides.empty.copy(mode = Some(Mode.light)))))
     for
       _ <- ZIO.logInfo("Seeding default theme...")
       themes <- themeRepo.getAll
       _ <- themes.find(_.id == defaultThemeId) match
         case None => themeRepo.create(ThemeRecord(defaultThemeId, "", None, tokens))
         case Some(theme) if theme.tokens.isEmpty =>
-          ZIO.logInfo("Converting the default theme from a stylesheet to a visual theme (base versola)") *>
+          ZIO.logInfo("Converting the default theme from a stylesheet to a visual theme (base versola, light scheme)") *>
             themeRepo.update(ThemeRecord(defaultThemeId, "", theme.tenantId, tokens))
         case Some(_) => ZIO.unit
     yield ()
