@@ -34,29 +34,41 @@ export class TenantSelector extends LitElement {
         position: relative;
       }
 
+      /* Looks like the console's <select> (formStyles in styles/components.ts):
+         same padding, same chevron drawn at the same inset from the right
+         edge, so the control lines up with every other field. */
       .selector-button {
         width: 100%;
-        padding: 0.75rem 1rem;
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        padding: 0.75rem 2.75rem 0.75rem 1rem;
+        background: var(--surface);
+        background-image: var(--select-chevron);
+        background-position: calc(100% - 1rem) 50%;
+        background-size: 0.625rem 0.375rem;
+        background-repeat: no-repeat;
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-primary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         font-family: var(--font-mono);
         cursor: pointer;
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        transition: all var(--transition-fast);
+        text-align: left;
+        transition: border-color var(--transition-fast), background-color var(--transition-fast);
       }
 
       .selector-button:hover {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.1);
+        background-color: var(--accent-subtle);
+      }
+
+      .selector-button:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       .selector-label {
-        font-size: 0.75rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--text-secondary);
         text-transform: uppercase;
@@ -67,18 +79,10 @@ export class TenantSelector extends LitElement {
 
       .tenant-name {
         flex: 1;
-        text-align: left;
-      }
-
-      .dropdown-arrow {
-        color: var(--accent);
-        font-size: 0.625rem;
-        margin-left: 0.5rem;
-        transition: transform var(--transition-fast);
-      }
-
-      .dropdown-arrow.open {
-        transform: rotate(180deg);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .dropdown {
@@ -86,39 +90,39 @@ export class TenantSelector extends LitElement {
         top: calc(100% + 0.5rem);
         left: 0;
         right: 0;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(var(--accent-tint), 0.1);
+        box-shadow: var(--shadow-lg);
         max-height: 320px;
         overflow: hidden;
-        z-index: 1000;
+        z-index: var(--z-dropdown);
         display: flex;
         flex-direction: column;
       }
 
       .search-box {
         padding: 0.5rem;
-        background: var(--bg-dark-card);
+        background: var(--surface);
       }
 
       .search-input {
         width: 100%;
         box-sizing: border-box;
         padding: 0.5rem 0.75rem;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-primary);
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         font-family: var(--font-mono);
         transition: all var(--transition-fast);
       }
 
       .search-input:focus {
-        outline: none;
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
       }
 
       .search-input::placeholder {
@@ -152,13 +156,13 @@ export class TenantSelector extends LitElement {
         cursor: pointer;
         transition: all var(--transition-fast);
         font-family: var(--font-mono);
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         color: var(--text-primary);
         display: flex;
         justify-content: center;
         align-items: center;
         appearance: none;
-        background: var(--bg-dark-card);
+        background: var(--surface);
         border: 1px solid transparent;
         border-radius: var(--radius-md);
         margin-bottom: 0.375rem;
@@ -169,25 +173,25 @@ export class TenantSelector extends LitElement {
       }
 
       .tenant-item:hover {
-        background: rgba(var(--accent-tint), 0.08);
-        border-color: rgba(var(--accent-tint), 0.3);
+        background: var(--accent-subtle);
+        border-color: var(--accent-border);
         transform: translateX(2px);
       }
 
       .tenant-item.selected {
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         border-color: var(--accent);
       }
 
       .tenant-item.selected:hover {
-        background: rgba(var(--accent-tint), 0.2);
+        background: var(--accent-subtle);
       }
 
       .no-results {
         padding: 2rem;
         text-align: center;
         color: var(--text-secondary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
       }
     `,
   ];
@@ -330,11 +334,11 @@ export class TenantSelector extends LitElement {
 
     return html`
       <div class="selector-label">Tenant</div>
-      <button class="selector-button" type="button" aria-label="Select tenant" @click=${(e: Event) => this.toggleDropdown(e)} ?disabled=${this.isLoading}>
+      <button class="selector-button" type="button" aria-label="Select tenant" aria-haspopup="listbox" aria-expanded=${this.isOpen}
+        @click=${(e: Event) => this.toggleDropdown(e)} ?disabled=${this.isLoading}>
         <span class="tenant-name">
           ${this.isLoading ? 'Loading tenants...' : selectedTenant?.id || 'Select Tenant'}
         </span>
-        <span class="dropdown-arrow ${this.isOpen ? 'open' : ''}">▼</span>
       </button>
 
       ${this.isOpen ? html`

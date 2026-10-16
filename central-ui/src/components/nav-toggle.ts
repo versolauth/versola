@@ -36,12 +36,12 @@ export class VersolaNavToggle extends LitElement {
         width: 2.75rem;
         height: 2.75rem;
         padding: 0;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
-        background: var(--bg-dark-card);
+        background: var(--surface);
         color: var(--text-primary);
         font-family: var(--font-family);
-        font-size: 1.25rem;
+        font-size: var(--text-2xl);
         line-height: 1;
         cursor: pointer;
         transition: all var(--transition-fast);

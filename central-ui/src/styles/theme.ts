@@ -16,10 +16,9 @@ import { css } from 'lit';
  * redeclaring them. See src/utils/theme.ts for the get/set/toggle API and
  * index.html for the actual color values.
  *
- * Light is the default palette, reusing the marketing site's warm palette
- * (versola-website: public/css/style.css) and Petrol Blue accent, so the
- * console and the site read as one product. Dark is the original console
- * palette, kept for anyone who picks it.
+ * The palette ("Stone": the login forms' neutrals with the brand's petrol
+ * accent) and what each token is for are described in
+ * central-ui/design-system/README.md.
  */
 
 export const theme = css`
@@ -40,16 +39,29 @@ export const theme = css`
     --radius-sm: 4px;
     --radius-md: 8px;
     --radius-lg: 12px;
-    
-    /* Shadows */
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.15);
-    --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.2);
-    
+
+    /* Shadows (--shadow-sm/md/lg) are colour tokens: defined per theme in
+       index.html next to the other colours, not here. */
+
     /* Transitions */
     --transition-fast: 0.15s ease;
     --transition-base: 0.25s ease;
     --transition-slow: 0.4s ease;
+
+    /* The type scale (--text-xs .. --text-4xl) and the layers (--z-dropdown,
+       --z-backdrop, --z-drawer, --z-modal, --z-toast) are in index.html too:
+       theme-independent, but one copy that inherits everywhere. */
+  }
+
+  /* A document-level rule does not reach into a shadow root, so every
+     component carries the reduced-motion switch itself. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 `;
 

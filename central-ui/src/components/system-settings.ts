@@ -39,7 +39,7 @@ export class VersolaSystemSettings extends LitElement {
         display: flex;
         gap: var(--spacing-md);
         padding: var(--spacing-sm) 0;
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
       .prop-row:last-child { border-bottom: none; }
       .prop-label {

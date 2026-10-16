@@ -83,8 +83,8 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
       }
 
       .type-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         overflow: hidden;
@@ -118,7 +118,7 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
       }
 
       .type-body {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding: var(--spacing-lg);
       }
 
@@ -126,8 +126,8 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
         font-family: var(--font-mono);
         font-size: 0.8125rem;
         color: var(--text-secondary);
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         margin: 0;

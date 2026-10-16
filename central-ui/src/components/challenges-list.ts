@@ -287,14 +287,14 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.9375rem;
         color: var(--text-primary);
         line-height: 1.6;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         white-space: pre-wrap;
       }
       .edit-loc-card {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         margin-bottom: var(--spacing-md);
@@ -342,9 +342,9 @@ export class VersolaChallengesList extends LitElement {
         display: block;
         width: 100%;
         min-height: 360px;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        background: #fff;
+        background: var(--surface);
       }
       .edit-loc-textarea {
         box-sizing: border-box;
@@ -358,7 +358,7 @@ export class VersolaChallengesList extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .error-msg { font-size: 0.875rem; color: var(--danger); margin-top: var(--spacing-sm); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
@@ -367,9 +367,9 @@ export class VersolaChallengesList extends LitElement {
       .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -378,20 +378,20 @@ export class VersolaChallengesList extends LitElement {
         cursor: pointer;
         font-family: var(--font-family);
       }
-      .option-info-button:hover { background: rgba(var(--accent-tint), 0.18); border-color: rgba(var(--accent-tint), 0.55); }
-      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2); }
+      .option-info-button:hover { background: var(--accent-subtle); border-color: var(--accent); }
+      .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .option-tooltip {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         display: none;
       }
       .option-info.option-info-open .option-tooltip { display: block; }
@@ -409,8 +409,8 @@ export class VersolaChallengesList extends LitElement {
         font-weight: 600;
         font-size: 0.9375rem;
         color: var(--accent);
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
         /* Phone prefixes and ACR names are short, but this class also renders
@@ -435,7 +435,7 @@ export class VersolaChallengesList extends LitElement {
       .region-chip .signup-mark {
         margin-left: var(--spacing-xs);
         font-family: var(--font-family);
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--success);
         border: 1px solid var(--success);
@@ -446,10 +446,10 @@ export class VersolaChallengesList extends LitElement {
       .region-reg { display: inline-flex; align-items: center; justify-content: center; margin: 0; text-transform: none; letter-spacing: normal; font-size: 0.8125rem; color: var(--text-secondary); white-space: nowrap; }
       .region-reg input { width: 1rem; height: 1rem; accent-color: var(--accent); }
       .preset-picker {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         padding: var(--spacing-md);
         margin-bottom: var(--spacing-md);
       }
@@ -524,13 +524,13 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.8125rem;
         font-weight: 600;
         color: var(--accent);
-        background: rgba(var(--accent-tint), 0.1);
-        border: 1px solid rgba(var(--accent-tint), 0.2);
+        background: var(--accent-subtle);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
       .info-table {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         overflow: hidden;
         margin-top: var(--spacing-md);
@@ -541,7 +541,7 @@ export class VersolaChallengesList extends LitElement {
         gap: var(--spacing-lg);
         align-items: start;
         padding: 0.875rem var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
         font-size: 0.875rem;
       }
       .prop-row:last-child {

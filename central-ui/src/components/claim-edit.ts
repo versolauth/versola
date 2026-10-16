@@ -84,7 +84,7 @@ export class VersolaClaimEdit extends LitElement {
         gap: var(--spacing-md);
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
     `,
   ];

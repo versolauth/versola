@@ -42,7 +42,7 @@ export class VersolaPermissionForm extends LitElement {
     .resource-picker .form-group { flex:0 1 var(--compact-field-width); margin-bottom:0; min-width:0; }
     .resource-picker .btn { flex:0 0 var(--inline-action-button-width); width:var(--inline-action-button-width); min-width:var(--inline-action-button-width); }
     .resource-stack { display:grid; gap:var(--spacing-md); }
-    .resource-card { display:grid; gap:var(--spacing-md); min-width:0; padding:1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.03); }
+    .resource-card { display:grid; gap:var(--spacing-md); min-width:0; padding:1rem; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-inset); }
     .resource-card-header { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--spacing-md); }
     .resource-card-trigger { display:flex; align-items:center; gap:.75rem; min-width:0; flex:1; padding:0; border:0; background:none; color:inherit; cursor:pointer; text-align:left; }
     .resource-chevron { color:var(--text-secondary); font-size:.875rem; flex:none; }
@@ -52,11 +52,11 @@ export class VersolaPermissionForm extends LitElement {
     .endpoint-picker .form-group { flex:0 1 var(--compact-field-width); margin-bottom:0; min-width:0; }
     .endpoint-picker .btn { flex:0 0 var(--inline-action-button-width); width:var(--inline-action-button-width); min-width:var(--inline-action-button-width); }
     .endpoint-list { display:grid; gap:.75rem; }
-    .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
+    .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-inset); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
     .endpoint-meta { color:var(--text-secondary); font-size:.875rem; }
     .empty-state, .hint-note { color:var(--text-secondary); font-size:.875rem; }
-    .actions { display:flex; gap:1rem; justify-content:flex-end; margin-top:var(--spacing-xl); padding-top:var(--spacing-xl); border-top:1px solid var(--border-dark); }
+    .actions { display:flex; gap:1rem; justify-content:flex-end; margin-top:var(--spacing-xl); padding-top:var(--spacing-xl); border-top:1px solid var(--border-default); }
     @media (max-width: 720px) {
       .form-header, .resource-picker, .endpoint-picker { flex-direction:column; align-items:flex-start; }
       .resource-picker .form-group, .resource-picker .btn, .endpoint-picker .form-group, .endpoint-picker .btn { width:100%; max-width:var(--compact-field-width); min-width:0; }

@@ -94,8 +94,8 @@ export class VersolaUsersList extends LitElement {
       }
 
       .user-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         transition: border-color var(--transition-base);
@@ -159,8 +159,8 @@ export class VersolaUsersList extends LitElement {
       .password-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: rgba(0, 0, 0, 0.25);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-family: var(--font-mono);
@@ -177,11 +177,11 @@ export class VersolaUsersList extends LitElement {
 
       .copy-feedback {
         font-size: 0.8125rem;
-        color: var(--success, #3fb950);
+        color: var(--success);
       }
 
       .user-body {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding: var(--spacing-lg);
         display: flex;
         flex-direction: column;
@@ -223,11 +223,11 @@ export class VersolaUsersList extends LitElement {
         display: flex;
         gap: var(--spacing-sm);
         padding: var(--spacing-md) var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .expand-section {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .expand-section-header {
@@ -262,8 +262,8 @@ export class VersolaUsersList extends LitElement {
       }
 
       .session-card {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         overflow: hidden;
       }
@@ -273,7 +273,7 @@ export class VersolaUsersList extends LitElement {
         align-items: center;
         justify-content: space-between;
         padding: var(--spacing-md) var(--spacing-md);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
         gap: var(--spacing-md);
       }
 
@@ -342,7 +342,7 @@ export class VersolaUsersList extends LitElement {
         min-width: 0;
       }
 
-      .claim-value.bool-true  { color: var(--success, #4ade80); }
+      .claim-value.bool-true  { color: var(--success); }
       .claim-value.bool-false { color: var(--danger); }
 
       .no-data {
@@ -352,8 +352,8 @@ export class VersolaUsersList extends LitElement {
       }
 
       .passkey-card {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         overflow: hidden;
       }
@@ -363,7 +363,7 @@ export class VersolaUsersList extends LitElement {
         align-items: center;
         justify-content: space-between;
         padding: var(--spacing-md) var(--spacing-md);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
         gap: var(--spacing-md);
       }
 
@@ -437,24 +437,24 @@ export class VersolaUsersList extends LitElement {
         gap: 0.25rem;
         padding: 0.125rem 0.5rem;
         border-radius: 999px;
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.03em;
-        background: rgba(99,102,241,0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
-        border: 1px solid rgba(99,102,241,0.25);
+        border: 1px solid var(--accent-border);
       }
 
       .passkey-badge.synced {
-        background: rgba(74,222,128,0.1);
-        color: var(--success, #4ade80);
-        border-color: rgba(74,222,128,0.25);
+        background: var(--success-subtle);
+        color: var(--success);
+        border-color: var(--success-border);
       }
 
       .passkey-badge.not-backed-up {
-        background: rgba(148,163,184,0.08);
+        background: var(--surface-inset);
         color: var(--text-secondary);
-        border-color: rgba(148,163,184,0.18);
+        border-color: var(--border-default);
       }
 
       .option-info {
@@ -466,9 +466,9 @@ export class VersolaUsersList extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -483,29 +483,29 @@ export class VersolaUsersList extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(var(--accent-tint), 0.18);
-        border-color: rgba(var(--accent-tint), 0.55);
+        background: var(--accent-subtle);
+        border-color: var(--accent);
       }
 
       .option-info-button:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       .option-tooltip {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 20rem;
         max-width: min(30rem, 75vw);
         max-height: 22rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         display: none;
       }
 
@@ -523,7 +523,7 @@ export class VersolaUsersList extends LitElement {
       }
 
       .option-tooltip-group {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         background: var(--surface-inset);
         padding: 0.5rem 0.625rem;
@@ -531,7 +531,7 @@ export class VersolaUsersList extends LitElement {
       }
 
       .option-tooltip-group-title {
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--accent);
         text-transform: uppercase;
@@ -1164,12 +1164,12 @@ export class VersolaUsersList extends LitElement {
         position:fixed;inset:0;margin:auto;
         border:1px solid var(--danger);
         border-radius:var(--radius-lg);
-        background:var(--bg-dark-card);
+        background:var(--surface);
         color:var(--text-primary);
         padding:var(--spacing-xl);
         max-width:28rem;width:90%;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
-        z-index:1000;
+        box-shadow:var(--shadow-lg);
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-lg)">${this.errorPopup}</p>
         <div style="display:flex;justify-content:flex-end">
@@ -1185,14 +1185,14 @@ export class VersolaUsersList extends LitElement {
     return html`
       <dialog open style="
         position:fixed;inset:0;margin:auto;
-        border:1px solid var(--border-dark);
+        border:1px solid var(--border-default);
         border-radius:var(--radius-lg);
-        background:var(--bg-dark-card);
+        background:var(--surface);
         color:var(--text-primary);
         padding:var(--spacing-xl);
         max-width:26rem;width:90%;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
-        z-index:1000;
+        box-shadow:var(--shadow-lg);
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Reset password</p>
         <div class="form-group" style="margin-bottom:var(--spacing-lg)">
@@ -1250,14 +1250,14 @@ export class VersolaUsersList extends LitElement {
     return html`
       <dialog open style="
         position:fixed;inset:0;margin:auto;
-        border:1px solid var(--border-dark);
+        border:1px solid var(--border-default);
         border-radius:var(--radius-lg);
-        background:var(--bg-dark-card);
+        background:var(--surface);
         color:var(--text-primary);
         padding:var(--spacing-xl);
         max-width:28rem;width:90%;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
-        z-index:1000;
+        box-shadow:var(--shadow-lg);
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Temporary password</p>
         <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
@@ -1286,12 +1286,12 @@ export class VersolaUsersList extends LitElement {
             position:fixed;inset:0;margin:auto;
             border:1px solid var(--danger);
             border-radius:var(--radius-lg);
-            background:var(--bg-dark-card);
+            background:var(--surface);
             color:var(--text-primary);
             padding:var(--spacing-xl);
             max-width:28rem;width:90%;
-            box-shadow:0 8px 32px rgba(0,0,0,0.5);
-            z-index:1000;
+            box-shadow:var(--shadow-lg);
+            z-index:var(--z-modal);
           ">
             <p style="margin:0 0 var(--spacing-lg)">${this.formError}</p>
             <div style="display:flex;justify-content:flex-end">

@@ -16,7 +16,8 @@
     "type-check": "tsc --noEmit",
     "test:ui": "npx playwright test",
     "test:ui:headed": "npx playwright test --headed",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "design:contrast": "node design-system/contrast.mjs"
   },
   "keywords": [
     "oauth",

@@ -53,8 +53,8 @@ export class VersolaEdgesList extends LitElement {
       }
 
       .edge-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         transition: border-color var(--transition-base);
@@ -100,7 +100,7 @@ export class VersolaEdgesList extends LitElement {
 
       .edge-body {
         padding: 0 var(--spacing-lg) var(--spacing-lg) var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .edge-body-content {
@@ -138,7 +138,7 @@ export class VersolaEdgesList extends LitElement {
       }
 
       .secret-banner {
-        background: rgba(var(--accent-tint), 0.1);
+        background: var(--accent-subtle);
         border: 1px solid var(--accent);
         border-radius: var(--radius-lg);
         padding: var(--spacing-lg);
@@ -171,8 +171,8 @@ export class VersolaEdgesList extends LitElement {
 
       .secret-value {
         padding: var(--spacing-md);
-        background: rgba(0, 0, 0, 0.25);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         font-family: var(--font-mono);
         font-size: 0.875rem;
@@ -187,7 +187,7 @@ export class VersolaEdgesList extends LitElement {
       }
 
       .copy-feedback {
-        color: var(--success, #3fb950);
+        color: var(--success);
         font-size: 0.875rem;
       }
 
@@ -218,8 +218,8 @@ export class VersolaEdgesList extends LitElement {
         display: inline-flex;
         align-items: center;
         padding: 0.25rem 0.75rem;
-        background: rgba(var(--accent-tint), 0.12);
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        background: var(--accent-subtle);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
         color: var(--accent);
         font-size: 0.8125rem;
@@ -256,9 +256,9 @@ export class VersolaEdgesList extends LitElement {
       .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -267,20 +267,20 @@ export class VersolaEdgesList extends LitElement {
         cursor: pointer;
         font-family: var(--font-family);
       }
-      .option-info-button:hover { background: rgba(var(--accent-tint), 0.18); border-color: rgba(var(--accent-tint), 0.55); }
-      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2); }
+      .option-info-button:hover { background: var(--accent-subtle); border-color: var(--accent); }
+      .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .option-tooltip {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         display: none;
       }
       .option-info.option-info-open .option-tooltip { display: block; }

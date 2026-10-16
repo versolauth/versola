@@ -64,8 +64,8 @@ export class VersolaRoleForm extends LitElement {
         align-items: flex-start;
         gap: 0.75rem;
         padding: 0.75rem;
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         cursor: pointer;
         transition: all var(--transition-fast);
@@ -73,7 +73,7 @@ export class VersolaRoleForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.05);
+        background: var(--accent-subtle);
       }
 
       .checkbox-item input[type="checkbox"] {
@@ -130,12 +130,12 @@ export class VersolaRoleForm extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .permissions-section {
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         padding: var(--spacing-lg);
       }

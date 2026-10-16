@@ -105,12 +105,12 @@ export class VersolaThemeEdit extends LitElement {
       .title-stack { display: flex; flex-direction: column; gap: 0.5rem; }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
-      .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-dark); }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
+      .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-default); }
       .form-actions-left { margin-right: auto; }
       .save-msg { font-size: 0.875rem; }
-      .save-msg.success { color: var(--success, #3fb950); }
+      .save-msg.success { color: var(--success); }
       .save-msg.error { color: var(--danger); }
 
       .editor { display: grid; grid-template-columns: minmax(0, 30rem) minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; margin-top: var(--spacing-lg); }
@@ -120,7 +120,7 @@ export class VersolaThemeEdit extends LitElement {
       .summary { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); font-size: 0.8125rem; color: var(--text-secondary); }
 
       .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); cursor: pointer; }
       .seg-btn:hover { color: var(--text-primary); }
       .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
       .seg-btn:disabled { opacity: 0.45; cursor: default; }
@@ -128,7 +128,7 @@ export class VersolaThemeEdit extends LitElement {
       .ctrl-label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
 
       .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: var(--spacing-sm); }
-      .preset { text-align: left; padding: 0.5rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .preset { text-align: left; padding: 0.5rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .preset:hover { border-color: var(--text-secondary); }
       .preset.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .preset b { display: block; font-size: 0.8125rem; margin-top: 0.375rem; }
@@ -145,15 +145,15 @@ export class VersolaThemeEdit extends LitElement {
       .th-field { height: 6px; background: #efeae0; border-radius: 4px; }
       .th-btn { height: 7px; background: #1c1b19; border-radius: 5px; margin-top: auto; }
 
-      details.advanced { border-top: 1px solid var(--border-dark); padding-top: var(--spacing-md); }
+      details.advanced { border-top: 1px solid var(--border-default); padding-top: var(--spacing-md); }
       details.advanced summary { cursor: pointer; font-weight: 600; font-size: 0.875rem; }
 
       .kind-toggle { display: inline-flex; gap: 0.25rem; }
 
       .preview { position: sticky; top: var(--spacing-md); }
       .preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-md); margin-bottom: var(--spacing-md); }
-      .preview-stage { background: rgba(0,0,0,0.2); border: 1px solid var(--border-dark); border-radius: var(--radius-md); padding: var(--spacing-sm); display: flex; justify-content: center; overflow: auto; }
-      .preview-iframe { border: 0; border-radius: var(--radius-md); background: #fff; height: 40rem; max-width: 100%; }
+      .preview-stage { background: var(--surface-inset); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: var(--spacing-sm); display: flex; justify-content: center; overflow: auto; }
+      .preview-iframe { border: 0; border-radius: var(--radius-md); background: var(--surface); height: 40rem; max-width: 100%; }
       .render-error { color: var(--danger); font-size: 0.8125rem; margin-bottom: var(--spacing-sm); }
     `,
   ];

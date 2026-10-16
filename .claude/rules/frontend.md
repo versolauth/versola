@@ -36,13 +36,15 @@ npm run build:forms       # forms -> ../central/src/main/resources/forms/, commo
 
 ## Admin console
 
-- Follow `central-ui/UI_STYLE_GUIDE.md` (shell, page structure, cards, the single primary action per
-  page, theme tokens) and reuse `src/styles/theme.ts`, `src/styles/components.ts` and existing
-  components before adding styles or a new component. Read the guide's representative screens
-  (`clients-list.ts`, `client-form.ts`) before building a new list or form screen.
+- Read `central-ui/design-system/README.md` before any console change; it is mandatory. It is the
+  design system: tokens, the theme mechanism, the shell, the page patterns (list, record, wizard,
+  settings), the component catalogue with when to use each, states, accessibility rules and how to
+  render and verify a screen. Reuse `src/styles/theme.ts`, `src/styles/components.ts` and the
+  shared components it lists before adding styles or a new component. Read its representative
+  screens (`clients-list.ts`, `client-form.ts`) before building a new list or form screen.
 - Colours are tokens defined per theme in `index.html`; a new colour is a new token with a value in
-  both the `light` and `dark` themes, never a literal in a component. Keep the guide current when
-  you change the design system.
+  both the `light` and `dark` themes, never a literal in a component, and `npm run design:contrast`
+  must stay green. Keep the design system document current when you change it.
 - API access goes through `src/utils/central-api.ts`. A backend change to a `central` request or
   response updates the client and the OpenAPI spec together (`openapi-specs.md`).
 - The admin UI reaches `central` only through `edge` in production; do not hardcode service URLs.

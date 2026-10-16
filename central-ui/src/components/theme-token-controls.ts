@@ -73,21 +73,21 @@ export class VersolaThemeTokenControls extends LitElement {
       :host { display: block; }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
       .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
-      .note-inherited { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
+      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
       .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
       .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); cursor: pointer; }
       .seg-btn:hover { color: var(--text-primary); }
       .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
       .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-dark); cursor: pointer; padding: 0; }
+      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-default); cursor: pointer; padding: 0; }
       .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
@@ -98,7 +98,7 @@ export class VersolaThemeTokenControls extends LitElement {
          The dark scheme is shown unless the scheme is fixed to light: the glow is only there, and the page of a bold
          theme is dark in both. */
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
-      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .bg-card:hover { border-color: var(--text-secondary); }
       .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
@@ -113,7 +113,7 @@ export class VersolaThemeTokenControls extends LitElement {
       .bg-swatch[data-bg='horizon'] { background: radial-gradient(130% 60% at 50% 110%, color-mix(in oklab, var(--b) var(--hor), transparent), transparent 72%), var(--pg); }
       .bg-sheet { display: block; width: 46%; height: 64%; background: #fffdf9; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
       .bg-swatch[data-scheme='dark'] .bg-sheet { background: #262628; }
-      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-dark); }
+      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-default); }
     `,
   ];
 

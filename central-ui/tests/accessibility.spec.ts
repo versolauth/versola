@@ -13,12 +13,22 @@ import { loadAdminApp } from './fixtures';
 const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users'];
 const themes = ['light', 'dark'] as const;
 
-for (const theme of themes) {
+/** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */
+const schemes = [
+  { pref: 'auto', os: 'dark', theme: 'dark' },
+  { pref: 'auto', os: 'light', theme: 'light' },
+  { pref: 'light', os: 'dark', theme: 'light' },
+  { pref: 'dark', os: 'light', theme: 'dark' },
+] as const;
+
+for (const scheme of schemes) {
   for (const view of views) {
-    test(`${view} has no axe violations in the ${theme} theme`, async ({ page }) => {
-      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    test(`${view} has no axe violations with the ${scheme.pref} choice on a ${scheme.os} OS`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme.os });
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme.pref);
       await loadAdminApp(page, { path: `/?view=${view}` });
-      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await expect(page.locator('html')).toHaveAttribute('data-theme', scheme.theme);
+      await expect(page.locator('html')).toHaveAttribute('data-theme-pref', scheme.pref);
 
       const results = await new AxeBuilder({ page })
         .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])

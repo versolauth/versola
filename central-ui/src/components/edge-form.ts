@@ -50,7 +50,7 @@ export class VersolaEdgeForm extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       /* In edit mode the only child of .form-grid is the action row itself —
@@ -103,8 +103,8 @@ export class VersolaEdgeForm extends LitElement {
         display: flex;
         align-items: center;
         padding: 0 0.75rem;
-        background: rgba(0, 0, 0, 0.3);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-input);
         border-right: none;
         border-radius: var(--radius-md) 0 0 var(--radius-md);
         color: var(--text-secondary);

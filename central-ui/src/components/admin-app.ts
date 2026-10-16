@@ -3,6 +3,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
 import type { NavItem, VersolaNavigation } from './navigation';
 import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
+import { watchSystemTheme } from '../utils/theme';
 
 import './navigation';
 // Imported directly (not just transitively via navigation) because the splash
@@ -126,6 +127,9 @@ export class VersolaAdmin extends LitElement {
     this.loadLocationState();
   };
 
+  /** Stops following the OS colour scheme (see watchSystemTheme). */
+  private unwatchSystemTheme: () => void = () => {};
+
   connectedCallback() {
     super.connectedCallback();
     this.applyApiConfig();
@@ -134,12 +138,14 @@ export class VersolaAdmin extends LitElement {
     window.addEventListener('popstate', this.handlePopState);
     window.addEventListener('keydown', this.handleKeyDown);
     this.observeBreakpoint(true);
+    this.unwatchSystemTheme = watchSystemTheme();
   }
 
   disconnectedCallback() {
     window.removeEventListener('popstate', this.handlePopState);
     window.removeEventListener('keydown', this.handleKeyDown);
     this.observeBreakpoint(false);
+    this.unwatchSystemTheme();
     super.disconnectedCallback();
   }
 
@@ -179,7 +185,7 @@ export class VersolaAdmin extends LitElement {
       :host {
         display: block;
         min-height: 100vh;
-        background: var(--bg-dark);
+        background: var(--bg-page);
         color: var(--text-primary);
       }
 
@@ -270,8 +276,8 @@ export class VersolaAdmin extends LitElement {
           display: block;
           position: fixed;
           inset: 0;
-          z-index: 150; /* under the drawer, over the content */
-          background: rgba(0, 0, 0, 0.5);
+          z-index: var(--z-backdrop);
+          background: var(--backdrop);
         }
       }
     `,

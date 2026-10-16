@@ -113,8 +113,8 @@ export class VersolaRolesList extends LitElement {
       }
 
       .role-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         transition: border-color var(--transition-base);
@@ -178,17 +178,17 @@ export class VersolaRolesList extends LitElement {
       }
 
       .badge-success {
-        background: rgba(63, 185, 80, 0.15);
+        background: var(--success-subtle);
         color: var(--success);
       }
 
       .badge-danger {
-        background: rgba(var(--danger-tint), 0.15);
+        background: var(--danger-subtle);
         color: var(--danger);
       }
 
       .role-body {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding: var(--spacing-lg);
       }
 
@@ -204,8 +204,8 @@ export class VersolaRolesList extends LitElement {
         align-items: center;
         justify-content: space-between;
         gap: 0.5rem;
-        background: rgba(var(--accent-tint), 0.15);
-        border: 1px solid var(--border-dark);
+        background: var(--accent-subtle);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-sm) var(--spacing-md);
         font-family: var(--font-mono);
