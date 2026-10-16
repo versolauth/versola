@@ -18,7 +18,9 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
@@ -87,6 +89,41 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector.empty)
+        _ <- themes.create.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        created = themes.create.calls
+        updates = themes.update.times
+      yield assertTrue(created == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), updates == 0)
+    },
+    test("converts a stylesheet default (tokens NULL) to the visual theme, keeping its tenant") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector(ThemeRecord("default", ":root{--brand:red}", None, tokens = None)))
+        _ <- themes.update.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        updated = themes.update.calls
+        creates = themes.create.times
+      yield assertTrue(updated == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), creates == 0)
+    },
+    test("leaves a token default alone: the administrator may have changed its base or overrides") {
+      val themes = stub[ThemeRepository]
+      val custom = ThemeRecord(
+        "default",
+        "a{}",
+        None,
+        Some(ThemeTokens("versola", Some(ThemeOverrides.empty.copy(shape = Some(versola.util.theme.Shape.sharp))))),
+      )
+      for
+        _ <- themes.getAll.succeedsWith(Vector(custom))
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        creates = themes.create.times
+        updates = themes.update.times
+      yield assertTrue(creates == 0, updates == 0)
+    },
     // The client and challenge-settings caches load before bootstrap seeds central-admin, and
     // the seed's notifications are lost: without this reload edge's first sync misses it.
     test("refreshCachesAfterBootstrap reloads the client and challenge-settings caches") {

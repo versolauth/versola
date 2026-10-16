@@ -184,6 +184,28 @@ jobs:
 
           echo "OK: no unmeasured .connect/.transact found in src/main."
 
+      # The built forms are needed before the first sbt step, not only before staging: the base
+      # stylesheet every theme is composed on (forms/common.css) is copied by `build:forms` into
+      # util's resources, and util, auth and central read it when they run (their tests too).
+      # Without this step `sbt test` fails on the missing resource.
+      # No `if: != release` guard here (unlike many steps below) --
+      # central-postgres-impl/stage packages whatever's under
+      # central/src/main/resources at stage time, and this is what
+      # populates that with the built forms. Needed on release too now
+      # that central is staged here instead of inside Dockerfile.central
+      # (which used to run its own npm build:forms before its own `sbt
+      # stage`, see docker-central job below).
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.12'
+
+      - name: Build forms
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build:forms
+
       # tools (build.sbt's gen-env.scala sub-project) is deliberately not
       # part of root's aggregate -- see its comment in build.sbt -- so
       # plain `sbt compile` above wouldn't touch it. Without this, the
@@ -270,24 +292,6 @@ jobs:
         run: |
           sed -i 's/^configuration-cache-refresh-interval = .*/configuration-cache-refresh-interval = "10 minutes"/' central/dev/env.conf
           grep -n '^configuration-cache-refresh-interval = "10 minutes"' central/dev/env.conf
-
-      # No `if: != release` guard here (unlike the steps above/below it) --
-      # central-postgres-impl/stage packages whatever's under
-      # central/src/main/resources at stage time, and this is what
-      # populates that with the built forms. Needed on release too now
-      # that central is staged here instead of inside Dockerfile.central
-      # (which used to run its own npm build:forms before its own `sbt
-      # stage`, see docker-central job below).
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.12'
-
-      - name: Build forms
-        working-directory: central-ui
-        run: |
-          npm ci
-          npm run build:forms
 
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
