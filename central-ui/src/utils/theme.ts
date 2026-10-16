@@ -5,7 +5,9 @@ export type ThemePreference = 'auto' | ThemeName;
 
 export const THEME_PREFERENCES: readonly ThemePreference[] = ['auto', 'light', 'dark'];
 
-const STORAGE_KEY = 'versola-theme';
+/** The localStorage key; exported so the switcher can recognise a `storage` event from another tab. */
+export const THEME_STORAGE_KEY = 'versola-theme';
+const STORAGE_KEY = THEME_STORAGE_KEY;
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 /** Fired on `window` whenever the painted theme changes (a new choice, or the

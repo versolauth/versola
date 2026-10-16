@@ -81,6 +81,28 @@ test('follows the operating system while the choice is Auto, and only then', asy
   await expect(root(page)).toHaveAttribute('data-theme', 'dark');
 });
 
+test('follows a choice made in another tab', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await loadAdminApp(page);
+  await expect(trigger(page, 'Auto')).toBeVisible();
+
+  // What the browser fires in this tab when another tab writes the key.
+  await page.evaluate(() => {
+    localStorage.setItem('versola-theme', 'dark');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'versola-theme', newValue: 'dark', storageArea: localStorage }));
+  });
+  await expect(root(page)).toHaveAttribute('data-theme', 'dark');
+  await expect(root(page)).toHaveAttribute('data-theme-pref', 'dark');
+  await expect(trigger(page, 'Dark')).toBeVisible();
+
+  await page.evaluate(() => {
+    localStorage.setItem('versola-theme', 'auto');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'versola-theme', newValue: 'auto', storageArea: localStorage }));
+  });
+  await expect(root(page)).toHaveAttribute('data-theme', 'light');
+  await expect(trigger(page, 'Auto')).toBeVisible();
+});
+
 test('a light or dark value stored before Auto existed still applies', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.addInitScript(() => localStorage.setItem('versola-theme', 'light'));

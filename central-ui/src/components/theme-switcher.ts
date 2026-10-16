@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing, svg } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { getStoredPreference, setThemePreference, THEME_PREFERENCES, type ThemePreference } from '../utils/theme';
+import { applyTheme, getStoredPreference, setThemePreference, THEME_CHANGE_EVENT, THEME_PREFERENCES, THEME_STORAGE_KEY, type ThemePreference } from '../utils/theme';
 
 const LABELS: Record<ThemePreference, string> = { auto: 'Auto', light: 'Light', dark: 'Dark' };
 
@@ -114,15 +114,32 @@ export class VersolaThemeSwitcher extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleOutsideClick);
+    window.addEventListener(THEME_CHANGE_EVENT, this.syncFromStore);
+    window.addEventListener('storage', this.handleStorage);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleOutsideClick);
+    window.removeEventListener(THEME_CHANGE_EVENT, this.syncFromStore);
+    window.removeEventListener('storage', this.handleStorage);
     super.disconnectedCallback();
   }
 
   private readonly handleOutsideClick = (event: Event) => {
     if (this.open && !event.composedPath().includes(this)) this.open = false;
+  };
+
+  /** The icon follows the stored choice when something other than this button changed it
+    * (another component, or the OS while the choice is Auto repainting through applyTheme). */
+  private readonly syncFromStore = () => {
+    this.preference = getStoredPreference();
+  };
+
+  /** Another tab changed the choice: paint it here too, so the tabs agree. */
+  private readonly handleStorage = (event: StorageEvent) => {
+    if (event.key !== null && event.key !== THEME_STORAGE_KEY) return;
+    this.preference = getStoredPreference();
+    applyTheme(this.preference);
   };
 
   private options(): HTMLElement[] {
