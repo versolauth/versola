@@ -50,3 +50,16 @@ export async function findClientWrite(requests: RequestLog[], method: 'POST' | '
 export function clientWrites(requests: RequestLog[], method: 'POST' | 'PUT'): RequestLog[] {
   return requests.filter(request => request.method === method && CLIENT_WRITE_PATH.test(request.pathname));
 }
+
+/** The side panel whose title is `heading`, as its host element: its slotted content (the record
+  * cards, the editor) are DOM children of the host, not of the `role="dialog"` inside its shadow
+  * root, so a locator chained from the host reaches them while one chained from the dialog
+  * does not. `sidePanelDialog` is the dialog itself, for its ARIA state and its box. */
+export function sidePanel(page: Page, heading: string) {
+  const pattern = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return page.locator('versola-side-panel').filter({ has: page.locator('#panel-title', { hasText: pattern }) });
+}
+
+export function sidePanelDialog(page: Page, heading: string) {
+  return sidePanel(page, heading).getByRole('dialog');
+}

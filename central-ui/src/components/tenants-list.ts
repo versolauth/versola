@@ -303,10 +303,11 @@ export class VersolaTenantsList extends LitElement {
     return this.tenants.filter(tenant => this.matchesFilter(tenant, filter)).length;
   }
 
+  /** The edge as a chip (the table renders cells with its own styles, which carry chips, not tags). */
   private edgeValue(tenant: Tenant) {
     if (!tenant.edgeId) return html`<span class="chip warn">Not assigned</span>`;
     const known = this.edges.some(edge => edge.id === tenant.edgeId);
-    return html`<span class="tag">${tenant.edgeId}</span>${this.edges.length && !known ? html` <span class="chip warn">Missing</span>` : ''}`;
+    return html`<span class="chip">${tenant.edgeId}</span>${this.edges.length && !known ? html` <span class="chip warn">Missing</span>` : ''}`;
   }
 
   private renderToolbar() {
@@ -317,7 +318,7 @@ export class VersolaTenantsList extends LitElement {
     ];
     return html`
       <div class="list-toolbar">
-        <input class="search-input" type="search" aria-label="Search tenants" placeholder="Search tenants by ID or description"
+        <input class="search-input" type="search" aria-label="Search tenant list" placeholder="Search tenants by ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter tenants"
           .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
@@ -417,7 +418,7 @@ export class VersolaTenantsList extends LitElement {
           <div class="banner-title">${statusIcon('alert')}Not assigned to an edge</div>
           <div>Sync is edge-scoped, so no edge serves this tenant.</div>
         </div>
-        ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openEditor('edge')}>Edit edge</button>` : ''}
+        ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openEditor('edge')}>Assign an edge</button>` : ''}
       </div>
     `;
   }

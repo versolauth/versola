@@ -520,7 +520,7 @@ export const recordStyles = css`
     white-space: normal;
   }
 
-  .record-compact .record-row > div:empty {
+  .record-compact .record-row > div:empty:not(.record-label) {
     display: none;
   }
 

@@ -448,8 +448,14 @@ export class VersolaAdmin extends LitElement {
     });
   }
 
+  /** The views whose records belong to the selected tenant: switching it closes the open record.
+    * A global view keeps its record (the selector also fires on load, picking the first tenant). */
+  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'roles', 'challenges']);
+
   private handleTenantChange(e: CustomEvent) {
-    if (e.detail.tenantId !== this.currentTenantId) this.recordRoute = EMPTY_RECORD_ROUTE;
+    if (e.detail.tenantId !== this.currentTenantId && VersolaAdmin.TENANT_SCOPED_VIEWS.has(this.currentView)) {
+      this.recordRoute = EMPTY_RECORD_ROUTE;
+    }
     this.currentTenantId = e.detail.tenantId;
   }
 

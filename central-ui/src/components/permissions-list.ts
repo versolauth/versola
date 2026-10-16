@@ -461,7 +461,7 @@ export class VersolaPermissionsList extends LitElement {
     return html`
       <div class="banner warn" role="status">
         <div class="banner-text">
-          <div class="banner-title">${statusIcon('alert')}${detached.length} linked ${detached.length === 1 ? 'endpoint' : 'endpoints'} no longer exist in Resources</div>
+          <div class="banner-title">${statusIcon('alert')}${detached.length} linked ${detached.length === 1 ? 'endpoint' : 'endpoints'} no longer ${detached.length === 1 ? 'exists' : 'exist'} in Resources</div>
           <div>Edit Endpoints to remove them.</div>
         </div>
       </div>

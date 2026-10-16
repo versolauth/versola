@@ -236,7 +236,8 @@ export class VersolaEdgesList extends LitElement {
         if (mode !== 'view') this.resetDraft();
       }
       // The key is for the edge it was issued to; leaving that edge's panel is the one chance gone.
-      if (this.generatedKey && this.route.id !== this.generatedKey.edgeId) this.dismissKey();
+      const previous = changed.get('route') as RecordRoute | undefined;
+      if (this.generatedKey && previous?.id === this.generatedKey.edgeId && this.route.id !== this.generatedKey.edgeId) this.dismissKey();
     }
   }
 
