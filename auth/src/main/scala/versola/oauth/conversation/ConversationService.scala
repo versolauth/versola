@@ -1043,8 +1043,16 @@ object ConversationService:
         acr: Option[Acr],
         sessionId: PublicSessionId,
     ): Task[Option[ConversationResult.IdTokenData]] =
-      val user = conversation.user.getOrElse(UserRecord.empty(userId))
       for
+        // The conversation carries the profile it started with but not the verified flags, which an
+        // OTP confirmed in this very conversation has just set, so they are read from the stored user.
+        stored <- userRepository.find(userId)
+        user = conversation.user
+          .getOrElse(UserRecord.empty(userId))
+          .copy(
+            emailVerified = stored.exists(_.emailVerified),
+            phoneVerified = stored.exists(_.phoneVerified),
+          )
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
           clientId = conversation.clientId,

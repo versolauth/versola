@@ -520,6 +520,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(emailVerified = true)))
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
@@ -529,6 +530,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield result match
           case complete: ConversationResult.Complete =>
             assertTrue(
+              env.userInfoService.getUserInfoForIdToken.calls.map(_._1.emailVerified) == List(true),
               complete.idTokenData.isDefined,
               complete.idTokenData.get.claims.contains("sub"),
               complete.idTokenData.get.claims.contains("email"),

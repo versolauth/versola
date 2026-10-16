@@ -558,6 +558,39 @@ object ConversationServiceSpec extends UnitSpecBase:
             assertTrue(s == sessionId)
           case _ => assertTrue(false)
       },
+      test("the ID token of a hybrid flow reports the verified flag stored for the user, not the conversation's") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          scope = Set(ScopeToken.OpenId, ScopeToken("email")),
+          grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("email"))),
+          responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        )
+        val stored = UserRecord(userId, Some(email), None, None, Json.Obj(), None, emailVerified = true)
+        val mac = MAC(Array.fill(32)(1.toByte))
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode.fromString("code"))
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(SessionId.fromString("session"))
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(versola.oauth.session.model.PublicSessionId("public-session"))
+          _ <- env.securityService.mac.succeedsWith(mac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(AccessToken.fromString("token"))
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
+          _ <- env.userRepository.find.succeedsWith(Some(stored))
+          _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+          _ <- env.service.finish(authId, record)
+        yield assertTrue(env.userInfoService.getUserInfoForIdToken.calls.map(_._1.emailVerified) == List(true))
+      },
       test("creates new session and issues cookie during step-up") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")

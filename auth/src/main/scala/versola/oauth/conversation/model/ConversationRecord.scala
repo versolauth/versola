@@ -81,6 +81,8 @@ case class ConversationRecord(
       * this conversation eventually issues. */
     dpopJkt: Option[String],
 ):
+  /** The user as this conversation knows it. It does not carry `emailVerified` / `phoneVerified`
+    * (they stay `false` here), so a caller that reports them reads the stored user instead. */
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(
       id = userId,
