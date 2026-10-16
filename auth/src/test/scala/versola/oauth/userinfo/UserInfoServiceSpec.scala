@@ -47,7 +47,6 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -65,6 +64,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   /** The same client, but one that shows the user a consent screen. */

@@ -28,7 +28,7 @@ The script first asks for the environment **Name** (default `local`):
       `http://auth:8080`, `jdbc:postgresql://postgres:5432/...` — containers on a bridge
       network can't reach each other via `localhost`.
     - **Anything a browser has to load** (auth/edge's own public URLs, the post-login
-      redirect) points at nginx's published port instead, `http://localhost:8080` — a
+      redirect) points at the proxy's published port instead, `http://localhost:2821` — a
       browser outside the Compose network has no way to resolve `auth` or `edge` as
       hostnames, and edge's own port isn't published to the host at all.
 
@@ -64,11 +64,11 @@ The script first asks for the environment **Name** (default `local`):
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres` - and, for `PostgresTlsConnectionSpec`, a Postgres that serves TLS - `util/implementations/postgres/tls-fixture/start.sh` (port 5433, CA written to `target/postgres-tls/ca.crt`; needs `docker` and `openssl`)
+3. Run tests - `test`. First, start postgres - `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with `POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec connects and which CA it trusts.
 4. ```bash
     cd central-ui
     npm install
-    npm run build:forms   # compile auth forms into central/src/main/resources/forms
+    npm run build:forms   # compile auth forms into central/src/main/resources/forms, and copy common.css to util/src/main/resources/versola/forms (auth, central and util need it)
     npm run dev           # run admin dashboard on port 3000
     ```
 5. Start server locally
@@ -96,8 +96,16 @@ The script first asks for the environment **Name** (default `local`):
       `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
       `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
       `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
-      docker-local/vps/interactive targets get no `central-admin-mtls` and no terminator, so
-      central keeps `central-admin` on its `client_secret` there and logs that it is outside the
+      docker-local and vps need neither the terminator nor a certificate in the config: their
+      `central-admin-mtls` names only the header, and central issues `central-admin`'s
+      certificate itself through step-ca (the one it issues edge-fronted clients' from) and
+      renews it. Edge presents it to auth's own mutual-TLS listener (`native` in `edge.conf`).
+      The proxy in front of auth clears `ssl-client-cert`, so a certificate cannot be asserted
+      from outside. Redeploying over a deployment from before this keeps `central-admin` on its
+      `client_secret`, and central then refuses to boot ("A client's authentication method is
+      fixed when it is created"): delete the `central-admin` client, or start from empty
+      volumes. The interactive and k8s targets still get no `central-admin-mtls`, so central
+      keeps `central-admin` on its `client_secret` there and logs that it is outside the
       tenant's profile.
     - go to http://localhost:9005/login/central-admin
     - enter admin/Admin1234!
@@ -146,7 +154,8 @@ docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
 
 (`central` additionally expects `central-ui`'s forms already built into
-`central/src/main/resources` -- see the `npm run build:forms` step above --
+`central/src/main/resources` (and `auth` and `central` the base stylesheet in
+`util/src/main/resources/versola/forms`, written by the same step) -- see the `npm run build:forms` step above --
 before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:

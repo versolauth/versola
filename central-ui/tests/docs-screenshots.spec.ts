@@ -97,10 +97,10 @@ test('clients list', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
   await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
-  await expect(page.locator('.client-card')).toHaveCount(1);
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(1);
   await shot(page, 'clients-list');
 
-  await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first().locator('.client-header').click();
+  await page.getByRole('button', { name: 'Open client storefront-web', exact: true }).click();
   await expect(page.getByText('https://storefront.example.com/callback').first()).toBeVisible();
   await shot(page, 'clients-list-expanded', true);
 });
@@ -152,10 +152,10 @@ test('clients list — registry (light theme)', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${registryTenant}`, state: registryState });
 
   await expect(page.getByRole('button', { name: '+ Create Client', exact: true })).toBeVisible();
-  await expect(page.getByPlaceholder('Search clients by client ID')).toBeVisible();
+  await expect(page.getByPlaceholder('Search by name or client ID')).toBeVisible();
 
-  // Expanding a client card also auto-expands Authorization Flows and loads presets.
-  await page.locator('.client-card').filter({ hasText: 'Central Admin' }).first().locator('.client-header').click();
+  // A client's own page lists its sign-in flow and loads its presets.
+  await page.getByRole('button', { name: 'Open client central-admin', exact: true }).click();
   await expect(page.getByText('https://id.example.kz/complete').first()).toBeVisible();
   await expect(page.getByText('passkey enrollment')).toBeVisible();
 
@@ -200,24 +200,39 @@ test('client create form', async ({ page }) => {
   await shot(page, 'client-created-edge');
 });
 
-test('client registration flow form', async ({ page }) => {
-  // Registration challenge and role assignment are edit-page refinements now - creation only
-  // asks whether sign-up is on at all - so this shot comes from editing an existing client.
-  await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
+/**
+ * Self-registration is a tenant policy, not a client setting: the Registration group of the
+ * Challenges & Security edit form holds the email mode (with its info popover), the domain list
+ * and the default roles.
+ */
+test('challenge settings registration form', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: `/?view=challenges&tenant=${tenant}`,
+    state: {
+      ...state,
+      challengeSettings: {
+        [tenant]: {
+          tenantId: tenant,
+          phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
+          emailRegistration: { mode: 'allowlist', domains: ['example.com', '*.corp.example'], blockSubaddress: false },
+          defaultRoles: ['user'],
+          submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+          otpLength: 6,
+          otpResendAfter: 60,
+          authConversationTtlSeconds: 900,
+          sessionTtlSeconds: 86400,
+          userAgentTtlSeconds: 15552000,
+          passkeySettings: { rpId: 'example.com', rpName: 'Example', origins: ['https://example.com'], userVerification: 'preferred' },
+        },
+      },
+    },
+  });
 
-  await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first()
-    .getByRole('button', { name: 'Edit client storefront-web' }).click();
-
-  // The edit page opens with every group collapsed behind its summary.
-  await page.getByRole('button', { name: /^Registration and consent/ }).click();
-
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
-
-  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
-  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha_admin', exact: true }).check();
-  await shot(page, 'client-form-registration', true);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('button', { name: 'About email registration modes', exact: true }).click();
+  await expect(page.getByLabel('Allowed domains')).toHaveValue('example.com\n*.corp.example');
+  await page.getByRole('heading', { name: 'Registration', exact: true }).scrollIntoViewIfNeeded();
+  await shot(page, 'challenge-settings-registration');
 });
 
 test('resources list', async ({ page }) => {

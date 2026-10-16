@@ -131,6 +131,26 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           upserts.map(_.email) == Vector(Some(Email("new@example.com"))),
         )
       },
+      test("patch fails with UserNotFound for an unknown user") {
+        for
+          result <- env.repository.patch(userId1, None, Some(Patch.Modified(phone)), None).either
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+        yield assertTrue(result == Left(UserNotFound), events.isEmpty)
+      },
+      test("patch fails with UserConflict when the phone belongs to another user") {
+        for
+          _ <- env.repository.create(userId1, None, Some(phone), None)
+          _ <- env.repository.create(userId2, Some(email), None, None)
+          _ <- drainOutbox(env)
+          result <- env.repository.patch(userId2, None, Some(Patch.Modified(phone)), None).either
+          found <- env.repository.findById(userId2)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+        yield assertTrue(
+          result == Left(UserConflict),
+          found == Some(UserIndexRecord(userId2, Some(email), None, None)),
+          events.isEmpty,
+        )
+      },
       test("enqueueRoleUpdate queues the role change for auth") {
         for
           _ <- env.repository.create(userId1, Some(email), None, None)

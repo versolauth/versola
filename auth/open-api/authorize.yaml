@@ -11,9 +11,11 @@ info:
 
     Either the request carries its parameters inline, or it carries a single `request_uri`
     obtained from `POST /par` alongside `client_id`; in the latter case the pushed payload
-    replaces every other parameter and is consumed on first use.
+    replaces every other parameter and is consumed on first use. A third form carries the
+    parameters as the claims of a signed `request` object (RFC 9101), again alongside
+    `client_id`; the object's claims replace every other parameter.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:
@@ -49,6 +51,8 @@ paths:
         - $ref: '#/components/parameters/AuthorizationDetails'
         - $ref: '#/components/parameters/DpopJkt'
         - $ref: '#/components/parameters/RequestUri'
+        - $ref: '#/components/parameters/Request'
+        - $ref: '#/components/parameters/ResponseMode'
         - $ref: '#/components/parameters/UserAgent'
         - $ref: '#/components/parameters/SessionCookie'
         - $ref: '#/components/parameters/UserAgentCookie'
@@ -180,7 +184,10 @@ components:
       name: nonce
       in: query
       required: false
-      description: Value bound into the ID token to associate it with this client session.
+      description: |
+        Value bound into the ID token to associate it with this client session. Required when
+        `response_type` is `code id_token` (OpenID Connect Core §3.3.2.11): a request without
+        one is refused with `invalid_request`.
       schema:
         type: string
 
@@ -232,6 +239,11 @@ components:
         Space-delimited BCP 47 language tags, in order of preference. The best match among the
         configured locales is used; when none is configured the default locale applies, and the
         request is not refused.
+
+        The language the user picks in a login form is sent with each submit as `ui_locale`, kept
+        for the rest of the conversation, and carried by the redirect to the next step. Precedence:
+        what the user picked, then these `ui_locales`, then `Accept-Language`, then the default
+        locale.
       schema:
         type: string
       example: ru en
@@ -352,6 +364,66 @@ components:
         pattern: '^urn:ietf:params:oauth:request_uri:'
       example: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
 
+    Request:
+      name: request
+      in: query
+      required: false
+      description: |
+        RFC 9101 request object passed by value: a JWT whose claims are the authorization
+        request parameters. It must be signed with a key from the JWK Set the client
+        registered, using an algorithm the server advertises as
+        `request_object_signing_alg_values_supported`; the client's `client_id` must be sent
+        beside it and equal the object's own `client_id`, and the object's `iss` must be that
+        `client_id` too.
+
+        The server uses only what the object carries -- a parameter repeated outside it is
+        ignored -- and requires an `exp` within the tenant's permitted lifetime. A `fapi2`
+        tenant also requires `nbf` and a `jti`, and an `aud` equal to the issuer identifier
+        alone; a `standard` tenant accepts the issuer identifier or the `/authorize` URL as
+        `aud`, and uses `jti` for replay protection only when one is sent. A `jti` is
+        accepted once. An object that carries a `sub` is refused, as it would be
+        indistinguishable from a client assertion signed with the same keys, and so is one
+        that nests another `request` or `request_uri`. A `typ` header, when present, is
+        `oauth-authz-req+jwt` (or plain `JWT`).
+
+        An object that fails any of these is answered `400` with `invalid_request_object`, as
+        JSON, rather than redirected: nothing in an unverified object can be trusted as a
+        `redirect_uri`. A `request` sent more than once is refused the same way. Only the
+        by-value form is supported; `request_uri` here always names a request pushed to
+        `POST /par`, never a document to be fetched. A client registered with
+        `requireSignedRequestObject` must use this parameter or `request_uri`.
+      schema:
+        type: string
+      example: eyJhbGciOiJQUzI1NiIsInR5cCI6Im9hdXRoLWF1dGh6LXJlcStqd3QifQ...
+
+    ResponseMode:
+      name: response_mode
+      in: query
+      required: false
+      description: |
+        Where the authorization response parameters are placed on the redirect URI, and
+        whether they travel as a signed JWT (JARM).
+
+        - `query` -- as query parameters. The default for `response_type=code`.
+        - `fragment` -- in the URI fragment. The default for `response_type=code id_token`.
+        - `query.jwt`, `fragment.jwt` -- every response parameter, errors included, moves
+          inside a single `response` parameter: a JWT signed with the tenant's signing key,
+          issued by this server to the client (`iss`, `aud`, `exp`), whose claims are the
+          parameters. The `iss` parameter is dropped from the claims, since the JWT carries it.
+        - `jwt` -- the JWT form of whichever placement the response type implies:
+          `query.jwt` for `code`, `fragment.jwt` for `code id_token`.
+
+        A query placement (`query`, `query.jwt`) is refused with `invalid_request` for
+        `response_type=code id_token`, because it would put an `id_token` into a URL the
+        browser sends upstream; so is an unrecognised value. The error is delivered in the
+        mode the response type implies, not the one that was requested. The supported values
+        are advertised as `response_modes_supported`, and the algorithm of a JARM response as
+        `authorization_signing_alg_values_supported`.
+      schema:
+        type: string
+        enum: [query, fragment, jwt, query.jwt, fragment.jwt]
+      example: query.jwt
+
     UserAgent:
       name: User-Agent
       in: header
@@ -385,7 +457,8 @@ components:
       description: |
         Only `client_id` is unconditionally required. `redirect_uri`, `response_type`, `scope`
         and `code_challenge` (see its parameter for who may omit it) are required inline, but
-        come from the pushed payload when `request_uri` is used.
+        come from the pushed payload when `request_uri` is used, or from the signed object when
+        `request` is.
       required: [client_id]
       properties:
         client_id:
@@ -438,18 +511,27 @@ components:
           pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
         request_uri:
           type: string
+        request:
+          type: string
+        response_mode:
+          type: string
+          enum: [query, fragment, jwt, query.jwt, fragment.jwt]
 
   responses:
     SeeOther:
       description: |
         Every outcome is a redirect. There are three shapes:
 
-        - **Authorized** — back to `redirect_uri` with `code` (and `state`, and `id_token`
-          when `response_type=code id_token`).
+        - **Authorized** — back to `redirect_uri` with `code`, `iss` (RFC 9207) and `state`, and
+          `id_token` when `response_type=code id_token`.
         - **Authentication required** — to `/challenge`, setting the `SSO_CONVERSATION`
           cookie that carries the pending authorization request.
         - **Failed** — back to `redirect_uri` with `error`, `error_description`, `error_uri`
           and `state`.
+
+        Both redirects to `redirect_uri` follow `response_mode`: the parameters go on the
+        query string or the fragment, or, for the `.jwt` modes, inside a single signed
+        `response` parameter (JARM).
 
         Failures that cannot be attributed to a registered redirect URI are answered with
         `400` instead, since redirecting them would be an open redirect.
@@ -487,10 +569,25 @@ components:
 
     BadRequest:
       description: |
-        `client_id` or `redirect_uri` is missing, malformed, supplied more than once, or not
-        registered for the client — so there is no verified URI to redirect the error to.
+        Either `client_id` or `redirect_uri` is missing, malformed, supplied more than once, or
+        not registered for the client — so there is no verified URI to redirect the error to —
+        answered as plain text; or the `request` object failed verification (RFC 9101 §6.2),
+        answered as JSON with `error` `invalid_request_object`.
       content:
         text/plain:
           schema:
             type: string
           example: Either client_id or redirect_uri is somehow missing, invalid, provided multiple times or not registered
+        application/json:
+          schema:
+            type: object
+            required: [error, error_description]
+            properties:
+              error:
+                type: string
+                const: invalid_request_object
+              error_description:
+                type: string
+          example:
+            error: invalid_request_object
+            error_description: The request parameter does not contain a valid Request Object for this client

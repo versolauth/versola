@@ -1,5 +1,6 @@
 package versola.oauth.client
 
+import versola.oauth.client.model.EmailRegistration
 import versola.oauth.client.model.{
   Acr,
   AuthMethod,
@@ -31,6 +32,7 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
+import versola.role.model.RoleId
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -59,7 +61,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -77,6 +78,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -90,7 +92,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -108,6 +109,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -121,7 +123,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -139,6 +140,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -432,7 +434,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val limits = SubmissionLimits(otpRequest = List(RateLimit(5, 60)))
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = limits,
         otpLength = 6,
         otpResendAfter = 60,
@@ -459,7 +463,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     test("getIpHeader returns header from challenge settings") {
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -487,7 +493,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val passkey = PasskeySettings("rp.com", "RP", List("https://rp.com"), "preferred")
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -584,7 +592,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val vocabulary = Map("factor1" -> List(PassedAuthFactor.password))
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,

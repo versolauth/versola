@@ -1,7 +1,13 @@
 package versola.central.configuration.tenants
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  EmailRegistration,
+  PasskeySettings,
+  SubmissionLimits,
+}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
@@ -104,7 +110,9 @@ object TenantService:
     ): ChallengeSettingsRecord =
       ChallengeSettingsRecord(
         tenantId = tenantId,
-        allowedPrefixes = List.empty,
+        phoneRegions = List.empty,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
         submissionLimits = submissionLimits,
         otpLength = 6,
         otpResendAfter = 60,

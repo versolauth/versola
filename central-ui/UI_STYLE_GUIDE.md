@@ -53,6 +53,33 @@ Rules:
 - Empty states should be centered inside a card
 - If a create/edit form is open, prefer replacing the list page content with the form instead of showing both together
 
+### Record pages (view first)
+
+A record that has settings of its own (a client) opens on a read-only page, never straight into a
+form:
+
+1. breadcrumb back to the list, the title, then a meta row: ID with a copy button, the kind of
+   record, its security status
+2. a status banner when the page can say something about the whole record
+3. one card per group of settings; its header carries an `Edit` button that opens only that group
+   as its own page with its own `Cancel` and `Save <group>`
+4. settings that are fixed when the record is created stay in a card marked `Fixed`, each row with
+   its reason (`By type`); they have no editor and no control
+5. delete is the last card, in danger colours, named for what it deletes
+
+Creating such a record is a stepped wizard that uses the same vocabulary, so a setting looks the
+same where it is chosen and where it is read:
+
+- each step is a stack of the same bordered panels (title, one-line subtitle, body), not fields
+  separated by rules
+- a rule the type sets is shown as a locked row (lock icon, text, reason), never as a glyph; state
+  icons come from `status-icon.ts`
+- the last step is a review in the page's own groups, each with `Change` to the step that sets it,
+  and the same FAPI 2.0 banner the page will show
+
+Lists of such records are tables (cards below 720px), rows open the page, and the row menu holds
+open, copy ID and delete. Nothing in the list edits.
+
 ### Create/edit pages
 
 Use this structure:
@@ -106,7 +133,7 @@ shadow DOM. Read the values there, and use only the tokens in components:
 - Accent `--accent`, `--accent-gradient`, and `--accent-tint` for tinted backgrounds
 - Text `--text-primary`, `--text-secondary`
 - Borders `--border-dark`, `--border-light`
-- Semantic `--success`, `--warning`, `--danger` (+ `--danger-tint`, `--danger-strong`), `--info`
+- Semantic `--success`, `--warning`, `--danger` (+ `--danger-tint`, `--danger-strong`, and `--on-danger`, the text colour on a solid danger fill), `--info`
 - Overlay and inset surfaces `--surface-overlay`, `--surface-inset`; switches `--toggle-track-off`
 
 A new colour is a new token with a value in **both** themes, not a literal in a component.

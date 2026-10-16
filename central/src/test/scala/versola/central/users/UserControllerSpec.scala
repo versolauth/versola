@@ -350,6 +350,30 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
     ),
     controllerTestCase(
+      description = "patch user returns 404 Not Found when the user is unknown",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+77000000098"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.patch.failsWith(UserNotFound),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch user returns 409 Conflict when an identifier is taken",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+77000000098"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Conflict,
+      setup = service => service.patch.failsWith(UserConflict),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
       description = "reset user limits returns 202 Accepted",
       request = Request(
         method = Method.POST,

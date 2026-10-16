@@ -1,14 +1,15 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
-import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.theme.ThemeOverrides
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
-/** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
-  * for example when registration is enabled without an auth flow or for a
-  * login+password flow, which has no credential the user can prove ownership of.
+/** Raised when a client's settings cannot be satisfied or contradict each other, for example an
+  * access token lifetime beyond the allowed maximum or an `mtlsAuth` the tenant cannot terminate.
   */
 case class InvalidRegistrationConfiguration(clientId: ClientId, reason: String)
 
@@ -37,6 +38,37 @@ object InvalidRegistrationConfiguration:
         clientId,
         s"authMethod is $stored and cannot be changed to $method after the client is registered; " +
           "delete the client and register it again to use another method",
+      )
+
+  /** A client that asks users for consent is a partner (its OTP messages name the app, and it
+    * is shown as one), so the consent flow can be changed but not taken away. Giving a client
+    * without one a consent flow is still allowed. */
+  def validateConsentFlowKept(
+      clientId: ClientId,
+      requested: Option[Patch[ConsentFlowDto]],
+      stored: Option[ConsentFlow],
+  ): Option[InvalidRegistrationConfiguration] =
+    requested.collect:
+      case Patch.Deleted if stored.isDefined =>
+        InvalidRegistrationConfiguration(
+          clientId,
+          "consentFlow cannot be removed from a client that asks for consent (a partner client); " +
+            "delete the client and register it again to make it a first-party one",
+        )
+
+  /** Only a partner app (one that asks users for consent) has an appearance of its own on top of its theme: a
+    * first-party client looks like the product it belongs to. Clearing overrides (an empty set) is always
+    * allowed, so a client that has some from before can be brought in line. */
+  def validateThemeOverridesForPartner(
+      clientId: ClientId,
+      themeOverrides: Option[ThemeOverrides],
+      asksForConsent: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    Option.when(!asksForConsent && themeOverrides.exists(!_.isEmpty)):
+      InvalidRegistrationConfiguration(
+        clientId,
+        "themeOverrides can only be set on a client that asks for consent (a partner client); " +
+          "set a consentFlow first, or leave themeOverrides out",
       )
 
   def validateAccessTokenTtl(
@@ -340,42 +372,6 @@ object InvalidRegistrationConfiguration:
         ),
       )
 
-  /** Registration is only reachable from a credential card that asks for a phone or an
-    * email, since account creation requires proving ownership of the entry credential.
-    */
-  def validate(
-      clientId: ClientId,
-      authFlow: Option[AuthFlow],
-      registrationFlow: Option[RegistrationFlow],
-  ): Option[InvalidRegistrationConfiguration] =
-    registrationFlow.flatMap: flow =>
-      def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, reason))
-      authFlow match
-        case None =>
-          invalid("registration requires an authentication flow")
-        case Some(auth) if auth.primary.credentials.contains(PrimaryCredential.login) =>
-          invalid("registration is not available for login+password flows")
-        case Some(auth) if auth.primary.credentials.sizeIs != 1 =>
-          invalid("registration requires exactly one primary credential, either phone or email")
-        case Some(auth) if auth.primary.credentials.headOption.map(_.toString) != Some(flow.credential.toString) =>
-          invalid("registration credential must match the client's primary credential")
-        case Some(auth) if auth.primary.inlinePassword =>
-          invalid("registration is not available when the credential card asks for a password inline")
-        case Some(_) if flow.roleIds.isEmpty =>
-          invalid("registration requires at least one assigned role")
-        case Some(_) if flow.steps.isEmpty =>
-          invalid("registration requires at least one step")
-        case Some(_) if !flow.steps.headOption.contains(RegistrationStep.Otp()) =>
-          invalid("registration must start with OTP verification")
-        case Some(_) if flow.steps.distinct.size != flow.steps.size =>
-          invalid("registration steps must be distinct")
-        case Some(_)
-            if flow.steps.contains(RegistrationStep.SetPassword()) &&
-              flow.steps.contains(RegistrationStep.PasskeyEnroll()) =>
-          invalid("registration allows only one of set-password or passkey enrollment")
-        case Some(_) =>
-          None
-
   // ── #353: the tenant's security profile ────────────────────────────────────────────────
   //
   // Kept apart from the per-setting checks above on purpose: those say whether a client's
@@ -555,3 +551,91 @@ object InvalidRegistrationConfiguration:
   private def isHttpsWithHost(uri: String): Boolean =
     scala.util.Try(java.net.URI(uri)).toOption.exists: parsed =>
       Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) && parsed.getHost != null
+
+  // ── typed registration: what each kind of client is held to ────────────────────────────────
+  //
+  // Read off the registration after the typed request has fixed what its kind fixes, so each
+  // rule is about what the caller chose. The general endpoint does not apply them: it takes any
+  // combination the checks above admit, and a kind is only what it recorded.
+
+  private val ConfidentialAuthMethods =
+    "client_secret, private_key_jwt, tls_client_auth or self_signed_tls_client_auth"
+
+  /** A client fronted by edge presents edge's certificate, which is shared by every user it
+    * serves, and it holds no key to sign a request object (refused here). Whether its tokens are
+    * bound and its requests pushed is the caller's to say; the console says both. */
+  private def edgeFronted(request: CreateClientRequest): Boolean =
+    request.issueEdgeClientCertificate || request.enrollEdgeClientCertificate || request.edgeClientCertificate.nonEmpty
+
+  def validateKindRegistration(kind: ClientKind, request: CreateClientRequest): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(request.id, s"$kind client $reason"))
+
+    kind match
+      case ClientKind.web =>
+        if request.authMethod == AuthMethod.none then
+          invalid(s"is confidential: authMethod must be $ConfidentialAuthMethods, not none")
+        else if request.redirectUris.isEmpty then
+          invalid("needs at least one redirect URI - users sign in through it")
+        else if edgeFronted(request) && request.requireSignedRequestObject then
+          invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
+        else None
+
+      case ClientKind.device =>
+        if request.authMethod != AuthMethod.none && request.authMethod != AuthMethod.tls_client_auth then
+          invalid(s"cannot authenticate with ${request.authMethod} - an app is public (none) or fronted by edge (tls_client_auth)")
+        else if request.redirectUris.isEmpty then
+          invalid("needs at least one redirect URI - users sign in through it")
+        else if request.authMethod == AuthMethod.none && edgeFronted(request) then
+          invalid("with authMethod none is not fronted by edge - there is no certificate to present")
+        else None
+
+      case ClientKind.service =>
+        if request.authMethod == AuthMethod.none then
+          invalid(s"must authenticate: authMethod must be $ConfidentialAuthMethods, not none")
+        else None
+
+  /** What an update may leave the client as, for the kind it is held to.
+    *
+    * @param redirectUris the client's redirect URIs after the patch is applied -- a patch that
+    *                     removes the last one is as much a way to break a client as registering
+    *                     it with none.
+    * @param edgeFronted  the client has an edge presenting its certificate, which fixes the same
+    *                     settings registration fixed for it: an update may restate them, never
+    *                     ask for the opposite ([[withKindFixed]] moves a stored client up to them).
+    */
+  def validateKindUpdate(
+      kind: ClientKind,
+      request: UpdateClientRequest,
+      current: OAuthClientRecord,
+      edgeFronted: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(request.clientId, s"$kind client $reason"))
+
+    val redirectUris = (current.redirectUris -- request.redirectUris.remove) ++ request.redirectUris.add
+
+    kind match
+      case ClientKind.web | ClientKind.device if redirectUris.isEmpty =>
+        invalid("needs at least one redirect URI - users sign in through it")
+      case ClientKind.web if edgeFronted && request.requireSignedRequestObject.contains(true) =>
+        invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
+      case _ => None
+
+  /** The update as the kind leaves it: what a kind fixes is written onto every update of it, so a
+    * client stored below its kind (registered before the kinds had endpoints) is brought up by
+    * the first update rather than left to a member no request has. Only values the kind itself
+    * decides: for a device fronted by edge, its DPoP binding and PAR; no certificate binding for a
+    * device; and no signed request object for a device or a service. A web client's settings are
+    * its own: edge's certificate and PAR are what the console asks for, not something central writes. */
+  def withKindFixed(kind: ClientKind, request: UpdateClientRequest, current: OAuthClientRecord, edgeFronted: Boolean): UpdateClientRequest =
+    kind match
+      case ClientKind.device =>
+        val byEdge = current.authMethod == AuthMethod.tls_client_auth
+        request.copy(
+          dpopBoundAccessTokens = if byEdge then Some(true) else request.dpopBoundAccessTokens,
+          certificateBoundAccessTokens = Some(false),
+          requireSignedRequestObject = Some(false),
+          requirePushedAuthorizationRequests = if byEdge then Some(true) else request.requirePushedAuthorizationRequests,
+        )
+      case ClientKind.service =>
+        request.copy(requireSignedRequestObject = Some(false), requirePushedAuthorizationRequests = Some(false))
+      case ClientKind.web => request

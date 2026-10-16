@@ -156,7 +156,6 @@ object ConversationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = Some(registrationFlow),
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -174,10 +173,10 @@ object ConversationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val consentingClient = registrationClient.copy(
-    registrationFlow = None,
     consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
   )
 

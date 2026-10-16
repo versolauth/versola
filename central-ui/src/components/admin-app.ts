@@ -21,6 +21,7 @@ import './edges-list';
 import './users-list';
 import './forms-list';
 import './locales-list';
+import './themes-list';
 import './challenges-list';
 import './well-known';
 import './system-settings';
@@ -319,6 +320,7 @@ export class VersolaAdmin extends LitElement {
       case 'users':
         return p.has('users:read');
       case 'forms':
+      case 'themes':
         return p.has('forms:read');
       case 'locales':
         return p.has('locales:read');
@@ -351,6 +353,7 @@ export class VersolaAdmin extends LitElement {
       case 'users':
         return p.has('users:manage');
       case 'forms':
+      case 'themes':
         return p.has('forms:manage');
       case 'locales':
         return p.has('locales:manage');
@@ -457,7 +460,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'well-known' || urlView === 'system-settings') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'themes' || urlView === 'locales' || urlView === 'challenges' || urlView === 'well-known' || urlView === 'system-settings') {
       this.currentView = urlView;
     }
 
@@ -543,6 +546,8 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
+      case 'themes':
+        return html`<versola-themes-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('themes')}></versola-themes-list>`;
       case 'locales':
         return html`<versola-locales-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('locales')}></versola-locales-list>`;
       case 'challenges':

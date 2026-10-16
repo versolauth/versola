@@ -82,6 +82,34 @@ if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   exit 1
 fi
 
+# POSTGRES_DB (vps only; gen-env.scala validates the name and defaults to `auth`).
+export POSTGRES_DB="${POSTGRES_DB:-}"
+# POSTGRES_CA_FILE (vps only): a CA bundle versola-cli mounted into this container (its
+# --postgres-ca). It becomes <bundle>/postgres-ca/ca.crt, which every service mounts read-only at
+# /etc/versola/postgres-ca, and gen-env.scala is told (POSTGRES_SSL_ROOT_CERT) to write that path as
+# `postgres.ssl-root-cert`. The directory exists on every vps bundle, empty when there is no CA: the
+# compose fragment always mounts it, since a bind mount of a missing file would be created as a
+# directory. Rebuilt on every run so a CA that was dropped does not linger.
+unset POSTGRES_SSL_ROOT_CERT
+if [ "$TARGET" = "vps" ]; then
+  rm -rf "$OUT_DIR"/postgres-ca
+  mkdir -p "$OUT_DIR"/postgres-ca
+  chmod 755 "$OUT_DIR"/postgres-ca
+fi
+if [ -n "${POSTGRES_CA_FILE:-}" ]; then
+  if [ "$TARGET" != "vps" ]; then
+    echo "versola-tools: POSTGRES_CA_FILE is only supported when TARGET=vps" >&2
+    exit 1
+  fi
+  if [ ! -f "$POSTGRES_CA_FILE" ]; then
+    echo "versola-tools: POSTGRES_CA_FILE '$POSTGRES_CA_FILE' is not a file" >&2
+    exit 1
+  fi
+  cp "$POSTGRES_CA_FILE" "$OUT_DIR"/postgres-ca/ca.crt
+  chmod 644 "$OUT_DIR"/postgres-ca/ca.crt
+  export POSTGRES_SSL_ROOT_CERT=/etc/versola/postgres-ca/ca.crt
+fi
+
 echo "versola-tools ${VERSION}: generating configs for $TARGET..."
 
 # gen-env.scala's "Target" prompt is the only input it ever reads from

@@ -132,7 +132,13 @@ object SigningKeySelectionSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         result <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
           ZIO.acquireReleaseWith(auth.generateJwksKey("RS256"))(auth.deleteJwksKey(_).orDie): kid =>
-            auth.upsertChallengeSettings(tenantId = tenantId, signingKeyId = Some(kid)).either
+            // Nothing registers in this tenant, so central looks up no default role in it.
+            auth.upsertChallengeSettings(
+              tenantId = tenantId,
+              signingKeyId = Some(kid),
+              phoneRegions = "[]",
+              emailRegistration = """{"mode":"closed","domains":[],"blockSubaddress":false}""",
+            ).either
       yield assertTrue(result.isLeft)
         .label("central must refuse an RS256 signing key for a tenant on the fapi2 profile") &&
         assertTrue(result.left.exists(_.getMessage.contains("RS256")))

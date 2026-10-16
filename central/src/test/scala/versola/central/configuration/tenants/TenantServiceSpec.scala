@@ -5,6 +5,7 @@ import versola.central.TestCentralConfig
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsService,
+  EmailRegistration,
   PasskeySettings,
   SecurityProfile,
   SubmissionLimits,
@@ -35,7 +36,9 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def settingsOf(profile: SecurityProfile) = ChallengeSettingsRecord(
     tenantId = tenant1,
-    allowedPrefixes = Nil,
+    phoneRegions = Nil,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.recommended,
     otpLength = 6,
     otpResendAfter = 60,
@@ -85,7 +88,9 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.challengeSettingsService.upsertSettings.calls ==
           List(ChallengeSettingsRecord(
             tenantId = tenant1,
-            allowedPrefixes = Nil,
+            phoneRegions = Nil,
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.recommended,
             otpLength = 6,
             otpResendAfter = 60,
@@ -136,7 +141,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
       yield assertTrue(
-        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(Some("ps-kid")),
+        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(Some("es-kid")),
       )
     },
     // The state of a deployment seeded from `bootstrap.jwks`: central holds no private half

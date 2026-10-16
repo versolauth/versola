@@ -8,15 +8,16 @@ import versola.oauth.client.model.{
   ConsentFlow,
   MutualTlsAuth,
   OAuthClientRecord,
-  RegistrationFlow,
   ScopeToken,
   TenantId,
 }
+import versola.util.theme.ThemeOverrides
 import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
+import zio.json.ast.Json
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Duration, Task, URLayer, ZIO, ZLayer, durationInt}
+import zio.{Duration, Task, UIO, URLayer, ZIO, ZLayer, durationInt}
 
 trait OAuthClientSyncClient extends CacheSource[Map[ClientId, OAuthClientRecord]]:
   def getAll: Task[Map[ClientId, OAuthClientRecord]]
@@ -36,7 +37,8 @@ object OAuthClientSyncClient:
       for
         response <- ZIO.scoped:
           centralSyncTokenService.syncRequest(Request.get(ClientsURL)).flatMap(_.bodyAs[OAuthClientsSyncResponse])
-        decryptedClients <- ZIO.foreach(response.clients) { client =>
+        clients <- ZIO.foreach(response.clients)(decodeClient)
+        decryptedClients <- ZIO.foreach(clients.flatten) { client =>
           for
             secret <- ZIO.foreach(client.secret)(decryptSecret)
             previousSecret <- ZIO.foreach(client.previousSecret)(decryptSecret)
@@ -52,7 +54,6 @@ object OAuthClientSyncClient:
             refreshTokenTtl = client.refreshTokenTtl,
             theme = client.theme,
             authFlow = client.authFlow,
-            registrationFlow = client.registrationFlow,
             otpTemplateId = client.otpTemplateId,
             frontChannelLogoutUri = client.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
@@ -71,9 +72,21 @@ object OAuthClientSyncClient:
             requireSignedRequestObject = client.requireSignedRequestObject,
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             applicationType = client.applicationType,
+            themeOverrides = client.themeOverrides,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
+
+    /** One record that does not decode (an unknown value of a strictly validated field, a stored format an older
+      * central wrote) costs that client, not every client: the rest still reach the cache. Only the id is logged,
+      * since the rest of the record can hold secrets.
+      */
+    private def decodeClient(json: Json): UIO[Option[OAuthClientRecordWithEncryptedSecrets]] =
+      json.as[OAuthClientRecordWithEncryptedSecrets] match
+        case Right(client) => ZIO.some(client)
+        case Left(_) =>
+          val id = json.asObject.flatMap(_.get("id")).flatMap(_.asString).getOrElse("<no id>")
+          ZIO.logWarning(s"Skipped a client that does not decode in the sync response: '$id'").as(None)
 
     private def decryptSecret(value: String): Task[Secret] =
       for
@@ -93,7 +106,6 @@ object OAuthClientSyncClient:
         refreshTokenTtl: Duration,
         theme: String,
         authFlow: Option[AuthFlow],
-        registrationFlow: Option[RegistrationFlow],
         otpTemplateId: String,
         frontChannelLogoutUri: Option[String],
         frontChannelLogoutSessionRequired: Boolean,
@@ -118,8 +130,9 @@ object OAuthClientSyncClient:
         /** Defaulted on the same terms: a central that predates the field only has `web`
           * clients. */
         applicationType: ApplicationType = ApplicationType.web,
+        themeOverrides: Option[ThemeOverrides],
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(
-        clients: Vector[OAuthClientRecordWithEncryptedSecrets],
+        clients: Vector[Json],
     ) derives JsonCodec

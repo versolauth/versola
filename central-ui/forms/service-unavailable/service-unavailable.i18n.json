@@ -1,12 +1,20 @@
 {
   "en": {
     "page_title": "Service temporarily unavailable",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Service temporarily unavailable",
     "description": "An unexpected error occurred. Try again later.",
     "return_button": "Return"
   },
   "ru": {
     "page_title": "Сервис временно недоступен",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Сервис временно недоступен",
     "description": "Возникла непредвиденная ошибка. Повторите попытку позже.",
     "return_button": "Вернуться"

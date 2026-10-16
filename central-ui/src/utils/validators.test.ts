@@ -6,7 +6,11 @@ import {
   validateClientCredential,
   validateEdgeFrontedRedirectUri,
   validateJwksJson,
+  describeJwks,
   validateMtlsTermination,
+  validatePermission,
+  validateRoleId,
+  validateScopeId,
 } from './validators';
 
 describe('validateJwksJson', () => {
@@ -114,5 +118,48 @@ describe('validateEdgeFrontedRedirectUri', () => {
 
   it('keeps the general rules, such as no fragment', () => {
     expect(validateEdgeFrontedRedirectUri('https://app.example.com/cb#frag').valid).toBe(false);
+  });
+});
+
+describe('describeJwks', () => {
+  it('names the key type, curve and size', () => {
+    const summary = describeJwks({
+      keys: [
+        { kty: 'EC', crv: 'P-256', kid: 'a', x: 'x', y: 'y' },
+        { kty: 'RSA', n: 'A'.repeat(342), e: 'AQAB', alg: 'PS256' },
+      ],
+    });
+    expect(summary.map(key => key.kind)).toEqual(['EC P-256', 'RSA 2048']);
+    expect(summary[0].kid).toBe('a');
+    expect(summary[1].alg).toBe('PS256');
+  });
+
+  it('flags private key material', () => {
+    expect(describeJwks({ keys: [{ kty: 'EC', crv: 'P-256', d: 'secret' }] })[0].private).toBe(true);
+    expect(describeJwks({ keys: [{ kty: 'EC', crv: 'P-256' }] })[0].private).toBe(false);
+  });
+
+  it('is empty for anything that is not a key set', () => {
+    expect(describeJwks(undefined)).toEqual([]);
+  });
+});
+
+describe('identifier validators match the server patterns', () => {
+  it('role IDs allow hyphens and reject underscores', () => {
+    expect(validateRoleId('oauth-admin')).toBe(true);
+    expect(validateRoleId('role_admin')).toBe(false);
+    expect(validateRoleId('1admin')).toBe(false);
+  });
+
+  it('scope IDs allow underscores and reject hyphens and colons', () => {
+    expect(validateScopeId('user_data')).toBe(true);
+    expect(validateScopeId('user-data')).toBe(false);
+    expect(validateScopeId('users:read')).toBe(false);
+  });
+
+  it('permissions allow dot and colon separators', () => {
+    expect(validatePermission('billing:invoice.read')).toBe(true);
+    expect(validatePermission('billing:')).toBe(false);
+    expect(validatePermission('billing-invoice')).toBe(false);
   });
 });

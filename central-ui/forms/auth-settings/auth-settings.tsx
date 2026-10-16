@@ -1,38 +1,8 @@
 import { render } from 'solid-js/web';
 import { createMemo, createSignal, For, Show } from 'solid-js';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
 
 type AccountSession = {
   id: string;
@@ -63,16 +33,9 @@ type AccountSettingsStep = {
   passkeys: AccountPasskey[];
 };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: AccountSettingsStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -99,19 +62,7 @@ function formatDate(value: string, locale: string): string {
 }
 
 function AccountSettingsForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
   const base = apiBase();
 
@@ -243,11 +194,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
 
   return (
     <div class="container account-container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
       <h1>{t().page_title}</h1>
 
       <section class="account-section">

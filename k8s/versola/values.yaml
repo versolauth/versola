@@ -14,6 +14,11 @@ nameOverride: ""
 fullnameOverride: ""
 
 global:
+  # Name of the deployment this release is (prod, stage, qa, ...). Put on every
+  # resource as the `environment` label; the Services' labels reach the metrics
+  # (vmagent/Prometheus label-map them), which is what the dashboards' Env
+  # selector lists. Unset: no label, and the selector offers "All".
+  environment: ""
   # Images are pulled as <imageRegistry>/<imageRepository>/<repository>:<tag>,
   # e.g. ghcr.io/versolauth/versola-auth:0.4.0.
   imageRegistry: ghcr.io

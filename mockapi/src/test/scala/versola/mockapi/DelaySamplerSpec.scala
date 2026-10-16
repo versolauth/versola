@@ -131,7 +131,9 @@ object DelaySamplerSpec extends ZIOSpecDefault:
       },
       test("reports the quantiles that miss an unattainable target") {
         val achieved = DelaySampler.sampleQuantiles(read, 100000)
-        val impossible = QuantileTargets(p50Millis = 1.0, p95Millis = 30.0, p99Millis = 1.0)
+        // The p95 target is what the draws themselves achieved: sampling is random, and a fixed 30 ms sat
+        // on the edge of the 10% tolerance, so some runs counted it as a miss too and reported three.
+        val impossible = QuantileTargets(p50Millis = 1.0, p95Millis = achieved.p95Millis, p99Millis = 1.0)
         val failures = DelaySampler.deviations(achieved, impossible, 0.10)
         assertTrue(
           failures.size == 2,

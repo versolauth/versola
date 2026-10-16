@@ -1,7 +1,17 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
-import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken, SecurityProfile}
+import versola.oauth.client.model.{
+  Acr,
+  AuthorizationDetail,
+  ClientId,
+  OAuthClientRecord,
+  PhoneRegion,
+  PrimaryCredential,
+  ResourceUri,
+  ScopeToken,
+  SecurityProfile,
+}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
@@ -445,9 +455,9 @@ object AuthorizeRequestParser:
       if value.startsWith("+") && value.drop(1).forall(_.isDigit) then
         if !accepts(PrimaryCredential.phone) then ZIO.none
         else
-          oauthClientService.getAllowedPhonePrefixes(client.id).map: prefixes =>
+          oauthClientService.getPhoneRegions(client.id).map: regions =>
             Phone.parse(value).toOption
-              .filter(phone => prefixes.isEmpty || prefixes.exists(phone.startsWith))
+              .filter(phone => PhoneRegion.allows(regions, phone))
               .map(Right(_))
       else
         ZIO.succeed(Option.when(accepts(PrimaryCredential.email))(Email.from(value)).flatMap(_.toOption).map(Left(_)))

@@ -21,9 +21,20 @@ export interface AuthorizationPreset {
   cookiePath?: string;
 }
 
+export type EmailRegistrationMode = 'closed' | 'open' | 'allowlist';
+
+/**
+ * `domains` is a blocklist in `open` mode and an allowlist in `allowlist` mode; `closed` stores
+ * it but ignores it.
+ */
+export interface EmailRegistration {
+  mode: EmailRegistrationMode;
+  domains: string[];
+  blockSubaddress: boolean;
+}
+
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
-export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -46,23 +57,13 @@ export interface AuthFlow {
 }
 
 // Registration flow (self-service account creation)
-export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
-
-export interface RegistrationStep {
-  type: RegistrationStepType;
-}
-
-export interface RegistrationFlow {
-  credential: RegistrationCredential;     // entry credential whose ownership is verified
-  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
-  roleIds: string[];          // roles granted to the account on creation
-}
-
 // Consent screen shown before an authorization code is issued. Absent for first-party
 // clients, which never prompt.
 export interface ConsentFlow {
   allowPartial: boolean;  // let the user deselect optional scopes and grant a subset
   rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
+  offlineAccessOptional: boolean;  // let the user deselect offline_access (no refresh token then)
+  requiredScopes: string[];  // scopes the user cannot deselect (besides openid and offline_access)
 }
 
 // Whether a client can hold a secret. Chosen once, at creation: a web client is
@@ -113,7 +114,6 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
-  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
@@ -147,6 +147,9 @@ export interface OAuthClient {
   /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
   requirePushedAuthorizationRequests: boolean;
   template?: ClientTemplate | null;
+  /** What kind of client central says this is, which an update is sent to the endpoint of. Fixed for
+   *  the client's life; absent for a client being built that has not been registered yet. */
+  kind?: ClientTemplate['kind'];
   /** Creation only: edge authenticates as this client with a certificate central provisions, so
    *  there is no credential for the operator to register. A native app's edge enrols for it; a
    *  web client's is issued once, because its tokens are bound to the certificate and every
@@ -155,6 +158,9 @@ export interface OAuthClient {
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
+  /** What this client changes in the theme it uses (a partner app with its own brand); absent or
+   *  null when it changes nothing. */
+  themeOverrides?: ThemeOverrides | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
@@ -196,11 +202,29 @@ export interface PasskeySettings {
 // headers again), so `auth` has to be told which shape to expect.
 export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
+export interface PhoneRegion {
+  /** ISO 3166-1 alpha-2, unique within the list. */
+  region: string;
+  /** '+' and 1-4 digits; several regions may share one. */
+  dialCode: string;
+  /** Digits after the dial code, 4..14; dial code digits + length <= 15. */
+  length: number;
+  /** Java regex matched in full against those digits. */
+  regex: string;
+  /** A number from this region may create an account by phone; no region listed means nobody can. */
+  registration: boolean;
+}
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   /** The profile the tenant's clients are held to; fixed when the tenant is created. */
   securityProfile?: SecurityProfile;
-  allowedPrefixes: string[];
+  /** Order is the order the login form lists the codes; empty accepts any E.164 number. */
+  phoneRegions: PhoneRegion[];
+  /** Who may create an account by email; `closed` unless the tenant opted in. */
+  emailRegistration?: EmailRegistration;
+  /** Role ids granted to every self-registered account; at least one. */
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
@@ -380,10 +404,50 @@ export interface UserRoleAssignment {
 export type UserSearchField = 'id' | 'email' | 'phone' | 'login';
 
 // Theme
+export type ThemeShape = 'round' | 'soft' | 'sharp';
+export type ThemeSurface = 'bold' | 'soft' | 'neutral';
+export type ThemeMode = 'auto' | 'light' | 'dark';
+// What is drawn over the page colour behind the card; the CSS of each is generated by central (ThemeCss in util).
+export type ThemeBackground = 'glow' | 'linear' | 'horizon' | 'flat';
+
+// What a theme sets over its base; an absent value is the base's.
+export interface ThemeOverrides {
+  brand?: string;
+  shape?: ThemeShape;
+  surface?: ThemeSurface;
+  mode?: ThemeMode;
+  background?: ThemeBackground;
+}
+
+// A built-in base theme and the values a theme overrides on it.
+export interface ThemeTokens {
+  base: string;
+  overrides?: ThemeOverrides;
+}
+
+// Every token with a value: a built-in theme's own.
+export interface ResolvedThemeTokens {
+  brand: string;
+  shape: ThemeShape;
+  surface: ThemeSurface;
+  mode: ThemeMode;
+  background: ThemeBackground;
+}
+
+// A theme that ships with Versola: what a theme can be based on. Fixed by the central build.
+export interface ThemePreset {
+  id: string;
+  title: Record<string, string>;
+  tokens: ResolvedThemeTokens;
+}
+
+// A theme is a stylesheet, or -- with `tokens` -- a built-in base with overrides, in which case
+// `css` holds only the theme's own additions and may be empty.
 export interface ThemeRecord {
   id: string;
   css: string;
   tenantId: string | null;
+  tokens?: ThemeTokens | null;
 }
 
 // Backend properties
@@ -407,6 +471,20 @@ export interface NumberProperty {
 }
 
 export type BackendProperty = BooleanProperty | StringArrayProperty | NumberProperty;
+
+// One state of a built-in form, as central lists it: the `step` the form receives (shaped like the
+// step auth serialises) and the error key shown above it. Fixed by the central build.
+export interface FormPreviewScenario {
+  id: string;
+  title: Record<string, string>;
+  step: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface FormPreview {
+  formId: string;
+  scenarios: FormPreviewScenario[];
+}
 
 // Auth Forms
 export interface FormRecord {

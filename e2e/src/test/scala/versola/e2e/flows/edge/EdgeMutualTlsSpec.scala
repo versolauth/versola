@@ -198,4 +198,29 @@ object EdgeMutualTlsSpec
         assertTrue(answered.status == Status.Unauthorized, !seen.exists(_.path == "/dual-bound"))
           .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
     },
+    // The same token on edge's own `/permissions/me`, which answers on the tokens the proxy
+    // does and so has to refuse this one the same way.
+    test("refuses a token bound to both a key and a certificate on /permissions/me too") {
+      for
+        edgeApi <- edge
+        prover <- DpopProver.make
+        token <- doublyBoundToken(prover)
+        cnf <- confirmation(token)
+        htu = s"${edgeApi.baseUrl}/permissions/me"
+        call = (nonce: Option[String]) =>
+          prover.proof(Method.GET, htu, accessToken = Some(token), nonce = nonce)
+            .flatMap(proof => edgeApi.permissions(EdgeAuth.Dpop(token, proof)))
+        first <- call(None)
+        answered <- DpopProver.nonceOf(first.response) match
+          case None => ZIO.succeed(first)
+          case Some(nonce) => call(Some(nonce))
+      yield assertTrue(
+        cnf.get("jkt").isDefined,
+        cnf.get("x5t#S256").isDefined,
+      ).label(s"the control: this token has to carry both bindings, got $cnf") &&
+        assertTrue(DpopProver.nonceOf(first.response).isEmpty)
+          .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
+        assertTrue(answered.status == Status.Unauthorized)
+          .label("a valid proof, nonce included, must not carry a certificate-bound token past /permissions/me")
+    },
   ) @@ TestAspect.sequential

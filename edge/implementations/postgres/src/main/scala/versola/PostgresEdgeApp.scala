@@ -148,28 +148,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
 
   given DeriveConfig[Secret] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
+    .mapOrFail(SecretConfig.secret)
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
-    .mapOrFail: str =>
-      PrivateKeyUtil.parse(str, "RSA")
-        .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
-
-  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
-    newType.fromBase64Url(str)
-      .left.map(message => zio.Config.Error.InvalidData(message = message))
-      .filterOrElse(
-        _.length == newType.length,
-        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
-      )
+    .mapOrFail(SecretConfig.rsaPrivateKey)

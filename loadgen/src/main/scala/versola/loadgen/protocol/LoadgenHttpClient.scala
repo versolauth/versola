@@ -19,14 +19,22 @@ object LoadgenHttpClient:
     */
   val requestTimeout: Duration = 10.seconds
 
-  /** Idle users are rows, not sockets (design doc §6.3): 256 pooled keep-alive connections per
-    * host serve an entire modelled population, and the 60 s idle timeout is longer than the
-    * backend's 50 ms tail but shorter than a k8s endpoint change.
+  /** Idle users are rows, not sockets (design doc §6.3): pooled keep-alive connections per host serve an
+    * entire modelled population, and the 60 s idle timeout is longer than the backend's 50 ms tail but
+    * shorter than a k8s endpoint change.
+    *
+    * The pool is also the driver's ceiling on in-flight requests: `size / latency` per host per driver, with
+    * the excess queueing inside the driver and being recorded as latency the SUT never had. 256 is enough for
+    * ~2500 rps at 100 ms across two drivers and not for more, so `HTTP_CLIENT_POOL_SIZE` (the variable the
+    * services use) raises it; size it above `rate x latency` of the scale being driven.
     */
+  val poolSize: Int =
+    Option(java.lang.System.getenv("HTTP_CLIENT_POOL_SIZE")).flatMap(_.trim.toIntOption).filter(_ > 0).getOrElse(256)
+
   val config: ZClient.Config =
     ZClient.Config.default
       .copy(
-        connectionPool = ConnectionPoolConfig.Fixed(256),
+        connectionPool = ConnectionPoolConfig.Fixed(poolSize),
         // The SUT does not compress; do not pay for the check.
         requestDecompression = Decompression.No,
         idleTimeout = Some(60.seconds),

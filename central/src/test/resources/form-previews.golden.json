@@ -1,0 +1,902 @@
+{
+  "previews" : [
+    {
+      "formId" : "credential",
+      "scenarios" : [
+        {
+          "id" : "email-password",
+          "title" : {
+            "en" : "Email and password",
+            "ru" : "Email и пароль"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "email"
+            ],
+            "inlinePassword" : true,
+            "passkey" : true,
+            "registration" : false
+          }
+        },
+        {
+          "id" : "phone",
+          "title" : {
+            "en" : "Phone, one country",
+            "ru" : "Телефон, одна страна"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "phone"
+            ],
+            "inlinePassword" : false,
+            "passkey" : true,
+            "registration" : false,
+            "phoneRegions" : [
+              {
+                "region" : "KZ",
+                "dialCode" : "+7",
+                "length" : 10,
+                "regex" : "7\\d{9}",
+                "registration" : true
+              }
+            ]
+          }
+        },
+        {
+          "id" : "phone-countries",
+          "title" : {
+            "en" : "Phone, several countries",
+            "ru" : "Телефон, несколько стран"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "phone"
+            ],
+            "inlinePassword" : false,
+            "passkey" : true,
+            "registration" : false,
+            "phoneRegions" : [
+              {
+                "region" : "KZ",
+                "dialCode" : "+7",
+                "length" : 10,
+                "regex" : "7\\d{9}",
+                "registration" : true
+              },
+              {
+                "region" : "RU",
+                "dialCode" : "+7",
+                "length" : 10,
+                "regex" : "9\\d{9}",
+                "registration" : true
+              },
+              {
+                "region" : "UZ",
+                "dialCode" : "+998",
+                "length" : 9,
+                "regex" : "\\d{9}",
+                "registration" : true
+              },
+              {
+                "region" : "KG",
+                "dialCode" : "+996",
+                "length" : 9,
+                "regex" : "[2-7]\\d{8}",
+                "registration" : true
+              }
+            ]
+          }
+        },
+        {
+          "id" : "login-password",
+          "title" : {
+            "en" : "Username and password",
+            "ru" : "Логин и пароль"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "login"
+            ],
+            "inlinePassword" : false,
+            "passkey" : false,
+            "registration" : false,
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          }
+        },
+        {
+          "id" : "email-or-phone",
+          "title" : {
+            "en" : "Email or phone",
+            "ru" : "Email или телефон"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "email",
+              "phone"
+            ],
+            "inlinePassword" : false,
+            "passkey" : false,
+            "registration" : false
+          }
+        },
+        {
+          "id" : "wrong-password",
+          "title" : {
+            "en" : "Wrong password",
+            "ru" : "Неверный пароль"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "login"
+            ],
+            "inlinePassword" : false,
+            "passkey" : false,
+            "registration" : false,
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          },
+          "error" : "login_failed"
+        },
+        {
+          "id" : "passkey-failed",
+          "title" : {
+            "en" : "Passkey failed",
+            "ru" : "Ошибка passkey"
+          },
+          "step" : {
+            "type" : "credential",
+            "primaryCredentials" : [
+              "email"
+            ],
+            "inlinePassword" : false,
+            "passkey" : true,
+            "registration" : false
+          },
+          "error" : "passkey_failed"
+        }
+      ]
+    },
+    {
+      "formId" : "otp",
+      "scenarios" : [
+        {
+          "id" : "code",
+          "title" : {
+            "en" : "Enter the code",
+            "ru" : "Ввод кода"
+          },
+          "step" : {
+            "type" : "otp",
+            "length" : 6,
+            "resendAfter" : 0,
+            "destination" : "a•••a@example.com"
+          }
+        },
+        {
+          "id" : "resend-timer",
+          "title" : {
+            "en" : "Resend timer",
+            "ru" : "Таймер повторной отправки"
+          },
+          "step" : {
+            "type" : "otp",
+            "length" : 6,
+            "resendAfter" : 42,
+            "destination" : "+7 701 ••• •• 78"
+          }
+        },
+        {
+          "id" : "locked",
+          "title" : {
+            "en" : "Locked after attempts",
+            "ru" : "Блокировка после попыток"
+          },
+          "step" : {
+            "type" : "otp",
+            "length" : 6,
+            "resendAfter" : 42,
+            "destination" : "+7 701 ••• •• 78",
+            "lockedSeconds" : 20
+          }
+        },
+        {
+          "id" : "wrong-code",
+          "title" : {
+            "en" : "Wrong code",
+            "ru" : "Неверный код"
+          },
+          "step" : {
+            "type" : "otp",
+            "length" : 6,
+            "resendAfter" : 0,
+            "destination" : "a•••a@example.com"
+          },
+          "error" : "otp_wrong"
+        }
+      ]
+    },
+    {
+      "formId" : "password",
+      "scenarios" : [
+        {
+          "id" : "password",
+          "title" : {
+            "en" : "Enter the password",
+            "ru" : "Ввод пароля"
+          },
+          "step" : {
+            "type" : "password",
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          }
+        },
+        {
+          "id" : "wrong-password",
+          "title" : {
+            "en" : "Wrong password",
+            "ru" : "Неверный пароль"
+          },
+          "step" : {
+            "type" : "password",
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          },
+          "error" : "password_wrong"
+        }
+      ]
+    },
+    {
+      "formId" : "set-password",
+      "scenarios" : [
+        {
+          "id" : "set-password",
+          "title" : {
+            "en" : "Choose a password",
+            "ru" : "Выбор пароля"
+          },
+          "step" : {
+            "type" : "set-password",
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          }
+        },
+        {
+          "id" : "reused",
+          "title" : {
+            "en" : "Password used recently",
+            "ru" : "Пароль уже использовался"
+          },
+          "step" : {
+            "type" : "set-password",
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          },
+          "error" : "password_reused"
+        }
+      ]
+    },
+    {
+      "formId" : "consent",
+      "scenarios" : [
+        {
+          "id" : "typical",
+          "title" : {
+            "en" : "Typical request",
+            "ru" : "Типичный запрос"
+          },
+          "step" : {
+            "type" : "consent",
+            "clientName" : "Danceliker",
+            "policyUri" : "https://danceliker.example/privacy",
+            "tosUri" : "https://danceliker.example/terms",
+            "scopes" : [
+              {
+                "scope" : "openid",
+                "description" : "OpenID Connect authentication",
+                "descriptionLocalizations" : {
+                  "en" : "OpenID Connect authentication",
+                  "ru" : "Аутентификация OpenID Connect"
+                },
+                "claims" : [
+                  "Unique identifier of the user"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Unique identifier of the user",
+                    "ru" : "Уникальный идентификатор пользователя"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "email",
+                "description" : "Email address",
+                "descriptionLocalizations" : {
+                  "en" : "Email address",
+                  "ru" : "Адрес электронной почты"
+                },
+                "claims" : [
+                  "Email address",
+                  "Email address verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Email address",
+                    "ru" : "Адрес электронной почты"
+                  },
+                  {
+                    "en" : "Email address verification status",
+                    "ru" : "Статус подтверждения адреса электронной почты"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "profile",
+                "description" : "Basic profile information",
+                "descriptionLocalizations" : {
+                  "en" : "Basic profile information",
+                  "ru" : "Основная информация профиля"
+                },
+                "claims" : [
+                  "Full name",
+                  "Profile picture URL",
+                  "Locale"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Full name",
+                    "ru" : "Полное имя"
+                  },
+                  {
+                    "en" : "Profile picture URL",
+                    "ru" : "URL изображения профиля"
+                  },
+                  {
+                    "en" : "Locale",
+                    "ru" : "Локаль"
+                  }
+                ],
+                "deselectable" : true
+              }
+            ],
+            "allowPartial" : true,
+            "denyUri" : "https://danceliker.example/callback?error=access_denied"
+          }
+        },
+        {
+          "id" : "everything",
+          "title" : {
+            "en" : "Everything requested",
+            "ru" : "Запрошено всё"
+          },
+          "step" : {
+            "type" : "consent",
+            "clientName" : "Danceliker",
+            "policyUri" : "https://danceliker.example/privacy",
+            "tosUri" : "https://danceliker.example/terms",
+            "scopes" : [
+              {
+                "scope" : "openid",
+                "description" : "OpenID Connect authentication",
+                "descriptionLocalizations" : {
+                  "en" : "OpenID Connect authentication",
+                  "ru" : "Аутентификация OpenID Connect"
+                },
+                "claims" : [
+                  "Unique identifier of the user"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Unique identifier of the user",
+                    "ru" : "Уникальный идентификатор пользователя"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "address",
+                "description" : "Postal address",
+                "descriptionLocalizations" : {
+                  "en" : "Postal address",
+                  "ru" : "Почтовый адрес"
+                },
+                "claims" : [
+                  "Postal address"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Postal address",
+                    "ru" : "Почтовый адрес"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "email",
+                "description" : "Email address",
+                "descriptionLocalizations" : {
+                  "en" : "Email address",
+                  "ru" : "Адрес электронной почты"
+                },
+                "claims" : [
+                  "Email address",
+                  "Email address verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Email address",
+                    "ru" : "Адрес электронной почты"
+                  },
+                  {
+                    "en" : "Email address verification status",
+                    "ru" : "Статус подтверждения адреса электронной почты"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "offline_access",
+                "description" : "Long-lived access",
+                "descriptionLocalizations" : {
+                  "en" : "Long-lived access",
+                  "ru" : "Длительный доступ"
+                },
+                "claims" : [],
+                "claimLocalizations" : [],
+                "deselectable" : false
+              },
+              {
+                "scope" : "phone",
+                "description" : "Phone number",
+                "descriptionLocalizations" : {
+                  "en" : "Phone number",
+                  "ru" : "Номер телефона"
+                },
+                "claims" : [
+                  "Phone number",
+                  "Phone number verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Phone number",
+                    "ru" : "Номер телефона"
+                  },
+                  {
+                    "en" : "Phone number verification status",
+                    "ru" : "Статус подтверждения номера телефона"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "profile",
+                "description" : "Basic profile information",
+                "descriptionLocalizations" : {
+                  "en" : "Basic profile information",
+                  "ru" : "Основная информация профиля"
+                },
+                "claims" : [
+                  "Full name",
+                  "Profile picture URL",
+                  "Locale"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Full name",
+                    "ru" : "Полное имя"
+                  },
+                  {
+                    "en" : "Profile picture URL",
+                    "ru" : "URL изображения профиля"
+                  },
+                  {
+                    "en" : "Locale",
+                    "ru" : "Локаль"
+                  }
+                ],
+                "deselectable" : true
+              }
+            ],
+            "allowPartial" : true,
+            "denyUri" : "https://danceliker.example/callback?error=access_denied"
+          }
+        },
+        {
+          "id" : "all-required",
+          "title" : {
+            "en" : "Nothing optional",
+            "ru" : "Ничего необязательного"
+          },
+          "step" : {
+            "type" : "consent",
+            "clientName" : "Danceliker",
+            "policyUri" : "https://danceliker.example/privacy",
+            "tosUri" : "https://danceliker.example/terms",
+            "scopes" : [
+              {
+                "scope" : "openid",
+                "description" : "OpenID Connect authentication",
+                "descriptionLocalizations" : {
+                  "en" : "OpenID Connect authentication",
+                  "ru" : "Аутентификация OpenID Connect"
+                },
+                "claims" : [
+                  "Unique identifier of the user"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Unique identifier of the user",
+                    "ru" : "Уникальный идентификатор пользователя"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "email",
+                "description" : "Email address",
+                "descriptionLocalizations" : {
+                  "en" : "Email address",
+                  "ru" : "Адрес электронной почты"
+                },
+                "claims" : [
+                  "Email address",
+                  "Email address verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Email address",
+                    "ru" : "Адрес электронной почты"
+                  },
+                  {
+                    "en" : "Email address verification status",
+                    "ru" : "Статус подтверждения адреса электронной почты"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "profile",
+                "description" : "Basic profile information",
+                "descriptionLocalizations" : {
+                  "en" : "Basic profile information",
+                  "ru" : "Основная информация профиля"
+                },
+                "claims" : [
+                  "Full name",
+                  "Profile picture URL",
+                  "Locale"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Full name",
+                    "ru" : "Полное имя"
+                  },
+                  {
+                    "en" : "Profile picture URL",
+                    "ru" : "URL изображения профиля"
+                  },
+                  {
+                    "en" : "Locale",
+                    "ru" : "Локаль"
+                  }
+                ],
+                "deselectable" : false
+              }
+            ],
+            "allowPartial" : false,
+            "denyUri" : "https://danceliker.example/callback?error=access_denied"
+          }
+        },
+        {
+          "id" : "signed-in-user",
+          "title" : {
+            "en" : "With the signed-in user",
+            "ru" : "С вошедшим пользователем"
+          },
+          "step" : {
+            "type" : "consent",
+            "clientName" : "Danceliker",
+            "policyUri" : "https://danceliker.example/privacy",
+            "tosUri" : "https://danceliker.example/terms",
+            "scopes" : [
+              {
+                "scope" : "openid",
+                "description" : "OpenID Connect authentication",
+                "descriptionLocalizations" : {
+                  "en" : "OpenID Connect authentication",
+                  "ru" : "Аутентификация OpenID Connect"
+                },
+                "claims" : [
+                  "Unique identifier of the user"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Unique identifier of the user",
+                    "ru" : "Уникальный идентификатор пользователя"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "email",
+                "description" : "Email address",
+                "descriptionLocalizations" : {
+                  "en" : "Email address",
+                  "ru" : "Адрес электронной почты"
+                },
+                "claims" : [
+                  "Email address",
+                  "Email address verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Email address",
+                    "ru" : "Адрес электронной почты"
+                  },
+                  {
+                    "en" : "Email address verification status",
+                    "ru" : "Статус подтверждения адреса электронной почты"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "profile",
+                "description" : "Basic profile information",
+                "descriptionLocalizations" : {
+                  "en" : "Basic profile information",
+                  "ru" : "Основная информация профиля"
+                },
+                "claims" : [
+                  "Full name",
+                  "Profile picture URL",
+                  "Locale"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Full name",
+                    "ru" : "Полное имя"
+                  },
+                  {
+                    "en" : "Profile picture URL",
+                    "ru" : "URL изображения профиля"
+                  },
+                  {
+                    "en" : "Locale",
+                    "ru" : "Локаль"
+                  }
+                ],
+                "deselectable" : true
+              }
+            ],
+            "allowPartial" : true,
+            "denyUri" : "https://danceliker.example/callback?error=access_denied",
+            "user" : {
+              "name" : "Anna Petrova"
+            }
+          }
+        },
+        {
+          "id" : "partner-logo",
+          "title" : {
+            "en" : "With the partner's logo",
+            "ru" : "С логотипом партнёра"
+          },
+          "step" : {
+            "type" : "consent",
+            "clientName" : "Danceliker",
+            "policyUri" : "https://danceliker.example/privacy",
+            "tosUri" : "https://danceliker.example/terms",
+            "scopes" : [
+              {
+                "scope" : "openid",
+                "description" : "OpenID Connect authentication",
+                "descriptionLocalizations" : {
+                  "en" : "OpenID Connect authentication",
+                  "ru" : "Аутентификация OpenID Connect"
+                },
+                "claims" : [
+                  "Unique identifier of the user"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Unique identifier of the user",
+                    "ru" : "Уникальный идентификатор пользователя"
+                  }
+                ],
+                "deselectable" : false
+              },
+              {
+                "scope" : "email",
+                "description" : "Email address",
+                "descriptionLocalizations" : {
+                  "en" : "Email address",
+                  "ru" : "Адрес электронной почты"
+                },
+                "claims" : [
+                  "Email address",
+                  "Email address verification status"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Email address",
+                    "ru" : "Адрес электронной почты"
+                  },
+                  {
+                    "en" : "Email address verification status",
+                    "ru" : "Статус подтверждения адреса электронной почты"
+                  }
+                ],
+                "deselectable" : true
+              },
+              {
+                "scope" : "profile",
+                "description" : "Basic profile information",
+                "descriptionLocalizations" : {
+                  "en" : "Basic profile information",
+                  "ru" : "Основная информация профиля"
+                },
+                "claims" : [
+                  "Full name",
+                  "Profile picture URL",
+                  "Locale"
+                ],
+                "claimLocalizations" : [
+                  {
+                    "en" : "Full name",
+                    "ru" : "Полное имя"
+                  },
+                  {
+                    "en" : "Profile picture URL",
+                    "ru" : "URL изображения профиля"
+                  },
+                  {
+                    "en" : "Locale",
+                    "ru" : "Локаль"
+                  }
+                ],
+                "deselectable" : true
+              }
+            ],
+            "allowPartial" : true,
+            "denyUri" : "https://danceliker.example/callback?error=access_denied",
+            "logoUri" : "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' rx='14' fill='%23ff6b4a'/><text x='32' y='43' font-size='30' font-weight='800' text-anchor='middle' fill='white' font-family='sans-serif'>D</text></svg>"
+          }
+        }
+      ]
+    },
+    {
+      "formId" : "passkey-enroll",
+      "scenarios" : [
+        {
+          "id" : "enroll",
+          "title" : {
+            "en" : "Offer a passkey",
+            "ru" : "Предложение passkey"
+          },
+          "step" : {
+            "type" : "passkey-enroll",
+            "publicKeyOptions" : "{}"
+          }
+        },
+        {
+          "id" : "enroll-failed",
+          "title" : {
+            "en" : "Enrolment failed",
+            "ru" : "Не удалось создать passkey"
+          },
+          "step" : {
+            "type" : "passkey-enroll",
+            "publicKeyOptions" : "{}"
+          },
+          "error" : "enroll_failed"
+        }
+      ]
+    },
+    {
+      "formId" : "access-denied",
+      "scenarios" : [
+        {
+          "id" : "access-denied",
+          "title" : {
+            "en" : "Access denied",
+            "ru" : "Доступ запрещён"
+          },
+          "step" : {
+            "type" : "access-denied",
+            "redirectUri" : "https://danceliker.example/callback"
+          }
+        }
+      ]
+    },
+    {
+      "formId" : "conversation-expired",
+      "scenarios" : [
+        {
+          "id" : "with-return",
+          "title" : {
+            "en" : "With a way back",
+            "ru" : "С возвратом"
+          },
+          "step" : {
+            "type" : "conversation-expired",
+            "redirectUri" : "https://danceliker.example/callback"
+          }
+        },
+        {
+          "id" : "no-return",
+          "title" : {
+            "en" : "Without a way back",
+            "ru" : "Без возврата"
+          },
+          "step" : {
+            "type" : "conversation-expired"
+          }
+        }
+      ]
+    },
+    {
+      "formId" : "service-unavailable",
+      "scenarios" : [
+        {
+          "id" : "with-return",
+          "title" : {
+            "en" : "With a way back",
+            "ru" : "С возвратом"
+          },
+          "step" : {
+            "type" : "service-unavailable",
+            "redirectUri" : "https://danceliker.example/callback"
+          }
+        },
+        {
+          "id" : "no-return",
+          "title" : {
+            "en" : "Without a way back",
+            "ru" : "Без возврата"
+          },
+          "step" : {
+            "type" : "service-unavailable"
+          }
+        }
+      ]
+    },
+    {
+      "formId" : "signed-out",
+      "scenarios" : [
+        {
+          "id" : "signed-out",
+          "title" : {
+            "en" : "Signed out",
+            "ru" : "Выход выполнен"
+          },
+          "step" : {
+            "type" : "signed-out",
+            "logoutUris" : [],
+            "redirectUri" : "https://danceliker.example/"
+          }
+        }
+      ]
+    },
+    {
+      "formId" : "confirm-logout",
+      "scenarios" : [
+        {
+          "id" : "confirm",
+          "title" : {
+            "en" : "Confirm the sign-out",
+            "ru" : "Подтверждение выхода"
+          },
+          "step" : {
+            "type" : "confirm-logout",
+            "csrfToken" : "preview",
+            "postLogoutRedirectUri" : "https://danceliker.example/",
+            "state" : "preview"
+          }
+        }
+      ]
+    }
+  ]
+}

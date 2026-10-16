@@ -84,7 +84,6 @@ object UserServiceSpec extends UnitSpecBase:
         permissions = Set.empty,
         theme = "",
         authFlow = Some(AuthFlow.default),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -106,6 +105,7 @@ object UserServiceSpec extends UnitSpecBase:
         edgeClientCertificate = None,
         template = None,
         createdAt = Instant.EPOCH,
+        themeOverrides = None,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",
@@ -147,7 +147,6 @@ object UserServiceSpec extends UnitSpecBase:
         permissions = Set.empty,
         theme = "",
         authFlow = Some(AuthFlow.default),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -169,6 +168,7 @@ object UserServiceSpec extends UnitSpecBase:
         edgeClientCertificate = None,
         template = None,
         createdAt = Instant.EPOCH,
+        themeOverrides = None,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",

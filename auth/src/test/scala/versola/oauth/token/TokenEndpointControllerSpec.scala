@@ -140,7 +140,6 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -158,6 +157,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   case class Services(

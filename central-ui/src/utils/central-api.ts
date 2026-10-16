@@ -1,3 +1,4 @@
+import { clientKindOf, type ClientKind } from './client-presets';
 import type {
   AuthFlow,
   AuthMethod,
@@ -6,15 +7,18 @@ import type {
   BackendProperty,
   Edge,
   Locale,
+  FormPreview,
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  EmailRegistration,
   ClientTemplate,
   JwksKeySummary,
   MtlsCertificateEncoding,
   MutualTlsAuth,
   SystemSettingsRecord,
   PasskeySettings,
+  PhoneRegion,
   SubmissionLimits,
   InjectRule,
   OAuthClaim,
@@ -22,7 +26,6 @@ import type {
   OAuthScope,
   Permission,
   ConsentFlow,
-  RegistrationFlow,
   Resource,
   ResourceEndpoint,
   ResourceEndpointId,
@@ -30,7 +33,10 @@ import type {
   ServiceKey,
   SecurityProfile,
   Tenant,
+  ThemeOverrides,
+  ThemePreset,
   ThemeRecord,
+  ThemeTokens,
 } from '../types';
 
 export const DEFAULT_PAGE_SIZE = 30;
@@ -112,15 +118,13 @@ type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeI
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
-type BackendRegistrationStep = { type: string };
-type BackendRegistrationFlow = { credential: string; steps: BackendRegistrationStep[]; roleIds: string[] };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
   otpType: 'sms' | 'email';
 };
-type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null; requiredScopes?: string[]; offlineAccessOptional?: boolean };
 type ClientsResponse = {
   clients: Array<{
     id: string;
@@ -131,11 +135,11 @@ type ClientsResponse = {
     secretRotation: boolean;
     authMethod?: AuthMethod;
     applicationType?: 'web' | 'native';
+    kind?: 'web' | 'device' | 'service';
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
     authFlow?: BackendAuthFlow | null;
-    registrationFlow?: BackendRegistrationFlow | null;
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
@@ -154,6 +158,7 @@ type ClientsResponse = {
     requirePushedAuthorizationRequests?: boolean;
     template?: ClientTemplate | null;
     createdAt?: string;
+    themeOverrides?: ThemeOverrides | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -203,29 +208,13 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
   };
 }
 
-function registrationFlowToBackend(flow: RegistrationFlow | null | undefined): BackendRegistrationFlow | null {
-  if (!flow) return null;
-  return {
-    credential: flow.credential,
-    steps: flow.steps.map(step => ({ type: step.type })),
-    roleIds: unique(flow.roleIds),
-  };
-}
-
-function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | undefined): RegistrationFlow | null {
-  if (!flow) return null;
-  return {
-    credential: flow.credential as RegistrationFlow['credential'],
-    steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
-    roleIds: unique(flow.roleIds),
-  };
-}
-
 function consentFlowToBackend(flow: ConsentFlow | null | undefined): BackendConsentFlow | null {
   if (!flow) return null;
   return {
     allowPartial: flow.allowPartial,
     rememberDuration: flow.rememberDurationDays != null ? flow.rememberDurationDays * 86400 : null,
+    requiredScopes: flow.requiredScopes,
+    offlineAccessOptional: flow.offlineAccessOptional,
   };
 }
 
@@ -234,6 +223,8 @@ function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): Co
   return {
     allowPartial: flow.allowPartial,
     rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
+    requiredScopes: flow.requiredScopes ?? [],
+    offlineAccessOptional: flow.offlineAccessOptional ?? false,
   };
 }
 
@@ -250,10 +241,17 @@ function sameJsonValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
+/** The overrides, or null when there are none: absent, null and `{}` all mean the client changes nothing. */
+function nonEmptyOverrides(overrides: ThemeOverrides | null | undefined): ThemeOverrides | null {
+  return overrides && Object.keys(overrides).length > 0 ? overrides : null;
+}
+
 function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
   if (!a || !b) return !a && !b;
   return a.allowPartial === b.allowPartial
-    && a.rememberDurationDays === b.rememberDurationDays;
+    && a.rememberDurationDays === b.rememberDurationDays
+    && sameStringSet(a.requiredScopes, b.requiredScopes)
+    && a.offlineAccessOptional === b.offlineAccessOptional;
 }
 
 // Client names are displayed on the consent screen and are stored as locale-keyed objects.
@@ -723,7 +721,12 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        clientType: client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        // Central names the kind; the application type and a missing credential are what a console
+        // that predates it had to guess from.
+        clientType: client.kind
+          ? (client.kind === 'device' ? 'native' : 'web')
+          : client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        kind: client.kind,
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
@@ -735,7 +738,6 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow),
-        registrationFlow: registrationFlowFromBackend(client.registrationFlow),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -753,6 +755,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         requirePushedAuthorizationRequests: client.requirePushedAuthorizationRequests ?? false,
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
+        themeOverrides: nonEmptyOverrides(client.themeOverrides),
         tenantId,
       };
     }),
@@ -1096,11 +1099,64 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
   invalidateRefData(rolesStore, tenantId);
 }
 
+/**
+ * One registration and one update per kind of client (`/configuration/clients/{web,native,service}`).
+ * Each endpoint refuses a member its kind does not have, so the body is cut down to the members
+ * the kind's request declares: what the kind fixes (a device's DPoP binding, a service's lack of
+ * redirect URIs) is not ours to send, and is set by central.
+ */
+const KIND_PATHS: Record<ClientKind, string> = { web: 'web', device: 'native', service: 'service' };
+
+const COMMON_CREATE_FIELDS = [
+  'tenantId', 'id', 'clientName', 'allowedScopes', 'accessTokenTtl', 'authMethod', 'mtlsAuth',
+  'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+] as const;
+
+const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
+  // Permissions are what a token issued to the client itself may call: only a service client has any.
+  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+const COMMON_UPDATE_FIELDS = [
+  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_UPDATE_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'themeOverrides',
+] as const;
+
+const UPDATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS, 'dpopBoundAccessTokens', 'mtlsAuth',
+    'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS],
+  service: [...COMMON_UPDATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+function pickFields(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(body).filter(([name]) => fields.includes(name)));
+}
+
 /** Resolves to the generated secret, or to `null` for a native client, which has none. */
 export async function createClient(tenantId: string, client: OAuthClient): Promise<CreatedClient> {
-  const response = await request<CreateClientResponse>('/configuration/clients', {
+  const kind = clientKindOf(client);
+  const response = await request<CreateClientResponse>(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'POST',
-    body: {
+    body: pickFields({
       tenantId,
       id: client.id,
       clientName: clientNameToBackend(client.clientName),
@@ -1109,9 +1165,8 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
-      otpTemplateId: client.otpTemplateId ?? null,
+      otpTemplateId: client.otpTemplateId ?? undefined,
       authFlow: authFlowToBackend(client.authFlow),
-      registrationFlow: registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -1129,11 +1184,10 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       jwks: client.jwks ?? null,
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
-      template: client.template ?? null,
-      applicationType: client.clientType === 'native' ? 'native' : 'web',
-      issueEdgeClientCertificate: !!client.edgeFronted && client.clientType !== 'native',
-      enrollEdgeClientCertificate: !!client.edgeFronted && client.clientType === 'native',
-    },
+      themeOverrides: nonEmptyOverrides(client.themeOverrides) ?? undefined,
+      issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
+      enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
+    }, CREATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
@@ -1176,9 +1230,11 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 }
 
 export async function updateClient(tenantId: string, existing: OAuthClient, client: OAuthClient): Promise<void> {
-  await requestVoid('/configuration/clients', {
+  // The kind the client was registered as: it is fixed, so it is read off what is stored.
+  const kind = clientKindOf(existing);
+  await requestVoid(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'PUT',
-    body: {
+    body: pickFields({
       clientId: client.id,
       clientName: sameLocalizedDescription(existing.clientName, client.clientName)
         ? undefined
@@ -1191,10 +1247,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
-      // Patch semantics: omitted leaves the stored flow alone, null clears it.
-      registrationFlow: sameRegistrationFlow(existing.registrationFlow, client.registrationFlow)
-        ? undefined
-        : registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
       backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
@@ -1226,7 +1278,11 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       requirePushedAuthorizationRequests: existing.requirePushedAuthorizationRequests !== client.requirePushedAuthorizationRequests
         ? client.requirePushedAuthorizationRequests
         : undefined,
-    },
+      // Patch semantics: omitted leaves the stored overrides alone, an empty object clears them.
+      themeOverrides: sameJsonValue(nonEmptyOverrides(existing.themeOverrides), nonEmptyOverrides(client.themeOverrides))
+        ? undefined
+        : (nonEmptyOverrides(client.themeOverrides) ?? {}),
+    }, UPDATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
@@ -1234,15 +1290,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     refreshTokenTtl: client.refreshTokenTtl ?? existing.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
-}
-
-function sameRegistrationFlow(a: RegistrationFlow | null | undefined, b: RegistrationFlow | null | undefined): boolean {
-  if (!a || !b) return !a && !b;
-  return a.credential === b.credential
-    && a.roleIds.length === b.roleIds.length
-    && a.roleIds.every(roleId => b.roleIds.includes(roleId))
-    && a.steps.length === b.steps.length
-    && a.steps.every((step, index) => step.type === b.steps[index]?.type);
 }
 
 export async function deleteClient(tenantId: string, clientId: string): Promise<void> {
@@ -1350,6 +1397,13 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
+// The states of the built-in forms that central previews. A failure here fails the screen's load
+// and is shown as its error; there is no fallback that guesses the states.
+export async function fetchFormPreviews(): Promise<FormPreview[]> {
+  const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
+  return response.previews;
+}
+
 export async function fetchLocales(): Promise<Locale[]> {
   const response = await request<{ locales: Locale[] }>('/configuration/locales');
   return response.locales;
@@ -1400,14 +1454,37 @@ export async function fetchThemes(tenantId: string): Promise<ThemeRecord[]> {
 export async function createTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'POST',
-    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId },
+    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
   });
 }
 
 export async function updateTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'PUT',
-    body: { id: theme.id, css: theme.css },
+    body: { id: theme.id, css: theme.css, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
+  });
+}
+
+// The built-in themes a theme can be based on; a failure fails the screen's load and is shown
+// as its error; there is no reduced editor.
+export async function fetchThemePresets(): Promise<ThemePreset[]> {
+  const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
+  return response.presets;
+}
+
+// The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
+// exactly what users get, because nobody but central builds it. `tokens` null is a stylesheet theme (its CSS alone is
+// the stylesheet); `overrides` are a client's own, laid over the theme as auth does, so the answer is that client's
+// effective stylesheet. Empty overrides are not sent.
+export async function renderTheme(
+  tokens: ThemeTokens | null,
+  css: string,
+  overrides?: ThemeOverrides,
+): Promise<{ css: string; generated: string }> {
+  const own = overrides && Object.keys(overrides).length > 0 ? overrides : undefined;
+  return request<{ css: string; generated: string }>('/configuration/themes/css', {
+    method: 'POST',
+    body: { ...(tokens ? { tokens } : {}), css, ...(own ? { overrides: own } : {}) },
   });
 }
 
@@ -1493,9 +1570,12 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
+const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
+const DEFAULT_ROLES = ['user'];
+
 export async function upsertChallengeSettings(
   tenantId: string,
-  allowedPrefixes: string[],
+  phoneRegions: PhoneRegion[],
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
@@ -1512,12 +1592,14 @@ export async function upsertChallengeSettings(
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
   signingKeyId?: string | null,
   clientAssertionMaxLifetimeSeconds?: number | null,
+  emailRegistration: EmailRegistration = DEFAULT_EMAIL_REGISTRATION,
+  defaultRoles: string[] = DEFAULT_ROLES,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
     body: {
       tenantId,
-      allowedPrefixes,
+      phoneRegions,
       submissionLimits,
       otpLength,
       otpResendAfter,
@@ -1534,6 +1616,8 @@ export async function upsertChallengeSettings(
       mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
       signingKeyId: signingKeyId ?? null,
       clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
+      emailRegistration,
+      defaultRoles,
     },
   });
 }

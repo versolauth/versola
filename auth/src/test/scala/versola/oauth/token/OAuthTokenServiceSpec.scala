@@ -102,7 +102,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -120,6 +119,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -135,7 +135,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -153,6 +152,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)

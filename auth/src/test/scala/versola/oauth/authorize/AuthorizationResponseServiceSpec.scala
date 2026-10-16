@@ -28,7 +28,6 @@ object AuthorizationResponseServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -46,6 +45,7 @@ object AuthorizationResponseServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val params = List("code" -> "the-code", "iss" -> config.jwt.issuer, "state" -> "test-state")

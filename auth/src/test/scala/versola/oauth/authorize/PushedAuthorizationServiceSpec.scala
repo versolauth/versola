@@ -34,7 +34,6 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -52,6 +51,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(

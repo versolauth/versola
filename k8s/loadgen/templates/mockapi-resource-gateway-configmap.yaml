@@ -13,9 +13,12 @@ metadata:
     {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
 data:
   nginx.conf: |
-    worker_processes 1;
+    worker_processes 2;
     events {
-      worker_connections 1024;
+      # Every proxied request holds two sockets (the caller's and the one to mockapi), so 1024 is ~500 requests
+      # in flight per pod. Edge's pool alone (HTTP_CLIENT_POOL_SIZE=1024 per pod) is past that: nginx closed
+      # the excess connections and edge counted them as 5xx on /resources/*.
+      worker_connections 16384;
     }
     http {
       access_log off;

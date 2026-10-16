@@ -35,16 +35,17 @@ async function renderCredential(page: import('@playwright/test').Page, logo?: st
   await page.addScriptTag({ path: credentialBundle });
 }
 
-test('renders the built-in SVG when no logo is configured', async ({ page }) => {
+test('renders the Versola wordmark when no logo is configured', async ({ page }) => {
   await renderCredential(page);
 
-  await expect(page.locator('.brand-mark svg')).toHaveCount(1);
-  await expect(page.locator('.brand-mark img')).toHaveCount(0);
+  await expect(page.locator('.page-brand .page-wordmark')).toHaveCount(1);
+  await expect(page.locator('.page-brand img')).toHaveCount(0);
 });
 
-test('removes a configured logo when the image fails to load', async ({ page }) => {
+test('replaces a configured logo with the wordmark when the image fails to load', async ({ page }) => {
   await page.route('https://assets.example/broken.svg', route => route.abort());
   await renderCredential(page, 'https://assets.example/broken.svg');
 
-  await expect(page.locator('.brand-mark')).toHaveCount(0);
+  await expect(page.locator('.page-brand img')).toHaveCount(0);
+  await expect(page.locator('.page-brand .page-wordmark')).toHaveCount(1);
 });

@@ -25,8 +25,13 @@ export interface PlanLine {
 export interface ClientKindDescriptor {
   id: ClientKind;
   name: string;
+  /** What the kind is, in a sentence a person choosing it recognises. */
   blurb: string;
-  /** Plain-language statement of the resulting client type, shown under the card. */
+  /** What the console sets up for it, shown as a short list under the card. */
+  gets: string[];
+  /** Where the kind turns up, so a card can be matched to what is being built. */
+  examples: string;
+  /** Plain-language statement of the resulting client type. */
   clientTypeLabel: string;
 }
 
@@ -42,19 +47,25 @@ export const CLIENT_KINDS: ClientKindDescriptor[] = [
   {
     id: 'web',
     name: 'Web app',
-    blurb: 'A browser front end and its backend. Edge is the OAuth client and keeps the tokens.',
+    blurb: 'A site with a backend. Users sign in; tokens stay on the server.',
+    gets: ['Tokens never reach the browser', 'No secret to store'],
+    examples: 'Shop, dashboard, internal portal',
     clientTypeLabel: 'web (confidential) · fronted by edge',
   },
   {
     id: 'device',
     name: 'Mobile or desktop app',
-    blurb: 'iOS, Android, Electron. Edge fronts the app and holds the credential; the device holds a key of its own.',
+    blurb: 'An app installed on a device. It holds a key of its own.',
+    gets: ['Tokens bound to the device', 'Opens only by verified link'],
+    examples: 'iOS, Android, Electron',
     clientTypeLabel: 'native · fronted by edge',
   },
   {
     id: 'service',
     name: 'Service app',
-    blurb: 'client_credentials. Calls your APIs with no user present.',
+    blurb: 'Code that calls your APIs with no user present.',
+    gets: ['Signs in with a key or certificate', 'Gets only the permissions you grant'],
+    examples: 'Batch jobs, backends, CLIs',
     clientTypeLabel: 'web (confidential)',
   },
 ];
@@ -117,7 +128,6 @@ const SERVICE_PATCH: Partial<OAuthClient> = {
   redirectUris: [],
   scope: [],
   authFlow: null,
-  registrationFlow: null,
   consentFlow: null,
   requirePushedAuthorizationRequests: false,
   requireSignedRequestObject: false,
@@ -377,4 +387,170 @@ export function credentialBinding(mode: ClientCredentialMode): Pick<OAuthClient,
     default:
       return null;
   }
+}
+
+/** What the client is, read back from what was stored: the template the wizard recorded, or -
+ * for a client registered through the API - the shape of the registration. A native client is
+ * a device; a web one with no sign-in flow and no redirect URIs makes no authorization
+ * request, which is a service. */
+export function clientKindOf(
+  client: Pick<OAuthClient, 'clientType' | 'redirectUris'> & { kind?: ClientKind; template?: { kind: ClientKind } | null; authFlow?: unknown },
+): ClientKind {
+  // What central says the client is, where it does: the same rule it holds an update to.
+  if (client.kind) {
+    return client.kind;
+  }
+  if (client.template?.kind) {
+    return client.template.kind;
+  }
+  if (client.clientType === 'native') {
+    return 'device';
+  }
+  return client.authFlow || (client.redirectUris ?? []).length > 0 ? 'web' : 'service';
+}
+
+/** A setting the kind, the profile or the credential settles. Locked means the console shows the
+ * value and its reason, and offers no way to move it. */
+export type SettingLock = { locked: false } | { locked: true; value: boolean; reason: string };
+
+const UNLOCKED: SettingLock = { locked: false };
+const lockedAs = (value: boolean, reason: string): SettingLock => ({ locked: true, value, reason });
+
+export interface ClientLocks {
+  /** The client authenticates with a certificate, which binds every token it gets to that
+   *  certificate by itself: nothing about binding is stored or chosen, so the console states it once
+   *  instead of offering a DPoP key or a flag beside it. */
+  boundByCertificate: boolean;
+  dpop: SettingLock;
+  certificateBound: SettingLock;
+  par: SettingLock;
+  jar: SettingLock;
+}
+
+const EDGE_HOLDS_NO_SIGNING_KEY =
+  'Edge authenticates with a certificate and holds no key it could sign a request object with.';
+const NO_AUTHORIZATION_REQUEST_REASON = 'A service client makes no authorization request, so there is nothing to push or sign.';
+
+/** What is settled for a client of this kind under this profile and credential - everything
+ * the edit form must not offer as a choice. Edge-fronted kinds are settled in both profiles,
+ * because what makes the split safe (see `validateEdgeFrontedNative`) does not depend on
+ * which profile the tenant is on. */
+export function clientLocks(kind: ClientKind, profile: SecurityProfile, mode: ClientCredentialMode): ClientLocks {
+  if (kind === 'device') {
+    return {
+      boundByCertificate: false,
+      dpop: lockedAs(true, "Binds each token to a key in the device's keystore. Edge's certificate is shared by every installation, so it cannot do that."),
+      certificateBound: lockedAs(false, "Edge's certificate is shared by every installation, so a token cannot be bound to it."),
+      par: lockedAs(true, 'Edge pushes the request over its authenticated back channel; the device key binding depends on it.'),
+      jar: lockedAs(false, EDGE_HOLDS_NO_SIGNING_KEY),
+    };
+  }
+  if (kind === 'web' && mode === 'edge') {
+    return {
+      boundByCertificate: true,
+      dpop: lockedAs(false, "Tokens are bound to edge's certificate instead (RFC 8705 §3.1)."),
+      certificateBound: lockedAs(true, 'Edge authenticates with a certificate, so every token is bound to it.'),
+      par: lockedAs(true, 'Edge pushes the request over its authenticated back channel, so the browser never carries it.'),
+      jar: lockedAs(false, EDGE_HOLDS_NO_SIGNING_KEY),
+    };
+  }
+  const certificate = mode === 'mtls' || mode === 'mtls-self-signed';
+  return {
+    boundByCertificate: certificate,
+    dpop: mode === 'private-key-jwt' && profile === 'fapi2'
+      ? lockedAs(true, 'FAPI 2.0 requires sender-constrained tokens, and a key-authenticated client gets them through DPoP.')
+      : UNLOCKED,
+    certificateBound: certificate
+      ? lockedAs(true, 'A certificate credential binds every token it gets to that certificate (RFC 8705 §3.1).')
+      : mode === 'private-key-jwt' && profile === 'fapi2'
+        ? lockedAs(false, 'DPoP is what binds this client\'s tokens.')
+        : UNLOCKED,
+    // A web client that authenticates for itself (not through edge) makes authorization
+    // requests, and how they arrive is its own choice.
+    par: kind === 'service' ? lockedAs(false, NO_AUTHORIZATION_REQUEST_REASON) : UNLOCKED,
+    jar: kind === 'service' ? lockedAs(false, NO_AUTHORIZATION_REQUEST_REASON) : UNLOCKED,
+  };
+}
+
+export interface PostureCheck {
+  ok: boolean;
+  text: string;
+  /** What is wrong, when `ok` is false. */
+  problem?: string;
+}
+
+/** Kept in sync with `InvalidRegistrationConfiguration.profileViolations`: what FAPI 2.0 asks of
+ * a client, one line each, so the page can say whether this one meets it. Empty under the
+ * standard profile, which asks nothing. */
+export function profilePosture(
+  client: Pick<
+    OAuthClient,
+    'authMethod' | 'clientType' | 'dpopBoundAccessTokens' | 'certificateBoundAccessTokens' | 'redirectUris' | 'requirePushedAuthorizationRequests'
+  >,
+  profile: SecurityProfile,
+): PostureCheck[] {
+  if (profile !== 'fapi2') {
+    return [];
+  }
+  const authMethods: AuthMethod[] = ['private_key_jwt', 'tls_client_auth', 'self_signed_tls_client_auth'];
+  const certificateAuth = client.authMethod === 'tls_client_auth' || client.authMethod === 'self_signed_tls_client_auth';
+  const senderConstrained = !!client.dpopBoundAccessTokens || !!client.certificateBoundAccessTokens || certificateAuth;
+  const redirectUris = client.redirectUris ?? [];
+  const checks: PostureCheck[] = [
+    authMethods.includes(client.authMethod)
+      ? { ok: true, text: `Authenticates with ${client.authMethod === 'private_key_jwt' ? 'a signing key' : 'a certificate'}, no shared secret` }
+      : { ok: false, text: 'Authenticates with a key or a certificate', problem: `Uses ${client.authMethod}, which FAPI 2.0 does not admit` },
+    senderConstrained
+      ? { ok: true, text: `Tokens bound to ${client.dpopBoundAccessTokens ? 'a DPoP key' : 'a certificate'}` }
+      : { ok: false, text: 'Tokens are sender-constrained', problem: 'Tokens are bearer tokens: nothing binds them to the client' },
+  ];
+  if (redirectUris.length > 0) {
+    checks.push(
+      client.requirePushedAuthorizationRequests
+        ? { ok: true, text: 'Authorization requests pushed (PAR)' }
+        : { ok: false, text: 'Authorization requests pushed (PAR)', problem: 'PAR is off for a client with redirect URIs' },
+    );
+    // Loopback http is not a gap: central admits it only outside production, so a client that has it
+    // is one a local stack registered, and in production it could not have been.
+    // Loopback http is not a gap: central admits it only outside production, so a client that has it
+    // is one a local stack registered, and in production it could not have been.
+    const insecure = redirectUris.filter(uri => !uri.startsWith('https://') && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(uri));
+    checks.push(
+      insecure.length === 0
+        ? { ok: true, text: 'Redirect URIs use https' }
+        : { ok: false, text: 'Redirect URIs use https', problem: `Not https: ${insecure.join(', ')}` },
+    );
+  }
+  return checks;
+}
+
+/** What the client authenticates with, in a few words for a list or a summary. */
+export function credentialLabel(client: Pick<OAuthClient, 'authMethod' | 'clientType' | 'mtlsAuth'>): string {
+  switch (client.authMethod) {
+    case 'tls_client_auth':
+      return client.clientType === 'native' || !client.mtlsAuth ? 'Certificate, issued to edge' : 'Certificate';
+    case 'self_signed_tls_client_auth':
+      return 'Self-signed certificate';
+    case 'private_key_jwt':
+      return 'Signing key';
+    case 'client_secret':
+      return 'Client secret';
+    default:
+      return 'None (public client)';
+  }
+}
+
+/** Whether the client would pass the FAPI 2.0 profile, whatever profile its tenant is on: a
+ * standard tenant holds clients of both kinds, and which one this is is worth saying. */
+export function fapiConformance(client: Parameters<typeof profilePosture>[0]): { conformant: boolean; gaps: PostureCheck[] } {
+  const checks = profilePosture(client, 'fapi2');
+  const gaps = checks.filter(check => !check.ok);
+  return { conformant: gaps.length === 0, gaps };
+}
+
+/** What the page calls the group of access settings: a client that signs users in has scopes, and its
+ *  users bring their permissions through their roles; permissions are what a token issued to the
+ *  client itself may call, which only a service client has. */
+export function accessSectionTitle(kind: ClientKind): string {
+  return kind === 'service' ? 'Permissions' : 'Scopes';
 }

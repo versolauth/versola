@@ -131,8 +131,9 @@ object CentralConfig:
       authAdditionalUrl: URL,
       /** Base64Url-encoded secret shared with auth's additional listener, used to
         * authenticate the seeded "auth" resource record. Always required — unlike
-        * the central resource secret, this is not auto-generated, since auth also
-        * needs to be configured with the same value out of band.
+        * the central resource secret, this is not auto-generated. Auth is not
+        * configured with it: it receives the value through the configuration sync
+        * from central (`accountResourceSecrets`).
         */
       authResourceSecret: Secret,
       /** Optional confidential client for tooling such as `loadgen provision`, seeded with the
@@ -170,17 +171,24 @@ object CentralConfig:
         publicKeyJwk: Option[Json.Obj] = None,
     )
 
-    /** The certificate (with its PKCS#8 private key, one PEM) an edge presents as
-      * `central-admin`, and where the default tenant's TLS terminator forwards it to auth.
+    /** How an edge authenticates as `central-admin`, and where the default tenant's TLS
+      * terminator forwards its certificate to auth.
       *
-      * The client is registered to be recognised by the certificate's own subject DN, so the
-      * certificate is the only thing to configure. It has to be issued by a CA the terminator
-      * advertises -- a JDK TLS client offers no certificate otherwise (see `gen-env.scala`).
+      * `certificate` is the certificate (with its PKCS#8 private key, one PEM) the edge
+      * presents. The client is registered to be recognised by the certificate's own subject DN.
+      * It has to be issued by a CA the terminator advertises -- a JDK TLS client offers no
+      * certificate otherwise (see `gen-env.scala`).
+      *
+      * Absent, central issues the certificate itself, through `client-certificates` (or
+      * `client-certificate-authority`), exactly as for any client registered with
+      * `issueEdgeClientCertificate`: short-lived, renewed by central before it expires, and
+      * presented to auth's own mutual-TLS listener when nothing terminates TLS in front of it.
+      * Boot is refused when no CA is configured to issue from.
       *
       * `certificateHeader`/`certificateEncoding` are written to the default tenant's challenge
       * settings only where it names no header yet: an operator's own choice is kept. */
     case class CentralAdminMtlsSeed(
-        certificate: String,
+        certificate: Option[String] = None,
         certificateHeader: String,
         certificateEncoding: String,
     )

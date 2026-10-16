@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.roles.{RoleId, RoleRecord, RoleRepository}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
@@ -42,7 +43,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      allowedPrefixes = List("+1"),
+      phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+      emailRegistration = EmailRegistration.Closed,
+      defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
       submissionLimits = SubmissionLimits.empty,
       otpLength = 6,
       otpResendAfter = 30,
@@ -74,6 +77,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       .getOrThrowFiberFailure()
   }
 
+  private val userRole = RoleRecord(ChallengeSettingsRecord.DefaultRoleId, tenantId, Map("en" -> "User"), Set.empty, active = true)
+
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
       Tracing.live(logAnnotated = false),
@@ -89,6 +94,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify: (Response, Stub[OtpChallengeService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       settingsSetup: Stub[ChallengeSettingsService] => UIO[Unit] = _ => ZIO.unit,
       settingsVerify: (Response, Stub[ChallengeSettingsService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+      roleSetup: Stub[RoleRepository] => UIO[Unit] = _ => ZIO.unit,
+      roleVerify: Stub[RoleRepository] => TestResult = _ => assertTrue(true),
   ) =
     test(description) {
       for
@@ -97,6 +104,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         challengeSettingsService = stub[ChallengeSettingsService]
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
+        roleRepository = stub[RoleRepository]
+        _ = roleRepository.findRole.returnsWith(ZIO.succeed(Some(userRole)))
         _ = challengeSettingsService.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.fapi2))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
@@ -105,30 +114,38 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
                 tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[ResourceService](resourceService) ++ ZEnvironment[RoleRepository](roleRepository),
             ),
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         _ <- settingsSetup(challengeSettingsService)
+        _ <- roleSetup(roleRepository)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
           case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
         settingsVerifyResult <- settingsVerify(response, challengeSettingsService)
-      yield assertTrue(response.status == expectedStatus) && verifyResult && settingsVerifyResult
+      yield assertTrue(response.status == expectedStatus) && verifyResult && settingsVerifyResult && roleVerify(roleRepository)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
-  private def upsertWithProfile(profile: Option[SecurityProfile]): Request =
+  private def upsertWithProfile(
+      profile: Option[SecurityProfile],
+      regions: List[PhoneRegion] = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+      emailRegistration: EmailRegistration = EmailRegistration.Closed,
+      defaultRoles: Set[RoleId] = Set(ChallengeSettingsRecord.DefaultRoleId),
+  ): Request =
     Request(
       method = Method.PUT,
       url = URL.empty / "configuration" / "challenges" / "challenge-settings",
       body = Body.fromString(
         UpsertChallengeSettingsRequest(
           tenantId = tenantId,
-          allowedPrefixes = List("+1"),
+          phoneRegions = regions,
+          emailRegistration = emailRegistration,
+          defaultRoles = defaultRoles,
           submissionLimits = SubmissionLimits.empty,
           otpLength = 6,
           otpResendAfter = 30,
@@ -151,6 +168,97 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ).addHeader(Header.ContentType(MediaType.application.json))
 
   def spec = suite("OtpChallengeController")(
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a phone region whose regex does not compile",
+      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "[7", true))),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("phoneRegions regex of KZ"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings accepts regions that share a dial code",
+      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true), PhoneRegion("RU", "+7", 10, "9\\d{9}", true))),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify =
+        (_, service) => ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.phoneRegions.map(_.region)) == List(List("KZ", "RU")))),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings stores email domains lower-cased and in punycode",
+      request = upsertWithProfile(
+        None,
+        emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List(" Example.COM ", "*.Пример.рф"), false),
+      ),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.upsertSettings.calls.map(_.emailRegistration.domains) == List(List("example.com", "*.xn--e1afmkfd.xn--p1ai")),
+        )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses an email domain that is not a domain",
+      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List("not a domain"), false)),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("emailRegistration domain 'not a domain'"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses empty default roles",
+      request = upsertWithProfile(None, defaultRoles = Set.empty),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a default role the tenant does not have while a credential can register",
+      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.open, Nil, false)),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      roleSetup = roles => roles.findRole.succeedsWith(None),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("does not exist in tenant"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings does not look the default roles up while nobody can register",
+      request = upsertWithProfile(None, regions = Nil),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      roleVerify = roles =>
+        val lookups = roles.findRole.times
+        assertTrue(lookups == 0),
+    ),
     // A tenant's profile is fixed when the tenant is created.
     controllerTestCase(
       description = "PUT challenge-settings refuses a switch from fapi2 to standard",
@@ -309,7 +417,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -358,7 +468,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -399,7 +511,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -436,7 +550,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -472,7 +588,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -510,7 +628,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -549,7 +669,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -589,7 +711,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -625,7 +749,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -662,7 +788,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -700,7 +828,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            allowedPrefixes = List("+1"),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,

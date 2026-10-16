@@ -26,7 +26,8 @@ type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boole
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
+type ClientKindDto = 'web' | 'device' | 'service';
+type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -65,8 +66,15 @@ type FormDto = {
   localizations: Record<string, Record<string, string>>;
   properties: FormPropertyDto[];
 };
+type FormPreviewDto = {
+  formId: string;
+  scenarios: Array<{ id: string; title: Record<string, string>; step: Record<string, unknown>; error?: string }>;
+};
 type FormLocaleDto = { code: string; name: string };
-type ThemeDto = { id: string; css: string; tenantId: string | null };
+type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string; background?: string };
+type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
+type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
+type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
@@ -74,16 +82,17 @@ type CreateClientRequest = {
   tenantId: string;
   id: string;
   clientName: Record<string, string>;
-  redirectUris: string[];
+  redirectUris?: string[];
   allowedScopes: string[];
   audience: string[];
-  permissions: string[];
+  permissions?: string[];
   accessTokenTtl: number;
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
   authMethod?: AuthMethodDto;
   template?: ClientTemplateDto | null;
+  themeOverrides?: ThemeOverridesDto;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -95,6 +104,7 @@ type UpdateClientRequest = {
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
+  themeOverrides?: ThemeOverridesDto;
 };
 type CreateScopeRequest = {
   tenantId: string;
@@ -201,8 +211,10 @@ type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<stri
 type ChallengeSettingsDto = {
   tenantId: string;
   securityProfile?: SecurityProfileDto;
-  allowedPrefixes: string[];
+  phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>;
   passwordRegex?: string | null;
+  emailRegistration?: { mode: 'closed' | 'open' | 'allowlist'; domains: string[]; blockSubaddress: boolean };
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimitsDto;
   otpLength: number;
   otpResendAfter: number;
@@ -228,9 +240,11 @@ const emptySubmissionLimits = (): SubmissionLimitsDto => ({
   banDurationSeconds: 0,
 });
 
-const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
+export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   tenantId,
-  allowedPrefixes: [],
+  phoneRegions: [],
+  emailRegistration: { mode: 'closed', domains: [], blockSubaddress: false },
+  defaultRoles: ['user'],
   passwordRegex: null,
   submissionLimits: emptySubmissionLimits(),
   otpLength: 6,
@@ -265,6 +279,9 @@ type MyPermissionsDto = {
   isProd: boolean;
 };
 
+/** Stands for the foundation stylesheet central lays every visual theme on. */
+export const baseStylesheetMock = 'BASE-STYLESHEET';
+
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
@@ -276,8 +293,14 @@ export type MockConfigState = {
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
+  // The states central lists for the built-in forms; null stands for a central that has no such endpoint.
+  formPreviews: FormPreviewDto[] | null;
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
+  // The built-in themes; null stands for a central that has none.
+  themePresets: ThemePresetDto[] | null;
+  // When set, central refuses to render a stylesheet with this message (a 500), to see how a preview shows it.
+  themeRenderError: string | null;
   systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
@@ -344,8 +367,11 @@ const defaultState: MockConfigState = {
   authorizationPresets: {},
   users: [],
   forms: [],
+  formPreviews: [],
   formLocales: [],
   themes: [],
+  themePresets: [],
+  themeRenderError: null,
   systemSettings: {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
     passwordHistorySize: 5,
@@ -377,8 +403,11 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
+    formPreviews: clone(overrides.formPreviews === undefined ? defaultState.formPreviews : overrides.formPreviews),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
+    themePresets: clone(overrides.themePresets === undefined ? defaultState.themePresets : overrides.themePresets),
+    themeRenderError: overrides.themeRenderError ?? null,
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
@@ -404,6 +433,58 @@ function pageSlice<T>(items: T[], url: URL): T[] {
 
 function json(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify(data) };
+}
+
+/**
+ * What each kind's request declares (central's `Create{Web,Native,Service}ClientRequest` and the
+ * `Update...` ones). Central refuses a member outside them rather than ignoring it, so the mock
+ * does the same: a console that sends a setting its kind fixes fails here, not in production.
+ */
+const KIND_BY_PATH: Record<string, ClientKindDto> = { web: 'web', native: 'device', service: 'service' };
+
+const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
+  web: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+  ],
+  device: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+  ],
+  service: [
+    'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+  ],
+};
+
+const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
+  web: [
+    'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
+    'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
+    'edgeClientCertificate', 'themeOverrides',
+  ],
+  device: [
+    'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+    'edgeClientCertificate', 'themeOverrides',
+  ],
+  service: [
+    'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks',
+  ],
+};
+
+function unknownMembers(body: unknown, allowed: string[]): string[] {
+  return Object.keys((body ?? {}) as Record<string, unknown>).filter(name => !allowed.includes(name));
 }
 
 function applyPatchSet<T>(items: T[], patch?: SetPatch<T>): T[] {
@@ -524,7 +605,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     }
 
     const tenantId = url.searchParams.get('tenantId') ?? '';
-    if (pathname === '/configuration/clients') {
+    const typedKind = KIND_BY_PATH[pathname.match(/^\/configuration\/clients\/(web|native|service)$/)?.[1] ?? ''];
+    if (pathname === '/configuration/clients' || (typedKind && (method === 'POST' || method === 'PUT'))) {
       if (method === 'GET') {
         await route.fulfill(json({ clients: pageSlice(state.clients[tenantId] ?? [], url) }));
         return;
@@ -533,6 +615,12 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (method === 'POST') {
         const payload = body as CreateClientRequest;
         const tenantClients = state.clients[payload.tenantId] ?? [];
+
+        const extra = typedKind ? unknownMembers(body, CREATE_MEMBERS[typedKind]) : [];
+        if (extra.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
+          return;
+        }
 
         if (tenantClients.some(client => client.id === payload.id)) {
           await route.fulfill(json({ message: `Client ${payload.id} already exists` }, 409));
@@ -545,16 +633,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const createdClient: ClientDto = {
           id: payload.id,
           clientName: payload.clientName,
-          redirectUris: [...payload.redirectUris],
+          redirectUris: [...(payload.redirectUris ?? [])],
           scope: [...payload.allowedScopes],
-          permissions: [...payload.permissions],
+          permissions: [...(payload.permissions ?? [])],
           secretRotation: false,
           authMethod: payload.authMethod ?? 'client_secret',
           refreshTokenTtl: payload.refreshTokenTtl ?? 180 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
-          template: payload.template ?? null,
+          // The endpoint a client was registered at is what it is, as central records it.
+          template: typedKind ? { kind: typedKind } : payload.template ?? null,
+          kind: typedKind ?? (payload.template?.kind as ClientKindDto | undefined),
           createdAt,
+          ...(payload.themeOverrides && Object.keys(payload.themeOverrides).length > 0 ? { themeOverrides: payload.themeOverrides } : {}),
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -582,6 +673,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
+        if (typedKind) {
+          const extra = unknownMembers(body, UPDATE_MEMBERS[typedKind]);
+          if (extra.length > 0) {
+            await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
+            return;
+          }
+          const stored = client.kind ?? client.template?.kind;
+          if (stored && stored !== typedKind) {
+            await route.fulfill({ status: 409, contentType: 'text/plain', body: `Client ${payload.clientId} is a ${stored} client` });
+            return;
+          }
+        }
+
         if (payload.clientName !== undefined) {
           client.clientName = payload.clientName;
         }
@@ -597,6 +701,10 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
         if ('consentFlow' in payload) {
           client.consentFlow = payload.consentFlow ?? null;
+        }
+        // An empty object clears the overrides, as central does.
+        if (payload.themeOverrides !== undefined) {
+          client.themeOverrides = Object.keys(payload.themeOverrides).length > 0 ? payload.themeOverrides : null;
         }
 
         await route.fulfill({ status: 204, body: '' });
@@ -1073,6 +1181,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
+    if (pathname === '/configuration/forms/previews' && method === 'GET') {
+      if (state.formPreviews === null) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      await route.fulfill(json({ previews: state.formPreviews }));
+      return;
+    }
+
     if (pathname === '/configuration/forms/locales') {
       if (method === 'GET') {
         await route.fulfill(json({ locales: state.formLocales }));
@@ -1127,6 +1244,41 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
+    if (pathname === '/configuration/themes/presets' && method === 'GET') {
+      if (state.themePresets === null) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      await route.fulfill(json({ presets: state.themePresets }));
+      return;
+    }
+
+    // What central renders: for a token theme the base stylesheet, a line naming the tokens, then the theme's own CSS; for a
+    // stylesheet theme (no tokens) its CSS alone; then, when the request carries a client's overrides, a line naming them.
+    if (pathname === '/configuration/themes/css' && method === 'POST') {
+      const payload = body as { tokens?: ThemeTokensDto; css?: string; overrides?: ThemeOverridesDto };
+      if (state.themeRenderError !== null) {
+        await route.fulfill(json({ message: state.themeRenderError }, 500));
+        return;
+      }
+      const overridden = payload.overrides && Object.keys(payload.overrides).length > 0
+        ? `/* client overrides ${JSON.stringify(payload.overrides)} */`
+        : '';
+      if (!payload.tokens) {
+        await route.fulfill(json({ css: [payload.css ?? '', overridden].filter(Boolean).join('\n'), generated: '' }));
+        return;
+      }
+      const base = (state.themePresets ?? []).find(preset => preset.id === payload.tokens!.base);
+      if (!base) {
+        await route.fulfill(json({ message: `'${payload.tokens.base}' is not a built-in theme` }, 400));
+        return;
+      }
+      const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
+      const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode};--background:${resolved.background}}`;
+      await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? '', overridden].filter(Boolean).join('\n'), generated }));
+      return;
+    }
+
     if (pathname === '/configuration/themes') {
       if (method === 'GET') {
         const visible = state.themes.filter(theme => !theme.tenantId || theme.tenantId === tenantId);
@@ -1142,13 +1294,13 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId });
+        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId, ...(payload.tokens ? { tokens: payload.tokens } : {}) });
         await route.fulfill({ status: 201, body: '' });
         return;
       }
 
       if (method === 'PUT') {
-        const payload = body as { id: string; css: string };
+        const payload = body as { id: string; css: string; tokens?: ThemeTokensDto };
         const theme = state.themes.find(candidate => candidate.id === payload.id);
         if (!theme) {
           await route.fulfill(json({ message: `Theme ${payload.id} was not found` }, 404));
@@ -1156,6 +1308,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         theme.css = payload.css;
+        theme.tokens = payload.tokens ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -1265,11 +1418,18 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as ChallengeSettingsDto;
+        // Central requires both members on PUT, so a console that forgets them fails here.
+        if (!payload.emailRegistration || !Array.isArray(payload.defaultRoles) || payload.defaultRoles.length === 0) {
+          await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'emailRegistration and defaultRoles are required' }) });
+          return;
+        }
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
           securityProfile: profileOf(state, payload.tenantId),
-          allowedPrefixes: [...payload.allowedPrefixes],
+          phoneRegions: payload.phoneRegions.map(r => ({ ...r })),
           passwordRegex: payload.passwordRegex ?? null,
+          emailRegistration: { ...payload.emailRegistration, domains: [...payload.emailRegistration.domains] },
+          defaultRoles: [...payload.defaultRoles],
           submissionLimits: payload.submissionLimits,
           otpLength: payload.otpLength,
           otpResendAfter: payload.otpResendAfter,

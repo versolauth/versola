@@ -1,2 +1,4 @@
-.logout-description { color: var(--text-muted); line-height: 1.6; margin: -8px 0 28px; }
-select { position: fixed; top: 16px; right: 16px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
+.logout-icon { width: 64px; height: 64px; border-radius: 50%; background: var(--field); display: flex; align-items: center; justify-content: center; margin: 0 0 24px; color: var(--ink); }
+.logout-icon svg { width: 30px; height: 30px; }
+.logout-description { color: var(--text-muted); line-height: 1.55; margin: -14px 0 28px; }
+.container > .btn { margin-top: 12px; }

@@ -2,7 +2,7 @@ package versola.loadgen.config
 
 import versola.util.postgres.PostgresConfig
 import versola.util.postgres.given
-import versola.util.{Dpop, Secret}
+import versola.util.{Dpop, Secret, SecretConfig}
 import zio.Config
 import zio.Duration
 import zio.config.magnolia.DeriveConfig
@@ -714,28 +714,14 @@ object SeedConfig:
     * it would not fail anywhere near here.
     */
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
-    .mapOrFail: value =>
-      Secret.Bytes16
-        .fromBase64Url(value)
-        .left.map(message => Config.Error.InvalidData(message = message))
-        .filterOrElse(
-          _.length == 16,
-          Config.Error.InvalidData(message = "seed.passwords-secret must be 16 base64url-encoded bytes"),
-        )
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))
 
   /** Same idiom as [[Secret.Bytes16]]'s, at auth's other secret length: `REFRESH_TOKENS_SECRET`
     * and `SESSIONS_SECRET` are both 32 bytes (`CoreConfig.security`), base64url like every other
     * secret auth reads.
     */
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail: value =>
-      Secret.Bytes32
-        .fromBase64Url(value)
-        .left.map(message => Config.Error.InvalidData(message = message))
-        .filterOrElse(
-          _.length == 32,
-          Config.Error.InvalidData(message = "seed secret must be 32 base64url-encoded bytes"),
-        )
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   given DeriveConfig[SeedConfig] = DeriveConfig
     .derived[SeedConfig]

@@ -42,7 +42,6 @@ object RevocationControllerSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -60,6 +59,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =

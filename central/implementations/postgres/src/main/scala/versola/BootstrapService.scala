@@ -1,11 +1,11 @@
 package versola
 
-import versola.util.SequentialLayers.*
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   ChallengeSettingsService,
+  EmailRegistration,
   MtlsCertificateEncoding,
   OtpChallengeRepository,
   OtpTemplateChannel,
@@ -14,6 +14,7 @@ import versola.central.configuration.challenges.{
   PasskeySettings,
   SubmissionLimits,
 }
+import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.clients.{
   AuthFactor,
   AuthFactorType,
@@ -34,7 +35,6 @@ import versola.central.configuration.clients.{
   PresetId,
   PrimaryAuthFlow,
   PrimaryCredential,
-  RegistrationFlow,
   ResponseType,
 }
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
@@ -62,6 +62,8 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
+import versola.util.SequentialLayers.*
+import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -95,13 +97,19 @@ object BootstrapService:
     * edge-fronted web client. Its tokens are certificate-bound by the method itself
     * (`OAuthClientRecord.bindsAccessTokens`), so no DPoP is asked for.
     *
-    * Without one: the `client_secret` it has always had, seeded outside the profile.
+    * With the seed but no certificate in it: the same, except that central issues the
+    * certificate itself (`issueEdgeClientCertificate`) and renews it, so there is no
+    * certificate here to read the subject from -- the registration is recognised by the
+    * subject central's CA signs it for.
+    *
+    * Without a seed: the `client_secret` it has always had, seeded outside the profile.
     */
   private[versola] case class CentralAdminCredential(
       authMethod: AuthMethod,
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
       requirePushedAuthorizationRequests: Boolean,
+      issueEdgeClientCertificate: Boolean = false,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
 
@@ -111,9 +119,17 @@ object BootstrapService:
     seed match
       case None =>
         Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
-      case Some(mtls) =>
+      case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, _, _)) =>
+        Right(CentralAdminCredential(
+          authMethod = AuthMethod.tls_client_auth,
+          mtlsAuth = None,
+          edgeClientCertificate = None,
+          requirePushedAuthorizationRequests = true,
+          issueEdgeClientCertificate = true,
+        ))
+      case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(Some(pem), _, _)) =>
         for
-          certificate <- PrivateClientCertificate.validate(mtls.certificate)
+          certificate <- PrivateClientCertificate.validate(pem)
             .left.map(reason => s"bootstrap.central-admin-mtls.certificate $reason")
           material <- certificate.material
         yield CentralAdminCredential(
@@ -297,8 +313,12 @@ object BootstrapService:
       Permission("oauth:manage"),
       localized("Manage OAuth clients and scopes", "Управление OAuth клиентами и скоупами"),
       Set(
-        endpointId("POST", "/configuration/clients"),
-        endpointId("PUT", "/configuration/clients"),
+        endpointId("POST", "/configuration/clients/web"),
+        endpointId("PUT", "/configuration/clients/web"),
+        endpointId("POST", "/configuration/clients/native"),
+        endpointId("PUT", "/configuration/clients/native"),
+        endpointId("POST", "/configuration/clients/service"),
+        endpointId("PUT", "/configuration/clients/service"),
         endpointId("DELETE", "/configuration/clients"),
         endpointId("POST", "/configuration/clients/edge-certificate/renew"),
         endpointId("POST", "/configuration/scopes"),
@@ -403,6 +423,10 @@ object BootstrapService:
       localized("View forms", "Просмотр форм"),
       Set(
         endpointId("GET", "/configuration/forms"),
+        endpointId("GET", "/configuration/forms/previews"),
+        endpointId("GET", "/configuration/themes"),
+        endpointId("GET", "/configuration/themes/presets"),
+        endpointId("POST", "/configuration/themes/css"),
       ),
     ),
     (
@@ -411,6 +435,9 @@ object BootstrapService:
       Set(
         endpointId("PUT", "/configuration/forms"),
         endpointId("PUT", "/configuration/forms/active"),
+        endpointId("POST", "/configuration/themes"),
+        endpointId("PUT", "/configuration/themes"),
+        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
@@ -433,7 +460,6 @@ object BootstrapService:
       localized("View tenants", "Просмотр тенантов"),
       Set(
         endpointId("GET", "/configuration/tenants"),
-        endpointId("GET", "/configuration/themes"),
       ),
     ),
     (
@@ -443,9 +469,6 @@ object BootstrapService:
         endpointId("POST", "/configuration/tenants"),
         endpointId("PUT", "/configuration/tenants"),
         endpointId("DELETE", "/configuration/tenants"),
-        endpointId("POST", "/configuration/themes"),
-        endpointId("PUT", "/configuration/themes"),
-        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
@@ -538,6 +561,10 @@ object BootstrapService:
       ),
     )
 
+  /** What the consent screen shows for each seeded scope, by token. */
+  private[versola] def scopeDescriptions: Map[ScopeToken, Map[String, String]] =
+    scopeCatalog.map(scope => scope.token -> scope.description).toMap
+
   /** Standard OpenID Connect scopes and their claims (OpenID Connect Core 1.0, §5.4). */
   private val scopeCatalog: List[ScopeSeed] = List(
     ScopeSeed(
@@ -588,7 +615,7 @@ object BootstrapService:
     ),
     ScopeSeed(
       ScopeToken("offline_access"),
-      localized("Offline access via refresh tokens", "Офлайн-доступ через refresh-токены"),
+      localized("Long-lived access", "Длительный доступ"),
       List.empty,
     ),
   )
@@ -603,6 +630,14 @@ object BootstrapService:
     localized(
       "You are entering Versola. Your verification code is: {{code}}",
       "Вы входите в Versola. Ваш код подтверждения: {{code}}",
+    )
+
+  /** SMS template for partner clients (those with a consent flow); names the app being signed in to. */
+  private val partnerOtpTemplateId = "partner"
+  private val partnerOtpTemplate: Map[String, String] =
+    localized(
+      "Your verification code for {{appName}}: {{code}}",
+      "Ваш код для входа в {{appName}}: {{code}}",
     )
   private val defaultEmailOtpTemplateId = defaultOtpTemplateId
   private val defaultEmailOtpTemplate: Map[String, String] =
@@ -713,7 +748,9 @@ object BootstrapService:
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      allowedPrefixes = List.empty,
+      phoneRegions = List.empty,
+      emailRegistration = EmailRegistration.Closed,
+      defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
       submissionLimits = SubmissionLimits.recommended,
       otpLength = 6,
       otpResendAfter = 60,
@@ -798,8 +835,12 @@ object BootstrapService:
     "PUT" -> "/configuration/authorization-detail-types",
     "DELETE" -> "/configuration/authorization-detail-types",
     "GET" -> "/configuration/clients",
-    "POST" -> "/configuration/clients",
-    "PUT" -> "/configuration/clients",
+    "POST" -> "/configuration/clients/web",
+    "PUT" -> "/configuration/clients/web",
+    "POST" -> "/configuration/clients/native",
+    "PUT" -> "/configuration/clients/native",
+    "POST" -> "/configuration/clients/service",
+    "PUT" -> "/configuration/clients/service",
     "DELETE" -> "/configuration/clients",
     "POST" -> "/configuration/clients/rotate-secret",
     "DELETE" -> "/configuration/clients/previous-secret",
@@ -810,6 +851,7 @@ object BootstrapService:
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
     "GET" -> "/configuration/forms",
+    "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
     "PUT" -> "/configuration/forms/active",
     "GET" -> "/configuration/jwks",
@@ -846,6 +888,8 @@ object BootstrapService:
     "PUT" -> "/configuration/tenants",
     "DELETE" -> "/configuration/tenants",
     "GET" -> "/configuration/themes",
+    "GET" -> "/configuration/themes/presets",
+    "POST" -> "/configuration/themes/css",
     "POST" -> "/configuration/themes",
     "PUT" -> "/configuration/themes",
     "DELETE" -> "/configuration/themes",
@@ -875,6 +919,24 @@ object BootstrapService:
     * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
     * secret this client replaces could read every one of them.
     */
+  /** `default` is a visual theme: the built-in `versola` base, no overrides, no CSS of its own. The foundation stylesheet
+    * every token theme is composed on is not stored in it (it is a resource of `util`, see `ThemeCss.baseStylesheet`).
+    * A stylesheet `default` row is what earlier versions seeded from `common.css` at every start, so it is converted
+    * and nothing is lost; a token row is the administrator's and is left alone.
+    */
+  private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None))
+    for
+      _ <- ZIO.logInfo("Seeding default theme...")
+      themes <- themeRepo.getAll
+      _ <- themes.find(_.id == defaultThemeId) match
+        case None => themeRepo.create(ThemeRecord(defaultThemeId, "", None, tokens))
+        case Some(theme) if theme.tokens.isEmpty =>
+          ZIO.logInfo("Converting the default theme from a stylesheet to a visual theme (base versola)") *>
+            themeRepo.update(ThemeRecord(defaultThemeId, "", theme.tenantId, tokens))
+        case Some(_) => ZIO.unit
+    yield ()
+
   private[versola] val utilityClientPermissions: Set[Permission] = Set(
     Permission("oauth:read"),
     Permission("oauth:manage"),
@@ -898,13 +960,18 @@ object BootstrapService:
         finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ClientCertificateService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
+    ZLayer.fromFunction(ClientServices(_, _)) >+>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >++>
       ZLayer(refreshCachesAfterBootstrap)
+
+  /** The two services that register a client, as one dependency: `ZLayer.fromFunction` takes at
+    * most 22, which [[Impl]] would otherwise exceed. */
+  private final case class ClientServices(clients: OAuthClientService, certificates: ClientCertificateService)
 
   /** Reloads the two caches built before bootstrap -- it registers central-admin through
     * OAuthClientService, which reads challenge settings -- so they loaded before the seed, and
@@ -927,7 +994,7 @@ object BootstrapService:
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
       clientRepo: OAuthClientRepository,
-      clientService: OAuthClientService,
+      clientServices: ClientServices,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
@@ -939,6 +1006,9 @@ object BootstrapService:
       secureRandom: SecureRandom,
       envName: EnvName,
   ) extends BootstrapService:
+
+    private def clientService: OAuthClientService = clientServices.clients
+    private def certificateService: ClientCertificateService = clientServices.certificates
 
     def bootstrap: Task[Unit] =
       ZIO.foreach(config.bootstrap) { config =>
@@ -991,12 +1061,12 @@ object BootstrapService:
       * revokes) later survive a restart.
       */
     private def seedRegistrationRole(tenantId: TenantId): Task[Unit] =
-      roleRepo.findRole(tenantId, RegistrationFlow.defaultRoleId).flatMap:
+      roleRepo.findRole(tenantId, ChallengeSettingsRecord.DefaultRoleId).flatMap:
         case Some(_) => ZIO.unit
         case None =>
           roleRepo.upsertRole(
             tenantId,
-            RegistrationFlow.defaultRoleId,
+            ChallengeSettingsRecord.DefaultRoleId,
             localized("User", "Пользователь"),
             List(accountPermission),
           )
@@ -1005,6 +1075,7 @@ object BootstrapService:
       ZIO.foreachDiscard(
         List(
           (defaultOtpTemplateId, defaultOtpTemplate, OtpTemplateChannel.sms),
+          (partnerOtpTemplateId, partnerOtpTemplate, OtpTemplateChannel.sms),
           (defaultEmailOtpTemplateId, defaultEmailOtpTemplate, OtpTemplateChannel.email),
         ),
       ): (id, localizations, channel) =>
@@ -1048,17 +1119,7 @@ object BootstrapService:
       systemSettingsRepo.getAll.unit.catchAll: _ =>
         systemSettingsRepo.upsert(SystemSettingsRecord.default)
 
-    private def seedTheme(): Task[Unit] =
-      for
-        _ <- ZIO.logInfo("Seeding default theme from resources...")
-        themes <- themeRepo.getAll
-        current = themes.find(_.id == defaultThemeId)
-        css <- readResource("forms/common.css")
-        _ <- current match
-          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
-          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
-          case Some(_) => ZIO.unit
-      yield ()
+    private def seedTheme(): Task[Unit] = seedDefaultTheme(themeRepo)
 
     private def seedLocales(): Task[Unit] =
       for
@@ -1159,7 +1220,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = Some(authFlow),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
@@ -1182,10 +1242,16 @@ object BootstrapService:
         edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
         applicationType = None,
-        issueEdgeClientCertificate = false,
+        issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
-      warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
+      // Issued by central: `register` takes the profile enforcement as it is, which for the one
+      // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
+      val register =
+        if credential.issueEdgeClientCertificate then certificateService.register(request)
+        else clientService.registerClient(request, enforceSecurityProfile = credential.conformant)
+      warnNonConformant *> register.foldZIO(
         {
           case _: ClientAlreadyExists =>
             refuseAuthMethodMismatch(
@@ -1203,7 +1269,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = Some(Patch.Modified(authFlow)),
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
@@ -1220,14 +1285,21 @@ object BootstrapService:
                 // was replaced has edge present the new one. The method itself is not -- it is
                 // fixed at creation, and `refuseAuthMethodMismatch` has already refused a boot
                 // that calls for another.
-                mtlsAuth = Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
+                // A certificate central issues is not reasserted: its renewal replaces it, and
+                // what the client is recognised by is the subject that issuance chose.
+                mtlsAuth =
+                  if credential.issueEdgeClientCertificate then None
+                  else Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
                 certificateBoundAccessTokens = None,
                 jwks = None,
                 requireSignedRequestObject = None,
                 requirePushedAuthorizationRequests = Some(credential.requirePushedAuthorizationRequests),
                 edgeSigningKey = None,
-                edgeClientCertificate = Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
+                edgeClientCertificate =
+                  if credential.issueEdgeClientCertificate then None
+                  else Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1264,7 +1336,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -1289,6 +1360,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = false,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1319,7 +1391,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = None,
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
@@ -1340,6 +1411,7 @@ object BootstrapService:
                 edgeSigningKey = None,
                 edgeClientCertificate = None,
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)

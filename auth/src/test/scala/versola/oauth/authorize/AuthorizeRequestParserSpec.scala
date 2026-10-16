@@ -49,7 +49,6 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     theme = "default",
     authFlow =
       Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -67,6 +66,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   /** A tenant ACR vocabulary defining each of `acrs` as satisfied by a password. */
@@ -899,7 +899,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
@@ -908,7 +908,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+787011234567")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+770"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)))
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+77011234567"))))
       },
@@ -939,7 +939,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+7"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)))
           result <- env.parser.parse(request).either
         yield assertTrue(result.map(_.loginHint) == Right(None))
       },
@@ -948,7 +948,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
@@ -965,7 +965,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+1202")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           result <- env.parser.parse(request).either
         yield assertTrue(result.map(_.loginHint) == Right(None))
       },

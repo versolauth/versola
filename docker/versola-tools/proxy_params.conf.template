@@ -10,3 +10,9 @@ proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header Connection "";
+# RFC 8705 §6.5: a tenant names a header its TLS terminator passes a client certificate to auth
+# in (central-admin's `tls_client_auth` registers one), and auth believes whatever that header
+# carries on the main listener. This proxy terminates no client TLS, so anything in it came
+# from the caller: cleared here, so a certificate can only be asserted where it was verified
+# (auth's own mutual-TLS listener, which does not go through this proxy).
+proxy_set_header ssl-client-cert "";

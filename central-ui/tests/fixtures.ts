@@ -37,3 +37,16 @@ export async function findRequest(requests: RequestLog[], method: string, pathna
   await expect.poll(() => find() !== undefined, { message: `Expected request ${method} ${pathname}` }).toBe(true);
   return find()!;
 }
+
+/** A client registration or update: one endpoint per kind of client, so the path says which. */
+export const CLIENT_WRITE_PATH = /^\/configuration\/clients\/(web|native|service)$/;
+
+export async function findClientWrite(requests: RequestLog[], method: 'POST' | 'PUT'): Promise<RequestLog> {
+  const find = () => [...requests].reverse().find(request => request.method === method && CLIENT_WRITE_PATH.test(request.pathname));
+  await expect.poll(() => find() !== undefined, { message: `Expected a client ${method} to one of the kind endpoints` }).toBe(true);
+  return find()!;
+}
+
+export function clientWrites(requests: RequestLog[], method: 'POST' | 'PUT'): RequestLog[] {
+  return requests.filter(request => request.method === method && CLIENT_WRITE_PATH.test(request.pathname));
+}

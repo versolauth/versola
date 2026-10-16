@@ -22,7 +22,7 @@ config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
 ```bash
 sbt compile                              # all services
 sbt Test/compile                         # also compiles e2e
-sbt test                                 # needs Postgres: docker-compose -f services.yml up -d postgres
+sbt test                                 # needs Postgres (serves TLS): docker-compose -f services.yml up -d --build postgres
 sbt "auth/testOnly versola.oauth.revoke.RevocationServiceSpec"   # one spec
 sbt e2e/test                             # needs the staged stack, see develop.md
 cd central-ui && npm run type-check && npm run test:unit   # admin UI; npm run test:ui = Playwright
@@ -30,7 +30,6 @@ cd central-ui && npm run build:forms     # required before central is built or s
 ```
 
 Scala formatting follows `.scalafmt.conf` (Scala 3, maxColumn 150); keep touched files formatted.
-`PostgresTlsConnectionSpec` needs a TLS Postgres: `util/implementations/postgres/tls-fixture/start.sh`.
 Running a service locally needs `RUN_MIGRATIONS=true` against a fresh database; the exact
 commands are in `develop.md`. Do not paste them from memory.
 
@@ -42,7 +41,12 @@ reporting the change as finished.
 1. `sbt compile` and `sbt test` pass. `sbt test` is run before every commit.
 2. Tests exist at the right level (see Test Coverage Rules below).
 3. Specs, docs and config that describe the changed behaviour are updated in the same change
-   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change).
+   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change). The
+   product documentation lives in `versolauth/versola-website`: a change to an admin console
+   screen needs retaken screenshots, a change to behaviour a standard defines needs its `rfc/`
+   page updated or created. The `versola-website` pull request is opened together with the code
+   change, never deferred to a follow-up issue. The PR has a **Docs** line (a link to it, or
+   `none: <reason>`); see `.claude/rules/documentation.md`.
 4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
    say so.
 

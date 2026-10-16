@@ -1,6 +1,10 @@
 {
   "en": {
     "page_title": "Set up a Passkey",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Set up a Passkey",
     "description": "Sign in faster next time with your face, fingerprint, or device PIN.",
     "enroll_button": "Create a Passkey",
@@ -12,6 +16,10 @@
   },
   "ru": {
     "page_title": "Настройка ключа доступа",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Настройка ключа доступа",
     "description": "Входите быстрее в следующий раз — по лицу, отпечатку или PIN-коду устройства.",
     "name_placeholder": "Мой ПК (Chrome)",

@@ -1,38 +1,12 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
+import { PhoneField, type PhoneFieldApi } from './phone-field';
+import type { PhoneRegion } from './phone';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { PageBrand, ClientBadge } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import { PasswordInput } from '../shared/password-input';
+import type { BaseFormConfig } from '../shared/config';
 
 type PrimaryCredential = 'email' | 'phone' | 'login';
 type CredentialStep = {
@@ -40,20 +14,13 @@ type CredentialStep = {
   primaryCredentials: PrimaryCredential[];
   inlinePassword: boolean;
   passkey: boolean;
-  allowedPhonePrefixes?: string[];
+  phoneRegions?: PhoneRegion[];
   passwordRegex?: string;
 };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: CredentialStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -63,26 +30,15 @@ declare global {
 }
 
 function CredentialForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
   const primaries = step.primaryCredentials ?? [];
   const isLoginFlow = primaries.includes('login');
   const single = primaries.length === 1 ? primaries[0] : null;
   const challengeKind = single ?? 'credential';
   const combinedPlaceholder = () => primaries.map((p) => t()[`${p}_placeholder`] ?? p).join(' / ');
-  const allowedPhonePrefixes = step.allowedPhonePrefixes ?? [];
+  const phoneRegions = step.phoneRegions ?? [];
+  let phoneField: PhoneFieldApi | undefined;
 
   // login always carries a password; email/phone show it only when inlinePassword is set
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
@@ -90,10 +46,8 @@ function CredentialForm(props: { config: FormConfig }) {
   const formAction = () =>
     `${showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`}?ui_locale=${currentLocale()}`;
 
-  const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
-  const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
@@ -146,12 +100,9 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
-    if (single === 'phone' && allowedPhonePrefixes.length > 0) {
-      const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
-      if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
-        e.preventDefault();
-        setPhoneNotAllowed(true);
-      }
+    if (single === 'phone' && phoneField && !phoneField.validate()) {
+      e.preventDefault();
+      return;
     }
     if (showPassword() && passwordRegex) {
       const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
@@ -165,75 +116,75 @@ function CredentialForm(props: { config: FormConfig }) {
   };
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
-      <Show when={!props.config.logo || !logoLoadFailed()}>
-        <div class="brand-mark" aria-hidden="true">
-          <Show
-            when={props.config.logo}
-            fallback={
-              <svg viewBox="0 0 64 64" fill="none">
-                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="var(--accent)" fill-opacity="0.06"/>
-                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="none" stroke="var(--accent)" stroke-width="2.2"/>
-                <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
-                      font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
-              </svg>
-            }
-          >
-            <img src={props.config.logo} alt="" onError={() => setLogoLoadFailed(true)} />
-          </Show>
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
 
       <form method="post" onSubmit={handleSubmit}>
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <Show when={single === 'email'}>
-          <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
+          <div class="field">
+            <label class="field-label" for="credential-email">{t().email_placeholder}</label>
+            <input id="credential-email" type="email" name="email" class="input-field" placeholder=" " autocomplete="email" required />
+          </div>
         </Show>
         <Show when={single === 'phone'}>
-          <input
-            type="tel"
-            name="phone"
-            class="input-field"
-            placeholder={t().phone_placeholder}
-            pattern="^\+[1-9]\d{6,14}$"
-            required
-            onInput={() => phoneNotAllowed() && setPhoneNotAllowed(false)}
-          />
-          <Show when={phoneNotAllowed()}>
-            <div class="phone-error-message error-text">{t().phone_not_allowed}</div>
-          </Show>
+          <div class="field">
+            <label class="field-label" for="credential-phone">{t().phone_placeholder}</label>
+            <Show
+              when={phoneRegions.length > 0}
+              fallback={
+                <>
+                  <input
+                    id="credential-phone"
+                    type="tel"
+                    name="phone"
+                    class="input-field"
+                    placeholder=" "
+                    autocomplete="tel"
+                    pattern="^\+[1-9]\d{6,14}$"
+                    required
+                    aria-describedby="credential-phone-hint"
+                  />
+                  <div id="credential-phone-hint" class="field-hint">{t().phone_hint}</div>
+                </>
+              }
+            >
+              <PhoneField id="credential-phone" regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
+            </Show>
+          </div>
         </Show>
         <Show when={single === 'login'}>
-          <input type="text" name="login" class="input-field" placeholder={t().login_placeholder} required />
+          <div class="field">
+            <label class="field-label" for="credential-login">{t().login_placeholder}</label>
+            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+          </div>
         </Show>
         <Show when={single === null && primaries.length > 0}>
-          <input type="text" name="login" class="input-field" placeholder={combinedPlaceholder()} required />
+          <div class="field">
+            <label class="field-label" for="credential-login">{combinedPlaceholder()}</label>
+            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+          </div>
         </Show>
 
         <Show when={showPassword()}>
-          <input
-            type="password"
+          <PasswordInput
+            id="credential-password"
             name="password"
-            class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
-            placeholder={t().password_placeholder}
-            required
-            onInput={(e) => checkPassword((e.currentTarget as HTMLInputElement).value)}
+            label={t().password_placeholder}
+            autocomplete="current-password"
+            error={passwordNotAllowed() ? t().password_not_allowed : undefined}
+            showLabel={t().show_password}
+            hideLabel={t().hide_password}
+            onInput={(value) => checkPassword(value)}
           />
-          <Show when={passwordNotAllowed()}>
-            <div class="phone-error-message error-text">{t().password_not_allowed}</div>
-          </Show>
         </Show>
 
         <button type="submit" formAction={formAction()} class="btn btn-primary">
@@ -268,6 +219,7 @@ function CredentialForm(props: { config: FormConfig }) {
         </div>
       </Show>
     </div>
+    </>
   );
 }
 

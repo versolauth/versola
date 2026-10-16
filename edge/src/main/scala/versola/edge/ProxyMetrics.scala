@@ -23,6 +23,16 @@ object ProxyMetrics:
 
   private val overhead = Metric.histogram("edge_proxy_overhead_seconds", boundaries)
 
+  /** Whether the request waited on auth before it was handed to the resource, which is the largest and the least
+    * edge-owned part of the overhead: a refresh when the access token had expired, the `/userinfo` call an
+    * endpoint asks for, or nothing. The overhead budget applies to `None` (what edge itself adds); the other two
+    * carry auth's latency and are read as that.
+    */
+  enum AuthCall(val label: String):
+    case None extends AuthCall("none")
+    case UserInfo extends AuthCall("userinfo")
+    case Refresh extends AuthCall("refresh")
+
   /** Time from the start of a proxied request to the moment it is handed to the resource: token
     * verification, revocation and DPoP checks, permission and rule evaluation, the token lookup at
     * auth, building the upstream request. The wait for the resource's response is not included.
@@ -31,5 +41,5 @@ object ProxyMetrics:
     * pull the figure down with a near-zero sample. The label is the resource id, which is
     * configuration: it is looked up before this is called, never taken from the caller's path.
     */
-  def beforeUpstream(resourceId: ResourceId, nanos: Long): UIO[Unit] =
-    overhead.tagged(MetricLabel("resource", resourceId.toString)).update(nanos / 1e9)
+  def beforeUpstream(resourceId: ResourceId, authCall: AuthCall, nanos: Long): UIO[Unit] =
+    overhead.tagged(Set(MetricLabel("resource", resourceId.toString), MetricLabel("auth_call", authCall.label))).update(nanos / 1e9)

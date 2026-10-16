@@ -4,7 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexConflict, UserIndexRecord, UserRepository}
+import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexConflict, UserIndexRecord, UserNotFound, UserRepository}
 import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Patch, Phone, SecureRandom}
@@ -134,12 +134,13 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-  ): Task[Unit] =
-    for
+  ): IO[UserNotFound | UserConflict | Throwable, Unit] =
+    (for
       version <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("patch-user"):
         // Lock the user row to prevent lost updates and serialize events
-        sql"SELECT id FROM user_index WHERE id = $id FOR UPDATE".query[UserId].run()
+        val locked = sql"SELECT id FROM user_index WHERE id = $id FOR UPDATE".query[UserId].run()
+        if locked.isEmpty then throw PostgresUserRepository.NotFound
 
         // Apply patch to local index
         patchSql(id, email, phone, login)
@@ -159,7 +160,10 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
             login = user.login,
           ),
         )
-    yield ()
+    yield ()).mapError:
+      case PostgresUserRepository.NotFound => UserNotFound
+      case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
+      case e => e
 
   override def delete(id: UserId): Task[Unit] =
     for
@@ -237,6 +241,9 @@ object PostgresUserRepository:
   private def isUniqueViolation(t: Throwable): Boolean = t match
     case sql: SQLException => sql.getSQLState == UniqueViolationSqlState
     case _ => Option(t.getCause).exists(isUniqueViolation)
+
+  /** Raised inside the patch transaction (rolling it back) when the user row does not exist. */
+  private case object NotFound extends RuntimeException("User not found in index")
 
   /** Raised when the ON CONFLICT branch of [[PostgresUserRepository.attemptIndexFromAuth]] finds
     * no owner row, meaning a concurrent delete raced the insert. Retried since the claim is safe
