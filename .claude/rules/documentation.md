@@ -49,8 +49,11 @@ The console is documented with screenshots; a stale one is a bug.
   Each screenshot is a pair: dark `name.png` and light `name-light.png`, 1440x900. Keep the file
   names; pages and both language twins reference them. A new screen adds a new pair and a
   `Screenshot` entry in the EN page and its RU twin.
-- Take them from a locally staged stack with realistic data (`develop.md`), never from a shared or
-  production environment. Use `example.com`-style data; no real hostnames, emails or secrets.
+- Generate them with `npm run docs:screenshots` in `central-ui` (the manifest
+  `tests/docs-screenshots.manifest.ts`, see `central-ui/design-system/README.md` "Docs screenshots")
+  and copy them with `npm run docs:screenshots:sync -- <website-checkout>`; never take them by hand
+  or from a shared or production environment. Use `example.com`-style data; no real hostnames,
+  emails or secrets.
 - If a screen is removed, delete its files and references (the site build checks links, not images,
   so grep for the file name).
 - Alt text and captions describe what the screenshot proves; update them with the picture.

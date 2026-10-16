@@ -271,6 +271,30 @@ Dialogs trap focus, close on Escape and return focus. Motion respects `prefers-r
    alignment, layering); fix before showing.
 3. `npm run type-check`, `npm run test:unit`, `npm run design:contrast`, `npx playwright test`
    (one run at a time; it owns port 4173).
-4. A screen the public docs show needs its screenshots retaken (`tests/docs-screenshots.spec.ts`,
-   `tests/docs-screenshots-branding.spec.ts`) and a `versola-website` PR
-   (`.claude/rules/documentation.md`).
+4. A screen the public docs show needs its screenshots retaken with the generator below and a
+   `versola-website` PR (`.claude/rules/documentation.md`).
+
+## Docs screenshots
+
+The images in the public documentation (`versola-website`, `public/img/docs/`) are generated, never
+taken by hand, so a changed screen cannot leave a stale picture behind.
+
+- `tests/docs-screenshots.manifest.ts` is the contract: one entry per image a docs page references,
+  with the console path, the mock state (`tests/mocks.ts`, `example.com` data), the actions that
+  reach the state, and the kind: `frame` (the 1440×900 viewport; `fullPage` grows it to the document
+  while a screen is still taller than one frame), `crop` (one card, located by its anchor id or
+  region name, with 16px padding) or `login` (a login form through `tests/form-harness.ts`). Every
+  entry yields a pair, dark `name.png` and light `name-light.png`, under
+  `test-results/docs-screenshots/{console,entities,login}/`.
+- `npm run docs:screenshots` runs `tests/docs-screenshots.spec.ts` (the `docs` Playwright project,
+  whose artifacts live apart so a partial re-run keeps the pairs it does not retake), which iterates
+  the manifest in both themes. It is not an assertion suite; a failing scene means the recipe no
+  longer matches the screen, so fix the entry, not the test. Playwright empties `test-results/` when
+  the `console` project runs, so generate and sync in one sitting.
+- `npm run docs:screenshots:sync -- <website-checkout>` copies the output into
+  `public/img/docs/` and fails listing (a) images a page references that the manifest lacks, (b)
+  manifest entries no page references and (c) files in the website folder nobody references; (c) is
+  reported only, `--prune` deletes them, `--dry-run` reports without copying.
+- A new or renamed screen: add or rename the manifest entry and the `Screenshot` in the EN page
+  and its RU twin in the same docs PR; the sync check turns red until both agree. A card that is
+  documented on its own gets a `crop` entry named `<screen>-<card>`.
