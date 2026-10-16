@@ -1,7 +1,7 @@
 package versola.util
 
 import zio.*
-import zio.http.{Request, Response, URL}
+import zio.http.{Request, Response, Status, URL}
 import zio.metrics.Metric
 import zio.test.*
 
@@ -38,8 +38,8 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     yield exit
 
   /** A source whose requests go through `snapshot`, the way a sync client's go through its
-    * central transport. Answers with `body` while `up`, fails like an unreachable central
-    * otherwise.
+    * central transport. Answers with `body` and `status` while `up`, fails with `error` -- an
+    * unreachable central, unless a test says otherwise -- when not.
     */
   private def syncSource(
       snapshot: ConfigSnapshot,
@@ -47,6 +47,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
       body: Ref[String],
       calls: Ref[Int],
       error: Ref[Throwable],
+      status: Ref[Status],
   ): CacheSource[String] =
     new CacheSource[String]:
       private val request = Request.get(URL.decode("https://central.example/configuration/clients/sync").toOption.get)
@@ -54,9 +55,11 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
         ZIO.scoped:
           snapshot.through(request):
             calls.update(_ + 1) *> up.get.flatMap:
-              case true => body.get.map(Response.text(_))
+              case true => (body.get <*> status.get).map((b, s) => Response.text(b).copy(status = s))
               case false => error.get.flatMap(ZIO.fail(_))
-          .flatMap(_.body.asString)
+          .flatMap(response =>
+            if response.status.isSuccess then response.body.asString else ZIO.fail(RuntimeException(s"answered ${response.status.code}")),
+          )
 
   private class InMemoryRepository(records: Ref[Map[String, ConfigSnapshot.Record]]) extends ConfigSnapshot.Repository:
     override def find(key: String): Task[Option[ConfigSnapshot.Record]] = records.get.map(_.get(key))
@@ -69,8 +72,9 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
       body: Ref[String],
       calls: Ref[Int],
       error: Ref[Throwable],
+      status: Ref[Status],
   ):
-    val source: CacheSource[String] = syncSource(snapshot, up, body, calls, error)
+    val source: CacheSource[String] = syncSource(snapshot, up, body, calls, error, status)
 
     /** One live sync, then waits for its record: the snapshot is written off the sync's path, on
       * a fiber the test would otherwise race.
@@ -86,8 +90,9 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
       up <- Ref.make(true)
       body <- Ref.make("saved")
       calls <- Ref.make(0)
-      error <- Ref.make[Throwable](RuntimeException("malformed response"))
-    yield Fixture(snapshot, records, up, body, calls, error)
+      error <- Ref.make[Throwable](ConnectException("refused"))
+      status <- Ref.make[Status](Status.Ok)
+    yield Fixture(snapshot, records, up, body, calls, error, status)
 
   /** Starts a cache in `scope`, stepping the test clock until the start finishes. */
   private def start(source: CacheSource[String], fromSnapshot: Boolean, scope: Scope): UIO[Exit[Throwable, ReloadingCache[String]]] =
@@ -117,12 +122,12 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
       for
         f <- fixture
         _ <- f.seed
-        _ <- f.error.set(ConnectException("refused")) *> f.up.set(false)
+        _ <- f.up.set(false)
         scope <- Scope.make
         first <- start(f.source, fromSnapshot = true, scope)
         secondCalls <- Ref.make(0)
         before <- Clock.instant
-        second <- start(syncSource(f.snapshot, f.up, f.body, secondCalls, f.error), fromSnapshot = true, scope)
+        second <- start(syncSource(f.snapshot, f.up, f.body, secondCalls, f.error, f.status), fromSnapshot = true, scope)
         after <- Clock.instant
         value <- ZIO.fromEither(second.toEither).flatMap(_.get)
         _ <- scope.close(Exit.unit)
@@ -146,6 +151,39 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
       for
         f <- fixture
         _ <- f.up.set(false)
+        scope <- Scope.make
+        exit <- start(f.source, fromSnapshot = true, scope)
+        _ <- scope.close(Exit.unit)
+      yield assertTrue(exit.causeOption.flatMap(_.failureOption).map(_.getMessage).contains("refused"))
+    },
+    test("is used when the source answers 5xx") {
+      for
+        f <- fixture
+        _ <- f.seed
+        _ <- f.status.set(Status.InternalServerError) *> f.calls.set(0)
+        scope <- Scope.make
+        exit <- start(f.source, fromSnapshot = true, scope)
+        value <- ZIO.fromEither(exit.toEither).flatMap(_.get)
+        attempts <- f.calls.get
+        _ <- scope.close(Exit.unit)
+      yield assertTrue(value == "saved", attempts >= 7)
+    },
+    test("is not used when the source answers and rejects the request: that is a configuration error") {
+      for
+        f <- fixture
+        _ <- f.seed
+        _ <- f.status.set(Status.Unauthorized) *> f.calls.set(0)
+        scope <- Scope.make
+        exit <- start(f.source, fromSnapshot = true, scope)
+        attempts <- f.calls.get
+        _ <- scope.close(Exit.unit)
+      yield assertTrue(exit.isFailure, attempts == 7)
+    },
+    test("is not used on a failure that is neither unreachable nor a server error") {
+      for
+        f <- fixture
+        _ <- f.seed
+        _ <- f.error.set(RuntimeException("malformed response")) *> f.up.set(false)
         scope <- Scope.make
         exit <- start(f.source, fromSnapshot = true, scope)
         _ <- scope.close(Exit.unit)

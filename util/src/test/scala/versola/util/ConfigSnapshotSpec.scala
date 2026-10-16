@@ -60,6 +60,39 @@ object ConfigSnapshotSpec extends ZIOSpecDefault:
         keys <- records.get.map(_.keySet)
       yield assertTrue(keys == Set(clientsKey))
     },
+    test("a 5xx response fails as the source having failed, and is not recorded") {
+      for
+        (repo, records, _) <- repository
+        snapshot <- ConfigSnapshot.make(repo, keyMaterial)
+        exit <- ZIO.scoped(snapshot.through(clientsRequest)(ZIO.succeed(Response.status(Status.InternalServerError)))).exit
+        stored <- records.get
+      yield assertTrue(
+        exit == Exit.fail(ConfigSnapshot.SourceFailed(clientsKey, Status.InternalServerError)),
+        stored.isEmpty,
+      )
+    },
+    test("a key prefix goes in front of the record key and is covered by the check") {
+      for
+        (repo, records, _) <- repository
+        prefixed <- ConfigSnapshot.make(repo, keyMaterial, keyPrefix = "edge-1:")
+        _ <- read(prefixed, clientsRequest, fetch("""{"clients":[]}"""))
+        keys <- records.get.map(_.keySet)
+        _ <- records.update(all => all.updated(clientsKey, all("edge-1:" + clientsKey).copy(key = clientsKey)))
+        unprefixed <- ConfigSnapshot.make(repo, keyMaterial)
+        exit <- replay(unprefixed, clientsRequest).exit
+      yield assertTrue(keys == Set("edge-1:" + clientsKey), exit == Exit.fail(ConfigSnapshot.Rejected(clientsKey)))
+    },
+    test("requests that differ in their query are recorded under different keys") {
+      val withQuery = Request.get(URL.decode("https://central.example/configuration/clients/sync?tenant=a").toOption.get)
+      for
+        (repo, records, _) <- repository
+        snapshot <- ConfigSnapshot.make(repo, keyMaterial)
+        _ <- read(snapshot, clientsRequest, fetch("all"))
+        _ <- read(snapshot, withQuery, fetch("tenant a"))
+        keys <- records.get.map(_.keySet)
+        (replayed, _) <- replay(snapshot, withQuery)
+      yield assertTrue(keys == Set(clientsKey, clientsKey + "?tenant=a"), replayed == "tenant a")
+    },
     test("an unsuccessful response is passed through and not recorded") {
       for
         (repo, records, _) <- repository

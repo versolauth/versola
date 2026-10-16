@@ -28,7 +28,10 @@ object ReloadingCache:
     * one failed connection per slot after its first refused attempt and hands out one per
     * retry, so with 128 slots the wait is over long before the pool is clean: the service exits
     * after [[DependencyWait]] and relies on the restart policy (`restart: unless-stopped`, a
-    * pod restart), whose fresh pool then connects. See `ClientRecoverySpec`.
+    * pod restart), whose fresh pool then connects. See `ClientRecoverySpec`. A cache started
+    * from the [[ConfigSnapshot]] does not exit: its background retries use the stored failures
+    * up one per attempt, so with the default 128 slots and a handful of caches the first live
+    * answer comes about a minute after central is back.
     *
     * Two minutes covers a cold Kubernetes install, where every service is scheduled at once and
     * central still has a JVM, a connection pool and a schema validation ahead of it before it
@@ -115,8 +118,11 @@ object ReloadingCache:
     * With `fromSnapshot`, a first load that still fails after its retries is answered from the
     * [[ConfigSnapshot]] the source's requests go through, and the source is tried again in the
     * background until it answers. `config_snapshot_age_seconds` is the age of what is served,
-    * zero once the source has answered. Without a snapshot the failure stands as before; a
-    * snapshot that fails verification fails the load.
+    * zero once the source has answered. Only a source that cannot be reached or answers 5xx is
+    * stood in for (see [[snapshotCovers]]): one that answers and rejects the request -- a wrong
+    * URL, a wrong sync key -- is a configuration error that the snapshot would only hide, so it
+    * fails the load as before. Without a snapshot the failure stands as before; a snapshot that
+    * fails verification fails the load.
     */
   def make[A: Tag](
       interval: Duration = 5.minutes,
@@ -136,10 +142,10 @@ object ReloadingCache:
         .retry(initialLoadRetry)
         .tapErrorCause(err => ZIO.logErrorCause(s"Couldn't initialize cache ${Tag[A].tag}", err))
         .map(_ -> Option.empty[Instant])
-        .catchAll(error => if fromSnapshot then loadSnapshot(source, error) else ZIO.fail(error))
+        .catchAll(error => if fromSnapshot && snapshotCovers(error) then loadSnapshot(source, error) else ZIO.fail(error))
       (initial, savedAt) = values
       ref <- Ref.make(initial)
-      snapshotAge = Metric.gauge("config_snapshot_age_seconds").tagged("cache", Tag[A].tag.toString)
+      snapshotAge = Metric.gauge("config_snapshot_age_seconds").tagged("cache", cacheName[A])
       refresh = source.getAll
         .foldZIO(
           error => ZIO.logErrorCause(Cause.fail(error)),
@@ -157,6 +163,18 @@ object ReloadingCache:
       _ <- (untilLive *> ZIO.sleep(interval) *> refresh.repeat(Schedule.spaced(interval))).forkScoped
     yield ref
 
+  /** Whether the snapshot stands in for this failure of the first load: the source could not be
+    * reached, has already been found down by another cache, or answered that it cannot serve.
+    */
+  private def snapshotCovers(error: Throwable): Boolean = error match
+    case _: ConfigSnapshot.SourceDown | _: ConfigSnapshot.SourceFailed => true
+    case other => notUpYet(other)
+
+  /** The cache's type without packages, for a metric label: `Map[ClientId,OAuthClient]` rather
+    * than the fully qualified form the logs use.
+    */
+  private def cacheName[A: Tag]: String = Tag[A].tag.toString.replaceAll("[\\w$]+\\.", "")
+
   private def loadSnapshot[A: Tag](source: CacheSource[A], error: Throwable): Task[(A, Option[Instant])] =
     ConfigSnapshot.replay(source.getAll).foldZIO(
       {
@@ -170,7 +188,7 @@ object ReloadingCache:
       {
         case result @ (_, Some(savedAt)) =>
           ZIO.logWarning(
-            s"Serving cache ${Tag[A].tag} from the configuration snapshot saved at $savedAt: its source is unreachable",
+            s"Serving cache ${Tag[A].tag} from the configuration snapshot saved at $savedAt: its source is unavailable",
           ).as(result)
         case result => ZIO.succeed(result)
       },

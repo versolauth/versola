@@ -135,14 +135,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       NativeAuthClient.live >++>
       NativeService.live
 
-  /** Keyed off this edge's private key, see [[ConfigSnapshot]]. */
+  /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
+    * on one database keep their own. See [[ConfigSnapshot]].
+    */
   private val configSnapshot: ZLayer[TransactorZIO & EdgeConfig, Nothing, ConfigSnapshot] =
     (PostgresConfigSnapshotRepository.live("edge_config_snapshots") ++ ZLayer.service[EdgeConfig]) >>>
       ZLayer.fromZIO:
         for
           repository <- ZIO.service[ConfigSnapshot.Repository]
           config <- ZIO.service[EdgeConfig]
-          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded)
+          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded, keyPrefix = s"${config.id}:")
         yield snapshot
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))

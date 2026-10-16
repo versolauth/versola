@@ -99,12 +99,15 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
       launch(config.edgeLauncher, config.edgeEnvConf, ColdEdgePorts)
 
   /** Replaces the recorded clients sync body of `table` with a forged one for the scope, and
-    * puts the original back afterwards. The save time is moved far ahead as well, which the
-    * HMAC also covers: the running service only overwrites a record with a newer one, so this
-    * keeps it from replacing the forgery with a valid record while the test runs.
+    * puts the original back afterwards. The save time is moved ahead as well, which the HMAC
+    * also covers: the running service only overwrites a record with a newer one, so this keeps
+    * it from replacing the forgery with a valid record while the test runs. Fifteen minutes,
+    * not forever: a run killed before the restore then heals on the stack's next confirming
+    * write instead of poisoning every later run. Edge's key carries the edge id in front, so
+    * the record is matched by the path it ends with.
     */
   private def forgeClients(table: String): ZIO[Scope, Throwable, Unit] =
-    val key = "/configuration/clients/sync"
+    val keyPattern = "%/configuration/clients/sync"
     def connect[A](f: java.sql.Connection => A): Task[A] =
       for
         url <- System.env("E2E_DB_URL").map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
@@ -117,19 +120,19 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
       yield result
     ZIO.acquireRelease(
       connect: connection =>
-        val select = connection.prepareStatement(s"SELECT body, saved_at FROM $table WHERE key = ?").nn
-        select.setString(1, key)
+        val select = connection.prepareStatement(s"SELECT key, body, saved_at FROM $table WHERE key LIKE ?").nn
+        select.setString(1, keyPattern)
         val rows = select.executeQuery().nn
-        if !rows.next() then throw RuntimeException(s"no $key record in $table to forge")
-        val original = (rows.getBytes(1).nn, rows.getTimestamp(2).nn)
+        if !rows.next() then throw RuntimeException(s"no $keyPattern record in $table to forge")
+        val original = (rows.getString(1).nn, rows.getBytes(2).nn, rows.getTimestamp(3).nn)
         val update = connection.prepareStatement(
-          s"UPDATE $table SET body = ?, saved_at = '9999-01-01T00:00:00Z' WHERE key = ?",
+          s"UPDATE $table SET body = ?, saved_at = now() + interval '15 minutes' WHERE key = ?",
         ).nn
         update.setBytes(1, """{"clients":[]}""".getBytes)
-        update.setString(2, key)
+        update.setString(2, original._1)
         update.executeUpdate()
         original,
-    )((body, savedAt) =>
+    )((key, body, savedAt) =>
       connect { connection =>
         val restore = connection.prepareStatement(s"UPDATE $table SET body = ?, saved_at = ? WHERE key = ?").nn
         restore.setBytes(1, body)

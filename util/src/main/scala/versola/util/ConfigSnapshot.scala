@@ -1,7 +1,7 @@
 package versola.util
 
 import zio.*
-import zio.http.{Body, Request, Response}
+import zio.http.{Body, Request, Response, Status}
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -25,10 +25,14 @@ import javax.crypto.spec.SecretKeySpec
   */
 trait ConfigSnapshot:
 
-  /** Runs `fetch` and records a successful body under the request's path (its segments, so a
-    * central URL with and without a trailing slash records the same key). While a cache is
-    * being started from the snapshot (see [[ReloadingCache.make]]), answers from the record
-    * instead and does not run `fetch` at all.
+  /** Runs `fetch` and records a successful body under the request's path and query (the path
+    * by its segments, so a central URL with and without a trailing slash records the same key).
+    * While a cache is being started from the snapshot (see [[ReloadingCache.make]]), answers
+    * from the record instead and does not run `fetch` at all.
+    *
+    * A 5xx answer fails with [[ConfigSnapshot.SourceFailed]] rather than being passed on: central
+    * is there but cannot serve the configuration, which is a case the snapshot stands in for.
+    * Any other unsuccessful answer is passed on as it is.
     */
   def through(request: Request)(fetch: ZIO[Scope, Throwable, Response]): ZIO[Scope, Throwable, Response]
 
@@ -52,6 +56,10 @@ object ConfigSnapshot:
     */
   final case class SourceDown(key: String, cause: Throwable)
     extends RuntimeException(s"'$key' is unreachable and the configuration snapshot is being served", cause)
+
+  /** The source answered, and the answer says it could not serve the request. */
+  final case class SourceFailed(key: String, status: Status)
+    extends RuntimeException(s"'$key' answered ${status.code}")
 
   /** An unchanged body is written again once this old, so that the age of a record stays a
     * bound on how long ago central last confirmed it, not on when it last changed.
@@ -80,12 +88,20 @@ object ConfigSnapshot:
     override def through(request: Request)(fetch: ZIO[Scope, Throwable, Response]): ZIO[Scope, Throwable, Response] =
       fetch
 
-  def make(repository: Repository, keyMaterial: Array[Byte]): UIO[ConfigSnapshot] =
+  /** `keyPrefix` goes in front of every record key. Services whose records are authenticated
+    * under different keys but share a table -- two edges, each with its own private key, on one
+    * database -- would otherwise overwrite each other's rows and refuse each other's on a cold
+    * start. The prefix is covered by the HMAC like the rest of the key.
+    */
+  def make(repository: Repository, keyMaterial: Array[Byte], keyPrefix: String = ""): UIO[ConfigSnapshot] =
     for
       saved <- Ref.make(Map.empty[String, Saved])
       serving <- Ref.make(false)
-    yield Impl(repository, deriveKey(keyMaterial), saved, serving)
+    yield Impl(repository, deriveKey(keyMaterial), keyPrefix, saved, serving)
 
+  /** One HMAC step with a fixed label, so that the stored MACs are under a key of their own
+    * rather than the raw material the service uses elsewhere.
+    */
   private def deriveKey(keyMaterial: Array[Byte]): SecretKeySpec =
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(SecretKeySpec(keyMaterial, "HmacSHA256"))
@@ -96,12 +112,13 @@ object ConfigSnapshot:
   private class Impl(
       repository: Repository,
       key: SecretKeySpec,
+      keyPrefix: String,
       saved: Ref[Map[String, Saved]],
       serving: Ref[Boolean],
   ) extends ConfigSnapshot:
 
     override def through(request: Request)(fetch: ZIO[Scope, Throwable, Response]): ZIO[Scope, Throwable, Response] =
-      val recordKey = request.url.path.segments.mkString("/", "/", "")
+      val recordKey = this.recordKey(request)
       replaying.get.flatMap:
         case Some(oldest) =>
           load(recordKey).flatMap: record =>
@@ -111,10 +128,16 @@ object ConfigSnapshot:
           fetch
             .catchAll(error => serving.get.flatMap(down => ZIO.fail(if down then SourceDown(recordKey, error) else error)))
             .flatMap: response =>
-              if !response.status.isSuccess then ZIO.succeed(response)
+              if response.status.isServerError then ZIO.fail(SourceFailed(recordKey, response.status))
+              else if !response.status.isSuccess then ZIO.succeed(response)
               else
                 response.body.asArray.flatMap: body =>
                   serving.set(false) *> save(recordKey, body).forkDaemon.as(response.copy(body = Body.fromArray(body)))
+
+    private def recordKey(request: Request): String =
+      val query = request.url.queryParams
+      keyPrefix + request.url.path.segments.mkString("/", "/", "") +
+        (if query.isEmpty then "" else "?" + query.encode.stripPrefix("?"))
 
     private def load(recordKey: String): Task[Record] =
       repository.find(recordKey)

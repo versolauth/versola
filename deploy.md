@@ -528,10 +528,13 @@ short, but run `versola migrate` at low traffic.
 
 **Migrations `auth` V0016 and `edge` V2006: configuration snapshot tables.** `auth_config_snapshots`
 and `edge_config_snapshots` keep the body of each configuration sync response the service last
-received from central, one row per request path (#566). A service that restarts while central is
-unreachable starts from these rows once its first load has given up on central, keeps retrying
-central in the background, logs a warning and reports `config_snapshot_age_seconds`; while central
-answers, the rows are only written, never read. #566 asked for a snapshot signed by central. Instead
+received from central, one row per request path (edge's rows are prefixed with the edge id, so two
+edges on one database keep their own) (#566). A service that restarts while central is unreachable
+or answering 5xx starts from these rows once its first load has given up on central, keeps retrying
+central in the background, logs a warning and reports `config_snapshot_age_seconds` (per cache, on
+the Grafana dashboards under "Calls to other services"); while central answers, the rows are only
+written, never read. A central that answers and rejects the request -- wrong URL, wrong sync key --
+still fails startup within seconds: that is a configuration error the snapshot would only hide. #566 asked for a snapshot signed by central. Instead
 each row carries an HMAC-SHA256 under a key derived from material the node already holds —
 `central.secret-key` in auth, `private-key` in edge. Whoever holds those keys can already read the
 same configuration from central, so a central signature would add a key to generate and roll out
