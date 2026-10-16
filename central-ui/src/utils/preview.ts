@@ -58,6 +58,8 @@ export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
     localeNames: params.localeNames,
     allT: params.localizations,
     previewId: params.previewId,
+    // Every preview, whichever screen shows it (previewId is set by the forms list only).
+    preview: true,
   });
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${params.themeCss}\n${params.style}</style><script>window.__VERSOLA_FORM__=${configJson};</script></head><body><div id="versola-form-root"></div><script>${params.jsCompiled}</script></body></html>`;
 }

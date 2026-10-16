@@ -1,6 +1,10 @@
 {
   "en": {
     "page_title": "Sign In",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Enter Code",
     "description": "We sent a verification code to {destination}",
     "code_placeholder": "Enter verification code",
@@ -15,6 +19,10 @@
   },
   "ru": {
     "page_title": "Вход",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Введите код",
     "description": "Мы отправили код подтверждения на {destination}",
     "code_placeholder": "Введите код подтверждения",
