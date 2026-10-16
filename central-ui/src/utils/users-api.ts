@@ -1,4 +1,12 @@
-import type { PasskeyInfo, SessionClientEntry, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import type {
+  PasskeyInfo,
+  SessionClientEntry,
+  User,
+  UserRefreshToken,
+  UserRoleAssignment,
+  UserSearchField,
+  UserSession,
+} from '../types';
 import { centralResourcePath, resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
@@ -158,6 +166,7 @@ export async function updateUserRoles(
 }
 
 type UserSessionDto = {
+  publicId: string;
   clients: SessionClientEntry[];
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
@@ -178,6 +187,7 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 
   const data = (await response.json()) as UserSessionDto[];
   return data.map(dto => ({
+    publicId: dto.publicId,
     clients: dto.clients,
     platform: dto.platform,
     os: dto.os,
@@ -185,6 +195,77 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
     version: dto.version,
     createdAt: dto.createdAt,
   }));
+}
+
+/** The offline access clients hold for the user. Independent of fetchUserSessions: a refresh
+ *  token outlives the session it was issued under, so it is read from here, not from the session list. */
+export async function fetchUserRefreshTokens(userId: string): Promise<UserRefreshToken[]> {
+  const url = proxyUrl('/users/refresh-tokens');
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load refresh tokens (${response.status})`);
+  }
+
+  return (await response.json()) as UserRefreshToken[];
+}
+
+/** Hard delete: auth purges the account (sessions, refresh tokens, passkeys, passwords, roles,
+ *  throttling, pending conversations) before the index row goes. 404 means the id is unknown. */
+export async function deleteUser(userId: string): Promise<void> {
+  const url = proxyUrl('/users');
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to delete user (${response.status})`);
+  }
+}
+
+/** Revokes the offline access one client holds for the user: its refresh tokens stop
+ *  redeeming, the user stays signed in. Idempotent. */
+export async function revokeUserRefreshTokens(userId: string, clientId: string): Promise<void> {
+  const url = proxyUrl('/users/refresh-tokens');
+  url.searchParams.set('id', userId);
+  url.searchParams.set('clientId', clientId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to revoke offline access (${response.status})`);
+  }
+}
+
+/** Signs one user agent out: ends that session (`publicId` from the session list), relying
+ *  parties told; the user's other sessions stay. 404 means it is not the user's session. */
+export async function endUserSession(userId: string, sessionId: string): Promise<void> {
+  const url = proxyUrl('/users/sessions');
+  url.searchParams.set('id', userId);
+  url.searchParams.set('sessionId', sessionId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to end session (${response.status})`);
+  }
 }
 
 export async function invalidateUserSession(userId: string): Promise<void> {
