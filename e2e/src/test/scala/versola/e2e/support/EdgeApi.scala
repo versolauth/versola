@@ -50,6 +50,12 @@ final class EdgeApi(client: Client, config: E2EConfig):
   def login(presetId: String, params: (String, String)*): Task[Response] =
     send(Method.GET, s"/login/$presetId", params, None, EdgeAuth.None)
 
+  /** GET /login/current — re-runs the authorization for the preset of the caller's own session.
+    * `session` is the EDGE_SESSION cookie content the browser would send, if any.
+    */
+  def loginCurrent(session: Option[String], params: (String, String)*): Task[Response] =
+    send(Method.GET, "/login/current", params, None, session.fold(EdgeAuth.None)(EdgeAuth.Session(_)))
+
   /** GET /complete — the OP's redirect back. Carries either `code`+`state` or `error`+`state`;
     * both parameters are optional here so a test can present neither, or only one.
     */

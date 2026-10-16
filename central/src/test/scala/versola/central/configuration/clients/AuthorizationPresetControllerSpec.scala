@@ -234,4 +234,19 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
           assertTrue(body == PresetValidationError.DuplicatePresetId.getMessage),
         ),
     ),
+    controllerTestCase(
+      description = "return validation message when preset ID is reserved",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "auth-request-presets",
+        body = Body.fromString(saveRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.savePresets.succeedsWith(Left(PresetValidationError.ReservedPresetId)),
+      verify = (response, _) =>
+        response.body.asString.map(body =>
+          assertTrue(body == PresetValidationError.ReservedPresetId.getMessage),
+        ),
+    ),
   )

@@ -51,6 +51,15 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val registeredRequestBody = s"""{"email":"$email"}"""
 
+  private val version = UUID.fromString("00000000-0000-7000-8000-0000000000aa")
+
+  private def setContactRequest(contact: String, body: String) =
+    Request(
+      method = Method.PUT,
+      url = URL.empty / "users" / contact,
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
+
   private val internalAuthorization: Task[Header] =
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
@@ -372,6 +381,113 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.patch.failsWith(UserConflict),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "set email returns 200 OK with the event version",
+      request = setContactRequest("email", s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.setEmail.succeedsWith(version),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[UserVersionResponse]
+        yield assertTrue(
+          service.setEmail.calls == List((userId, Email("new@example.com"))),
+          body == UserVersionResponse(version),
+        ),
+    ),
+    controllerTestCase(
+      description = "set email returns 400 Bad Request for a malformed email",
+      request = setContactRequest("email", s"""{"userId":"$userId","email":"not-an-email"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setEmail.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "set email returns 404 Not Found when the user is not indexed",
+      request = setContactRequest("email", s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.NotFound,
+      setup = service => service.setEmail.failsWith(UserNotFound),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "set email returns 409 Conflict when another user holds the email",
+      request = setContactRequest("email", s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Conflict,
+      setup = service => service.setEmail.failsWith(UserConflict),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "set email rejects the admin Basic credentials with 401",
+      request = setContactRequest("email", s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setEmail.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "set phone returns 200 OK with the event version",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+77011234567"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.setPhone.succeedsWith(version),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[UserVersionResponse]
+        yield assertTrue(
+          service.setPhone.calls == List((userId, Phone("+77011234567"))),
+          body == UserVersionResponse(version),
+        ),
+    ),
+    controllerTestCase(
+      description = "set phone returns 400 Bad Request for a valid number that is not written in E.164",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+787011234567"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setPhone.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "set phone returns 400 Bad Request for an invalid phone",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"123"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setPhone.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "create user returns 400 Bad Request for a phone that is not in E.164",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users",
+        body = Body.fromString("""{"phone":"+787011234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.create.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch user returns 400 Bad Request for a phone that is not in E.164",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+787011234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.patch.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "set phone returns 404 Not Found when the user is not indexed",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+77011234567"}"""),
+      expectedStatus = Status.NotFound,
+      setup = service => service.setPhone.failsWith(UserNotFound),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "set phone returns 409 Conflict when another user holds the phone",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+77011234567"}"""),
+      expectedStatus = Status.Conflict,
+      setup = service => service.setPhone.failsWith(UserConflict),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "set phone rejects the admin Basic credentials with 401",
+      request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+77011234567"}"""),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setPhone.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "reset user limits returns 202 Accepted",

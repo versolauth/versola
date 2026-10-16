@@ -22,6 +22,7 @@ import versola.oauth.client.model.{
   ScopeToken,
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
@@ -119,6 +120,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val otpRecord = ConversationRecord(
@@ -156,6 +158,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val login = Login("testuser")
@@ -347,6 +350,57 @@ object ConversationRouterSpec extends UnitSpecBase:
           checkOtpTimes == 1,
           finishTimes == 1,
         )
+      },
+      test("check the code for a new identifier as such, and commit the change instead of continuing the login") {
+        val env = Env()
+        val verifying = otpRecord.copy(
+          identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone), IdentifierChangeStage.VerifyNew)),
+        )
+        val committed = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(verifying))
+          _ <- env.otpConversationService.checkIdentifierOtp.succeedsWith(ConversationResult.StepPassed(verifying))
+          _ <- env.otpConversationService.commitIdentifierChange.succeedsWith(committed)
+          (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+          checkedAsFactor = env.otpConversationService.checkOtp.times
+          checkedAsIdentifier = env.otpConversationService.checkIdentifierOtp.times
+          commits = env.otpConversationService.commitIdentifierChange.times
+          finished = env.otpConversationService.finish.times
+        yield assertTrue(
+          result == committed,
+          checkedAsFactor == 0,
+          checkedAsIdentifier == 1,
+          commits == 1,
+          finished == 0,
+        )
+      },
+      test("not commit a change when the code for the new identifier is wrong") {
+        val env = Env()
+        val verifying = otpRecord.copy(
+          identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone), IdentifierChangeStage.VerifyNew)),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(verifying))
+          _ <- env.otpConversationService.checkIdentifierOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+          commits = env.otpConversationService.commitIdentifierChange.times
+        yield assertTrue(result == conversationResult, commits == 0)
+      },
+      test("treat the code of an identifier change that is still proving the old identifier as an ordinary factor") {
+        val env = Env()
+        val pending =
+          otpRecord.copy(identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone), IdentifierChangeStage.Pending)))
+        val successResult = ConversationResult.StepPassed(pending)
+        val passed = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(pending))
+          _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)
+          _ <- env.otpConversationService.finish.succeedsWith(passed)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+          checkedAsFactor = env.otpConversationService.checkOtp.times
+          checkedAsIdentifier = env.otpConversationService.checkIdentifierOtp.times
+        yield assertTrue(result == passed, checkedAsFactor == 1, checkedAsIdentifier == 0)
       },
       test("return BadRequest when the submission does not match the current step") {
         val env = Env()

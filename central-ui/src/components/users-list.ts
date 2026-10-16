@@ -1,3 +1,4 @@
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
@@ -572,7 +573,11 @@ export class VersolaUsersList extends LitElement {
     this.errorMessage = '';
     this.hasSearched = true;
     try {
-      const result = await searchUsers(this.searchField, this.searchQuery);
+      // The backend only validates a phone, so a phone is searched for in E.164 whatever was typed.
+      const query = this.searchField === 'phone'
+        ? (parsePhoneNumberFromString(this.searchQuery.trim())?.number ?? this.searchQuery)
+        : this.searchQuery;
+      const result = await searchUsers(this.searchField, query);
       if (requestId !== this.loadRequestId) return;
       this.users = result;
     } catch (error) {

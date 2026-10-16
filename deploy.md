@@ -526,6 +526,36 @@ client retries. Sessions, tokens, consents and users are unaffected. The migrati
 logins on the still-running previous version wait while it runs. The tables are small, so it is
 short, but run `versola migrate` at low traffic.
 
+**Migration `auth` V0016: self-service change of a phone number or email (#634).** Adds the
+table `user_intents` (what a signed-in user asked for on the account page; logged, because such requests are rare) and a
+nullable `auth_conversations.identifier_change` column; no existing row changes, and the previous
+version keeps running on the new schema. Two things to know when upgrading:
+
+- `central` now refuses to save an authorization request preset whose id is `current`, because
+  `edge` serves `GET /login/current` (re-authorize with the preset of the caller's own session).
+  A client that already has a preset named `current` gets a `400` the next time its preset list is
+  saved, and `/login/current` no longer reaches that preset by name. Before upgrading, check with
+  `SELECT id, client_id FROM authorization_presets WHERE id = 'current';` (in the database `central`
+  uses) and rename any it returns.
+- A configuration generated before this release has no `cleanup` entry for the new table, so expired
+  intents are not purged until `user_intents` (`key-column = "user_id"`, like the
+  other entries, see `scripts/gen-env.scala`) is added to `cleanup.tables`. They are one row per
+  user at most and expire after five minutes whether or not they are purged.
+
+**Behaviour change: phone numbers are validated, not normalised.** `central` (`POST /users`, `PATCH /users`,
+`POST /users/registrations`, the limits reset, `GET /users?phone=`) and `auth` (the login and registration
+form, `login_hint`) now accept a phone only when it is already written in E.164. Before, `auth` and the
+`phone` lookup rewrote a valid number (`+787011234567` became `+77011234567`) and `central`'s JSON
+endpoints stored whatever they were given. A valid number in another spelling now gets `400` from `central`,
+a form error from the login page, and is ignored as a `login_hint`. The login page composes the number in E.164 from its country selector, and the Security page and
+the admin console normalise with libphonenumber before they send, so people are not affected; a client that
+calls these endpoints directly, or passes a `login_hint` with a trunk prefix, has to send E.164. Numbers
+already stored are not touched.
+
+`central` also gains the internal `PUT /users/email` and `PUT /users/phone` (called by `auth`, authorised like
+`/users/registrations`) and the account endpoint `POST /settings/identifier/intent` is added to the
+`auth` resource on the next start.
+
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
 matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database

@@ -6,12 +6,13 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService.StepView
 import versola.oauth.conversation.{ConversationRenderService, UiLocales}
+import versola.oauth.identifier.{IdentifierChangeIntentError, IdentifierChangeIntentService, IdentifierChangeKind}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
-import versola.util.{Base64, CoreConfig, Secret}
+import versola.util.{Base64, CoreConfig, Email, Phone, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -26,7 +27,7 @@ import java.security.MessageDigest
     */
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
-    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService
+    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService & IdentifierChangeIntentService
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -38,6 +39,7 @@ object AccountSettingsController extends Controller:
     deletePasskeyRoute,
     startPasskeyEnrollmentRoute,
     finishPasskeyEnrollmentRoute,
+    identifierChangeIntentRoute,
   )
 
   val pageRoute: Route[Env, Throwable] =
@@ -121,6 +123,29 @@ object AccountSettingsController extends Controller:
       yield Response.json(passkeyView(record.id, record.name, record.backedUp, record.lastUsedAt, record.createdAt).toJson)
     }
 
+  /** The first step of changing a phone number or email: records that this user, on this
+    * client's account page, asked for it. The page then sends the browser through
+    * `/authorize` with the reserved `*-change` ACR value, which refuses to start without the
+    * record. The rest of the change (the old identifier, then a code to the new one) is the
+    * ordinary conversation, not something this page implements. */
+  val identifierChangeIntentRoute: Route[Env, Throwable] =
+    Method.POST / "settings" / "identifier" / "intent" -> handler { (request: Request) =>
+      for
+        _ <- authorizeResource(request)
+        body <- request.bodyAs[IdentifierChangeIntentRequest]
+        response <- ZIO.serviceWithZIO[IdentifierChangeIntentService](_.create(body.userId, body.clientId, body.kind, body.value))
+          .as(Response.status(Status.NoContent))
+          .catchAll:
+            case IdentifierChangeIntentError.InvalidValue =>
+              Observability.setError("invalid_identifier").as(Response.status(Status.BadRequest))
+            case IdentifierChangeIntentError.AlreadyInUse =>
+              Observability.setError("identifier_in_use").as(Response.status(Status.Conflict))
+            case IdentifierChangeIntentError.UserNotFound =>
+              Observability.setError("user_not_found").as(Response.status(Status.NotFound))
+            case error: Throwable => ZIO.fail(error)
+      yield response
+    }
+
   /** Authenticates edge's Basic credentials for this resource, whose secret is synced
     * encrypted from central rather than configured statically (see [[OAuthConfigurationService]]). */
   private def authorizeResource(request: Request): ZIO[OAuthConfigurationService, Throwable, Unit] =
@@ -159,11 +184,17 @@ object AccountSettingsController extends Controller:
   private def accountView(
       userId: UserId,
       sessionId: PublicSessionId,
-  ): ZIO[SessionService & PasskeyRepository, Throwable, StepView.AccountSettings] =
+  ): ZIO[SessionService & PasskeyRepository & UserRepository, Throwable, StepView.AccountSettings] =
     for
       sessions <- listSessions(userId, sessionId)
       passkeys <- listPasskeys(userId)
-    yield StepView.AccountSettings(sessions, passkeys)
+      user <- ZIO.serviceWithZIO[UserRepository](_.find(userId))
+    yield StepView.AccountSettings(
+      sessions,
+      passkeys,
+      phone = user.flatMap(_.phone).map(Phone.mask),
+      email = user.flatMap(_.email).map(Email.mask),
+    )
 
   private def listSessions(userId: UserId, sessionId: PublicSessionId): ZIO[SessionService, Throwable, List[StepView.AccountSession]] =
     ZIO.serviceWithZIO[SessionService](_.listByUser(userId)).map:
@@ -209,6 +240,15 @@ object AccountSettingsController extends Controller:
   private case class RevokeSessionRequest(
       userId: UserId,
       targetSessionId: PublicSessionId,
+  ) derives JsonCodec
+
+  /** `userId` and `clientId` are the edge-injected caller context; `kind` and `value` are what
+    * the user typed. */
+  private case class IdentifierChangeIntentRequest(
+      userId: UserId,
+      clientId: ClientId,
+      kind: IdentifierChangeKind,
+      value: String,
   ) derives JsonCodec
 
   private case class RenamePasskeyRequest(

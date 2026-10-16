@@ -104,6 +104,20 @@ object PhoneSpec extends UnitSpecBase:
       val parsed = List("+77011234567", "+787011234567").map(Phone.parse)
       assertTrue(parsed.distinct == List(Right(Phone("+77011234567"))))
     },
+    suite("validate")(
+      test("accepts a valid number written in E.164") {
+        assertTrue(Phone.validate("+77011234567") == Right(Phone("+77011234567")))
+      },
+      test("refuses a valid number written any other way, instead of normalising it") {
+        assertTrue(
+          Phone.validate("+787011234567") == Left("+787011234567 is not written in E.164 form"),
+          Phone.validate("+4407911123456").isLeft,
+        )
+      },
+      test("refuses what is not a number") {
+        assertTrue(Phone.validate("+1 202 555 1234").isLeft, Phone.validate("abc").isLeft, Phone.validate("").isLeft)
+      },
+    ),
     suite("regionCode")(
       test("Kazakh number") {
         assertTrue(Phone.regionCode(Phone("+77011234567")).contains("KZ"))

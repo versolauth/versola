@@ -4,12 +4,12 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
-import versola.util.{Email, EnvName, Phone}
-import zio.ZIO
+import versola.util.http.{BadRequest, Controller}
+import versola.util.{Email, EnvName, Patch, Phone}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.{IO, ZIO}
 
 object UserController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName
@@ -21,6 +21,8 @@ object UserController extends Controller:
     getUserRefreshTokensEndpoint,
     createUserEndpoint,
     registeredUserEndpoint,
+    setEmailEndpoint,
+    setPhoneEndpoint,
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
@@ -94,6 +96,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[CreateUserRequest]
+        _ <- requireE164(body.phone)
         id <- service.create(body)
       yield Response.json(CreateUserResponse(id).toJson).status(Status.Created))
         .catchAll:
@@ -107,6 +110,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[RegisteredUserRequest]
+        _ <- requireE164(body.phone)
         userId <- service.indexRegistered(body)
       yield Response.json(RegisteredUserResponse(userId).toJson))
         .catchAll:
@@ -114,12 +118,53 @@ object UserController extends Controller:
           case error: Throwable => ZIO.fail(error)
     }
 
+  /** Called by auth once the user has proven they own a new email; the response `version` is the
+    * outbox event's version, so auth can recognise the UpsertUser that central replays to it. */
+  val setEmailEndpoint =
+    Method.PUT / "users" / "email" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[SetUserEmailRequest]
+        // The JSON codec does not validate Email, so it is checked here before it reaches the index.
+        email <- ZIO.fromEither(Email.from(body.email)).mapError(BadRequest(_))
+        version <- service.setEmail(body.userId, email)
+      yield Response.json(UserVersionResponse(version).toJson))
+        .catchAll(contactFailure)
+    }
+
+  /** The phone counterpart of [[setEmailEndpoint]]. The caller writes the number in E.164, the form
+    * the index stores; one that is valid but written another way is refused, not normalised. */
+  val setPhoneEndpoint =
+    Method.PUT / "users" / "phone" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[SetUserPhoneRequest]
+        phone <- ZIO.fromEither(Phone.validate(body.phone)).mapError(BadRequest(_))
+        version <- service.setPhone(body.userId, phone)
+      yield Response.json(UserVersionResponse(version).toJson))
+        .catchAll(contactFailure)
+    }
+
+  /** The JSON codec does not validate a Phone, and the index stores E.164: a phone that is not
+    * already written that way is refused here instead of being stored as given. */
+  private def requireE164(phone: Option[Phone]): IO[BadRequest, Unit] =
+    ZIO.foreachDiscard(phone)(phone => ZIO.fromEither(Phone.validate(phone)).mapError(BadRequest(_)))
+
+  private def contactFailure(error: UserNotFound | UserConflict | Throwable): IO[Throwable, Response] =
+    error match
+      case UserNotFound => ZIO.succeed(Response.status(Status.NotFound))
+      case UserConflict => ZIO.succeed(Response.status(Status.Conflict))
+      case error: Throwable => ZIO.fail(error)
+
   val patchUserEndpoint =
     Method.PATCH / "users" -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[PatchUserRequest]
+        _ <- requireE164(body.phone.collect { case Patch.Modified(phone) => phone })
         _ <- service.patch(body)
       yield Response.status(Status.Accepted))
         .catchAll:
@@ -164,6 +209,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[ResetUserLimitsRequest]
+        _ <- requireE164(body.phone)
         _ <- service.resetLimits(body)
       yield Response.status(Status.Accepted)
     }

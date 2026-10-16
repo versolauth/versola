@@ -73,6 +73,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
+    val userContactSyncClient = stub[versola.oauth.identifier.UserContactSyncClient]
 
     val service = ConversationService.Impl(
       otpService,
@@ -94,6 +95,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      userContactSyncClient,
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -138,6 +140,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

@@ -20,6 +20,7 @@ object EdgeController extends Controller:
   ) derives JsonEncoder
 
   def routes: Routes[Env, Throwable] = Routes(
+    loginCurrentEndpoint,
     loginEndpoint,
     logoutEndpoint,
     completeEndpoint,
@@ -41,26 +42,40 @@ object EdgeController extends Controller:
     "ui_locales",
   )
 
+  /** Declared before [[loginEndpoint]] and a literal segment, so `/login/current` is never read
+    * as a preset named `current`. */
+  val loginCurrentEndpoint =
+    Method.GET / "login" / "current" -> handler { (request: Request) =>
+      redirectToAuthorize(request)(
+        _.authorizeForSession(request.cookie(EdgeSessionCookie.name).map(_.content), _),
+      )
+    }
+
   val loginEndpoint =
     Method.GET / "login" / string("presetId") -> handler { (presetId: String, request: Request) =>
-      for
-        edgeService <- ZIO.service[EdgeService]
-        overrideParams: Map[String, String] = loginParamWhitelist.flatMap { key =>
-          request.url.queryParams.map.get(key).flatMap(_.headOption).map(key -> _)
-        }.toMap
-
-        response <- edgeService.authorize(PresetId(presetId), overrideParams)
-          .either.flatMap:
-            case Left(error: PresetNotFound) =>
-              ZIO.succeed(Response.notFound)
-
-            case Left(ex: Throwable) =>
-              ZIO.fail(ex)
-
-            case Right(url) =>
-              ZIO.succeed(Response.seeOther(url))
-      yield response
+      redirectToAuthorize(request)(_.authorize(PresetId(presetId), _))
     }
+
+  private def redirectToAuthorize(request: Request)(
+      authorize: (EdgeService, Map[String, String]) => IO[Throwable | PresetNotFound, URL],
+  ): ZIO[EdgeService, Throwable, Response] =
+    for
+      edgeService <- ZIO.service[EdgeService]
+      overrideParams: Map[String, String] = loginParamWhitelist.flatMap { key =>
+        request.url.queryParams.map.get(key).flatMap(_.headOption).map(key -> _)
+      }.toMap
+
+      response <- authorize(edgeService, overrideParams)
+        .either.flatMap:
+          case Left(error: PresetNotFound) =>
+            ZIO.succeed(Response.notFound)
+
+          case Left(ex: Throwable) =>
+            ZIO.fail(ex)
+
+          case Right(url) =>
+            ZIO.succeed(Response.seeOther(url))
+    yield response
 
   val logoutEndpoint: Route[EdgeConfig & OAuthClientService, Throwable] =
     Method.GET / "logout" / string("presetId") -> handler { (presetId: String, _: Request) =>
@@ -70,7 +85,9 @@ object EdgeController extends Controller:
         // whose `getAll` is a request to central with every call: on the Yandex Cloud step-load test every
         // web logout cost one (11/s of `/configuration/auth-request-presets/sync` against 0.02/s for each
         // routine refresh) and logout stopped working whenever central was unreachable.
-        preset <- ZIO.serviceWithZIO[OAuthClientService](_.findPreset(PresetId(presetId))).someOrFail(PresetNotFound).mapError(_ => RuntimeException("Preset not found"))
+        preset <- ZIO.serviceWithZIO[OAuthClientService](_.findPreset(PresetId(presetId))).someOrFail(PresetNotFound).mapError(_ =>
+          RuntimeException("Preset not found"),
+        )
         redirect <- ZIO.fromEither(URL.decode(config.versolaUrl.toString + "/logout"))
         target = preset.postLogoutRedirectUri.fold(redirect)(uri => redirect.addQueryParam("post_logout_redirect_uri", uri.toString))
       yield Response.seeOther(target)

@@ -4,7 +4,17 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexConflict, UserIndexRecord, UserNotFound, UserRepository}
+import versola.central.users.{
+  Login,
+  OutboxEvent,
+  OutboxRecord,
+  UserConflict,
+  UserId,
+  UserIndexConflict,
+  UserIndexRecord,
+  UserNotFound,
+  UserRepository,
+}
 import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Patch, Phone, SecureRandom}
@@ -134,7 +144,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-  ): IO[UserNotFound | UserConflict | Throwable, Unit] =
+  ): IO[UserNotFound | UserConflict | Throwable, UUID] =
     (for
       version <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("patch-user"):
@@ -160,7 +170,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
             login = user.login,
           ),
         )
-    yield ()).mapError:
+    yield version).mapError:
       case PostgresUserRepository.NotFound => UserNotFound
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
       case e => e

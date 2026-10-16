@@ -166,6 +166,9 @@ object ConversationRenderService:
     case class AccountSettings(
         sessions: List[AccountSession],
         passkeys: List[AccountPasskey],
+        /** The user's phone number and email, masked, so the page can say what a change replaces. */
+        phone: Option[String],
+        email: Option[String],
     ) extends StepView
 
     @jsonHint("access-denied")

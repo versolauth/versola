@@ -217,6 +217,22 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
 
+  /** The reserved `urn:versola:acr:*-change` values are a Versola extension (#634), not an OIDC
+    * parameter, hence no error URI.
+    */
+  case class IdentifierChangeInvalid(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "An identifier change names one urn:versola:acr:phone-change or urn:versola:acr:email-change value " +
+        "and a login_hint holding the new identifier of that kind, without id_token_hint",
+      errorUri = None,
+    )
+
+  case class IdentifierChangeNotInitiated(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.AccessDenied,
+      errorDescription = "The identifier change was not started from the account page",
+      errorUri = None,
+    )
+
   case class InvalidTarget(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidTarget,
       errorDescription = s"The requested resource is invalid, malformed, or unknown - $value",

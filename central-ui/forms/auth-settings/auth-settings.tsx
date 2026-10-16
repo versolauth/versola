@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { createMemo, createSignal, For, Show } from 'solid-js';
+import { toE164 } from '../phone';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
@@ -31,6 +32,19 @@ type AccountSettingsStep = {
   type: 'auth-settings';
   sessions: AccountSession[];
   passkeys: AccountPasskey[];
+  // Masked by the server: said back to the user as what a change would replace.
+  phone?: string;
+  email?: string;
+};
+
+type IdentifierKind = 'phone' | 'email';
+
+// Reserved by Versola: they turn an authorization request into a change of the signed-in user's
+// phone or email, with the new value in login_hint. The server refuses them unless the intent
+// recorded below exists, so nothing but this page can start one.
+const IDENTIFIER_CHANGE_ACR: Record<IdentifierKind, string> = {
+  phone: 'urn:versola:acr:phone-change',
+  email: 'urn:versola:acr:email-change',
 };
 
 interface FormConfig extends BaseFormConfig {
@@ -80,6 +94,10 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [enrollNameError, setEnrollNameError] = createSignal(false);
   const [enrollError, setEnrollError] = createSignal(false);
   const [deletionRequest, setDeletionRequest] = createSignal<DeletionRequest | null>(null);
+  const [changeKind, setChangeKind] = createSignal<IdentifierKind>('phone');
+  const [changeValue, setChangeValue] = createSignal('');
+  const [changing, setChanging] = createSignal(false);
+  const [changeError, setChangeError] = createSignal<'invalid' | 'in_use' | 'failed' | null>(null);
 
   const revokeSession = async (session: AccountSession) => {
     if (busySessionId()) return;
@@ -156,6 +174,42 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     else await deletePasskey(request.id);
   };
 
+  // Records that this user asked for the change, then sends the browser through the ordinary login
+  // at edge: the old identifier is verified again and the code for the new one is entered there,
+  // not on this page. The user comes back to the application when it is done.
+  const startIdentifierChange = async () => {
+    if (changing()) return;
+    const kind = changeKind();
+    const typed = changeValue().trim();
+    const value = kind === 'phone' ? toE164(typed) : typed;
+    if (!value) {
+      setChangeError('invalid');
+      return;
+    }
+    setChanging(true);
+    setChangeError(null);
+    try {
+      const res = await fetch(`${base}identifier/intent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, value }),
+      });
+      if (res.status === 204) {
+        const params = new URLSearchParams({
+          acr_values: IDENTIFIER_CHANGE_ACR[kind],
+          login_hint: value,
+          ui_locales: currentLocale(),
+        });
+        window.location.assign(`${window.location.origin}/login/current?${params}`);
+        return;
+      }
+      setChangeError(res.status === 409 ? 'in_use' : res.status === 400 ? 'invalid' : 'failed');
+    } catch (_) {
+      setChangeError('failed');
+    }
+    setChanging(false);
+  };
+
   const enroll = async () => {
     if (enrolling()) return;
     const trimmed = enrollName().trim();
@@ -196,6 +250,65 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     <div class="container account-container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
       <h1>{t().page_title}</h1>
+
+      <section class="account-section">
+        <h2>{t().identifiers_title}</h2>
+        <ul class="account-list">
+          <Show when={step.phone}>
+            <li class="account-row">
+              <div class="account-row-info">
+                <div class="account-row-title">{t().phone_label}</div>
+                <div class="account-row-subtitle">{step.phone}</div>
+              </div>
+            </li>
+          </Show>
+          <Show when={step.email}>
+            <li class="account-row">
+              <div class="account-row-info">
+                <div class="account-row-title">{t().email_label}</div>
+                <div class="account-row-subtitle">{step.email}</div>
+              </div>
+            </li>
+          </Show>
+        </ul>
+        <form
+          class="account-enroll"
+          onSubmit={(event) => { event.preventDefault(); void startIdentifierChange(); }}
+        >
+          <p class="account-empty">{t().change_description}</p>
+          <select
+            class="input-field"
+            aria-label={t().change_kind_label}
+            value={changeKind()}
+            onChange={(e) => { setChangeKind(e.currentTarget.value as IdentifierKind); setChangeError(null); }}
+            disabled={changing()}
+          >
+            <option value="phone">{t().phone_label}</option>
+            <option value="email">{t().email_label}</option>
+          </select>
+          <input
+            class={`input-field${changeError() === 'invalid' ? ' input-error' : ''}`}
+            type={changeKind() === 'email' ? 'email' : 'tel'}
+            placeholder={changeKind() === 'email' ? t().new_email_placeholder : t().new_phone_placeholder}
+            aria-label={changeKind() === 'email' ? t().new_email_placeholder : t().new_phone_placeholder}
+            value={changeValue()}
+            onInput={(e) => { setChangeValue(e.currentTarget.value); setChangeError(null); }}
+            disabled={changing()}
+            autocomplete="off"
+            required
+          />
+          <Show when={changeError()}>
+            {(error) => (
+              <div class="error-text account-enroll-error" role="alert">
+                {error() === 'invalid' ? t().change_invalid : error() === 'in_use' ? t().change_in_use : t().change_failed}
+              </div>
+            )}
+          </Show>
+          <button type="submit" class="btn btn-primary" disabled={changing()}>
+            {t().change_button}
+          </button>
+        </form>
+      </section>
 
       <section class="account-section">
         <h2>{t().sessions_title}</h2>

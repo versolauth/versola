@@ -5,6 +5,7 @@ import versola.oauth.authorize.model.*
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.client.model.SecurityProfile
+import versola.oauth.identifier.IdentifierChangeKind
 import versola.oauth.model.{
   CodeChallenge,
   CodeChallengeMethod,
@@ -72,6 +73,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   /** A tenant ACR vocabulary defining each of `acrs` as satisfied by a password. */
   private def acrVocabulary(acrs: String*): Map[Acr, NonEmptyList[PassedAuthFactor]] =
     acrs.map(acr => Acr(acr) -> NonEmptyList(PassedAuthFactor.password)).toMap
+
+  private val usRegion = PhoneRegion("US", "+1", 10, "\\d{10}", false)
+  private val kzRegion = PhoneRegion("KZ", "+7", 10, "7\\d{9}", false)
+
+  private def changeRequest(acr: String, hint: Option[String], extra: Map[String, String] = Map.empty) =
+    Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> acr) ++ hint.map("login_hint" -> _) ++ extra))
+
+  private def invalid = Error.IdentifierChangeInvalid(clientId, redirectUri, Some(State("test-state")), ResponseMode.Query)
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
 
@@ -903,14 +912,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
-      test("canonicalises a phone login_hint before the prefix check") {
+      test("ignores a phone login_hint that is valid but not written in E.164: the backend validates, it does not normalise") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+787011234567")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)))
           result <- env.parser.parse(request)
-        yield assertTrue(result.loginHint == Some(Right(Phone("+77011234567"))))
+        yield assertTrue(result.loginHint.isEmpty)
       },
       test("ignores an email login_hint when the client does not accept email credentials") {
         val env = Env()
@@ -1715,6 +1724,95 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
           result <- env.parser.parse(request)
         yield assertTrue(result.acrValues.isEmpty)
+      },
+    ),
+    suite("identifier change")(
+      test("takes the reserved phone-change value out of acr_values and reads the new phone from login_hint") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(usRegion))
+          result <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("+12025551234")))
+        yield assertTrue(
+          result.identifierChange == Some(IdentifierChangeKind.Phone),
+          result.loginHint == Some(Right(Phone("+12025551234"))),
+          // Not an authentication requirement: nothing is left to resolve.
+          result.acrValues.isEmpty,
+        )
+      },
+      test("takes the reserved email-change value out of acr_values and reads the new email from login_hint") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(changeRequest("urn:versola:acr:email-change", Some("new@example.com")))
+        yield assertTrue(
+          result.identifierChange == Some(IdentifierChangeKind.Email),
+          result.loginHint == Some(Left(Email("new@example.com"))),
+          result.acrValues.isEmpty,
+        )
+      },
+      test("keeps the ordinary acr values the request also carries") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
+          result <- env.parser.parse(changeRequest("urn:mfa urn:versola:acr:phone-change", Some("+12025551234")))
+        yield assertTrue(
+          result.identifierChange == Some(IdentifierChangeKind.Phone),
+          result.acrValues == Some(NonEmptyList(Acr("urn:mfa"))),
+        )
+      },
+      test("is not a change without the reserved value: login_hint stays a hint") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
+          result <- env.parser.parse(changeRequest("urn:mfa", Some("new@example.com")))
+        yield assertTrue(result.identifierChange.isEmpty)
+      },
+      test("refuses a change without a login_hint") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", None)).either
+        yield assertTrue(result == Left(invalid))
+      },
+      test("refuses a login_hint that is not an identifier of the kind the ACR names, instead of ignoring it") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
+          emailForPhone <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("new@example.com"))).either
+          phoneForEmail <- env.parser.parse(changeRequest("urn:versola:acr:email-change", Some("+12025551234"))).either
+          garbage <- env.parser.parse(changeRequest("urn:versola:acr:email-change", Some("not an email"))).either
+        yield assertTrue(emailForPhone == Left(invalid), phoneForEmail == Left(invalid), garbage == Left(invalid))
+      },
+      test("refuses a new phone the tenant does not allow") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(kzRegion))
+          result <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("+12025551234"))).either
+        yield assertTrue(result == Left(invalid))
+      },
+      test("refuses both reserved values at once") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(
+            changeRequest("urn:versola:acr:phone-change urn:versola:acr:email-change", Some("new@example.com")),
+          ).either
+        yield assertTrue(result == Left(invalid))
+      },
+      test("refuses an id_token_hint beside it: the user is the session's") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(
+            changeRequest("urn:versola:acr:email-change", Some("new@example.com"), Map("id_token_hint" -> "a.b.c")),
+          ).either
+        yield assertTrue(result == Left(invalid))
       },
     ),
     suite("id_token_hint")(

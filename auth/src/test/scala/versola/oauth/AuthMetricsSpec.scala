@@ -55,6 +55,7 @@ object AuthMetricsSpec extends ZIOSpecDefault:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   // The counters are process-global and other specs in the same JVM drive the same labels in

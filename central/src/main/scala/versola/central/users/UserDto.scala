@@ -9,6 +9,7 @@ import zio.json.ast.Json
 import zio.schema.{Schema, derived}
 
 import java.time.Instant
+import java.util.UUID
 
 case class CreateUserRequest(
     email: Option[Email],
@@ -33,6 +34,21 @@ case class PatchUserRequest(
     phone: Option[Patch[Phone]],
     login: Option[Patch[Login]],
 ) derives JsonCodec, Schema
+
+/** Auth sets a user's email once the user has proven they own it. */
+case class SetUserEmailRequest(
+    userId: UserId,
+    email: Email,
+) derives JsonCodec, Schema
+
+/** Auth sets a user's phone once the user has proven they own it. */
+case class SetUserPhoneRequest(
+    userId: UserId,
+    phone: Phone,
+) derives JsonCodec, Schema
+
+/** `version` is the outbox event's UUIDv7, the same value auth receives in the UpsertUser event. */
+case class UserVersionResponse(version: UUID) derives JsonCodec, Schema
 
 case class PatchUserClaimsRequest(
     id: UserId,

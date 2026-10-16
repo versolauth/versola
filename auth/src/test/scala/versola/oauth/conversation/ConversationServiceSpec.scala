@@ -14,6 +14,7 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage, UserContactResult, UserContactSyncClient}
 import versola.oauth.model.*
 import versola.oauth.session.model.*
 import versola.oauth.session.model.PriorSession
@@ -85,10 +86,38 @@ object ConversationServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   /** Consent already decided, so `finish` proceeds straight to issuing the code. */
   private val consentedRecord = conversationRecord.copy(grantedScope = Some(conversationRecord.scope))
+
+  private val newPhone = Phone("+12025557777")
+
+  /** The old identifiers are proven; the code for the new phone has not been sent yet. */
+  private val changePending = consentedRecord.copy(
+    userId = Some(userId),
+    priorSessionUserId = Some(userId),
+    grantedScope = None,
+    identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone), IdentifierChangeStage.Pending)),
+  )
+
+  private val changeOtp = ConversationStep.Otp(
+    real = Some(ConversationStep.Otp.Real(OtpCode("123456"))),
+    timesRequested = 1,
+    timesSubmitted = 0,
+    factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
+  )
+
+  /** The code went to the new phone and the user is typing it. */
+  private val changeVerifying = changePending.copy(
+    credential = Some(Right(newPhone)),
+    step = changeOtp,
+    identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone), IdentifierChangeStage.VerifyNew)),
+  )
 
   class Env:
     val otpService = stub[OtpService]
@@ -109,6 +138,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
+    val userContactSyncClient = stub[UserContactSyncClient]
 
     val service = ConversationService.Impl(
       otpService,
@@ -130,6 +160,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      userContactSyncClient,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -215,6 +246,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           service <- ZIO.service[ConversationService].provide(
+            ZLayer.succeed(env.userContactSyncClient),
             ZLayer.succeed(env.otpService),
             ZLayer.succeed(env.passwordService),
             ZLayer.succeed(env.conversationRepository),
@@ -867,6 +899,154 @@ object ConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           // The code must carry the narrowed grant, not the wider requested scope.
           codeCalls.head._2.scope == narrowed,
+        )
+      },
+    ),
+    suite("identifier change")(
+      test("finish sends the code to the new identifier, not the old one, once the old ones are proven") {
+        val env = Env()
+        val record = changePending
+        for
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(changeOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          result <- env.service.finish(authId, record)
+          sent = env.otpService.sendOtp.calls.map(_._2)
+          saved = env.conversationRepository.overwrite.calls.last._2
+          limited = env.submissionLimiter.tryAcquire.calls.map(call => (call._2, call._3))
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.RenderStep],
+          sent == List(Right(newPhone)),
+          saved.credential == Some(Right(newPhone)),
+          saved.identifierChange.map(_.stage) == Some(IdentifierChangeStage.VerifyNew),
+          // Per user as well as per identifier: each phone named is a message to a third party.
+          limited.contains((userId.toString, ChallengeType.OtpRequest)),
+          limited.contains((newPhone.toString, ChallengeType.OtpRequest)),
+        )
+      },
+      test("finish does not send a code when the conversation does not belong to the user who asked") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          other <- env.service.finish(authId, changePending.copy(priorSessionUserId = Some(UserId(UUID.randomUUID()))))
+          none <- env.service.finish(authId, changePending.copy(priorSessionUserId = None))
+          sent = env.otpService.sendOtp.calls
+        yield assertTrue(
+          other == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          none == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          sent.isEmpty,
+        )
+      },
+      test("finish sends nothing when the user has asked for too many codes") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, changePending)
+          sent = env.otpService.sendOtp.calls
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied), sent.isEmpty)
+      },
+      test("a correct code for the new identifier is not a passed authentication factor") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkIdentifierOtp(changeVerifying, changeOtp, OtpCode("123456"), authId)
+        yield assertTrue(
+          result match
+            case ConversationResult.StepPassed(updated) => updated.amr == changeVerifying.amr
+            case _ => false,
+        )
+      },
+      test("a wrong code for the new identifier keeps the conversation on the code step") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkIdentifierOtp(changeVerifying, changeOtp, OtpCode("000000"), authId)
+        yield assertTrue(result.isInstanceOf[ConversationResult.RenderStep])
+      },
+      test("commit moves the identifier in central, follows it locally under central's version, marks it verified, and carries on to consent") {
+        val env = Env()
+        val version = UUID.randomUUID()
+        val before = UserRecord.empty(userId).copy(email = Some(email), phone = Some(Phone("+12025551234")), login = Some(Login("someone")))
+        val after = before.copy(phone = Some(newPhone), claims = Json.Obj("phone_number_verified" -> Json.Bool(true)))
+        for
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.Updated(version))
+          lookups <- Ref.make(0)
+          // The first lookup is the user as central has just left it, the second as auth now holds it.
+          _ <- env.userRepository.find.returnsZIO(_ => lookups.getAndUpdate(_ + 1).map(n => Some(if n == 0 then before else after)))
+          _ <- env.userRepository.upsert.succeedsWith(())
+          _ <- env.userRepository.patchClaims.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
+          result <- env.service.commitIdentifierChange(authId, changeVerifying)
+          changed = env.userContactSyncClient.set.calls
+          upserted = env.userRepository.upsert.calls
+          claims = env.userRepository.patchClaims.calls
+          firstSave = env.conversationRepository.overwrite.calls.head._2
+        yield assertTrue(
+          changed == List((userId, Right(newPhone))),
+          // Email and login are kept, the phone is the new one, and the version is central's.
+          upserted == List((userId, version, Some(email), Some(newPhone), Some(Login("someone")))),
+          claims == List((userId, Json.Obj("phone_number_verified" -> Json.Bool(true)))),
+          firstSave.identifierChange.isEmpty,
+          firstSave.userPhone == Some(newPhone),
+          result == ConversationResult.RenderStep(ConversationStep.Consent(requestedScope = requestedScope, allowPartial = false)),
+        )
+      },
+      test("commit marks an email verified through email_verified") {
+        val env = Env()
+        val newEmail = Email("new@example.com")
+        val before = UserRecord.empty(userId).copy(email = Some(email))
+        for
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.Updated(UUID.randomUUID()))
+          _ <- env.userRepository.find.succeedsWith(Some(before))
+          _ <- env.userRepository.upsert.succeedsWith(())
+          _ <- env.userRepository.patchClaims.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
+          _ <- env.service.commitIdentifierChange(
+            authId,
+            changeVerifying.copy(identifierChange =
+              Some(IdentifierChange(IdentifierChangeKind.Email, Left(newEmail), IdentifierChangeStage.VerifyNew)),
+            ),
+          )
+          claims = env.userRepository.patchClaims.calls
+        yield assertTrue(claims == List((userId, Json.Obj("email_verified" -> Json.Bool(true)))))
+      },
+      test("commit changes nothing and ends in access denied when another user took the identifier in the meantime") {
+        val env = Env()
+        for
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.AlreadyInUse)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.commitIdentifierChange(authId, changeVerifying)
+          upserted = env.userRepository.upsert.calls
+          claims = env.userRepository.patchClaims.calls
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          upserted.isEmpty,
+          claims.isEmpty,
+        )
+      },
+      test("commit refuses a conversation that is not verifying the new identifier, or belongs to another user") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          pending <- env.service.commitIdentifierChange(authId, changePending)
+          mismatch <- env.service.commitIdentifierChange(authId, changeVerifying.copy(priorSessionUserId = Some(UserId(UUID.randomUUID()))))
+          changed = env.userContactSyncClient.set.calls
+        yield assertTrue(
+          pending == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          mismatch == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          changed.isEmpty,
         )
       },
     ),

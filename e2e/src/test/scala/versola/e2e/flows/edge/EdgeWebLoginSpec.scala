@@ -100,6 +100,52 @@ object EdgeWebLoginSpec extends EdgeSpec(
       yield assertTrue(url.queryParams.getAll("redirect_uri").contains(edgeApi.completeUri))
         .label("a caller-supplied redirect_uri must not reach the OP")
     },
+    test("/login/current redirects a signed-in browser to its own preset's authorization request") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        session <- signIn
+        started <- edgeApi.loginCurrent(
+          Some(session.cookie),
+          "login_hint" -> f.login,
+          "acr_values" -> Acr.PasswordLevel,
+          "max_age" -> "0",
+          "redirect_uri" -> "http://attacker.test/steal",
+        )
+        url <- ZIO.fromEither(URL.decode(started.header(Header.Location).map(_.url.encode).getOrElse("")))
+      yield assertTrue(started.status == Status.SeeOther) &&
+        assertTrue(url.encode.contains("/authorize")) &&
+        assertTrue(url.queryParams.getAll("client_id").contains(f.clientId)) &&
+        assertTrue(url.queryParams.getAll("login_hint").contains(f.login)) &&
+        assertTrue(url.queryParams.getAll("acr_values").contains(Acr.PasswordLevel)) &&
+        assertTrue(url.queryParams.getAll("max_age").contains("0")) &&
+        assertTrue(url.queryParams.getAll("redirect_uri").contains(edgeApi.completeUri))
+          .label("redirect_uri stays the preset's, whatever the query says")
+    },
+    test("/login/current without a session cookie answers 404") {
+      for
+        edgeApi <- edge
+        started <- edgeApi.loginCurrent(None)
+      yield assertTrue(started.status == Status.NotFound)
+    },
+    test("/login/current with a forged session cookie answers 404") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        session <- signIn
+        forged = s"${f.presetId}:${session.accessToken.dropRight(6)}AAAAAA"
+        tampered <- edgeApi.loginCurrent(Some(forged))
+        invented <- edgeApi.loginCurrent(Some(s"${f.presetId}:not.a.token"))
+      yield assertTrue(tampered.status == Status.NotFound) &&
+        assertTrue(invented.status == Status.NotFound)
+          .label("the preset id in the cookie is not a credential; the signed token is")
+    },
+    test("/login/current is not read as a preset called current") {
+      for
+        edgeApi <- edge
+        started <- edgeApi.loginCurrent(Some("current:header.payload.signature"))
+      yield assertTrue(started.status == Status.NotFound)
+    },
     test("a full browser login sets the EDGE_SESSION cookie") {
       for
         session <- signIn

@@ -21,7 +21,18 @@
     "name_required": "Enter a passkey name",
     "add_passkey_button": "Add a passkey",
     "enroll_failed": "Could not add the passkey. Please try again",
-    "go_back_button": "Go back"
+    "go_back_button": "Go back",
+    "identifiers_title": "Phone number and email",
+    "phone_label": "Phone number",
+    "email_label": "Email",
+    "change_kind_label": "What to change",
+    "change_description": "To change one, enter the new value. You will confirm your current sign-in first, then a code sent to the new one.",
+    "new_phone_placeholder": "New phone number, e.g. +77011234567",
+    "new_email_placeholder": "New email",
+    "change_button": "Change",
+    "change_invalid": "Enter a valid value. A phone number starts with + and the country code",
+    "change_failed": "Could not start the change. Please try again",
+    "change_in_use": "This number or email is already in use"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -45,6 +56,17 @@
     "name_required": "Укажите название ключа доступа",
     "add_passkey_button": "Добавить ключ доступа",
     "enroll_failed": "Не удалось добавить ключ доступа. Попробуйте ещё раз",
-    "go_back_button": "Назад"
+    "go_back_button": "Назад",
+    "identifiers_title": "Номер телефона и email",
+    "phone_label": "Номер телефона",
+    "email_label": "Email",
+    "change_kind_label": "Что изменить",
+    "change_description": "Чтобы изменить, введите новое значение. Сначала вы подтвердите текущий вход, затем код, отправленный на новое значение.",
+    "new_phone_placeholder": "Новый номер, например +77011234567",
+    "new_email_placeholder": "Новый email",
+    "change_button": "Изменить",
+    "change_invalid": "Введите корректное значение. Номер начинается с + и кода страны",
+    "change_failed": "Не удалось начать изменение. Попробуйте ещё раз",
+    "change_in_use": "Этот номер или email уже используется"
   }
 }

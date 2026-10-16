@@ -242,6 +242,26 @@ object AuthRequestPresetApiSpec extends CentralApiSpec:
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("a preset the OP would reject at authorization time must not be storable")
     },
+    test("the reserved preset id current is refused") {
+      for
+        central <- api
+        rejected <- withClient(central, Set(appUri), Set("openid")) { clientId =>
+          central.post(path, Fixtures.presets(clientId, Fixtures.preset("current", redirectUri = appUri)))
+        }
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("the edge serves /login/current itself, so no preset can be called that")
+    },
+    test("a preset id that merely starts with current is accepted") {
+      for
+        central <- api
+        saved <- withClient(central, Set(appUri), Set("openid")) { clientId =>
+          for
+            presetId <- CentralApi.id("current-app")
+            saved <- central.post(path, Fixtures.presets(clientId, Fixtures.preset(presetId, redirectUri = appUri)))
+          yield saved
+        }
+      yield assertTrue(saved.status == Status.NoContent)
+    },
     test("a rejected preset leaves the existing set untouched") {
       for
         central <- api

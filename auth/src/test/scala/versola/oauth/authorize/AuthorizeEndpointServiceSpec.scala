@@ -25,14 +25,15 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, RefreshTokenFamilyId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
 import versola.user.model.UserRecord
+import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -116,6 +117,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -148,6 +150,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
+    val userIntents = stub[UserIntentRepository]
     // Registration is a tenant decision; a test that is about it says so.
     configurationService.registrationAvailable.returnsWith(ZIO.succeed(false))
     val service = AuthorizeEndpointService.Impl(
@@ -165,10 +168,18 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       conversationRouter,
       acrResolver,
       consentService,
+      userIntents,
     )
 
   val phoneHint = Phone("+12025551234")
   val emailHint = Email("user@example.com")
+
+  val newPhone = Phone("+12025557777")
+  val changeRequest = baseRequest.copy(
+    sessionId = Some(rawSessionId),
+    loginHint = Some(Right(newPhone)),
+    identifierChange = Some(IdentifierChangeKind.Phone),
+  )
 
   val passwordFlow = AuthFlow(
     primary = PrimaryAuthFlow(
@@ -259,6 +270,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -1802,4 +1814,119 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.head._2.uiLocales.isEmpty,
       )
     },
+    // ── identifier change (#634) ──────────────────────────────────────────────
+    suite("identifier change")(
+      test("re-verify the session user and carry the change when the account page started it") {
+        val env = Env()
+        val uuid = UUID.randomUUID()
+        // A fresh session that already satisfies every factor: nothing but the change forces the re-verification.
+        val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+        val user = UserRecord.empty(session.userId).copy(phone = Some(phoneHint))
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+          _ <- env.userIntents.consume.succeedsWith(true)
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+          _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+          _ <- env.userRepository.find.succeedsWith(Some(user))
+          _ <- env.conversationRepository.create.succeedsWith(())
+          _ <- env.conversationRouter.advance.succeedsWith(())
+          result <- env.service.authorize(changeRequest)
+          created = env.conversationRepository.create.calls.head._2
+          consumed = env.userIntents.consume.calls.head
+          advanceTimes = env.conversationRouter.advance.times
+          submitCalls = env.conversationRouter.submit.calls
+        yield assertTrue(
+          result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+          // The user is the session's, the old factors are asked again, and the new number is
+          // neither a credential nor submitted as a login_hint.
+          created.userId == Some(session.userId),
+          created.priorSessionUserId == Some(session.userId),
+          created.amr.isEmpty,
+          created.identifierChange == Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone), IdentifierChangeStage.Pending)),
+          advanceTimes == 1,
+          submitCalls.isEmpty,
+          consumed == (session.userId, clientId, UserIntent.ChangePhone(newPhone)),
+        )
+      },
+      test("fail with IdentifierChangeNotInitiated when the account page did not start it") {
+        val env = Env()
+        val session = sessionWithAmr(Map.empty)
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+          _ <- env.userIntents.consume.succeedsWith(false)
+          result <- env.service.authorize(changeRequest).flip
+          createCalls = env.conversationRepository.create.calls
+        yield assertTrue(
+          result == Error.IdentifierChangeNotInitiated(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
+          createCalls.isEmpty,
+        )
+      },
+      test("fail with LoginRequired when there is no session, without looking for an intent") {
+        val env = Env()
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          result <- env.service.authorize(changeRequest.copy(sessionId = None)).flip
+          consumeCalls = env.userIntents.consume.calls
+        yield assertTrue(
+          result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
+          consumeCalls.isEmpty,
+        )
+      },
+      test("fail with LoginRequired under prompt=none, without consuming the intent") {
+        val env = Env()
+        val session = sessionWithAmr(Map.empty)
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+          result <- env.service.authorize(changeRequest.copy(prompt = Set(Prompt.none))).flip
+          consumeCalls = env.userIntents.consume.calls
+        yield assertTrue(
+          result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
+          consumeCalls.isEmpty,
+        )
+      },
+      test("refuse the change when nothing would verify the user, instead of moving the account on the session alone") {
+        val env = Env()
+        val inlinePasswordFlow = otpFlow.copy(
+          primary = otpFlow.primary.copy(credentials = List(PrimaryCredential.email), inlinePassword = true, factors = Nil),
+        )
+        val session = sessionWithAmr(Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))))
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+          _ <- env.userIntents.consume.succeedsWith(true)
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          result <- env.service.authorize(changeRequest).flip
+          createCalls = env.conversationRepository.create.calls
+        yield assertTrue(
+          result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
+          createCalls.isEmpty,
+        )
+      },
+      test("leave an ordinary request alone: no intent is looked up") {
+        val env = Env()
+        val uuid = UUID.randomUUID()
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+          _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+          _ <- env.conversationRepository.create.succeedsWith(())
+          _ <- env.service.authorize(baseRequest)
+          consumeCalls = env.userIntents.consume.calls
+          created = env.conversationRepository.create.calls.head._2
+        yield assertTrue(
+          consumeCalls.isEmpty,
+          created.identifierChange.isEmpty,
+        )
+      },
+    ),
   )

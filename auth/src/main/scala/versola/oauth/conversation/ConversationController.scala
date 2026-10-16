@@ -243,7 +243,7 @@ object ConversationController extends Controller:
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for
-      phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
+      phone <- FormDecoder.single[Phone](form, "phone", Phone.validate)
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PhoneSubmission(phone, csrf)
 

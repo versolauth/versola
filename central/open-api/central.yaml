@@ -16,9 +16,10 @@ info:
     rather than with the HTTP Basic credentials below; they are not part of this document:
     the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
     `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
-    who registered themselves so that central can index them) and `POST
-    /configuration/clients/edge-certificate/sign` (an edge asks for a certificate for a client
-    whose key it generated).
+    who registered themselves so that central can index them), `PUT /users/email` and
+    `PUT /users/phone` (auth sets a user's email or phone once the user has proven they own the new
+    one) and `POST /configuration/clients/edge-certificate/sign` (an edge asks for a certificate
+    for a client whose key it generated).
 
     ## Authentication
 
@@ -484,7 +485,10 @@ paths:
         '204':
           description: Presets saved.
         '400':
-          description: The presets were rejected, e.g. two presets share an id.
+          description: |
+            The presets were rejected, e.g. two presets share an id, or a preset id is
+            reserved (`current`: edge serves `GET /login/current` itself, so the id cannot
+            name a preset).
           content:
             text/plain:
               schema:
@@ -2044,6 +2048,7 @@ components:
     PresetId:
       type: string
       examples: [default]
+      description: The id `current` is reserved and rejected when presets are saved.
     UserId:
       type: string
       format: uuid
@@ -2055,10 +2060,11 @@ components:
       type: string
       pattern: '^\+?\d{9,15}$'
       description: |
-        A number that parses and validates as an international phone number. It is stored and
-        returned in canonical E.164 (`+` and digits, national trunk prefix dropped), so
-        `+787011234567` is accepted and stored as `+77011234567`; lookups canonicalise the input
-        the same way.
+        A valid international phone number written in E.164 (`+` and digits, no national trunk
+        prefix), which is also how it is stored and returned. It is validated, not normalised: a valid
+        number spelled any other way, such as `+787011234567` for `+77011234567`, is refused with
+        `400`, and so is a lookup by one. Clients (the admin console included) write the number in
+        E.164 before sending it.
       examples: ['+77001234567']
     Login:
       type: string

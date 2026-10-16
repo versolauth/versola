@@ -52,6 +52,17 @@ trait EdgeService:
       overrideParams: Map[String, String] = Map.empty,
   ): IO[Throwable | PresetNotFound, URL]
 
+  /** Like [[authorize]], for the preset of the caller's own live session (`GET /login/current`).
+    * The EDGE_SESSION cookie is caller-supplied, and its preset id is not authenticated, so the
+    * preset is taken from the edge session record the cookie's access token maps to, never from
+    * the cookie text. A missing, forged, lapsed, revoked or mismatched session is reported as
+    * [[PresetNotFound]], the same answer an unknown preset gets, so the route reveals nothing.
+    */
+  def authorizeForSession(
+      sessionCookie: Option[String],
+      overrideParams: Map[String, String] = Map.empty,
+  ): IO[Throwable | PresetNotFound, URL]
+
   def complete(
       code: Code,
       state: State,
@@ -96,6 +107,8 @@ trait EdgeService:
   def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
 
 object EdgeService:
+  /** The preset id edge's `GET /login/current` route owns; central refuses to create it. */
+  val ReservedPresetId: PresetId = PresetId("current")
 
   /** The exchange with auth outlasted the refresh lease's budget; see `refreshExchangeTimeout`. */
   final class RefreshExchangeTimedOut extends RuntimeException("refresh token exchange with auth timed out")
@@ -232,7 +245,49 @@ object EdgeService:
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
     ): IO[Throwable | PresetNotFound, URL] =
-      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl(_, overrideParams))
+      clientService.findPreset(presetId)
+        .someOrElseZIO(Observability.setError("preset_not_found") *> ZIO.fail(PresetNotFound()))
+        .flatMap(prepareAuthorizeUrl(_, overrideParams))
+
+    override def authorizeForSession(
+        sessionCookie: Option[String],
+        overrideParams: Map[String, String],
+    ): IO[Throwable | PresetNotFound, URL] =
+      for
+        content <- ZIO.fromOption(sessionCookie).orElse(rejectSession("session_missing"))
+        (cookiePresetId, token) = EdgeSessionCookie.parse(content)
+        publicKeys <- jwksService.getPublicKeys
+        now <- Clock.instant
+        // The signature is checked before expiry, so an expired token is still one this edge's
+        // OP signed. Its session may well be alive: the access token is far shorter-lived than
+        // the cookie, and the proxy refreshes it from the same session record.
+        verified <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.AccessToken)
+          .map(claims => (jtiOf(claims), claims.as[AccessTokenClaims].toOption))
+          .catchAll:
+            case JWT.Error.Expired(jti) => ZIO.succeed((Some(jti), None))
+            case _ => rejectSession("session_invalid")
+        (jti, typedClaims) = verified
+        record <- ZIO.fromOption(jti).orElse(rejectSession("session_invalid"))
+          .flatMap(id => sessionRepository.findByAccessTokenId(AccessTokenId(id)))
+          .someOrElseZIO(rejectSession("session_unknown"))
+        // The cookie's own preset id must agree with the record: it is only a hint until then.
+        _ <- rejectSession("session_unknown").when(record.presetId != cookiePresetId || !record.expiresAt.isAfter(now))
+        // `current` names this route (central refuses to create such a preset); never resolve it as one.
+        _ <- rejectSession("session_preset_reserved").when(record.presetId == EdgeService.ReservedPresetId)
+        revoked <- ZIO.foreach(typedClaims): claims =>
+          revocationService.isRevoked(
+            RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
+            Instant.ofEpochSecond(claims.issuedAt),
+          )
+        _ <- rejectSession("session_revoked").when(revoked.contains(true))
+        url <- authorize(record.presetId, overrideParams)
+      yield url
+
+    private def jtiOf(claims: Json.Obj): Option[String] =
+      claims.fields.collectFirst { case ("jti", Json.Str(jti)) => jti }
+
+    private def rejectSession(code: String): IO[PresetNotFound, Nothing] =
+      Observability.setError(code) *> ZIO.fail(PresetNotFound())
 
     private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
       for

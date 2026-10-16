@@ -72,6 +72,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
+    val userContactSyncClient = stub[versola.oauth.identifier.UserContactSyncClient]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -92,6 +93,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      userContactSyncClient,
     )
 
   val initialConversation = ConversationRecord(
@@ -129,6 +131,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -331,6 +334,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           grantedScope = None,
           promptConsent = false,
           dpopJkt = None,
+          identifierChange = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -386,6 +390,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           grantedScope = None,
           promptConsent = false,
           dpopJkt = None,
+          identifierChange = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
