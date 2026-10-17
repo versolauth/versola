@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
 
 /**
  * OAuth scopes on the table + side panel pattern: the list, opening a scope by click and by
@@ -250,8 +250,7 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   const dialog = panel(page, 'OpenID scope');
   await expect(dialog.getByRole('dialog')).toBeVisible();
   const box = await dialog.getByRole('dialog').boundingBox();
-  // The viewport minus a classic scrollbar (15px on Linux CI), not the nominal 375.
-  expect(box?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
+  await expectSheetWidth(page, box?.width);
   expect(box?.x).toBe(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 

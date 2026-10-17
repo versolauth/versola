@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
 import { defaultChallengeSettings } from './mocks';
 
 /**
@@ -174,7 +174,7 @@ test('below 720px the wide create panel is a full-screen sheet', async ({ page }
 
   const dialog = panel(page, 'Create role');
   await expect(dialog.getByRole('dialog')).toBeVisible();
-  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
+  await expectSheetWidth(page, (await dialog.getByRole('dialog').boundingBox())?.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 

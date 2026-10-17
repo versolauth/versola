@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, openTenantDropdown, tenantSelectorButton, sidePanel, sidePanelDialog } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, openTenantDropdown, tenantSelectorButton, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
 import { defaultChallengeSettings } from './mocks';
 
 /**
@@ -199,6 +199,6 @@ test('below 720px the panel is a full-screen sheet', async ({ page }) => {
 
   const dialog = panel(page, 'Alpha Workspace');
   await expect(dialog.getByRole('dialog')).toBeVisible();
-  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
+  await expectSheetWidth(page, (await dialog.getByRole('dialog').boundingBox())?.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
