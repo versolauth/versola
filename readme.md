@@ -1,4 +1,9 @@
-# Versola
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-white.svg">
+    <img alt="Versola" src="docs/brand/wordmark-ink.svg" height="36">
+  </picture>
+</h1>
 
 ![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/goshacodes/bd1fd5151f5190b2f8325a56610909ef/raw/versola-coverage.json)
 ![CI/CD](https://github.com/versolauth/versola/actions/workflows/ci-cd.yml/badge.svg)
