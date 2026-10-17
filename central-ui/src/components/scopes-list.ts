@@ -7,6 +7,7 @@ import { createScope, deleteScope, fetchAllClients, fetchLocales, getScopes, upd
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateScopeId } from '../utils/validators';
 import { languagesCell, languagesChip, localizedValue, missingLocales } from './localized-value';
 import { statusIcon } from './status-icon';
@@ -235,7 +236,15 @@ export class VersolaScopesList extends LitElement {
     dispatchRecordRoute(this, { edit: group, create: false });
   }
 
-  private cancelEditor() {
+  private draftBaseline = '';
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draftId, this.draftDescription, this.draftClaims.map(claim => [claim.id, claim.description])]);
+  }
+
+  /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
+  private async cancelEditor() {
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null, create: false });
   }
 
@@ -257,6 +266,7 @@ export class VersolaScopesList extends LitElement {
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
+    this.draftBaseline = this.draftSnapshot;
   }
 
   private get draftIdError(): string {
@@ -319,7 +329,7 @@ export class VersolaScopesList extends LitElement {
       } else {
         await updateScope(this.tenantId, existing!, next);
         this.scopes = this.scopes.map(scope => scope.id === next.id ? next : scope);
-        this.cancelEditor();
+        dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save scope';

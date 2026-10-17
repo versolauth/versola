@@ -7,6 +7,7 @@ import { createTenant, deleteTenant, fetchChallengeSettings, fetchEdges, fetchTe
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateTenantId } from '../utils/validators';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
@@ -189,7 +190,15 @@ export class VersolaTenantsList extends LitElement {
     dispatchRecordRoute(this, { edit: group, create: false });
   }
 
-  private cancelEditor() {
+  private draftBaseline = '';
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draftId, this.draftDescription, this.draftEdgeId, this.draftProfile]);
+  }
+
+  /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
+  private async cancelEditor() {
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null, create: false });
   }
 
@@ -208,6 +217,7 @@ export class VersolaTenantsList extends LitElement {
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
+    this.draftBaseline = this.draftSnapshot;
   }
 
   private get draftIdError(): string {
@@ -251,7 +261,7 @@ export class VersolaTenantsList extends LitElement {
         await updateTenant(id, description, edgeId);
         this.tenants = this.tenants.map(tenant => tenant.id === id ? next : tenant);
         this.notifyTenantsUpdated();
-        this.cancelEditor();
+        dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save tenant';

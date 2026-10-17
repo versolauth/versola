@@ -7,6 +7,7 @@ import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, r
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateEdgeId } from '../utils/validators';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
@@ -224,8 +225,18 @@ export class VersolaEdgesList extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
     void this.loadData();
   }
+
+  disconnectedCallback() {
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
+    super.disconnectedCallback();
+  }
+
+  private readonly handleBeforeUnload = (event: BeforeUnloadEvent) => {
+    if (this.generatedKey) event.preventDefault();
+  };
 
   updated(changed: Map<string, unknown>) {
     if (changed.has('route') || changed.has('edges')) {
@@ -267,12 +278,26 @@ export class VersolaEdgesList extends LitElement {
     return this.route.create ? 'create' : this.route.edit === 'dpop' && this.openEdge ? 'edit' : 'view';
   }
 
-  private openView(edge: Edge) {
+  /** The private key is shown once: leaving its edge asks first. */
+  private async confirmLeaveKey(nextId: string | null): Promise<boolean> {
+    const key = this.generatedKey;
+    if (!key || nextId === key.edgeId) return true;
+    return confirmDestructiveAction({
+      title: 'Leave without saving the private key?',
+      message: 'The private key is shown only once. After you leave it cannot be retrieved; you would have to rotate the key.',
+      confirmLabel: 'Leave',
+      cancelLabel: 'Stay',
+    });
+  }
+
+  private async openView(edge: Edge) {
+    if (!await this.confirmLeaveKey(edge.id)) return;
     dispatchRecordRoute(this, { id: edge.id, edit: null, create: false });
   }
 
-  private closePanel() {
+  private async closePanel() {
     const key = this.route.id;
+    if (!await this.confirmLeaveKey(null)) return;
     dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
     if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
   }
@@ -281,7 +306,15 @@ export class VersolaEdgesList extends LitElement {
     dispatchRecordRoute(this, { edit: 'dpop', create: false });
   }
 
-  private cancelEditor() {
+  private draftBaseline = '';
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draftId, this.draftDpop]);
+  }
+
+  /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
+  private async cancelEditor() {
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null, create: false });
   }
 
@@ -297,6 +330,7 @@ export class VersolaEdgesList extends LitElement {
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
+    this.draftBaseline = this.draftSnapshot;
   }
 
   private get draftIdError(): string {
@@ -329,7 +363,7 @@ export class VersolaEdgesList extends LitElement {
         const edge = this.openEdge!;
         await setEdgeDpopNonce(edge.id, this.draftDpop);
         this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, requireDpopNonce: this.draftDpop } : candidate);
-        this.cancelEditor();
+        dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save edge';

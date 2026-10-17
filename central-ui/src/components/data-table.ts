@@ -102,12 +102,12 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: pointer;
       }
 
-      tbody tr[aria-selected='true'] td,
-      tbody tr[aria-selected='true']:hover td {
+      tbody tr[aria-current='true'] td,
+      tbody tr[aria-current='true']:hover td {
         background: var(--accent-subtle);
       }
 
-      tbody tr[aria-selected='true'] td:first-child {
+      tbody tr[aria-current='true'] td:first-child {
         box-shadow: inset 3px 0 0 var(--accent);
       }
 
@@ -273,12 +273,12 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           background: none;
         }
 
-        tbody tr[aria-selected='true'],
-        tbody tr[aria-selected='true']:hover td {
+        tbody tr[aria-current='true'],
+        tbody tr[aria-current='true']:hover td {
           background: var(--accent-subtle);
         }
 
-        tbody tr[aria-selected='true'] td:first-child {
+        tbody tr[aria-current='true'] td:first-child {
           box-shadow: none;
         }
 
@@ -356,6 +356,8 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
   private handleRowClick(event: Event, row: T) {
     if (!this.selectable) return;
+    // Selecting text in a row is not opening it.
+    if (window.getSelection()?.toString()) return;
     // The menu button and its items act on their own; a click there is not a row selection.
     const path = event.composedPath();
     if (path.some(node => node instanceof HTMLElement && node.classList.contains('cell-actions'))) return;
@@ -433,7 +435,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
               const key = this.rowKey(row);
               return html`
                 <tr role="row" data-key=${key} class=${this.selectable ? 'selectable' : nothing}
-                  aria-selected=${this.selectedKey === null ? nothing : this.selectedKey === key}
+                  aria-current=${this.selectedKey !== null && this.selectedKey === key ? 'true' : nothing}
                   @click=${(e: Event) => this.handleRowClick(e, row)}>
                   ${this.columns.map(column => html`
                     <td role="cell" class=${column.class ?? nothing} data-label=${column.srOnly ? nothing : column.label}>${column.cell(row)}</td>`)}

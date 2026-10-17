@@ -65,7 +65,7 @@ test('opens the panel from the row, shows the groups, and the URL follows', asyn
   await expect(dialog.getByRole('region', { name: 'Requested by' })).toContainText('alpha-web');
   await expect(dialog.getByRole('region', { name: 'Fixed' })).toContainText('Set at creation; clients request it by this value');
   await expect(dialog.getByRole('region', { name: 'Delete scope' })).toBeVisible();
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'OpenID scope' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'OpenID scope' })).toHaveAttribute('aria-current', 'true');
 
   await dialog.getByRole('button', { name: 'Close panel' }).click();
   await expect(dialog).toHaveCount(0);
@@ -121,7 +121,7 @@ test('creates a scope with localized descriptions and claims in the panel and op
   });
   await expect(sidePanelDialog(page, 'Profile data')).toBeVisible();
   await expect(page).toHaveURL(/id=profile/);
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'profile' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'profile' })).toHaveAttribute('aria-current', 'true');
 });
 
 test('refuses an invalid scope ID and a claim without an English description before submitting', async ({ page }) => {
@@ -257,4 +257,25 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   await dialog.getByRole('button', { name: 'Edit claims' }).click();
   await expect(panel(page, 'Edit claims').getByRole('button', { name: 'Save claims' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('asks before Escape drops an edited draft, and closes straight away when nothing changed', async ({ page }) => {
+  await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] }, locales } });
+
+  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await panel(page, 'OpenID scope').getByRole('button', { name: 'Edit general' }).click();
+  await panel(page, 'Edit general').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page).not.toHaveURL(/edit=general/);
+
+  await panel(page, 'OpenID scope').getByRole('button', { name: 'Edit general' }).click();
+  await panel(page, 'Edit general').locator('#scope-description').fill('Changed');
+  await page.keyboard.press('Escape');
+  const confirm = page.getByRole('dialog', { name: 'Discard changes?' });
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page).toHaveURL(/edit=general/);
+  await expect(panel(page, 'Edit general').locator('#scope-description')).toHaveValue('Changed');
+
+  await page.keyboard.press('Escape');
+  await confirm.getByRole('button', { name: 'Discard' }).click();
+  await expect(page).not.toHaveURL(/edit=general/);
 });

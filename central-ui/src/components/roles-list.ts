@@ -7,6 +7,7 @@ import { createRole, deleteRole, fetchChallengeSettings, fetchLocales, getPermis
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateRoleId } from '../utils/validators';
 import { localizedValue } from './localized-value';
 import { statusIcon } from './status-icon';
@@ -211,7 +212,15 @@ export class VersolaRolesList extends LitElement {
     dispatchRecordRoute(this, { edit: group, create: false });
   }
 
-  private cancelEditor() {
+  private draftBaseline = '';
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draftId, this.draftDescription, this.draftPermissions]);
+  }
+
+  /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
+  private async cancelEditor() {
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null, create: false });
   }
 
@@ -229,6 +238,7 @@ export class VersolaRolesList extends LitElement {
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
+    this.draftBaseline = this.draftSnapshot;
   }
 
   private get draftIdError(): string {
@@ -271,7 +281,7 @@ export class VersolaRolesList extends LitElement {
       } else {
         await updateRole(this.tenantId, existing!, next);
         this.roles = this.roles.map(role => role.id === next.id ? next : role);
-        this.cancelEditor();
+        dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save role';

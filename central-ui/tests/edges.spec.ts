@@ -172,3 +172,23 @@ test('below 720px the panel is a full-screen sheet', async ({ page }) => {
   expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(375);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+test('asks before the panel closes on a private key that is shown only once', async ({ page }) => {
+  await loadAdminApp(page, { path: edgesPath, state: { edges: [] } });
+
+  await page.getByRole('button', { name: '+ Create Edge' }).click();
+  const dialog = panel(page, 'Register edge');
+  await dialog.getByLabel('Edge ID *').fill('new');
+  await dialog.getByRole('button', { name: 'Register edge', exact: true }).click();
+  const record = panel(page, 'edge-new');
+  await expect(record.getByText('Edge key generated')).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  const confirm = page.getByRole('dialog', { name: 'Leave without saving the private key?' });
+  await confirm.getByRole('button', { name: 'Stay' }).click();
+  await expect(record.getByText('Edge key generated')).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  await confirm.getByRole('button', { name: 'Leave' }).click();
+  await expect(panel(page, 'edge-new')).toHaveCount(0);
+});
