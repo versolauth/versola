@@ -53,17 +53,17 @@ test('switches themes for the session when localStorage is unavailable', async (
   const navigation = page.locator('versola-navigation');
   const favicon = page.locator('link[rel="icon"]');
 
-  await expect(favicon).toHaveAttribute('href', '/logo-shield-light.svg');
+  await expect(favicon).toHaveAttribute('href', '/favicon-light.svg');
 
   await navigation.getByRole('button', { name: 'Colour scheme: Auto' }).click();
   await navigation.getByRole('option', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(favicon).toHaveAttribute('href', 'logo-shield.svg');
+  await expect(favicon).toHaveAttribute('href', 'favicon-dark.svg');
 
   await navigation.getByRole('button', { name: 'Colour scheme: Dark' }).click();
   await navigation.getByRole('option', { name: 'Light' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(favicon).toHaveAttribute('href', 'logo-shield-light.svg');
+  await expect(favicon).toHaveAttribute('href', 'favicon-light.svg');
 });
 
 test('follows the operating system when nothing is persisted', async ({ page }) => {
@@ -72,7 +72,7 @@ test('follows the operating system when nothing is persisted', async ({ page }) 
 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(page.locator('html')).toHaveAttribute('data-theme-pref', 'auto');
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/logo-shield-light.svg');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/favicon-light.svg');
 });
 
 test('uses the dark favicon for a persisted dark theme on first load', async ({ page }) => {
@@ -81,5 +81,5 @@ test('uses the dark favicon for a persisted dark theme on first load', async ({ 
   await loadAdminApp(page);
 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'logo-shield.svg');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'favicon-dark.svg');
 });
