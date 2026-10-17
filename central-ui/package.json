@@ -17,6 +17,8 @@
     "test:ui": "npx playwright test",
     "test:ui:headed": "npx playwright test --headed",
     "test:unit": "vitest run",
+    "docs:screenshots": "npx playwright test --project docs",
+    "docs:screenshots:sync": "node scripts/sync-docs-screenshots.mjs",
     "design:contrast": "node design-system/contrast.mjs"
   },
   "keywords": [
