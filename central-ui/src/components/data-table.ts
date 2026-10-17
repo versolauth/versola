@@ -135,6 +135,10 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         min-height: 1.5rem;
       }
 
+      .row-flags {
+        margin-top: 0.25rem;
+      }
+
       .row-link:hover .row-title {
         color: var(--accent);
         text-decoration: underline;

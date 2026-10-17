@@ -420,7 +420,7 @@ export class VersolaRolesList extends LitElement {
 
       <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
         ${this.row('Role ID', html`<span class="mono">${role.id}</span>`, 'Set at creation')}
-        ${this.row('Active', role.active ? 'Yes' : 'No', 'Reported by central')}
+        ${this.row('Active', role.active ? 'Yes' : 'No', 'Cannot be changed here yet')}
       `}></versola-record-card>
 
       ${this.canManage ? html`

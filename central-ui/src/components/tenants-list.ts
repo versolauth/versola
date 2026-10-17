@@ -344,8 +344,8 @@ export class VersolaTenantsList extends LitElement {
         <button type="button" class="row-link" aria-label=${`Open tenant ${tenant.id}`}>
           <span class="row-title">${tenant.description || tenant.id}</span>
           <span class="row-id">${tenant.id}</span>
-        </button>` },
-      { id: 'selected', label: 'Selected', cell: tenant => tenant.id === this.selectedTenantId ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Selected</span>` : html`<span class="muted">—</span>` },
+        </button>
+        ${tenant.id === this.selectedTenantId ? html`<div class="row-flags"><span class="chip ok">${statusIcon('check', 'icon', 14)}Selected</span></div>` : nothing}` },
       { id: 'edge', label: 'Edge', cell: tenant => html`<div class="chips">${this.edgeValue(tenant)}</div>` },
     ];
     const menuItems = (tenant: Tenant): RowMenuItem[] => [

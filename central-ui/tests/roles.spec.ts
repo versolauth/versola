@@ -55,7 +55,7 @@ test('opens a role and shows its permissions grouped by category, Fixed and the 
   await expect(perms.getByRole('button', { name: 'Show endpoints for orders:read' })).toBeVisible();
   const fixed = dialog.getByRole('region', { name: 'Fixed' });
   await expect(fixed).toContainText('Set at creation');
-  await expect(fixed).toContainText('Reported by central');
+  await expect(fixed).toContainText('Cannot be changed here yet');
   await expect(dialog.getByRole('button', { name: 'Delete role alpha-admin' })).toBeEnabled();
 
   await page.keyboard.press('Escape');

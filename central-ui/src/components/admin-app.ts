@@ -225,6 +225,7 @@ export class VersolaAdmin extends LitElement {
       .main-content {
         flex: 1 1 auto;
         padding: 2rem;
+        padding-right: calc(2rem + var(--panel-inset, 0rem));
         max-width: 1400px;
         min-width: 0; /* let children shrink instead of overflowing */
       }

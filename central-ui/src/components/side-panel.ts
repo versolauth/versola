@@ -237,6 +237,7 @@ export class VersolaSidePanel extends LitElement {
 
   disconnectedCallback() {
     window.removeEventListener('keydown', this.handleKeyDown);
+    document.documentElement.style.removeProperty('--panel-inset');
     super.disconnectedCallback();
   }
 
@@ -245,8 +246,20 @@ export class VersolaSidePanel extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    // A new record or a mode change is a new dialog: a screen reader hears the title again.
-    if (changed.has('mode') || changed.has('recordId') && changed.get('recordId') !== undefined) this.focusTitle();
+    // A mode change is a new dialog: a screen reader hears the title again. Picking another row
+    // while the panel is open in view mode leaves focus on that row, so the list stays walkable.
+    if (changed.has('mode') || (this.mode !== 'view' && changed.has('recordId') && changed.get('recordId') !== undefined)) this.focusTitle();
+    this.syncInset();
+  }
+
+  /** At 1440px and up the panel takes its 560px from the page instead of covering the table:
+    * `admin-app` pads `<main>` by `--panel-inset`. Narrower screens keep the overlay. */
+  private static readonly INSET_QUERY = '(min-width: 1440px)';
+
+  private syncInset() {
+    const inset = this.mode === 'view' && window.matchMedia(VersolaSidePanel.INSET_QUERY).matches && !this.wide;
+    if (inset) document.documentElement.style.setProperty('--panel-inset', '35rem');
+    else document.documentElement.style.removeProperty('--panel-inset');
   }
 
   private focusTitle() {
@@ -293,9 +306,7 @@ export class VersolaSidePanel extends LitElement {
           <div class="head-text">
             ${this.mode === 'edit' && this.parentLabel ? html`
               <nav class="crumbs" aria-label="Breadcrumb">
-                <button type="button" class="crumb-link" @click=${() => this.dispatchEvent(new CustomEvent('back', { bubbles: true, composed: true }))}>${this.parentLabel}</button>
-                <span aria-hidden="true">›</span>
-                <span>${this.heading}</span>
+                <button type="button" class="crumb-link" @click=${() => this.dispatchEvent(new CustomEvent('back', { bubbles: true, composed: true }))}><span aria-hidden="true">‹ </span>${this.parentLabel}</button>
               </nav>` : this.mode === 'view' && this.kind ? html`<div class="kind">${this.kind}</div>` : ''}
             <h2 class="panel-title" id="panel-title" tabindex="-1">${this.heading}</h2>
             ${this.mode === 'view' ? html`

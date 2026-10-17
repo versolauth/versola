@@ -40,7 +40,7 @@ test('lists tenants with the selected one first, filters by edge and searches', 
   });
 
   const table = page.locator('versola-data-table');
-  await expect(table.getByRole('columnheader')).toHaveText(['Tenant', 'Selected', 'Edge', 'Actions']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Tenant', 'Edge', 'Actions']);
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveText([/tenant-bravo/, /tenant-alpha/]);
   await expect(table.getByRole('row').filter({ hasText: 'Bravo Workspace' })).toContainText('Selected');
   await expect(table.getByRole('row').filter({ hasText: 'Bravo Workspace' })).toContainText('Not assigned');
