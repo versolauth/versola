@@ -3,49 +3,27 @@ import { findRequest, loadAdminApp } from './fixtures';
 
 const systemSettingsPath = '/?view=system-settings';
 
-test('shows and updates identity provider logo settings', async ({ page }) => {
+test('updates the password policy', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: systemSettingsPath,
-    state: {
-      systemSettings: {
-        passwordRegex: '.{8,}',
-        passwordHistorySize: 5,
-        passwordNumDifferent: 3,
-        identityProviderLogo: 'https://assets.example/current.svg',
-      },
-    },
+    state: { systemSettings: { passwordRegex: '.{8,}', passwordHistorySize: 5, passwordNumDifferent: 3 } },
   });
 
-  await expect(page.getByText('https://assets.example/current.svg')).toBeVisible();
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.locator('input[type="url"]').fill('https://assets.example/new.svg');
+  await page.locator('input[type="text"]').fill('.{12,}');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toMatchObject({
-    identityProviderLogo: 'https://assets.example/new.svg',
+  expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toEqual({
+    passwordRegex: '.{12,}',
+    passwordHistorySize: 5,
+    passwordNumDifferent: 3,
   });
-  await expect(page.getByText('https://assets.example/new.svg')).toBeVisible();
 });
 
-test('rejects malformed logo URLs before submitting', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: systemSettingsPath });
+test('no longer carries the logo: it is a tenant setting', async ({ page }) => {
+  await loadAdminApp(page, { path: systemSettingsPath });
 
+  await expect(page.getByText('Identity provider logo')).toHaveCount(0);
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.locator('input[type="url"]').fill('https://');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-
-  await expect(page.getByText('Logo must be an absolute http(s) URL.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/system-settings')).toBeFalsy();
-});
-
-test('sends null when the configured logo is cleared', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: systemSettingsPath });
-
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.locator('input[type="url"]').fill('');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-
-  expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toMatchObject({
-    identityProviderLogo: null,
-  });
+  await expect(page.locator('input[type="url"]')).toHaveCount(0);
 });

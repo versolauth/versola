@@ -251,6 +251,10 @@ export interface ChallengeSettingsRecord {
   /** RFC 7523 section 3: how far into the future a `private_key_jwt` client assertion from
    * one of this tenant's clients may set its `exp`. */
   clientAssertionMaxLifetimeSeconds?: number;
+  /** The tenant's logo above its sign-in card: the file for the light colour scheme (dark artwork) and the one for the
+   * dark scheme (light artwork). Both or neither. */
+  logoLight?: string | null;
+  logoDark?: string | null;
 }
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the
@@ -268,7 +272,6 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
-  identityProviderLogo?: string | null;
 }
 
 // A registered passkey credential for a user

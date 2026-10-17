@@ -7,6 +7,14 @@ export type ClientInfo = {
   partner: boolean;
 };
 
+/** The tenant's logo above the card: one file per colour scheme, always both. */
+export type PageLogo = {
+  /** For the light scheme: dark artwork. */
+  light: string;
+  /** For the dark scheme: light artwork. */
+  dark: string;
+};
+
 /** What every form receives in `window.__VERSOLA_FORM__`, besides its own `step`. */
 export interface BaseFormConfig {
   t: Record<string, string>;
@@ -19,7 +27,7 @@ export interface BaseFormConfig {
   /** Set by the console's form previews: the visitor's colour scheme toggle is not drawn there (the preview has its own Light / Dark control). */
   preview?: boolean;
   csrf?: string;
-  logo?: string;
+  logo?: PageLogo;
   client?: ClientInfo;
   /** Display name per locale code, as configured under Locales. */
   localeNames?: Record<string, string>;

@@ -142,26 +142,30 @@ body {
   height: 28px;
   width: auto;
 }
-/* The identity provider's logo on a light tile, like an app icon: it reads on any page colour
- * and with any logo, dark or light, square or wide. */
-.page-brand-tile {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 64px;
-  min-width: 64px;
+/* The tenant's logo, bare on the page: two images in one grid cell, and the one made for the other scheme is masked
+ * out. light-dark() follows color-scheme, so the visitor's Auto / Light / Dark toggle switches the logo as well, which
+ * prefers-color-scheme (inside the page or inside an SVG) would not. */
+.page-logo {
+  display: grid;
+  justify-items: center;
+  height: 40px;
   max-width: 240px;
-  padding: 12px;
-  border-radius: var(--rf);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
 }
-.page-brand-tile img {
+.page-logo img {
+  grid-area: 1 / 1;
   height: 100%;
   width: auto;
   max-width: 100%;
   object-fit: contain;
   display: block;
+}
+.page-logo-light {
+  -webkit-mask-image: linear-gradient(light-dark(#000, transparent), light-dark(#000, transparent));
+  mask-image: linear-gradient(light-dark(#000, transparent), light-dark(#000, transparent));
+}
+.page-logo-dark {
+  -webkit-mask-image: linear-gradient(light-dark(transparent, #000), light-dark(transparent, #000));
+  mask-image: linear-gradient(light-dark(transparent, #000), light-dark(transparent, #000));
 }
 h1 {
   font-size: 1.9rem;

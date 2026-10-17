@@ -38,7 +38,7 @@ type LoginShot = {
   form: string;
   step: Record<string, unknown>;
   extraCss?: string;
-  logo?: string;
+  logo?: { light: string; dark: string };
   width?: number;
   act?: Act;
 };
@@ -183,6 +183,16 @@ const dana = {
   }],
 };
 
+// The tenant's logo pair, as artwork with its text already outlined (an <img> has no fonts): dark ink for the light
+// scheme, light ink for the dark one. The console shows them by URL, so the docs spec serves these bodies for them.
+const acmeMark = (ink: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="150" height="40" viewBox="0 0 150 40" fill="none" stroke="${ink}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><circle cx="20" cy="20" r="14"/><path d="M13 24 L20 12 L27 24"/><circle cx="58" cy="24" r="6"/><path d="M64 18 V30"/><path d="M90 20 C88 17 86 17 84 17 C79 17 77 20 77 24 C77 28 79 31 84 31 C86 31 88 31 90 28"/><path d="M98 31 V17 M98 22 C98 16 108 16 108 22 V31 M108 22 C108 16 118 16 118 22 V31"/><path d="M127 24 H139 C139 17 127 17 127 24 C127 31 136 32 139 29"/></svg>`;
+export const tenantLogoBodies: Record<string, string> = {
+  'https://assets.example.com/acme-light.svg': acmeMark('#1c1b19'),
+  'https://assets.example.com/acme-dark.svg': acmeMark('#f3f2f0'),
+};
+const [tenantLogoLight, tenantLogoDark] = Object.keys(tenantLogoBodies);
+
 const challengeSettings = {
   tenantId: tenant,
   phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
@@ -202,6 +212,8 @@ const challengeSettings = {
   signingKeyId: 'ps-kid',
   clientAssertionMaxLifetimeSeconds: 300,
   acrVocabulary: { otp: ['otp'], mfa: ['password', 'otp'] },
+  logoLight: tenantLogoLight,
+  logoDark: tenantLogoDark,
 };
 
 const locales = [
@@ -337,7 +349,7 @@ const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, t
 const edgesState: MockState = { tenants: edgeTenants, edges };
 
 const systemSettingsState: MockState = {
-  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1, identityProviderLogo: null },
+  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1 },
 };
 
 const jwksState: MockState = {
@@ -691,13 +703,13 @@ const consoleShots: DocsShot[] = [
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
-    before: async page => { await expect(page.locator('versola-system-settings .card').nth(1).locator('.prop-value')).toHaveText('—'); },
+    before: async page => { await expect(page.locator('versola-system-settings .prop-label').filter({ hasText: 'History size' })).toBeVisible(); },
   },
   {
     name: 'console/system-settings-edit', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
     before: async page => {
       await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.locator('versola-system-settings input[type="url"]')).toBeVisible();
+      await expect(page.locator('versola-system-settings input[type="text"]')).toBeVisible();
     },
   },
 
@@ -722,6 +734,14 @@ const consoleShots: DocsShot[] = [
   {
     name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
     before: async page => { await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible(); },
+  },
+  {
+    name: 'console/challenges-logo', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    section: page => page.locator('.card').filter({ has: page.getByText('Logo', { exact: true }) }).last(),
+    before: async page => {
+      await expect(page.getByTestId('logo-preview-light').locator('img')).toBeVisible();
+      await expect(page.getByTestId('logo-preview-dark').locator('img')).toBeVisible();
+    },
   },
   {
     name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
@@ -1105,13 +1125,14 @@ const consoleShots: DocsShot[] = [
 const kz = { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' };
 const phoneSignIn = { type: 'credential', primaryCredentials: ['phone'], passkey: true, phoneRegions: [kz] };
 const partnerLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="14" fill="%23b4348a"/><text x="32" y="43" font-size="30" font-weight="800" text-anchor="middle" fill="white" font-family="sans-serif">S</text></svg>';
-const idpLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="40"><text x="0" y="30" font-size="30" font-weight="800" fill="%231c1b19" font-family="Georgia,serif" font-style="italic">Acme ID</text></svg>';
+const asDataUri = (svg: string) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+const tenantLogo = { light: asDataUri(tenantLogoBodies[tenantLogoLight]), dark: asDataUri(tenantLogoBodies[tenantLogoDark]) };
 const typePhone: Act = page => page.locator('.phone-input').fill('7012345678');
 
 const loginShots: DocsShot[] = [
   { name: 'login/sign-in', kind: 'login', form: 'credential', step: phoneSignIn, act: typePhone },
   { name: 'login/sign-in-brand', kind: 'login', form: 'credential', step: phoneSignIn, extraCss: generate(resolve({ base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } })), act: typePhone },
-  { name: 'login/sign-in-idp-logo', kind: 'login', form: 'credential', step: phoneSignIn, logo: idpLogo, act: typePhone },
+  { name: 'login/sign-in-idp-logo', kind: 'login', form: 'credential', step: phoneSignIn, logo: tenantLogo, act: typePhone },
   { name: 'login/consent', kind: 'login', form: 'consent', step: { ...scenario('consent', 'typical').step, clientName: 'Storefront', logoUri: partnerLogo, user: { name: 'Anna Petrova' } } },
 ];
 

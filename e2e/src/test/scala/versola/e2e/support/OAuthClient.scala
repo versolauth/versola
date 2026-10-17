@@ -199,7 +199,9 @@ object UserinfoResult:
           err => ZIO.succeed(Failure(response, s"JSON parse error [$err] body=$body")),
           raw =>
             ZIO.attempt(java.util.UUID.fromString(raw.sub))
-              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified))
+              .map(uuid =>
+                Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified),
+              )
               .orElse(ZIO.succeed(Failure(response, s"sub is not a valid UUID: ${raw.sub}"))),
         )
       else ZIO.succeed(Failure(response, body))
@@ -1415,6 +1417,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       emailRegistration: String = OAuthClient.openEmailRegistration,
       /** The role ids a self-registered account gets, as a JSON array; central wants at least one. */
       defaultRoles: String = """["user"]""",
+      /** The tenant's logo for the light and the dark colour scheme. Sent as null when `None`, which clears the
+        * stored file (central keeps what an omitted field says), so every call leaves the tenant on exactly
+        * these two. Central takes both or neither. */
+      logoLight: Option[String] = None,
+      logoDark: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1436,7 +1443,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson,
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
          |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
-         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")}
+         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")},
+         |  "logoLight": ${logoLight.fold("null")(url => s"\"$url\"")},
+         |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)

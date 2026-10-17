@@ -5,7 +5,7 @@ import versola.central.configuration.tenants.TenantId
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
-import java.net.IDN
+import java.net.{IDN, URI}
 import java.util.Locale
 import java.util.regex.Pattern
 import scala.util.Try
@@ -199,9 +199,24 @@ case class ChallengeSettingsRecord(
     /** Which FAPI profile this tenant's clients are held to. `fapi2` is the default for new
       * tenants -- see [[ChallengeSettingsRecord.DefaultSecurityProfile]]. */
     securityProfile: SecurityProfile,
+    /** The tenant's logo for the light colour scheme (dark artwork) and for the dark one (light artwork), shown bare
+      * above the sign-in card. Both or neither: a single file reused for both schemes would vanish on one of them. */
+    logoLight: Option[String] = None,
+    logoDark: Option[String] = None,
 ) derives Schema, JsonCodec
 
 object ChallengeSettingsRecord:
+  /** Why this logo pair cannot be stored, if it cannot: both files or none, each an absolute HTTP(S) URL. */
+  def validateLogo(light: Option[String], dark: Option[String]): Option[String] =
+    if light.isDefined != dark.isDefined then Some("logoLight and logoDark must be set or cleared together")
+    else if (light ++ dark).exists(url => !isLogoUrl(url)) then Some("logoLight and logoDark must be absolute HTTP(S) URLs")
+    else None
+
+  private def isLogoUrl(value: String): Boolean =
+    Try(URI(value)).toOption.exists: uri =>
+      val httpScheme = Option(uri.getScheme).exists(scheme => scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
+      uri.isAbsolute && httpScheme && Option(uri.getHost).exists(_.nonEmpty) && uri.getPort <= 65535
+
   /** Seeded by bootstrap with no permissions beyond access to the account itself. */
   val DefaultRoleId: RoleId = RoleId("user")
 

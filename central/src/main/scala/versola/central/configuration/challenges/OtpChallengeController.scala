@@ -111,6 +111,9 @@ object OtpChallengeController extends Controller:
         // off while central reports it configured.
         _ <- ZIO.fail(BadRequest("mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together"))
           .when(mtlsCertificateHeader.isDefined != mtlsCertificateEncoding.isDefined)
+        logoLight = body.logoLight.applyTo(existing.flatMap(_.logoLight))
+        logoDark = body.logoDark.applyTo(existing.flatMap(_.logoDark))
+        _ <- ZIO.foreachDiscard(ChallengeSettingsRecord.validateLogo(logoLight, logoDark))(error => ZIO.fail(BadRequest(error)))
         _ <- ZIO.fail(BadRequest(
           s"clientAssertionMaxLifetimeSeconds must be between ${ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds}" +
             s" and ${ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds}",
@@ -154,6 +157,8 @@ object OtpChallengeController extends Controller:
             body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
             clientAssertionMaxLifetimeSeconds,
             securityProfile,
+            logoLight,
+            logoDark,
           ),
         )
           // A kid nothing can sign with, or one signing under a disallowed algorithm, is the

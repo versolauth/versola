@@ -138,6 +138,10 @@ case class ChallengeSettingsRecord(
     /** Which FAPI profile this tenant's clients are held to -- see
       * [[versola.oauth.client.OAuthConfigurationService.getSecurityProfile]]. */
     securityProfile: SecurityProfile,
+    /** The tenant's logo for the light and the dark colour scheme: both or neither, see
+      * [[versola.oauth.client.OAuthConfigurationService.getTenantLogo]]. */
+    logoLight: Option[String] = None,
+    logoDark: Option[String] = None,
 ) derives JsonCodec
 
 object ChallengeSettingsRecord:

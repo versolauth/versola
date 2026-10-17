@@ -680,12 +680,11 @@ object Fixtures:
       passwordRegex: String = ".{8,}",
       passwordHistorySize: Int = 3,
       passwordNumDifferent: Int = 1,
-      identityProviderLogo: Option[String] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "passwordRegex" -> Json.Str(passwordRegex),
         "passwordHistorySize" -> Json.Num(passwordHistorySize),
         "passwordNumDifferent" -> Json.Num(passwordNumDifferent),
-      ) ++ Chunk.fromIterable(identityProviderLogo.map(value => "identityProviderLogo" -> Json.Str(value))),
+      ),
     )

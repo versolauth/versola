@@ -724,3 +724,76 @@ test('keeps the stored domains when the mode is closed', async ({ page }) => {
   expect(body.emailRegistration).toEqual({ mode: 'closed', domains: ['example.com'], blockSubaddress: false });
   expect(body.defaultRoles).toEqual(['member']);
 });
+
+
+async function fillRequiredPasskey(page: import('@playwright/test').Page) {
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+}
+
+test('shows a tenant without a logo as the Versola wordmark', async ({ page }) => {
+  await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await expect(page.getByText('The login pages of this tenant show the Versola wordmark.')).toBeVisible();
+  await expect(page.getByTestId('logo-preview-light')).toHaveCount(0);
+});
+
+test('saves a logo pair and previews each file on a swatch of its own scheme', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByTestId('logo-light-input').fill('https://assets.example/logo-light.svg');
+  await page.getByTestId('logo-dark-input').fill('https://assets.example/logo-dark.svg');
+  await expect(page.getByTestId('logo-preview-light').locator('img')).toHaveAttribute('src', 'https://assets.example/logo-light.svg');
+  await expect(page.getByTestId('logo-preview-dark').locator('img')).toHaveAttribute('src', 'https://assets.example/logo-dark.svg');
+  await expect(page.getByTestId('logo-preview-light')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(page.getByTestId('logo-preview-dark')).toHaveCSS('background-color', 'rgb(31, 31, 32)');
+  await fillRequiredPasskey(page);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body).toMatchObject({
+    logoLight: 'https://assets.example/logo-light.svg',
+    logoDark: 'https://assets.example/logo-dark.svg',
+  });
+  await expect(page.locator('.prop-value').filter({ hasText: 'https://assets.example/logo-dark.svg' })).toBeVisible();
+});
+
+test('refuses a single logo file and a malformed URL before submitting', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await fillRequiredPasskey(page);
+  await page.getByTestId('logo-light-input').fill('https://assets.example/logo-light.svg');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.error-msg')).toHaveText('The logo needs both a light and a dark file, or neither.');
+
+  await page.getByTestId('logo-dark-input').fill('/logo-dark.svg');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.error-msg')).toHaveText('Logo must be an absolute http(s) URL.');
+  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/challenges/challenge-settings')).toBeFalsy();
+});
+
+test('clears both logo files as explicit nulls', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...baseState,
+      challengeSettings: {
+        'tenant-alpha': { ...settingsWithoutPasskey, logoLight: 'https://assets.example/l.svg', logoDark: 'https://assets.example/d.svg' },
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByTestId('logo-light-input').fill('');
+  await page.getByTestId('logo-dark-input').fill('');
+  await fillRequiredPasskey(page);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body).toMatchObject({
+    logoLight: null,
+    logoDark: null,
+  });
+});

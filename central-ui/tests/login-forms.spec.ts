@@ -428,8 +428,8 @@ test.describe('credential', () => {
 
   test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
     const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';
-    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo });
-    await expect(page.locator('.page-brand img')).toBeVisible();
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: { light: logo, dark: logo } });
+    await expect(page.locator('.page-brand img').first()).toBeAttached();
     await expect(page.locator('.page-wordmark')).toHaveCount(0);
     expect(await page.locator('.page-brand').evaluate(el => el.nextElementSibling?.classList.contains('container'))).toBe(true);
 
@@ -439,9 +439,35 @@ test.describe('credential', () => {
 
     const broken = await page.context().newPage();
     await broken.route('**/missing-logo.png', route => route.abort());
-    await renderForm(broken, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: '/missing-logo.png' });
+    await renderForm(broken, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: { light: '/missing-logo.png', dark: '/missing-logo.png' } });
     await expect(broken.locator('.page-brand img')).toHaveCount(0);
     await expect(broken.locator('.page-wordmark')).toHaveCount(1);
+  });
+
+  test('shows the logo made for the current colour scheme, bare, and follows the scheme toggle', async ({ page }) => {
+    const svg = (fill: string) => `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="%23${fill}"/></svg>`;
+    await renderForm(page, 'credential', {
+      step: { type: 'credential', primaryCredentials: ['email'] },
+      logo: { light: svg('111111'), dark: svg('eeeeee') },
+    });
+    const light = page.locator('.page-brand img.page-logo-light');
+    const dark = page.locator('.page-brand img.page-logo-dark');
+    const maskOf = (locator: typeof light) => locator.evaluate(el => getComputedStyle(el).maskImage);
+
+    await page.evaluate(() => { document.documentElement.style.colorScheme = 'light'; });
+    expect(await maskOf(light)).toContain('rgb(0, 0, 0)');
+    expect(await maskOf(dark)).toContain('rgba(0, 0, 0, 0)');
+
+    await page.evaluate(() => { document.documentElement.style.colorScheme = 'dark'; });
+    expect(await maskOf(dark)).toContain('rgb(0, 0, 0)');
+    expect(await maskOf(light)).toContain('rgba(0, 0, 0, 0)');
+
+    // Bare on the page: no tile, no padding or background around the artwork.
+    const frame = await page.locator('.page-logo').evaluate(el => {
+      const style = getComputedStyle(el);
+      return { background: style.backgroundColor, padding: style.padding, shadow: style.boxShadow };
+    });
+    expect(frame).toEqual({ background: 'rgba(0, 0, 0, 0)', padding: '0px', shadow: 'none' });
   });
 
   test('the terminal screens carry an icon, so the card is not a bare title', async ({ page }) => {
@@ -633,8 +659,8 @@ test.describe('consent, with the seeded scope catalog', () => {
 
   test('puts the identity provider\'s logo, not the partner\'s, in the brand zone', async ({ page }) => {
     const idp = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%2336c"/></svg>';
-    await renderForm(page, 'consent', { step: { ...step, logoUri: logo }, logo: idp });
-    await expect(page.locator('.page-brand img')).toHaveAttribute('src', idp);
+    await renderForm(page, 'consent', { step: { ...step, logoUri: logo }, logo: { light: idp, dark: idp } });
+    await expect(page.locator('.page-brand img.page-logo-light')).toHaveAttribute('src', idp);
     await expect(page.locator('.page-wordmark')).toHaveCount(0);
   });
 
