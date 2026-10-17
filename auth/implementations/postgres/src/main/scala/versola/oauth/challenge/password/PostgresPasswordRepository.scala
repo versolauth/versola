@@ -13,7 +13,9 @@ import zio.{Clock, IO, Task, ZLayer}
 import java.time.Instant
 import java.util.UUID
 
-class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, BasicCodecs:
+class PostgresPasswordRepository(
+  xa: TransactorZIO,
+) extends PasswordRepository, BasicCodecs:
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Salt] = DbCodec.ByteArrayCodec.biMap(Salt(_), identity[Array[Byte]])
@@ -74,23 +76,19 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           ORDER BY id DESC
         """.query[PasswordRecord].run()
 
-        if permanents.take(numDifferent).exists(_.password === password) then
-          Left(PasswordReuseError(numDifferent))
-        else {
-          // Remove any temporary passwords so they are never part of history
-          sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
-             """.update.run()
+        // Remove any temporary passwords so they are never part of history
+        sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
+           """.update.run()
 
-          sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
-                VALUES ($userId, $password, $salt, $now, NULL)
-             """.update.run()
+        sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
+              VALUES ($userId, $password, $salt, $now, NULL)
+           """.update.run()
 
-          val toDelete = permanents.drop(historySize - 1)
-          if toDelete.nonEmpty then
-            val ids = toDelete.map(_.id)
-            sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-          Right(())
-        }
+        val toDelete = permanents.drop(historySize - 1)
+        if toDelete.nonEmpty then
+          val ids = toDelete.map(_.id)
+          sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
+        Right(())
       }.absolve
     yield result
 
@@ -130,6 +128,6 @@ object PostgresPasswordRepository:
     * wait, never a correctness issue.
     */
   private[password] val PasswordHistoryLockNamespace: Int = 92
-
-  def live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
+  
+  val live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
     ZLayer.fromFunction(PostgresPasswordRepository(_))
