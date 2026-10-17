@@ -65,18 +65,19 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
   private def page(brand: Rgb, surface: Surface, dark: Boolean): Page =
     val card = if dark then mix(brand, 0.07, rgb("#1f1f20")) else rgb("#ffffff")
     (surface, dark) match
-      case (Surface.bold, false) => Page(mix(brand, 0.22, rgb("#0c1110")), rgb("#ffffff"), card)
+      case (Surface.bold, false) => Page(mix(brand, 0.09, rgb("#f6f4ef")), rgb("#1c1b19"), card)
       case (Surface.bold, true) => Page(mix(brand, 0.10, rgb("#060707")), rgb("#f3f2f0"), card)
       case (Surface.soft, false) => Page(mix(brand, 0.14, rgb("#f7f4ee")), rgb("#1c1b19"), card)
       case (Surface.soft, true) => Page(mix(brand, 0.07, rgb("#0e0e0d")), rgb("#f3f2f0"), card)
       case (Surface.neutral, false) => Page(rgb("#ecebe7"), rgb("#1c1b19"), card)
       case (Surface.neutral, true) => Page(rgb("#0b0b0a"), rgb("#f3f2f0"), card)
 
-  // The glow's strength in the dark scheme (`--glow-dark`, as common.css and ThemeCss.surface write it); transparent in the light one.
-  private def glowShare(surface: Surface): Double = surface match
-    case Surface.bold => 0.55
-    case Surface.soft => 0.16
-    case Surface.neutral => 0.0
+  // The glow's strength per scheme (`--glow-light` and `--glow-dark`, as common.css and ThemeCss.surface write them).
+  private def glowShare(surface: Surface, dark: Boolean): Double = (surface, dark) match
+    case (Surface.bold, false) => 0.30
+    case (Surface.bold, true) => 0.55
+    case (Surface.soft, _) => 0.16
+    case (Surface.neutral, _) => 0.0
 
   private val brands = ThemePresets.all.map(preset => preset.id -> rgb(preset.tokens.brand.value))
   private val cases =
@@ -190,10 +191,11 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
       test("the page colours this spec checks are the ones common.css defines") {
         val css = ThemeCss.baseStylesheet
         assertTrue(
-          css.contains("--page-light: color-mix(in oklab, var(--brand) 22%, #0c1110);"),
+          css.contains("--page-light: color-mix(in oklab, var(--brand) 9%, #f6f4ef);"),
           css.contains("--page-dark: color-mix(in oklab, var(--brand) 10%, #060707);"),
+          css.contains("--glow-light: color-mix(in oklab, var(--brand) 30%, transparent);"),
           css.contains("--glow-dark: color-mix(in oklab, var(--brand) 55%, transparent);"),
-          css.contains("--page-ink: light-dark(#ffffff, #f3f2f0);"),
+          css.contains("--page-ink: light-dark(#1c1b19, #f3f2f0);"),
           css.contains("--sheet: light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20));"),
           css.contains("--page-bg: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--page);"),
           css.contains("background: var(--page-bg);"),
@@ -223,7 +225,7 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
         // `radial-gradient(75% 70% at 50% 40%, glow, transparent 75%)`: alpha falls linearly from the centre to 75% of the radius.
         def glowAt(height: Double, brand: Rgb, surface: Surface, dark: Boolean): Rgb =
           val distance = math.abs(height - 0.40) / 0.70
-          val alpha = if dark then glowShare(surface) * max(0.0, 1 - distance / 0.75) else 0.0
+          val alpha = glowShare(surface, dark) * max(0.0, 1 - distance / 0.75)
           over(brand, alpha, page(brand, surface, dark).colour)
         val weak =
           for

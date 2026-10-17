@@ -13,7 +13,7 @@ const SURFACES: Array<[ThemeSurface, string, string]> = [
   ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
 ];
 const BACKGROUNDS: Array<[ThemeBackground, string, string]> = [
-  ['glow', 'Glow', 'The brand glowing from behind the card, in the dark scheme (the default look)'],
+  ['glow', 'Glow', 'The brand glowing from behind the card (the default look)'],
   ['linear', 'Linear', 'A soft diagonal wash of the brand colour'],
   ['horizon', 'Horizon', 'A soft light rising from the bottom edge'],
   ['flat', 'Flat', 'The plain page colour, no gradient'],
@@ -95,17 +95,16 @@ export class VersolaThemeTokenControls extends LitElement {
       /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
          repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
          --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
-         The dark scheme is shown unless the scheme is fixed to light: the glow is only there, and the page of a bold
-         theme is dark in both. */
+         The dark scheme is shown unless the scheme is fixed to light. */
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
       .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .bg-card:hover { border-color: var(--text-secondary); }
       .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
       .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
-      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 22%, #0c1110); --lin: 40%; --hor: 42%; --glow-x: 0%; }
+      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 9%, #f6f4ef); --lin: 34%; --hor: 36%; --glow-x: 30%; }
       .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
-      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 0%; }
+      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 16%; }
       .bg-swatch[data-surface='neutral'] { --pg: #0b0b0a; --lin: 16%; --hor: 14%; --glow-x: 0%; }
       .bg-swatch[data-surface='neutral'][data-scheme='light'] { --pg: #ecebe7; --lin: 14%; --hor: 18%; --glow-x: 0%; }
       .bg-swatch[data-bg='glow'] { background: radial-gradient(75% 70% at 50% 40%, color-mix(in oklab, var(--b) var(--glow-x), transparent), transparent 75%), var(--pg); }

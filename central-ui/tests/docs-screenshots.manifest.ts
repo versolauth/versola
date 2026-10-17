@@ -258,13 +258,13 @@ function generate(t: Tokens): string {
   const onBrand = contrast(own, 1) >= contrast(own, lum('#1c1b19')) ? '#ffffff' : '#1c1b19';
   const [field, button, card] = ({ round: ['18px', '999px', '32px'], soft: ['14px', '14px', '24px'], sharp: ['4px', '4px', '6px'] } as Record<string, string[]>)[t.shape];
   const surface = t.surface === 'soft'
-    ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);'
-    : t.surface === 'neutral' ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;' : '';
+    ? '--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);--glow-light:color-mix(in oklab,var(--brand) 16%,transparent);--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);'
+    : t.surface === 'neutral' ? '--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-light:transparent;--glow-dark:transparent;' : '';
   const scheme = t.mode === 'auto' ? '' : `color-scheme:${t.mode};`;
   // The tint strengths (light, dark) of ThemeCss.tint, per surface.
   const tint = ({
-    linear: { bold: [40, 45], soft: [34, 34], neutral: [14, 16] },
-    horizon: { bold: [42, 46], soft: [36, 34], neutral: [18, 14] },
+    linear: { bold: [34, 45], soft: [34, 34], neutral: [14, 16] },
+    horizon: { bold: [36, 46], soft: [36, 34], neutral: [18, 14] },
   } as Record<string, Record<string, number[]>>)[t.background]?.[t.surface] ?? [0, 0];
   const mixes = (light: string, dark: string) => `light-dark(color-mix(in oklab,var(--brand) ${tint[0]}%,${light}),color-mix(in oklab,var(--brand) ${tint[1]}%,${dark}))`;
   const plain = t.background === 'flat' ? '--page-bg:var(--page);' : '';

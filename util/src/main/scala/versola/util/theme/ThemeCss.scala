@@ -119,18 +119,16 @@ object ThemeCss:
     val (light, dark) = (indicator(colour, dark = false), indicator(colour, dark = true))
     s"--focus:light-dark($light,$dark);--on-focus:light-dark(${onIndicator(light)},${onIndicator(dark)});"
 
-  // The page colours; `--page-ink` is written with light-dark(), so it is returned apart (see `generate`).
-  private def surface(surface: Surface): (String, String) = surface match
-    case Surface.bold => ("", "")
+  // The page colours and the halo of the glow, per scheme.
+  private def surface(surface: Surface): String = surface match
+    case Surface.bold => ""
     case Surface.soft =>
-      (
-        "--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);" +
-          "--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);" +
-          "--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);",
-        "--page-ink:light-dark(#1c1b19,#f3f2f0);",
-      )
+      "--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);" +
+        "--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);" +
+        "--glow-light:color-mix(in oklab,var(--brand) 16%,transparent);" +
+        "--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);"
     case Surface.neutral =>
-      ("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;", "--page-ink:light-dark(#1c1b19,#f3f2f0);")
+      "--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-light:transparent;--glow-dark:transparent;"
 
   private val SupportsLightDark = "@supports (color: light-dark(#000, #fff))"
 
@@ -139,13 +137,13 @@ object ThemeCss:
     * and the brand text above the card (`--page-ink`) must stay readable on the strongest point, and the strongest point
     * must not shade into the colour of the dark card, so the strength follows the surface and is tested against every
     * built-in brand (ThemeBackgroundSpec). Glow and flat have no strength here: the
-    * glow's lives in `--glow-dark` (see `surface`), flat has no tint.
+    * glow's lives in `--glow-light` and `--glow-dark` (see `surface`), flat has no tint.
     */
   private[theme] def tint(background: Background, surface: Surface): (Int, Int) = (background, surface) match
-    case (Background.linear, Surface.bold) => (40, 45)
+    case (Background.linear, Surface.bold) => (34, 45)
     case (Background.linear, Surface.soft) => (34, 34)
     case (Background.linear, Surface.neutral) => (14, 16)
-    case (Background.horizon, Surface.bold) => (42, 46)
+    case (Background.horizon, Surface.bold) => (36, 46)
     case (Background.horizon, Surface.soft) => (36, 34)
     case (Background.horizon, Surface.neutral) => (18, 14)
     case (Background.glow | Background.flat, _) => (0, 0)
@@ -157,7 +155,7 @@ object ThemeCss:
     val (light, dark) = tint(background, surface)
     background match
       case Background.glow =>
-        // The glow is dark-scheme only because `--glow` is transparent in the light one; the formula is common.css's.
+        // The formula is common.css's; `--glow` is the halo of the scheme in force.
         ("--page-bg:radial-gradient(75% 70% at 50% 40%,var(--glow),transparent 75%),var(--page);", "")
       case Background.flat => ("--page-bg:var(--page);", "")
       case Background.linear =>
@@ -186,21 +184,21 @@ object ThemeCss:
     */
   def generate(tokens: ResolvedTokens): String =
     val (field, button, card) = corners(tokens.shape)
-    val (page, pageInk) = surface(tokens.surface)
+    val page = surface(tokens.surface)
     // The glow is what common.css paints already, so it is left out here, as the bold page is.
     val (plainBackground, supportedBackground) = tokens.background match
       case Background.glow => ("", "")
       case other => background(other, tokens.surface)
     s"/* theme tokens: brand ${tokens.brand.value}, ${tokens.shape}, ${tokens.surface} page, ${tokens.background} background, ${tokens.mode} scheme */\n" +
       s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};--rf:$field;--rb:$button;--rs:$card;$page$plainBackground${scheme(tokens.mode)}}\n" +
-      s"$SupportsLightDark{:root{${focus(tokens.brand)}$pageInk$supportedBackground}}"
+      s"$SupportsLightDark{:root{${focus(tokens.brand)}$supportedBackground}}"
 
   // Bold page variables as common.css defines them. `generate` leaves them out (the default stylesheet has them); a
   // partial block must write them, or an override of `bold` could not undo the soft or neutral surface under it.
   private val boldSurface =
-    "--page-ink:light-dark(#ffffff,#f3f2f0);" +
-      "--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);" +
+    "--page-light:color-mix(in oklab,var(--brand) 9%,#f6f4ef);" +
       "--page-dark:color-mix(in oklab,var(--brand) 10%,#060707);" +
+      "--glow-light:color-mix(in oklab,var(--brand) 30%,transparent);" +
       "--glow-dark:color-mix(in oklab,var(--brand) 55%,transparent);"
 
   /** The block a client adds on top of the theme it uses: only the variables its overrides change, empty when it
