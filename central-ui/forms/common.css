@@ -6,7 +6,7 @@
  *   --brand, --on-brand     accent colour and the text colour that is readable on it
  *   --focus, --on-focus     the brand as focus rings and ticked boxes: kept visible (3:1) on the card; follows --brand
  *   --rf / --rb / --rs      corner radius of fields, buttons and the card
- *   --page-light/--page-dark  page background per colour scheme, --glow-dark the dark-mode halo
+ *   --page-light/--page-dark  page background per colour scheme, --glow-light/--glow-dark the halo of the glow in each
  *   --page-bg               what `body` paints behind the card: by default the glow over --page; a theme's background
  *                           token (glow, linear, horizon, flat) replaces only this variable (see ThemeCss)
  *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
@@ -28,12 +28,13 @@
   --rs: 24px;
   --control-h: 54px;
 
-  --page-light: color-mix(in oklab, var(--brand) 22%, #0c1110);
+  --page-light: color-mix(in oklab, var(--brand) 9%, #f6f4ef);
   --page-dark: color-mix(in oklab, var(--brand) 10%, #060707);
+  --glow-light: color-mix(in oklab, var(--brand) 30%, transparent);
   --glow-dark: color-mix(in oklab, var(--brand) 55%, transparent);
   --page: light-dark(var(--page-light), var(--page-dark));
-  --page-ink: light-dark(#ffffff, #f3f2f0);
-  --glow: light-dark(transparent, var(--glow-dark));
+  --page-ink: light-dark(#1c1b19, #f3f2f0);
+  --glow: light-dark(var(--glow-light), var(--glow-dark));
   --page-bg: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--page);
 
   --ink: light-dark(#1c1b19, #f3f2f0);
