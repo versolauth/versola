@@ -372,7 +372,7 @@ export class VersolaPermissionsList extends LitElement {
     ];
     return html`
       <div class="list-toolbar">
-        <input class="search-input" type="search" aria-label="Search permissions" placeholder="Search permissions by ID or description"
+        <input class="search-input" type="search" aria-label="Search permissions" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter permissions"
           .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}

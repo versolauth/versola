@@ -392,7 +392,7 @@ export class VersolaScopesList extends LitElement {
     ];
     return html`
       <div class="list-toolbar">
-        <input class="search-input" type="search" aria-label="Search scopes" placeholder="Search scopes by ID or description"
+        <input class="search-input" type="search" aria-label="Search scopes" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter scopes"
           .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}

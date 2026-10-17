@@ -328,7 +328,7 @@ export class VersolaTenantsList extends LitElement {
     ];
     return html`
       <div class="list-toolbar">
-        <input class="search-input" type="search" aria-label="Search tenant list" placeholder="Search tenants by ID or description"
+        <input class="search-input" type="search" aria-label="Search tenant list" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter tenants"
           .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
