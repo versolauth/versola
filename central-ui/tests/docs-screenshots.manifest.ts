@@ -486,7 +486,7 @@ const consoleShots: DocsShot[] = [
     name: 'console/client-page-partner', kind: 'frame', path: clientsPath, state: withClients(partnerClient),
     before: async page => {
       await openClient('acme-wallet')(page);
-      await expect(page.getByRole('region', { name: 'Consent' })).toContainText('On (partner, cannot be turned off)');
+      await expect(page.getByRole('region', { name: 'Ownership' })).toContainText('Partner app');
     },
   },
   {
@@ -550,14 +550,14 @@ const consoleShots: DocsShot[] = [
   {
     name: 'console/client-edit-registration-consent', kind: 'frame', path: clientsPath, state: withClients(webClient),
     before: async page => {
-      await editClient('storefront-web', 'consent', 'Consent')(page);
-      await expect(page.locator('versola-client-form .flow-toggle-row input[type=checkbox]')).not.toBeChecked();
+      await editClient('storefront-web', 'ownership', 'Ownership')(page);
+      await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
     },
   },
   {
     name: 'console/client-edit-registration-consent-partner', kind: 'frame', fullPage: true, path: clientsPath, state: withClients(partnerClient),
     before: async page => {
-      await editClient('acme-wallet', 'consent', 'Consent')(page);
+      await editClient('acme-wallet', 'ownership', 'Ownership')(page);
       await expect(page.getByRole('group', { name: 'Required scopes' }).getByRole('button', { name: 'phone', exact: true })).toHaveAttribute('aria-pressed', 'true');
     },
   },
@@ -635,8 +635,8 @@ const consoleShots: DocsShot[] = [
     name: 'console/client-wizard-partner-3-consent', kind: 'frame', fullPage: true, path: clientsPath, state: alpha,
     before: async page => {
       await webSignIn(page);
-      await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
-      await expect(page.getByText('This makes the client a partner')).toBeVisible();
+      await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+      await expect(page.getByText("How the sign-in and consent screens look for this partner's users.")).toBeVisible();
     },
   },
   { name: 'console/client-wizard-service-2-basics', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceBasics },
