@@ -248,7 +248,7 @@ test.describe('colour scheme toggle', () => {
     await toggle(page).press('ArrowDown');
     await expect(page.getByRole('listbox')).toBeVisible();
     // axe reads the colours as painted: let the colour transitions of the switch finish first
-    await page.evaluate(() => Promise.all(document.getAnimations().map(animation => animation.finished)));
+    await page.evaluate(() => Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => undefined))));
 
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(results.violations.map(v => `${v.id}: ${v.help}`)).toEqual([]);
