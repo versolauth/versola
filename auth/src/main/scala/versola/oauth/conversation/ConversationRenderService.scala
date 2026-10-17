@@ -79,6 +79,18 @@ trait ConversationRenderService:
   ): Task[Response]
 
 object ConversationRenderService:
+
+  /** Applies the visitor's own Auto / Light / Dark choice (`localStorage`, key `versola.colorScheme`, written by the forms'
+    * `shared/scheme-toggle.tsx`) before the first paint. It sits after the `<style>` block because it reads the computed
+    * `--scheme-locked`: a theme that fixes the scheme sets it to 1, and then the stored choice is not applied (it is left
+    * in storage, since another client's theme may not lock). Constant: no configuration and no user data go into it.
+    * Storage may be blocked, hence the try/catch; the page then simply follows the device.
+    */
+  val SchemeScript: String =
+    "<script>(function(){try{var d=document.documentElement;" +
+      "if(getComputedStyle(d).getPropertyValue('--scheme-locked').trim()==='1')return;" +
+      "var v=localStorage.getItem('versola.colorScheme');" +
+      "if(v==='light'||v==='dark')d.style.colorScheme=v}catch(e){}})()</script>"
   val live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   @jsonDiscriminator("type")
@@ -885,7 +897,7 @@ object ConversationRenderService:
           logo,
         )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(
           info.style,
-        )}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+        )}</style>$SchemeScript<script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
           "",
         )}</script></body></html>"""
 
@@ -924,6 +936,7 @@ object ConversationRenderService:
          |      ${escapeCssForStyle(themeCss)}
          |      ${escapeCssForStyle(info.style)}
          |    </style>
+         |    $SchemeScript
          |    <script>
          |      window.__VERSOLA_FORM__ = $config;
          |    </script>
@@ -946,6 +959,7 @@ object ConversationRenderService:
          |    <style>
          |      ${escapeCssForStyle(themeCss)}
          |    </style>
+         |    $SchemeScript
          |  </head>
          |  <body>
          |    <div class="container">

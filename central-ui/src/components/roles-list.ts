@@ -58,6 +58,7 @@ export class VersolaRolesList extends LitElement {
   @state() private draftId = '';
   @state() private draftDescription: Record<string, string> = { en: '' };
   @state() private draftPermissions: Permission[] = [];
+  @state() private draftActive = true;
   @state() private formError = '';
   @state() private isSaving = false;
   @state() private submitted = false;
@@ -215,7 +216,7 @@ export class VersolaRolesList extends LitElement {
   private draftBaseline = '';
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftId, this.draftDescription, this.draftPermissions]);
+    return JSON.stringify([this.draftId, this.draftDescription, this.draftActive, this.draftPermissions]);
   }
 
   /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
@@ -234,6 +235,7 @@ export class VersolaRolesList extends LitElement {
     const role = this.editorMode === 'edit' ? this.openRole : null;
     this.draftId = role?.id ?? '';
     this.draftDescription = { ...(role?.description ?? { en: '' }) };
+    this.draftActive = role?.active ?? true;
     this.draftPermissions = [...(role?.permissions ?? [])];
     this.formError = '';
     this.submitted = false;
@@ -266,9 +268,9 @@ export class VersolaRolesList extends LitElement {
     const now = new Date().toISOString();
     const description = Object.fromEntries(Object.entries(this.draftDescription).filter(([, value]) => value.trim()));
     const next: Role = mode === 'create'
-      ? { id: this.draftId.trim(), description, active: true, permissions: this.draftPermissions, createdAt: now, updatedAt: now }
+      ? { id: this.draftId.trim(), description, active: this.draftActive, permissions: this.draftPermissions, createdAt: now, updatedAt: now }
       : group === 'general'
-        ? { ...existing!, description, updatedAt: now }
+        ? { ...existing!, description, active: this.draftActive, updatedAt: now }
         : { ...existing!, permissions: this.draftPermissions, updatedAt: now };
 
     this.isSaving = true;
@@ -407,6 +409,7 @@ export class VersolaRolesList extends LitElement {
     return html`
       <versola-record-card heading="General" ?editable=${this.canManage} .body=${html`
         ${this.row('Description', localizedValue(role.description, this.locales))}
+        ${this.row('Active', role.active ? 'Yes' : 'No')}
       `} @edit=${() => this.openEditor('general')}></versola-record-card>
 
       <versola-record-card heading=${`Permissions (${role.permissions.length})`} subheading="What a user with this role may call." ?editable=${this.canManage}
@@ -420,7 +423,6 @@ export class VersolaRolesList extends LitElement {
 
       <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
         ${this.row('Role ID', html`<span class="mono">${role.id}</span>`, 'Set at creation')}
-        ${this.row('Active', role.active ? 'Yes' : 'No', 'Cannot be changed here yet')}
       `}></versola-record-card>
 
       ${this.canManage ? html`
@@ -480,6 +482,20 @@ export class VersolaRolesList extends LitElement {
     `;
   }
 
+  private renderActiveField() {
+    const locked = this.editorMode === 'edit' && !!this.openRole && this.defaultRoleIds.has(this.openRole.id);
+    return html`
+      <div class="form-group">
+        <label class="toggle-row">
+          <input type="checkbox" id="role-active" .checked=${this.draftActive} ?disabled=${locked} aria-describedby="role-active-hint"
+            @change=${(e: Event) => this.draftActive = (e.target as HTMLInputElement).checked} />
+          <span>Active</span>
+        </label>
+        <div class="hint" id="role-active-hint">${locked ? DEFAULT_ROLE_REASON : 'An inactive role stays assigned but grants nothing until it is switched on.'}</div>
+      </div>
+    `;
+  }
+
   private renderPermissionsEditor() {
     return html`
       <div class="editor-box">
@@ -515,6 +531,7 @@ export class VersolaRolesList extends LitElement {
                 : html`<div class="hint" id="role-id-hint">Lowercase letters, digits and dashes, starting with a letter.</div>`}
             </div>
             ${this.renderDescriptionField()}
+            ${this.renderActiveField()}
           </div>
           ${this.renderPermissionsEditor()}
         ` : this.editGroup === 'general' ? html`
@@ -522,6 +539,7 @@ export class VersolaRolesList extends LitElement {
             <h3>General</h3>
             <p class="editor-sub">What the console and the user's role list show for this role.</p>
             ${this.renderDescriptionField()}
+            ${this.renderActiveField()}
           </div>
         ` : this.renderPermissionsEditor()}
       </form>

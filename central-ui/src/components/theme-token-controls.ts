@@ -46,9 +46,6 @@ export class VersolaThemeTokenControls extends LitElement {
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
-  /** Draw a small schematic sign-in card in the resulting tokens above the controls. It is a sketch of brand,
-   *  page and corners, not a render of a form: the theme editor has the real preview. */
-  @property({ type: Boolean }) preview = false;
 
   @state() private brandText = '';
 
@@ -95,24 +92,9 @@ export class VersolaThemeTokenControls extends LitElement {
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
       .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
-      .sketch { display: grid; place-items: center; height: 4.5rem; border-radius: var(--radius-md); overflow: hidden; margin-bottom: var(--spacing-md); background: color-mix(in oklab, var(--b) 24%, #0c1110); }
-      .sketch[data-surface='soft'] { background: color-mix(in oklab, var(--b) 14%, #f7f4ee); }
-      .sketch[data-surface='neutral'] { background: #ecebe7; }
-      .sketch[data-surface='soft'][data-mode='dark'] { background: color-mix(in oklab, var(--b) 7%, #0e0e0d); }
-      .sketch[data-surface='neutral'][data-mode='dark'] { background: #0b0b0a; }
-      .sketch-card { width: 8rem; display: flex; flex-direction: column; gap: 0.1875rem; padding: 0.375rem 0.5rem; background: #fffdf9; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
-      .sketch[data-mode='dark'] .sketch-card { background: #262628; }
-      .sketch[data-shape='soft'] .sketch-card { border-radius: 8px; }
-      .sketch[data-shape='sharp'] .sketch-card { border-radius: 2px; }
-      .sketch i { display: block; }
-      .sketch-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--b); }
-      .sketch-field { height: 0.4375rem; background: #e6e1d6; border-radius: 6px; }
-      .sketch[data-mode='dark'] .sketch-field { background: #3a3a3d; }
-      .sketch[data-shape='sharp'] .sketch-field, .sketch[data-shape='sharp'] .sketch-btn { border-radius: 1px; }
-      .sketch-btn { height: 0.625rem; background: var(--b); border-radius: 999px; margin-top: 0.125rem; }
       /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
          repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
-         --pg is the page colour (as the sketch above), --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
+         --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
          The dark scheme is shown unless the scheme is fixed to light: the glow is only there, and the page of a bold
          theme is dark in both. */
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
@@ -191,12 +173,6 @@ export class VersolaThemeTokenControls extends LitElement {
     const resolved = this.resolved;
     const base = this.base;
     return html`
-      ${this.preview && resolved.brand && resolved.surface && resolved.shape && resolved.mode ? html`
-        <div class="sketch" style=${`--b:${resolved.brand}`} data-surface=${resolved.surface} data-shape=${resolved.shape} data-mode=${resolved.mode}
-          role="img" aria-label=${`Sketch of the sign-in page: ${resolved.brand}, ${resolved.surface} page, ${resolved.shape} corners, ${resolved.mode} scheme`}>
-          <i class="sketch-card"><i class="sketch-dot"></i><i class="sketch-field"></i><i class="sketch-field"></i><i class="sketch-btn"></i></i>
-        </div>
-      ` : nothing}
       <div class="group">
         <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base?.brand)}</div>
         <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>

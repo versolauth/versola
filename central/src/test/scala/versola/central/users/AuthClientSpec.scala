@@ -179,7 +179,7 @@ object AuthClientSpec extends ZIOSpecDefault:
   ) @@ TestAspect.silentLogging
 
   // ── Bearer token is attached to every outbound request ─────────────────────
-  private val bearerSuite = suite("Bearer token added to all 15 methods")(
+  private val bearerSuite = suite("Bearer token added to every method")(
     mkTest(
       "deleteUser",
       _.deleteUser(userId),
@@ -207,6 +207,14 @@ object AuthClientSpec extends ZIOSpecDefault:
     mkTest(
       "invalidateSession",
       _.invalidateSession(userId),
+    ),
+    mkTest(
+      "endSession",
+      _.endSession(userId, "c2lk").unit,
+    ),
+    mkTest(
+      "revokeRefreshTokens",
+      _.revokeRefreshTokens(userId, ClientId("app")),
     ),
     mkTest(
       "resetUserLimits",
@@ -294,6 +302,24 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         result <- client.getUserRoles(userId, tenantId)
       yield assertTrue(result == List(RoleId("r1"), RoleId("r2")))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("endSession answers false when auth does not know the session as the user's") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NotFound))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.endSession(userId, "c2lk")
+      yield assertTrue(!ended)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("endSession answers true when auth ended the session") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NoContent))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.endSession(userId, "c2lk")
+      yield assertTrue(ended)
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("getUserSessions decodes the session list") {
       val json = AuthClient.SessionListResponse(List(sessionDto)).toJson

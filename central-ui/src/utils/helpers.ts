@@ -23,13 +23,15 @@ export function createDefaultAuthFlow(): AuthFlow {
 export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
 
 /**
- * Default consent flow: ask once, remember the grant until it is revoked, and require the
- * whole requested scope to be granted at once.
+ * Default consent flow: ask once, remember the grant for 90 days (one of the presets the
+ * wizard offers), and require the whole requested scope to be granted at once.
  */
+export const DEFAULT_CONSENT_REMEMBER_DAYS = 90;
+
 export function createDefaultConsentFlow(): ConsentFlow {
   return {
     allowPartial: false,
-    rememberDurationDays: 180,
+    rememberDurationDays: DEFAULT_CONSENT_REMEMBER_DAYS,
     requiredScopes: [],
     offlineAccessOptional: false,
   };

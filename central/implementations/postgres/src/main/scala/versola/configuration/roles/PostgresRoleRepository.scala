@@ -35,11 +35,12 @@ class PostgresRoleRepository(
       id: RoleId,
       description: Map[String, String],
       permissions: List[Permission],
+      active: Boolean,
   ): Task[Unit] =
     xa.connectMeasured("create-role"):
       sql"""
           INSERT INTO roles (id, tenant_id, description, permissions, active)
-          VALUES ($id, $tenantId, $description, $permissions, TRUE)
+          VALUES ($id, $tenantId, $description, $permissions, $active)
         """.update.run()
 
   override def upsertRole(
@@ -68,6 +69,7 @@ class PostgresRoleRepository(
       id: RoleId,
       descriptionPatch: PatchDescription,
       permissionsPatch: PatchPermissions,
+      activePatch: Option[Boolean],
   ): Task[Unit] =
     xa.transactMeasured("update-role"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
@@ -78,10 +80,12 @@ class PostgresRoleRepository(
         case Some(role) =>
           val newDescr = (role.description -- descriptionPatch.delete) ++ descriptionPatch.add
           val newPermissions = (role.permissions -- permissionsPatch.remove) ++ permissionsPatch.add
+          val newActive = activePatch.getOrElse(role.active)
           sql"""
                UPDATE roles SET
                  description = $newDescr,
-                 permissions = $newPermissions
+                 permissions = $newPermissions,
+                 active = $newActive
                WHERE
                  tenant_id = $tenantId AND
                  id = $id""".update.run()

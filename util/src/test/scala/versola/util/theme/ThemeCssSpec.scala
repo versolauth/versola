@@ -109,6 +109,18 @@ object ThemeCssSpec extends ZIOSpecDefault:
           ThemeCss.generate(resolved("#155e75", mode = Mode.light)).contains("color-scheme:light;"),
         )
       },
+      test("a fixed scheme also sets the lock marker the forms read to hide the visitor's toggle; auto does not") {
+        val dark = ThemeCss.generate(resolved("#155e75", mode = Mode.dark))
+        val light = ThemeCss.generate(resolved("#155e75", mode = Mode.light))
+        val auto = ThemeCss.generate(resolved("#155e75", mode = Mode.auto))
+        assertTrue(
+          dark.contains("color-scheme:dark;--scheme-locked:1;"),
+          light.contains("color-scheme:light;--scheme-locked:1;"),
+          !auto.contains("--scheme-locked"),
+          // in the :root rule, not behind @supports: it must hold in every browser
+          dark.indexOf("--scheme-locked") < dark.indexOf("@supports"),
+        )
+      },
       test("is one comment, one rule and one @supports rule, with nothing but the tokens in it") {
         val css = ThemeCss.generate(resolved("#ff6b4a", Shape.sharp, Surface.neutral, Mode.dark))
         assertTrue(css.count(_ == '{') == 3, css.count(_ == '}') == 3, css.linesIterator.size == 3)
@@ -173,6 +185,21 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val dark =
           ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None, background = None))
         assertTrue(css.contains("color-scheme:light dark;"), dark.contains("color-scheme:light;"))
+      },
+      test("a mode override sets or resets the lock marker, so a client can lock an auto theme or unlock a locked one") {
+        def partial(mode: Mode) =
+          ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(mode), brand = None, shape = None, surface = None, background = None))
+        val unlockedBase = ThemeCss.generatePartial(
+          base,
+          ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None),
+        )
+        assertTrue(
+          partial(Mode.auto).contains("color-scheme:light dark;--scheme-locked:0;"),
+          partial(Mode.dark).contains("color-scheme:dark;--scheme-locked:1;"),
+          partial(Mode.light).contains("color-scheme:light;--scheme-locked:1;"),
+          // no mode override: the marker of the theme underneath stays untouched
+          !unlockedBase.contains("--scheme-locked"),
+        )
       },
       test("is one rule, so it can be appended to a stylesheet") {
         val css = ThemeCss.generatePartial(

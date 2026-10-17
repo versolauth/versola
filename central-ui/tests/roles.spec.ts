@@ -55,7 +55,8 @@ test('opens a role and shows its permissions grouped by category, Fixed and the 
   await expect(perms.getByRole('button', { name: 'Show endpoints for orders:read' })).toBeVisible();
   const fixed = dialog.getByRole('region', { name: 'Fixed' });
   await expect(fixed).toContainText('Set at creation');
-  await expect(fixed).toContainText('Cannot be changed here yet');
+  await expect(fixed).not.toContainText('Active');
+  await expect(dialog.getByRole('region', { name: 'General' })).toContainText('Active');
   await expect(dialog.getByRole('button', { name: 'Delete role alpha-admin' })).toBeEnabled();
 
   await page.keyboard.press('Escape');
@@ -81,7 +82,7 @@ test('creates a role with permissions picked by group and with the search', asyn
   await dialog.getByRole('button', { name: 'Create role', exact: true }).click();
 
   expect((await findRequest(api.requests, 'POST', '/configuration/roles')).body).toEqual({
-    tenantId: 'tenant-alpha', id: 'platform-admin', description: { en: 'Platform admin' }, permissions: ['orders:read', 'reports:read'],
+    tenantId: 'tenant-alpha', id: 'platform-admin', description: { en: 'Platform admin' }, permissions: ['orders:read', 'reports:read'], active: true,
   });
   await expect(panel(page, 'Platform admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('reports:read');
 });
@@ -175,4 +176,24 @@ test('below 720px the wide create panel is a full-screen sheet', async ({ page }
   await expect(dialog.getByRole('dialog')).toBeVisible();
   expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(375);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('creates an inactive role, then switches it on from the General group (patch carries only active)', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [] }, permissions } });
+
+  await page.getByRole('button', { name: '+ Create Role', exact: true }).click();
+  const dialog = panel(page, 'Create role');
+  await dialog.getByLabel('Role ID *').fill('night-shift');
+  await dialog.locator('#role-description').fill('Night shift');
+  await dialog.getByLabel('Active', { exact: true }).uncheck();
+  await dialog.getByRole('button', { name: 'Create role', exact: true }).click();
+  expect((await findRequest(api.requests, 'POST', '/configuration/roles')).body).toMatchObject({ id: 'night-shift', active: false });
+  await expect(panel(page, 'Night shift').getByRole('region', { name: 'General' })).toContainText('No');
+
+  await panel(page, 'Night shift').getByRole('button', { name: 'Edit general', exact: true }).click();
+  await panel(page, 'Edit general').getByLabel('Active', { exact: true }).check();
+  await panel(page, 'Edit general').getByRole('button', { name: 'Save general', exact: true }).click();
+  const put = await findRequest(api.requests, 'PUT', '/configuration/roles');
+  expect(put.body).toMatchObject({ tenantId: 'tenant-alpha', id: 'night-shift', active: true });
+  await expect(panel(page, 'Night shift').getByRole('region', { name: 'General' })).toContainText('Yes');
 });

@@ -24,7 +24,7 @@ import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
-import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
+import zio.json.{DeriveJsonCodec, DeriveJsonEncoder, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
@@ -219,13 +219,35 @@ case class CreateRoleRequest(
     id: RoleId,
     description: Map[String, String],
     permissions: Set[Permission],
-) derives Schema, JsonCodec
+    /** Whether the role grants anything from the start. */
+    active: Boolean,
+) derives Schema
+
+object CreateRoleRequest:
+  /** `active` arrived after the endpoint shipped, when every role was created active; a body
+    * that does not name it keeps meaning that, so the callers written before it still work. */
+  private case class Wire(
+      tenantId: TenantId,
+      id: RoleId,
+      description: Map[String, String],
+      permissions: Set[Permission],
+      active: Option[Boolean],
+  ) derives JsonDecoder
+
+  given JsonCodec[CreateRoleRequest] = JsonCodec(
+    DeriveJsonEncoder.gen[CreateRoleRequest],
+    JsonDecoder[Wire].map(wire =>
+      CreateRoleRequest(wire.tenantId, wire.id, wire.description, wire.permissions, wire.active.getOrElse(true)),
+    ),
+  )
 
 case class UpdateRoleRequest(
     tenantId: TenantId,
     id: RoleId,
     description: PatchDescription,
     permissions: PatchPermissions,
+    /** Absent leaves the flag as it is, like the other members' patches. */
+    active: Option[Boolean],
 ) derives Schema, JsonCodec
 
 case class RoleResponse(
@@ -298,6 +320,13 @@ case class TenantResponse(
     id: TenantId,
     description: String,
     edgeId: Option[String],
+    /** From the tenant's challenge settings, where the profile is stored; a tenant whose
+      * settings are missing reads as `ChallengeSettingsRecord.DefaultSecurityProfile`, what
+      * `getSecurityProfile` would answer for it. */
+    securityProfile: SecurityProfile,
+    /** The `kid` the tenant's tokens are signed with, also from its challenge settings; `None`
+      * when the tenant falls back to auth's configured key. */
+    signingKeyId: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetAllTenantsResponse(

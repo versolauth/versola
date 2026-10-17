@@ -15,7 +15,7 @@ trait ThemeService:
   def updateTheme(theme: ThemeRecord): Task[Unit]
   def deleteTheme(id: String): Task[Unit]
 
-  /** The stylesheet a theme built from these tokens has, for the console's preview. Fails with an
+  /** The stylesheet a theme has, with a client's overrides on top, for the console's preview. Fails with an
     * [[IllegalArgumentException]] when the tokens name a base that is not built in.
     */
   def render(request: RenderThemeRequest): Task[RenderThemeResponse]
@@ -56,13 +56,27 @@ object ThemeService:
     override def updateTheme(theme: ThemeRecord): Task[Unit] =
       validated(theme) *> repository.update(theme)
 
+    // The order auth's `themeCss` uses: the theme's stylesheet, then the client's overrides on top. A stylesheet theme
+    // (no tokens) has its own CSS in place of the foundation, and the default preset stands in as the base the overrides
+    // are measured against; with no CSS either, it is the foundation, as for a theme auth does not find.
     override def render(request: RenderThemeRequest): Task[RenderThemeResponse] =
       for
-        resolved <- ZIO.fromEither(ThemePresets.resolve(request.tokens)).mapError(IllegalArgumentException(_))
-      yield RenderThemeResponse(
-        css = ThemeCss.compose(ThemeCss.baseStylesheet, resolved, request.css.getOrElse("")),
-        generated = ThemeCss.generate(resolved),
-      )
+        themed <- request.tokens match
+          case Some(tokens) =>
+            ZIO.fromEither(ThemePresets.resolve(tokens)).mapError(IllegalArgumentException(_)).map: resolved =>
+              (
+                ThemeCss.compose(ThemeCss.baseStylesheet, resolved, request.css.getOrElse("")),
+                ThemeCss.generate(resolved),
+                Some(resolved),
+              )
+          case None =>
+            val stylesheet = request.css.filter(_.nonEmpty).getOrElse(ThemeCss.baseStylesheet)
+            ZIO.succeed((stylesheet, "", ThemePresets.find(ThemePresets.DefaultId).map(_.tokens)))
+        (css, generated, base) = themed
+        partial = (request.overrides.filterNot(_.isEmpty), base) match
+          case (Some(own), Some(resolved)) => ThemeCss.generatePartial(resolved, own)
+          case _ => ""
+      yield RenderThemeResponse(css = Seq(css, partial).filter(_.nonEmpty).mkString("\n"), generated = generated)
 
     // The tokens are written into a stylesheet, so a base that is not built in is refused here.
     private def validated(theme: ThemeRecord): Task[Unit] =

@@ -36,6 +36,10 @@ trait UserRepository:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
+  /** Removes the account and every row keyed by it, in one transaction: sessions and their user
+    * agents, refresh tokens, authorization codes, in-flight conversations, passkeys, passwords,
+    * roles, consents, and the throttling records of the account's identifiers. A no-op for an
+    * unknown id. */
   def delete(id: UserId): Task[Unit]
 
   def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]]

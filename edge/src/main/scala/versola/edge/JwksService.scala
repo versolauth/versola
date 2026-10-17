@@ -10,7 +10,7 @@ object JwksService:
   def live: ZLayer[JwksSyncClient & Scope & EdgeConfig, Throwable, JwksService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[EdgeConfig](config =>
-        ReloadingCache.make[JWT.PublicKeys](config.configurationCacheRefreshInterval),
+        ReloadingCache.make[JWT.PublicKeys](config.configurationCacheRefreshInterval, fromSnapshot = true),
       )
     ) >>>
       ZLayer.fromFunction(Impl(_))

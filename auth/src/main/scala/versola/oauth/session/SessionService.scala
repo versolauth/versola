@@ -46,6 +46,10 @@ trait SessionService:
    *  was issued under and must still be listed once that session is gone. */
   def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]]
 
+  /** Revokes the offline access one client holds for a user (admin-panel action): every live
+   *  refresh token the client was issued for them expires now. The user's sessions stay. */
+  def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int]
+
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _))
 
@@ -106,3 +110,6 @@ object SessionService:
 
     override def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]] =
       repository.findRefreshTokensByUserId(userId)
+
+    override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
+      repository.revokeRefreshTokensByUserAndClient(userId, clientId)
