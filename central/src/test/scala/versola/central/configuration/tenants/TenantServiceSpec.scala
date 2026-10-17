@@ -56,6 +56,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = profile,
+    logoLight = None,
+    logoDark = None,
   )
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
@@ -108,6 +110,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = 300,
             securityProfile = SecurityProfile.fapi2,
+            logoLight = None,
+            logoDark = None,
           )),
       )
     },

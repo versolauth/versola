@@ -35,6 +35,8 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   /** A key as central stores one it generated: published with an `alg`, private half kept. */

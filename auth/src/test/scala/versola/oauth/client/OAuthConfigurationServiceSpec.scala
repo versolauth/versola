@@ -108,6 +108,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
   val systemSettings = SystemSettingsRecord.default
   val smsTemplates = Vector(

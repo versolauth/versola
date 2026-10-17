@@ -454,6 +454,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
         securityProfile = SecurityProfile.fapi2,
+        logoLight = None,
+        logoDark = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -483,6 +485,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
         securityProfile = SecurityProfile.fapi2,
+        logoLight = None,
+        logoDark = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -513,6 +517,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
         securityProfile = SecurityProfile.fapi2,
+        logoLight = None,
+        logoDark = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -612,6 +618,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
         securityProfile = SecurityProfile.fapi2,
+        logoLight = None,
+        logoDark = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

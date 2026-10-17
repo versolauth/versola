@@ -201,8 +201,8 @@ case class ChallengeSettingsRecord(
     securityProfile: SecurityProfile,
     /** The tenant's logo for the light colour scheme (dark artwork) and for the dark one (light artwork), shown bare
       * above the sign-in card. Both or neither: a single file reused for both schemes would vanish on one of them. */
-    logoLight: Option[String] = None,
-    logoDark: Option[String] = None,
+    logoLight: Option[String],
+    logoDark: Option[String],
 ) derives Schema, JsonCodec
 
 object ChallengeSettingsRecord:

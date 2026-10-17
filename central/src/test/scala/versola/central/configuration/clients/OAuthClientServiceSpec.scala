@@ -360,6 +360,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   /** #421: the registration an edge-fronted native app is held to -- `tls_client_auth` with a

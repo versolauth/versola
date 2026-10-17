@@ -778,6 +778,8 @@ object BootstrapService:
       signingKeyId = None,
       clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
       securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
+      logoLight = None,
+      logoDark = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */

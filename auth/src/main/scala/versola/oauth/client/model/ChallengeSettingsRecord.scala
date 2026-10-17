@@ -140,8 +140,8 @@ case class ChallengeSettingsRecord(
     securityProfile: SecurityProfile,
     /** The tenant's logo for the light and the dark colour scheme: both or neither, see
       * [[versola.oauth.client.OAuthConfigurationService.getTenantLogo]]. */
-    logoLight: Option[String] = None,
-    logoDark: Option[String] = None,
+    logoLight: Option[String],
+    logoDark: Option[String],
 ) derives JsonCodec
 
 object ChallengeSettingsRecord:
