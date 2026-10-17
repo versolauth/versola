@@ -210,6 +210,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
           SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
         """.query[SessionRecord].run().toList
 
+  override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("revoke-refresh-tokens-by-user-and-client"):
+        sql"""UPDATE refresh_tokens SET expires_at = $now
+              WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL""".update.run()
+
   override def findRefreshTokensByUserId(userId: UserId): Task[List[RefreshTokenRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-refresh-tokens-by-user"):

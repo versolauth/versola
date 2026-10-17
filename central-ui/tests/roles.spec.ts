@@ -43,7 +43,7 @@ test('creates a role with selected permissions', async ({ page }) => {
 
   const created = roleCard(page, 'Platform admin');
   await expect(created).toContainText('platform-admin');
-  expect((await findRequest(api.requests, 'POST', '/configuration/roles')).body).toEqual({ tenantId: 'tenant-alpha', id: 'platform-admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'] });
+  expect((await findRequest(api.requests, 'POST', '/configuration/roles')).body).toEqual({ tenantId: 'tenant-alpha', id: 'platform-admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'], active: true });
 });
 
 test('shows role validation with a red input border before submitting', async ({ page }) => {

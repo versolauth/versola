@@ -3,7 +3,7 @@ package versola.central.users
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.util.EnvName
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -42,10 +42,13 @@ object ServiceController extends Controller:
       ZIO.serviceWithZIO[EnvName]: env =>
         if env.isProd then ZIO.succeed(Response.notFound)
         else
-          for
+          (for
             _ <- authorizeBasic(request)
             service <- ZIO.service[UserService]
             id <- request.queryZIO[UserId]("id")
             _ <- service.delete(id)
-          yield Response.status(Status.NoContent)
+          yield Response.status(Status.NoContent))
+            .catchAll:
+              case UserNotFound => Observability.setError("user_not_found").as(Response.status(Status.NotFound))
+              case error: Throwable => ZIO.fail(error)
     }

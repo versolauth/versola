@@ -142,12 +142,14 @@ type CreateRoleRequest = {
   id: string;
   description: Record<string, string>;
   permissions: string[];
+  active?: boolean;
 };
 type UpdateRoleRequest = {
   tenantId: string;
   id: string;
   description: DescriptionPatch;
   permissions: SetPatch<string>;
+  active?: boolean | null;
 };
 type UpdateScopeRequest = {
   tenantId: string;
@@ -1069,7 +1071,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           id: payload.id,
           description: { ...payload.description },
           permissions: [...payload.permissions],
-          active: true,
+          // Like central: a body without the flag creates an active role.
+          active: payload.active ?? true,
         }, ...tenantRoles];
         await route.fulfill({ status: 201, body: '' });
         return;
@@ -1086,6 +1089,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
         role.description = applyDescriptionPatch(role.description, payload.description);
         role.permissions = applyPatchSet(role.permissions, payload.permissions);
+        if (payload.active != null) role.active = payload.active;
         await route.fulfill({ status: 204, body: '' });
         return;
       }

@@ -114,7 +114,9 @@ type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boo
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
-type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeId?: string | null }> };
+type TenantsResponse = {
+  tenants: Array<{ id: string; description: string; edgeId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
+};
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
@@ -170,7 +172,7 @@ type AuthorizationDetailTypesResponse = {
 const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL, consoleMode: 'prefix' };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { accessTokenTtl: number; refreshTokenTtl: number; hasPreviousSecret: boolean }>();
-const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
+const roleSupplementStore = new Map<string, { createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
 
@@ -653,6 +655,8 @@ export async function fetchTenants(): Promise<Tenant[]> {
     name: tenant.description || tenant.id,
     description: tenant.description,
     edgeId: tenant.edgeId ?? null,
+    securityProfile: tenant.securityProfile,
+    signingKeyId: tenant.signingKeyId ?? null,
   })));
 }
 
@@ -771,7 +775,7 @@ export async function fetchRoles(tenantId: string, offset = 0, limit = DEFAULT_P
       return {
         id: role.id,
         description: role.description,
-        active: supplement?.active ?? role.active,
+        active: role.active,
         permissions: role.permissions.map(permissionId => hydratePermission(tenantId, permissionId)),
         createdAt: supplement?.createdAt ?? new Date(0).toISOString(),
         updatedAt: supplement?.updatedAt ?? new Date(0).toISOString(),
@@ -1056,11 +1060,11 @@ export async function createRole(tenantId: string, role: Role): Promise<void> {
       id: role.id,
       description: role.description,
       permissions: unique(role.permissions.map(permission => permission.id)),
+      active: role.active,
     },
   });
 
   roleSupplementStore.set(entityKey(tenantId, role.id), {
-    active: role.active,
     createdAt: role.createdAt,
     updatedAt: role.updatedAt,
   });
@@ -1078,11 +1082,12 @@ export async function updateRole(tenantId: string, existing: Role, role: Role): 
         existing.permissions.map(permission => permission.id),
         role.permissions.map(permission => permission.id),
       ),
+      // Patch semantics: only sent when the switch moved.
+      ...(role.active !== existing.active ? { active: role.active } : {}),
     },
   });
 
   roleSupplementStore.set(entityKey(tenantId, role.id), {
-    active: role.active,
     createdAt: existing.createdAt,
     updatedAt: role.updatedAt,
   });

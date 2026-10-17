@@ -4,6 +4,10 @@ export interface Tenant {
   name: string;
   description?: string;
   edgeId?: string | null;
+  /** From the tenant's challenge settings; fixed when the tenant is created. */
+  securityProfile?: SecurityProfile;
+  /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
+  signingKeyId?: string | null;
 }
 
 // Authorization Preset
@@ -521,11 +525,23 @@ export interface SessionClientEntry {
 }
 
 export interface UserSession {
+  /** What `endUserSession` takes to end this one session. */
+  publicId?: string;
   clients: SessionClientEntry[];
   createdAt?: string;
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
+}
+
+/** A live refresh token, one per grant; it outlives the session it was issued under. */
+export interface UserRefreshToken {
+  sessionId: string;
+  clientId: string;
+  scope: string[];
+  issuedAt: string;
+  expiresAt: string;
+  dpopBound: boolean;
 }
 
