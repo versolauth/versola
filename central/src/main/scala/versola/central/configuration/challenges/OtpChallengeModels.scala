@@ -69,4 +69,10 @@ case class UpsertChallengeSettingsRequest(
       * created ([[versola.central.configuration.CreateTenantRequest]]) and fixed from then on:
       * absent, or naming the stored profile, leaves it as it is; any other value is refused. */
     securityProfile: Option[SecurityProfile],
+    /** The logo pair, see [[ChallengeSettingsRecord.logoLight]]. Null clears one, absent keeps the stored one; after
+      * both are applied they must be set or cleared together. Surrounding blanks are not trimmed: send a clean URL.
+      *
+      * No default, for the same reason as `signingKeyId`. */
+    logoLight: Option[Patch[String]],
+    logoDark: Option[Patch[String]],
 ) derives Schema, JsonCodec

@@ -10,7 +10,7 @@
 import { test, type Page } from '@playwright/test';
 import { loadAdminApp } from './fixtures';
 import { renderForm } from './form-harness';
-import { docsShots, type DocsShot, type DocsTheme } from './docs-screenshots.manifest';
+import { docsShots, tenantLogoBodies, type DocsShot, type DocsTheme } from './docs-screenshots.manifest';
 
 const outputDir = 'test-results/docs-screenshots';
 const frame = { width: 1440, height: 900 };
@@ -35,6 +35,9 @@ async function growToDocument(page: Page) {
 async function consoleShot(page: Page, shot: Extract<DocsShot, { kind: 'frame' | 'crop' }>, theme: DocsTheme) {
   await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
   await page.setViewportSize(frame);
+  // The tenant's logos are URLs the console previews; they are not reachable from the test run.
+  await page.route(url => url.href in tenantLogoBodies, route =>
+    route.fulfill({ contentType: 'image/svg+xml', body: tenantLogoBodies[route.request().url()] }));
   await loadAdminApp(page, { path: shot.path, state: typeof shot.state === 'function' ? await shot.state() : shot.state });
   await shot.before?.(page);
   // Fonts and the theme's transitions settle before the capture.

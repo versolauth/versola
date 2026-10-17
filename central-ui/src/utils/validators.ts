@@ -93,6 +93,16 @@ export function validateEdgeFrontedRedirectUri(uri: string): { valid: boolean; e
     : { valid: false, error: 'An app fronted by edge accepts only https redirect URIs (App Links / Universal Links)' };
 }
 
+/** An absolute http(s) URL with a host: what central accepts for a logo. */
+export function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
 export function validateRedirectUri(uri: string): { valid: boolean; error?: string } {
   if (!uri || uri.trim() === '') {
     return { valid: false, error: 'URI cannot be empty' };

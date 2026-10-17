@@ -75,7 +75,7 @@ type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mod
 type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
-type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
+type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -224,6 +224,8 @@ type ChallengeSettingsDto = {
   requireDpopNonce?: boolean | null;
   signingKeyId?: string | null;
   mtlsCertificateHeader?: string | null;
+  logoLight?: string | null;
+  logoDark?: string | null;
 };
 type JwksKeyDto = { kid: string; kty: string; alg?: string; use?: string };
 type JwksKeySummaryDto = {
@@ -255,6 +257,8 @@ export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto
   requireDpopNonce: false,
   signingKeyId: null,
   mtlsCertificateHeader: null,
+  logoLight: null,
+  logoDark: null,
 });
 
 /** A tenant's profile is seeded on the tenant (or on its challenge settings) and defaults to FAPI 2.0. */
@@ -378,7 +382,6 @@ const defaultState: MockConfigState = {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
     passwordHistorySize: 5,
     passwordNumDifferent: 3,
-    identityProviderLogo: null,
   },
   otpTemplates: {},
   challengeSettings: {},
@@ -1427,6 +1430,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'emailRegistration and defaultRoles are required' }) });
           return;
         }
+        // Central refuses one logo file without the other: a single file would vanish on one scheme.
+        if (!payload.logoLight !== !payload.logoDark) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'logoLight and logoDark must be set or cleared together' });
+          return;
+        }
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
           securityProfile: profileOf(state, payload.tenantId),
@@ -1441,6 +1449,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
           mtlsCertificateHeader: payload.mtlsCertificateHeader ?? null,
+          logoLight: payload.logoLight ?? null,
+          logoDark: payload.logoDark ?? null,
         };
         await route.fulfill({ status: 204, body: '' });
         return;

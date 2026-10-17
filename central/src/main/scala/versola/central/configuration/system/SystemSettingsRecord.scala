@@ -10,7 +10,6 @@ case class SystemSettingsRecord(
     passwordRegex: String,
     passwordHistorySize: Int,
     passwordNumDifferent: Int,
-    identityProviderLogo: Option[String],
 ) derives Schema, JsonCodec
 
 object SystemSettingsRecord:
@@ -24,5 +23,4 @@ object SystemSettingsRecord:
       passwordRegex = DefaultPasswordRegex,
       passwordHistorySize = 2,
       passwordNumDifferent = 1,
-      identityProviderLogo = None,
     )

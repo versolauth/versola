@@ -108,6 +108,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
   val systemSettings = SystemSettingsRecord.default
   val smsTemplates = Vector(
@@ -960,13 +962,17 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         unknown.isEmpty,
       )
     },
-    test("getIdentityProviderLogo reads the system settings value") {
+    test("getTenantLogo reads the tenant's pair, and nothing for a tenant without both files or without settings") {
+      def withSettings(settings: ChallengeSettingsRecord) = makeEnv(challengeSettingsVec = Vector(settings))
       for
-        withLogo <- makeEnv(sysSettings = systemSettings.copy(identityProviderLogo = Some("logo.svg")))
-        withoutLogo <- makeEnv()
-        set <- withLogo.getIdentityProviderLogo
-        unset <- withoutLogo.getIdentityProviderLogo
-      yield assertTrue(set == Some("logo.svg"), unset == systemSettings.identityProviderLogo)
+        pair <- withSettings(challengeSettings.copy(logoLight = Some("light.svg"), logoDark = Some("dark.svg")))
+        onlyLight <- withSettings(challengeSettings.copy(logoLight = Some("light.svg"), logoDark = None))
+        none <- makeEnv()
+        set <- pair.getTenantLogo(tenantId)
+        otherTenant <- pair.getTenantLogo(TenantId("nobody"))
+        single <- onlyLight.getTenantLogo(tenantId)
+        unset <- none.getTenantLogo(tenantId)
+      yield assertTrue(set == Some(TenantLogo("light.svg", "dark.svg")), otherTenant.isEmpty, single.isEmpty, unset.isEmpty)
     },
     test("getPostLogoutRedirectUris decodes the tenant's configured URLs") {
       val settings = challengeSettings.copy(
@@ -1095,7 +1101,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           OtpTemplateRecord("tmpl-2", tenantId, Map("en" -> "code"), OtpTemplatePurpose.otp, OtpTemplateChannel.sms),
         )
         val newChallengeSettings = Vector(challengeSettings.copy(ipHeader = "X-Forwarded-For"))
-        val newSystemSettings = systemSettings.copy(identityProviderLogo = Some("new-logo.svg"))
+        val newSystemSettings = systemSettings.copy(passwordRegex = "^.{12,}$")
         val newMetadata = Json.Obj("issuer" -> Json.Str("https://idp.example"))
         val newResources = Vector(resourceRecord)
         val newSecrets = List(Secret(Array.fill(16)(3.toByte)))

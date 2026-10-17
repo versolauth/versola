@@ -41,8 +41,6 @@ object SystemSettingsController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[SystemSettingsService]
         body <- request.bodyAs[SystemSettingsRecord]
-        result <- service.upsertSettings(body)
-      yield result match
-        case Right(_) => Response.status(Status.NoContent)
-        case Left(error) => Response.text(error.message).status(Status.BadRequest)
+        _ <- service.upsertSettings(body)
+      yield Response.status(Status.NoContent)
     }

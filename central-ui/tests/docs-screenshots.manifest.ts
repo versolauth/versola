@@ -44,7 +44,7 @@ type LoginShot = {
   form: string;
   step: Record<string, unknown>;
   extraCss?: string;
-  logo?: string;
+  logo?: { light: string; dark: string };
   width?: number;
   act?: Act;
 };
@@ -189,6 +189,16 @@ const dana = {
   }],
 };
 
+// The tenant's logo pair, as artwork with its text already outlined (the wordmark is Inter Bold converted to paths) (an <img> has no fonts): dark ink for the light
+// scheme, light ink for the dark one. The console shows them by URL, so the docs spec serves these bodies for them.
+const acmeMark = (ink: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="126" height="40" viewBox="0 0 126 40"><rect x="2" y="4" width="32" height="32" rx="9" fill="none" stroke="${ink}" stroke-width="3"/><path d="M10.5 27 L18 11 L25.5 27 M13.3 22 H22.7" fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path transform="translate(44 28.3)" fill="${ink}" d="M6.4 0.3C8.9 0.3 10.4-0.7 11.2-2.3L11.4-2.3L11.4 0L15.5 0L15.5-11C15.5-15 12.1-16.6 8.6-16.6C4.9-16.6 2.3-15 1.5-12.1L5.5-11.4C5.8-12.5 6.9-13.3 8.6-13.3C10.2-13.3 11.1-12.5 11.1-11.1L11.1-11.1C11.1-10 10-9.9 7.2-9.6C4-9.3 1-8.2 1-4.6C1-1.3 3.3 0.3 6.4 0.3M7.7-2.8C6.2-2.8 5.2-3.4 5.2-4.7C5.2-6 6.3-6.7 7.9-6.9C8.9-7 10.6-7.3 11.2-7.6L11.2-5.9C11.2-4.1 9.7-2.8 7.7-2.8M26.2 0.3C30.1 0.3 32.9-1.8 33.5-5.2L29.4-6C29.1-4.2 28-3.1 26.3-3.1C23.9-3.1 22.7-5.2 22.7-8.1C22.7-11.1 23.9-13.1 26.3-13.1C28-13.1 29-12.1 29.4-10.4L33.5-11.1C32.9-14.5 30.1-16.6 26.2-16.6C21.3-16.6 18.2-13.2 18.2-8.1C18.2-3.1 21.3 0.3 26.2 0.3M36.1 0L40.5 0L40.5-9.9C40.5-11.9 41.7-12.9 43.3-12.9C44.8-12.9 45.8-11.9 45.8-10.3L45.8 0L50.1 0L50.1-10.1C50.1-11.8 51.1-12.9 52.8-12.9C54.2-12.9 55.4-12.1 55.4-10.2L55.4 0L59.8 0L59.8-11C59.8-14.6 57.5-16.6 54.5-16.6C52.3-16.6 50.2-15.5 49.3-12.9C48.5-15.4 47.2-16.6 45.1-16.6C43.1-16.6 41.3-15.6 40.4-13.2L40.2-16.4L36.1-16.4M70.5 0.3C74.3 0.3 76.9-1.5 77.7-4.2L73.8-4.9C73.3-3.7 72.1-3 70.6-3C68.4-3 66.9-4.4 66.8-7L78-7L78-8.3C78-13.9 74.6-16.6 70.3-16.6C65.5-16.6 62.4-13.2 62.4-8.1C62.4-2.9 65.5 0.3 70.5 0.3M66.8-9.8C67-11.8 68.2-13.3 70.3-13.3C72.4-13.3 73.5-11.9 73.8-9.8"/></svg>`;
+export const tenantLogoBodies: Record<string, string> = {
+  'https://assets.example.com/acme-light.svg': acmeMark('#1c1b19'),
+  'https://assets.example.com/acme-dark.svg': acmeMark('#f3f2f0'),
+};
+const [tenantLogoLight, tenantLogoDark] = Object.keys(tenantLogoBodies);
+
 const challengeSettings = {
   tenantId: tenant,
   phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
@@ -208,6 +218,8 @@ const challengeSettings = {
   signingKeyId: 'ps-kid',
   clientAssertionMaxLifetimeSeconds: 300,
   acrVocabulary: { otp: ['otp'], mfa: ['password', 'otp'] },
+  logoLight: tenantLogoLight,
+  logoDark: tenantLogoDark,
 };
 
 const locales = [
@@ -343,7 +355,7 @@ const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, t
 const edgesState: MockState = { tenants: edgeTenants, edges };
 
 const systemSettingsState: MockState = {
-  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1, identityProviderLogo: null },
+  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1 },
 };
 
 const jwksState: MockState = {
@@ -702,13 +714,13 @@ const consoleShots: DocsShot[] = [
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
-    before: async page => { await expect(page.locator('versola-system-settings .card').nth(1).locator('.prop-value')).toHaveText('—'); },
+    before: async page => { await expect(page.locator('versola-system-settings .prop-label').filter({ hasText: 'History size' })).toBeVisible(); },
   },
   {
     name: 'console/system-settings-edit', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
     before: async page => {
       await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.locator('versola-system-settings input[type="url"]')).toBeVisible();
+      await expect(page.locator('versola-system-settings input[type="text"]')).toBeVisible();
     },
   },
 
@@ -733,6 +745,14 @@ const consoleShots: DocsShot[] = [
   {
     name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
     before: async page => { await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible(); },
+  },
+  {
+    name: 'console/challenges-logo', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    section: page => page.locator('.card').filter({ has: page.getByText('Logo', { exact: true }) }).last(),
+    before: async page => {
+      await expect(page.getByTestId('logo-preview-light').locator('img')).toBeVisible();
+      await expect(page.getByTestId('logo-preview-dark').locator('img')).toBeVisible();
+    },
   },
   {
     name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
@@ -1130,13 +1150,14 @@ const consoleShots: DocsShot[] = [
 const kz = { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' };
 const phoneSignIn = { type: 'credential', primaryCredentials: ['phone'], passkey: true, phoneRegions: [kz] };
 const partnerLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="14" fill="%23b4348a"/><text x="32" y="43" font-size="30" font-weight="800" text-anchor="middle" fill="white" font-family="sans-serif">S</text></svg>';
-const idpLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="40"><text x="0" y="30" font-size="30" font-weight="800" fill="%231c1b19" font-family="Georgia,serif" font-style="italic">Acme ID</text></svg>';
+const asDataUri = (svg: string) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+const tenantLogo = { light: asDataUri(tenantLogoBodies[tenantLogoLight]), dark: asDataUri(tenantLogoBodies[tenantLogoDark]) };
 const typePhone: Act = page => page.locator('.phone-input').fill('7012345678');
 
 const loginShots: DocsShot[] = [
   { name: 'login/sign-in', kind: 'login', form: 'credential', step: phoneSignIn, act: typePhone },
   { name: 'login/sign-in-brand', kind: 'login', form: 'credential', step: phoneSignIn, extraCss: generate(resolve({ base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } })), act: typePhone },
-  { name: 'login/sign-in-idp-logo', kind: 'login', form: 'credential', step: phoneSignIn, logo: idpLogo, act: typePhone },
+  { name: 'login/sign-in-idp-logo', kind: 'login', form: 'credential', step: phoneSignIn, logo: tenantLogo, act: typePhone },
   { name: 'login/consent', kind: 'login', form: 'consent', step: { ...scenario('consent', 'typical').step, clientName: 'Storefront', logoUri: partnerLogo, user: { name: 'Anna Petrova' } } },
 ];
 

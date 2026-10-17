@@ -169,4 +169,6 @@ object TenantService:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
         securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
+        logoLight = None,
+        logoDark = None,
       )

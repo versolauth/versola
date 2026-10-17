@@ -1599,6 +1599,8 @@ export async function upsertChallengeSettings(
   clientAssertionMaxLifetimeSeconds?: number | null,
   emailRegistration: EmailRegistration = DEFAULT_EMAIL_REGISTRATION,
   defaultRoles: string[] = DEFAULT_ROLES,
+  logoLight?: string | null,
+  logoDark?: string | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1623,6 +1625,8 @@ export async function upsertChallengeSettings(
       clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
       emailRegistration,
       defaultRoles,
+      logoLight: logoLight ?? null,
+      logoDark: logoDark ?? null,
     },
   });
 }

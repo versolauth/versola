@@ -579,6 +579,22 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
+#### Breaking change: the identity provider logo is a per-tenant light/dark pair
+
+The logo above the sign-in card is no longer a system setting. `identityProviderLogo` is gone from
+`GET`/`PUT /configuration/system-settings` (a `PUT` that still sends it is accepted and the member is ignored). A
+tenant's challenge settings carry `logoLight` (for the light colour scheme, dark artwork) and `logoDark` (for the dark
+scheme, light artwork) instead: absolute HTTP(S) URLs, both or neither, otherwise the `PUT` is refused with 400. The
+forms show the logo bare on the page and fall back to the Versola wordmark when either file fails to load. Pages that
+belong to no known client (for example a sign-out page opened without a `client_id`) have no tenant and show the
+wordmark.
+
+Migration `central` V1024 copies the deployment's existing logo into `logoLight` and `logoDark` of **every** tenant, so
+no login page loses its logo; replace the pair with proper light and dark artwork afterwards (an SVG needs its text
+converted to outlines, fonts are not loaded inside an image). The old `system_settings.identity_provider_logo` column is
+kept so the previous release keeps running while the new one is rolled out, and is unused from now on. Upgrade `central`
+and `auth` together: the challenge settings in the sync feed gained the two members.
+
 #### Breaking change: self-registration is the tenant's decision, not the client's
 
 Registration is no longer configured on a client. `registrationFlow` is gone from every client API (`POST`

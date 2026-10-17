@@ -4541,6 +4541,15 @@ components:
             retention. Between 30 and 900 seconds.
         securityProfile:
           $ref: '#/components/schemas/SecurityProfile'
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Absolute HTTP(S) URL of the tenant's logo for the light colour scheme (dark
+            artwork), shown bare above its sign-in card. Set together with `logoDark` or not at
+            all. When neither is set the forms show the Versola wordmark.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
         - phoneRegions
@@ -4652,6 +4661,17 @@ components:
             outside 30..900 -- below that ordinary clock skew starts rejecting honestly minted
             assertions, above it auth could no longer remember a `jti` for the whole life of
             the assertion carrying it.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Keeps the stored value when omitted; null clears it. An absolute HTTP(S) URL of the
+            logo for the light colour scheme (dark artwork). After both are applied `logoLight`
+            and `logoDark` must be set or cleared together, otherwise the request is refused
+            with 400: one file reused for both schemes would vanish on one of them. An SVG must
+            have its text converted to outlines, as fonts are not loaded inside an image.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
         - phoneRegions
@@ -5028,8 +5048,6 @@ components:
         passwordNumDifferent:
           type: integer
           description: How many characters a new password must differ by.
-        identityProviderLogo:
-          type: [string, 'null']
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────────── Edges ───────────────────────────────

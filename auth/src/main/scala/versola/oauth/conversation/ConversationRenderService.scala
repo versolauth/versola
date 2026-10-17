@@ -5,7 +5,7 @@ import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRecord, PhoneRegion, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRecord, PhoneRegion, PrimaryCredential, ScopeToken, TenantLogo}
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
@@ -197,7 +197,7 @@ object ConversationRenderService:
       allT: Map[String, Map[String, String]],
       error: Option[String],
       csrf: String,
-      logo: Option[String],
+      logo: Option[TenantLogo],
       /** The client the user is signing in to; forms show it inside the card for a partner's app. */
       client: Option[ClientBrand],
       /** The language each code is shown as in the switcher, as configured under Locales. */
@@ -252,7 +252,7 @@ object ConversationRenderService:
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId, client.flatMap(_.themeOverrides))
-        logo <- configuration.getIdentityProviderLogo
+        logo <- tenantLogo(client)
         maybeInfo <-
           formFor(
             record.step,
@@ -337,7 +337,7 @@ object ConversationRenderService:
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId, client.flatMap(_.themeOverrides))
-        logo <- configuration.getIdentityProviderLogo
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
       yield formOpt match
@@ -374,7 +374,7 @@ object ConversationRenderService:
       for
         client <- configuration.find(clientId)
         css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
-        logo <- configuration.getIdentityProviderLogo
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm("auth-settings")
         locales <- configuration.getLocales
       yield formOpt match
@@ -479,7 +479,7 @@ object ConversationRenderService:
       for
         client <- clientId.fold(ZIO.succeed(None))(configuration.find)
         css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
-        logo <- configuration.getIdentityProviderLogo
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales
       yield formOpt match
@@ -522,7 +522,7 @@ object ConversationRenderService:
       for
         client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
         css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
-        logo <- configuration.getIdentityProviderLogo
+        logo <- tenantLogo(client)
         form <- configuration.getForm("confirm-logout")
         locales <- configuration.getLocales
       yield form match
@@ -889,7 +889,7 @@ object ConversationRenderService:
       case _: LogoutConfirm => "confirm-logout"
       case _: SignedOut => "signed-out"
 
-    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
+    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[TenantLogo]): String =
       val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(
           info.title,
@@ -901,10 +901,19 @@ object ConversationRenderService:
           "",
         )}</script></body></html>"""
 
-    /** The identity provider logo doubles as the favicon of the login pages. */
-    private def faviconLink(logo: Option[String]): String =
-      val href = logo.filter(_.nonEmpty).map(escapeAttribute).getOrElse(defaultFavicon)
-      s"""<link rel="icon" href="$href">"""
+    /** The logo of the client's tenant. A page that belongs to no known client has no tenant to take one from, and
+      * shows the Versola wordmark. */
+    private def tenantLogo(client: Option[OAuthClientRecord]): UIO[Option[TenantLogo]] =
+      client.fold(ZIO.none)(c => configuration.getTenantLogo(c.tenantId))
+
+    /** The tenant's logo doubles as the favicon of its login pages: the file made for the browser's light or dark
+      * chrome, which is the device's scheme, not the page's (the visitor's toggle does not reach a tab strip). */
+    private def faviconLink(logo: Option[TenantLogo]): String =
+      logo match
+        case Some(TenantLogo(light, dark)) =>
+          s"""<link rel="icon" href="${escapeAttribute(light)}" media="(prefers-color-scheme: light)">""" +
+            s"""<link rel="icon" href="${escapeAttribute(dark)}" media="(prefers-color-scheme: dark)">"""
+        case None => s"""<link rel="icon" href="$defaultFavicon">"""
 
     private val defaultFavicon =
       val svg =
@@ -922,7 +931,7 @@ object ConversationRenderService:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
 
-    private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
+    private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[TenantLogo]): String =
       val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html>
          |<html lang="en">
