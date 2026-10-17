@@ -250,7 +250,8 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   const dialog = panel(page, 'OpenID scope');
   await expect(dialog.getByRole('dialog')).toBeVisible();
   const box = await dialog.getByRole('dialog').boundingBox();
-  expect(box?.width).toBe(375);
+  // The viewport minus a classic scrollbar (15px on Linux CI), not the nominal 375.
+  expect(box?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
   expect(box?.x).toBe(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 

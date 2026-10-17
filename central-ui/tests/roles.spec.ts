@@ -174,7 +174,7 @@ test('below 720px the wide create panel is a full-screen sheet', async ({ page }
 
   const dialog = panel(page, 'Create role');
   await expect(dialog.getByRole('dialog')).toBeVisible();
-  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(375);
+  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 

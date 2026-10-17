@@ -199,6 +199,6 @@ test('below 720px the panel is a full-screen sheet', async ({ page }) => {
 
   const dialog = panel(page, 'Alpha Workspace');
   await expect(dialog.getByRole('dialog')).toBeVisible();
-  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(375);
+  expect((await dialog.getByRole('dialog').boundingBox())?.width).toBe(await page.evaluate(() => document.documentElement.clientWidth));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
