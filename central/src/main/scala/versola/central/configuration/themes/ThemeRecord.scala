@@ -1,7 +1,7 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
-import versola.util.theme.{ThemePreset, ThemeTokens}
+import versola.util.theme.{ThemeOverrides, ThemePreset, ThemeTokens}
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
@@ -32,16 +32,20 @@ case class GetThemePresetsResponse(
     presets: Vector[ThemePreset],
 ) derives Schema, JsonCodec
 
-/** Asks what stylesheet a theme built from these tokens would have, for the console's preview. */
+/** Asks what stylesheet a theme would have, for the console's preview. `tokens` present: a token theme (the foundation,
+  * what the tokens set, then `css`); absent: a stylesheet theme, where `css` alone is the stylesheet. `overrides` are a
+  * client's own, laid after all of that as the authorization server does.
+  */
 case class RenderThemeRequest(
-    tokens: ThemeTokens,
+    tokens: Option[ThemeTokens],
     css: Option[String],
+    overrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 case class RenderThemeResponse(
-    /** The whole stylesheet: the base stylesheet, what the tokens set, then the theme's own CSS. */
+    /** The whole stylesheet: the base stylesheet, what the tokens set, the theme's own CSS, then the client's overrides. */
     css: String,
-    /** Only what the tokens set. */
+    /** Only what the theme's tokens set; empty for a stylesheet theme. */
     generated: String,
 ) derives Schema, JsonCodec
 

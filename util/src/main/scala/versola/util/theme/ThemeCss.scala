@@ -173,10 +173,12 @@ object ThemeCss:
             "--page-bg:radial-gradient(130% 60% at 50% 110%,var(--page-tint),transparent 72%),var(--page);",
         )
 
+  // A fixed scheme also sets `--scheme-locked:1`, which the forms read to hide the visitor's Auto / Light / Dark toggle
+  // (common.css documents it, default 0). `auto` writes nothing here: the toggle is shown.
   private def scheme(mode: Mode): String = mode match
     case Mode.auto => ""
-    case Mode.light => "color-scheme:light;"
-    case Mode.dark => "color-scheme:dark;"
+    case Mode.light => "color-scheme:light;--scheme-locked:1;"
+    case Mode.dark => "color-scheme:dark;--scheme-locked:1;"
 
   /** The block a theme adds after the default stylesheet. A declaration with light-dark() is dropped whole by a browser
     * that does not know it, so those sit in an `@supports` rule, as in common.css; there the default stylesheet's
@@ -220,7 +222,8 @@ object ThemeCss:
         case other => surface(other)
       }
       val mode = overrides.mode.fold("") {
-        case Mode.auto => "color-scheme:light dark;"
+        // An `auto` override must also undo a lock the theme set, so the partner can hand the choice to the visitor.
+        case Mode.auto => "color-scheme:light dark;--scheme-locked:0;"
         case other => scheme(other)
       }
       // The strength of a tint follows the surface, so a surface override re-writes a background that is not the glow;

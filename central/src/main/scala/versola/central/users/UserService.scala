@@ -22,6 +22,13 @@ trait UserService:
 
   def invalidateSession(userId: UserId): Task[Unit]
 
+  /** Signs one user agent out: ends that session of the user, relying parties told. `false`
+    * when the session is not the user's or no longer live. */
+  def endSession(userId: UserId, sessionId: String): Task[Boolean]
+
+  /** Revokes the offline access one client holds for the user. The user's sessions stay. */
+  def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
+
   /** Every currently-live refresh token issued to the user, independent of
     * [[getSessions]]: a refresh token's expiry is fixed at issuance and independent of a
     * session's, so a token routinely outlives the session it was issued under. */
@@ -36,7 +43,12 @@ trait UserService:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
-  def delete(id: UserId): Task[Unit]
+  /** Hard-deletes the user: everything auth holds for them first -- sessions, refresh tokens,
+    * passkeys, passwords, roles, throttling, pending conversations -- then the index row. Fails
+    * with [[UserNotFound]] when the id is not indexed, and leaves the index row in place when
+    * auth's purge fails, so the deletion can be retried rather than leaving a user nothing can
+    * find but who can still sign in. */
+  def delete(id: UserId): IO[UserNotFound | Throwable, Unit]
 
   def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
@@ -117,6 +129,12 @@ object UserService:
     override def invalidateSession(userId: UserId): Task[Unit] =
       authClient.invalidateSession(userId)
 
+    override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
+      authClient.endSession(userId, sessionId)
+
+    override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
+      authClient.revokeRefreshTokens(userId, clientId)
+
     override def getRefreshTokens(id: UserId): Task[List[RefreshTokenResponse]] =
       authClient.getUserRefreshTokens(id).map(_.map { token =>
         RefreshTokenResponse(
@@ -144,8 +162,15 @@ object UserService:
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
 
-    override def delete(id: UserId): Task[Unit] =
-      userRepository.delete(id)
+    override def delete(id: UserId): IO[UserNotFound | Throwable, Unit] =
+      for
+        _ <- userRepository.findById(id).someOrFail(UserNotFound)
+        _ <- authClient.deleteUser(id)
+        // The index row goes with a `DeleteUser` event queued behind it: the outbox delivers
+        // per user in order, so an upsert still in flight for this user is followed by a
+        // second, idempotent purge rather than resurrecting the account in auth.
+        _ <- userRepository.delete(id)
+      yield ()
 
     override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
       userRepository.enqueueRoleUpdate(request.userId, request.tenantId, request.add, request.remove)

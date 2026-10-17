@@ -27,6 +27,12 @@ export type SubmittedRequest = {
   fields: URLSearchParams;
 };
 
+// What the server's page shell runs before first paint (ConversationRenderService.SchemeScript), after the <style> block.
+const SCHEME_SCRIPT = `<script>(function(){try{var d=document.documentElement;`
+  + `if(getComputedStyle(d).getPropertyValue('--scheme-locked').trim()==='1')return;`
+  + `var v=localStorage.getItem('versola.colorScheme');`
+  + `if(v==='light'||v==='dark')d.style.colorScheme=v}catch(e){}})()</script>`;
+
 const bundles = new Map<string, Promise<string>>();
 
 export function formBundle(id: string): Promise<string> {
@@ -86,7 +92,7 @@ export async function renderForm(page: Page, id: string, config: FormConfig, opt
   await page.setContent(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${all.en.page_title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
-<style>${commonCss}\n${options.extraCss ?? ''}\n${formCss}</style></head><body>
+<style>${commonCss}\n${options.extraCss ?? ''}\n${formCss}</style>${SCHEME_SCRIPT}</head><body>
 <script>window.__VERSOLA_FORM__ = ${JSON.stringify(full).replace(/</g, '\\u003c')};</script>
 <div id="versola-form-root"></div>
 <script>${script}</script>

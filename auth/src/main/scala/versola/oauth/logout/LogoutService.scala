@@ -24,6 +24,11 @@ trait LogoutService:
     * browser to redirect here, so unlike [[logout]] this produces no front-channel URIs. */
   def invalidateAllSessions(userId: UserId): Task[Unit]
 
+  /** Ends one of the user's sessions (admin-panel action) the way [[logout]] would, relying
+    * parties included. `false` when the session is not the user's or no longer live: knowing
+    * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
+  def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+
 object LogoutService:
   case class LogoutResult(
       logoutUris: List[URL],
@@ -74,6 +79,11 @@ object LogoutService:
       * clients costs one or two deliveries instead of ten — and the RP records one revocation
       * instead of five.
       */
+    override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+      sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
+        case false => ZIO.succeed(false)
+        case true => logout(Left(publicId), None, None).as(true)
+
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)

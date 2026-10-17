@@ -1,12 +1,20 @@
 {
   "en": {
     "page_title": "Access Denied",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Access Denied",
     "description": "Your access has been temporarily restricted due to too many attempts.",
     "return_button": "Return"
   },
   "ru": {
     "page_title": "Доступ запрещён",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Доступ запрещён",
     "description": "Ваш доступ временно ограничен из-за слишком большого количества попыток.",
     "return_button": "Вернуться"

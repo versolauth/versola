@@ -3,10 +3,11 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ResolvedThemeTokens } from '../types';
-import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, FormPreviewScenario, FormRecord, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ThemeTokens, ResolvedThemeTokens } from '../types';
+import { createDefaultAuthFlow, createDefaultConsentFlow, DEFAULT_CONSENT_REMEMBER_DAYS, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
+import './client-consent-preview';
 import './client-kind-step';
 import {
   CLIENT_KINDS,
@@ -62,7 +63,7 @@ export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   signin: 'Sign-in',
   tokens: 'Tokens',
   keys: 'Keys',
-  registration: 'Consent',
+  registration: 'Ownership',
   branding: 'Branding and logout',
 };
 
@@ -85,6 +86,10 @@ export class VersolaClientForm extends LitElement {
   /** The built-in themes a theme is built on; empty from a central that has none, which hides the
    *  client's own appearance, since there is then nothing to show it against. */
   @property({ attribute: false }) availableThemePresets: ThemePreset[] = [];
+  /** The active consent form and the scenario of the preview catalog the appearance block draws; `null` when central has
+   *  no consent form, the catalog lacks it, or the console may not read them. The block then says so instead. */
+  @property({ attribute: false }) consentPreviewForm: FormRecord | null = null;
+  @property({ attribute: false }) consentPreviewScenario: FormPreviewScenario | null = null;
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   /** The profile the tenant's clients are held to; decides what a kind sets. */
   @property({ attribute: false }) securityProfile: SecurityProfile = 'fapi2';
@@ -2499,7 +2504,8 @@ export class VersolaClientForm extends LitElement {
     if (this.consentLocked) return;
     const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
     // The appearance block goes with the consent flow, and so must what was set in it.
-    this.formData = { ...this.formData, consentFlow, ...(consentFlow ? {} : { themeOverrides: null }) };
+    // Creating a first-party app offers no branding, so a theme picked for a partner does not stay behind.
+    this.formData = { ...this.formData, consentFlow, ...(consentFlow ? {} : { themeOverrides: null, ...(this.client ? {} : { theme: 'default' }) }) };
     if (!consentFlow) this.themeBrandInvalid = false;
     this.syncPartnerTemplate();
   }
@@ -2523,7 +2529,7 @@ export class VersolaClientForm extends LitElement {
   }
 
   private setConsentRemember(mode: 'forever' | 'days') {
-    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : 180 });
+    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : DEFAULT_CONSENT_REMEMBER_DAYS });
   }
 
   private get credentialMode(): 'phone-email' | 'login-password' {
@@ -3410,20 +3416,30 @@ export class VersolaClientForm extends LitElement {
       )}
 
       ${this.wizardSection(
-        'Consent',
-        'No prompt is the normal choice for an app you own.',
+        'Ownership',
+        'Whose app this is decides whether its users are asked for consent.',
         html`
-        <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
+        <div class="seg" role="group" aria-label="Who the app belongs to" style="margin-bottom:.6rem">
           <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
-            First party, no prompt
+            First party app
           </button>
           <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
-            Ask for consent
+            Partner app
           </button>
         </div>
+        <div class="hint" style="margin:0 0 ${this.hasConsentFlow ? '.9rem' : '0'}">
+          ${this.hasConsentFlow
+            ? 'Someone else\'s app: users are asked for consent, its SMS codes name the app, and consent cannot be turned off once the client is created.'
+            : 'Your own app: users are not asked for consent. Pick Partner app for an app that belongs to someone else.'}
+        </div>
         ${this.hasConsentFlow ? html`
-          <div class="hint" style="margin:-.4rem 0 .9rem">This makes the client a partner: its SMS codes name the app, and consent cannot be turned off once the client is created.</div>
           ${this.renderWizardConsentSettings()}
+          ${this.hasAuthFlow ? html`
+            <div class="wizard-group-head" style="font-size:.875rem;margin-top:var(--spacing-md)">Branding</div>
+            <div class="wizard-group-sub">How the sign-in and consent screens look for this partner's users.</div>
+            ${this.renderThemeSelect()}
+            ${this.renderAppearance()}
+          ` : ''}
         ` : ''}
         `,
       )}
@@ -3434,16 +3450,10 @@ export class VersolaClientForm extends LitElement {
   private renderWizardConsentSettings() {
     const days = this.consentFlow.rememberDurationDays;
     const remember = days == null ? 'forever' : String(days);
+    const presetDays = ['30', '90', 'forever', '0'];
     return html`
       <div class="path alt" style="padding:1rem">
-        ${this.renderCheckRow(
-          this.consentFlow.allowPartial,
-          'Let the user grant part of it',
-          'Off is the default - all or nothing. On lets optional scopes be unticked.',
-          () => this.setConsentFlow({ allowPartial: !this.consentFlow.allowPartial }),
-        )}
-
-        <div class="wizard-field inline-field" style="margin-top:.7rem">
+        <div class="wizard-field inline-field">
           <label for="consent-remember">Reuse the grant for</label>
           <select
             id="consent-remember"
@@ -3458,8 +3468,18 @@ export class VersolaClientForm extends LitElement {
             <option value="90" ?selected=${remember === '90'}>90 days</option>
             <option value="forever" ?selected=${remember === 'forever'}>Until the user revokes it</option>
             <option value="0" ?selected=${remember === '0'}>Ask every time</option>
+            ${presetDays.includes(remember) ? '' : html`<option value=${remember} selected>${remember} days</option>`}
           </select>
           <div class="hint">How long before the same scopes are asked for again.</div>
+        </div>
+
+        <div style="margin-top:.7rem">
+          ${this.renderCheckRow(
+          this.consentFlow.allowPartial,
+          'Let the user grant part of it',
+          'Off is the default - all or nothing. On lets optional scopes be unticked.',
+          () => this.setConsentFlow({ allowPartial: !this.consentFlow.allowPartial }),
+        )}
         </div>
 
         <hr class="wizard-rule" style="margin:var(--spacing-md) 0" />
@@ -3701,8 +3721,8 @@ export class VersolaClientForm extends LitElement {
             ${this.renderReviewGroup('Scopes', 3, [
               ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
             ])}
-            ${this.renderReviewGroup('Consent', 3, [
-              ['Consent', this.hasConsentFlow ? 'asked' : 'first party, no prompt', !this.hasConsentFlow],
+            ${this.renderReviewGroup('Ownership', 3, [
+              ['Ownership', this.hasConsentFlow ? 'partner, users are asked for consent' : 'first party', !this.hasConsentFlow],
             ])}
             ${this.renderReviewGroup('Logout', 2, [
               ['Logout notice', this.logoutMode === 'none' ? 'none' : `${this.logoutMode}-channel`, this.logoutMode === 'none'],
@@ -4515,32 +4535,68 @@ export class VersolaClientForm extends LitElement {
             ${this.hasAuthFlow ? html`
               <div class="form-group">
                 <div class="flow-toggle-row">
-                  <label style="margin: 0; line-height: 18px;">Consent</label>
+                  <span style="margin: 0; line-height: 18px; font-weight: 600;" id="ownership-label">Ownership</span>
                   ${this.renderOptionInfo(
                     'consent',
-                    'Consent screen',
-                    html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
-                    'Consent settings info',
+                    'Ownership',
+                    html`<div class="option-tooltip-item">A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.</div>`,
+                    'Ownership info',
                   )}
-                  ${this.consentLocked ? html`
-                    ${this.statusIcon('lock', 'locked-icon')}
-                    <span class="locked-state on">Always on</span>
-                  ` : html`
-                    <label class="toggle">
-                      <input
-                        type="checkbox"
-                        .checked=${this.hasConsentFlow}
-                        @change=${() => this.toggleConsentEnabled()}
-                      />
-                    </label>
-                  `}
+                  ${this.consentLocked ? this.statusIcon('lock', 'locked-icon') : ''}
+                </div>
+                <div class="seg" role="group" aria-labelledby="ownership-label" style="margin-top:.5rem">
+                  <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
+                    First party app
+                  </button>
+                  <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
+                    Partner app
+                  </button>
                 </div>
                 ${this.consentLocked ? html`
-                  <div class="hint" style="margin-top:.35rem">A partner client asks users for consent for good: this cannot be turned off.</div>
+                  <div class="hint" style="margin-top:.35rem">A partner app asks users for consent for good: it cannot be made a first party app.</div>
                 ` : ''}
 
                 ${this.hasConsentFlow ? html`
                   <div class="registration-settings">
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-remember">Remember</label>
+                        ${this.renderOptionInfo(
+                          'consent-remember',
+                          'Remember grant',
+                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
+                          'Remember consent info',
+                        )}
+                      </div>
+                      <div>
+                        <div class="consent-remember-row">
+                          <select
+                            id="consent-remember"
+                            class="compact-input"
+                            .value=${this.consentRemember}
+                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
+                          >
+                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
+                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
+                          </select>
+                          ${this.consentRemember === 'days' ? html`
+                            <input
+                              class="compact-input"
+                              type="number"
+                              min="1"
+                              aria-label="Remember duration in days"
+                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
+                              @input=${(e: Event) => this.setConsentFlow({
+                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                              })}
+                            />
+                            <span class="registration-hint">days</span>
+                          ` : ''}
+                        </div>
+                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
+                      </div>
+                    </div>
+
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">
                         <span>Partial grants</span>
@@ -4616,45 +4672,6 @@ export class VersolaClientForm extends LitElement {
                         </div>
                       </div>
                     ` : ''}
-
-                    <div class="registration-row">
-                      <div class="registration-label consent-property-label">
-                        <label for="consent-remember">Remember</label>
-                        ${this.renderOptionInfo(
-                          'consent-remember',
-                          'Remember grant',
-                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
-                          'Remember consent info',
-                        )}
-                      </div>
-                      <div>
-                        <div class="consent-remember-row">
-                          <select
-                            id="consent-remember"
-                            class="compact-input"
-                            .value=${this.consentRemember}
-                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
-                          >
-                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
-                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
-                          </select>
-                          ${this.consentRemember === 'days' ? html`
-                            <input
-                              class="compact-input"
-                              type="number"
-                              min="1"
-                              aria-label="Remember duration in days"
-                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
-                              @input=${(e: Event) => this.setConsentFlow({
-                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
-                              })}
-                            />
-                            <span class="registration-hint">days</span>
-                          ` : ''}
-                        </div>
-                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
-                      </div>
-                    </div>
 
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">
@@ -4780,7 +4797,13 @@ export class VersolaClientForm extends LitElement {
   private renderThemeField() {
     return html`
 
-            ${this.hasAuthFlow ? html`
+            ${this.hasAuthFlow ? this.renderThemeSelect() : ''}
+            ${this.hasAuthFlow && this.hasConsentFlow ? this.renderAppearance() : ''}
+    `;
+  }
+
+  private renderThemeSelect() {
+    return html`
             <div class="form-group">
               <label for="client-theme">Forms Theme</label>
               <select
@@ -4796,8 +4819,6 @@ export class VersolaClientForm extends LitElement {
                   `)}
               </select>
             </div>
-            ` : ''}
-            ${this.hasAuthFlow && this.hasConsentFlow ? this.renderAppearance() : ''}
     `;
   }
 
@@ -4814,6 +4835,20 @@ export class VersolaClientForm extends LitElement {
     if (record && !record.tokens) return { stylesheet: true };
     const fallback = preset('versola');
     return fallback ? { tokens: fallback, stylesheet: false } : null;
+  }
+
+  /** What central is asked to render for the preview: the theme the client uses (a stylesheet theme has no tokens), and a
+   *  built-in default look while the theme is not found yet. */
+  private get previewTheme(): { tokens: ThemeTokens | null; css: string } {
+    const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
+    if (!record) return { tokens: { base: 'versola' }, css: '' };
+    return { tokens: record.tokens ?? null, css: record.css };
+  }
+
+  /** The colour scheme the client's look is fixed to, if it is: the preview has no dark variant to switch on then. */
+  private previewFixedMode(base: { tokens?: ResolvedThemeTokens }, overrides: ThemeOverrides): 'light' | 'dark' | null {
+    const mode = overrides.mode ?? base.tokens?.mode;
+    return mode === 'light' || mode === 'dark' ? mode : null;
   }
 
   /** The brand colour field of the appearance block holds text that is not a #rrggbb colour. */
@@ -4847,7 +4882,12 @@ export class VersolaClientForm extends LitElement {
             : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
           ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and its own values are not shown.' : ''}
         </div>
-        <versola-theme-token-controls preview inheritedNote="From the theme"
+        <versola-client-consent-preview
+          .form=${this.consentPreviewForm} .scenario=${this.consentPreviewScenario}
+          .tokens=${this.previewTheme.tokens} .themeCss=${this.previewTheme.css} .overrides=${overrides}
+          .fixedMode=${this.previewFixedMode(base, overrides)}
+          .clientName=${this.formData.clientName ?? {}} .logoUri=${this.formData.logoUri ?? ''} .locales=${this.locales}></versola-client-consent-preview>
+        <versola-theme-token-controls inheritedNote="From the theme"
           .base=${base.tokens} ?stylesheet=${base.stylesheet} .overrides=${overrides}
           @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
       </section>

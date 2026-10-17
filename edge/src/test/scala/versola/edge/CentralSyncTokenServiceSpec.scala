@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.util.{JWT, Secret}
+import versola.util.{ConfigSnapshot, JWT, Secret}
 import zio.*
 import zio.http.URL
 import zio.json.JsonCodec
@@ -49,6 +49,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     ZIO.service[CentralSyncTokenService].provideSome[Scope](
       ZLayer.succeed(config),
       CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
     )
 
   def spec = suite("CentralSyncTokenService")(

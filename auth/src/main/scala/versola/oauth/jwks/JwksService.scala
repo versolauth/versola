@@ -107,7 +107,7 @@ object JwksService:
         // The same source backs the scheduled refresh and the on-demand one, so a forced
         // sync cannot compute the fallback differently from the timer that follows it.
         source = new SigningAwareSource(client, config.jwt.privateKey): CacheSource[Snapshot]
-        cache <- ReloadingCache.make[Snapshot](config.configurationCacheRefreshInterval)
+        cache <- ReloadingCache.make[Snapshot](config.configurationCacheRefreshInterval, fromSnapshot = true)
           .provideSome[Scope](ZLayer.succeed(source))
       yield Impl(cache, configurationService, source)
 

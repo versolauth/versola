@@ -1,6 +1,10 @@
 {
   "en": {
     "page_title": "Authorize",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Authorize access",
     "description": "{client} wants to access your account.",
     "unknown_client": "An application",
@@ -16,6 +20,10 @@
   },
   "ru": {
     "page_title": "Авторизация",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Разрешить доступ",
     "description": "Приложение {client} запрашивает доступ к вашей учётной записи.",
     "unknown_client": "Приложение",

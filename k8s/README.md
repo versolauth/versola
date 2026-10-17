@@ -316,7 +316,10 @@ How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
 
 The wait is two minutes, and only for a central that cannot be *reached*. A central that answers
 and rejects the request — wrong URL, wrong sync key — still fails startup within seconds rather
-than spending the whole budget on something waiting cannot fix.
+than spending the whole budget on something waiting cannot fix. Once the service has synced at
+least once, a restart that finds central unreachable after the wait starts from the configuration
+snapshot kept in its own database and becomes Ready on it, retrying central in the background
+(`config_snapshot_age_seconds`, see deploy.md, #566); it does not restart.
 
 ### Availability: spread, disruption budgets, priority, autoscaling
 
