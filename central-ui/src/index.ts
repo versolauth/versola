@@ -11,13 +11,12 @@ export { VersolaClientForm } from './components/client-form';
 export { VersolaScopesList } from './components/scopes-list';
 export { VersolaAuthorizationDetailTypesList } from './components/authorization-detail-types-list';
 export { VersolaAuthorizationDetailTypeForm } from './components/authorization-detail-type-form';
-export { VersolaScopeForm } from './components/scope-form';
 export { VersolaPermissionsList } from './components/permissions-list';
-export { VersolaPermissionForm } from './components/permission-form';
 export { VersolaResourcesList } from './components/resources-list';
 export { VersolaRolesList } from './components/roles-list';
-export { VersolaRoleForm } from './components/role-form';
 export { VersolaPagination } from './components/pagination';
+export { VersolaSidePanel } from './components/side-panel';
+export { VersolaDataTable } from './components/data-table';
 
 // Export types
 export type {
