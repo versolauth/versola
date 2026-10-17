@@ -12,6 +12,9 @@ import java.util.UUID
 trait UserRepository:
   /** Atomically resolves or creates a registration account and grants its tenant roles. Central
     * has already claimed the credential and returned the canonical `userId` before this is called.
+    *
+    * The credential is always one a confirmed OTP was just sent to, so the account comes back with
+    * its `email_verified` / `phone_number_verified` claim already set, in the same statement.
     */
   def register(
       userId: UserId,
@@ -52,3 +55,13 @@ trait UserRepository:
       add: Set[RoleId],
       remove: Set[RoleId],
   ): Task[Unit]
+
+  /** Marks the given credential as verified for this user by setting its `email_verified` /
+    * `phone_number_verified` claim in `claims`, and returns the user's claims after the update.
+    * Only fires when OTP verification actually succeeded – never on failure or expiry.
+    * Idempotent: an already-true claim is rewritten with the same value.
+    * Guards against contact replacement: the UPDATE also checks that the stored value
+    * still matches the credential the OTP was sent to, so a concurrent upsert that
+    * swapped in a different email/phone cannot accidentally get verified; `None` then.
+    */
+  def markVerified(userId: UserId, credential: Either[Email, Phone]): Task[Option[Json.Obj]]

@@ -175,6 +175,8 @@ object UserinfoResult:
       givenName: Option[String],
       familyName: Option[String],
       phoneNumber: Option[String],
+      emailVerified: Option[Boolean] = None,
+      phoneVerified: Option[Boolean] = None,
   ) extends UserinfoResult
 
   case class Failure(response: Response, body: String) extends UserinfoResult
@@ -186,6 +188,8 @@ object UserinfoResult:
       @jsonField("given_name") givenName: Option[String],
       @jsonField("family_name") familyName: Option[String],
       @jsonField("phone_number") phoneNumber: Option[String],
+      @jsonField("email_verified") emailVerified: Option[Boolean],
+      @jsonField("phone_number_verified") phoneVerified: Option[Boolean],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[UserinfoResult] =
@@ -195,7 +199,7 @@ object UserinfoResult:
           err => ZIO.succeed(Failure(response, s"JSON parse error [$err] body=$body")),
           raw =>
             ZIO.attempt(java.util.UUID.fromString(raw.sub))
-              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber))
+              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified))
               .orElse(ZIO.succeed(Failure(response, s"sub is not a valid UUID: ${raw.sub}"))),
         )
       else ZIO.succeed(Failure(response, body))
