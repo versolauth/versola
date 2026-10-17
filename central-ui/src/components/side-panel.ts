@@ -193,9 +193,12 @@ export class VersolaSidePanel extends LitElement {
       }
 
       @media (max-width: 1023px) {
+        /* left + right instead of 100vw: 100vw counts a classic scrollbar, which pushes the
+           panel's left edge that many pixels off screen. */
         .panel,
         :host([wide]) .panel {
-          width: 100vw;
+          left: 0;
+          width: auto;
         }
       }
 
