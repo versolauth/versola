@@ -23,6 +23,12 @@ export type DocsTheme = 'dark' | 'light';
 type MockState = Partial<MockConfigState>;
 type Act = (page: Page) => Promise<void>;
 
+/** The side panel of a small-entity section (scopes, permissions, roles, tenants, edges), found by
+ *  its heading. Its body is slotted light DOM, so locators chain from the host, not the dialog. */
+const sidePanel = (page: Page, heading: string) =>
+  page.locator('versola-side-panel').filter({ has: page.locator('#panel-title', { hasText: new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
+const sidePanelDialog = (page: Page, heading: string) => sidePanel(page, heading).getByRole('dialog');
+
 type ConsoleShot = {
   name: string;
   path: string;
@@ -270,13 +276,13 @@ function generate(t: Tokens): string {
   const onBrand = contrast(own, 1) >= contrast(own, lum('#1c1b19')) ? '#ffffff' : '#1c1b19';
   const [field, button, card] = ({ round: ['18px', '999px', '32px'], soft: ['14px', '14px', '24px'], sharp: ['4px', '4px', '6px'] } as Record<string, string[]>)[t.shape];
   const surface = t.surface === 'soft'
-    ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);'
-    : t.surface === 'neutral' ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;' : '';
+    ? '--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);--glow-light:color-mix(in oklab,var(--brand) 16%,transparent);--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);'
+    : t.surface === 'neutral' ? '--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-light:transparent;--glow-dark:transparent;' : '';
   const scheme = t.mode === 'auto' ? '' : `color-scheme:${t.mode};`;
   // The tint strengths (light, dark) of ThemeCss.tint, per surface.
   const tint = ({
-    linear: { bold: [40, 45], soft: [34, 34], neutral: [14, 16] },
-    horizon: { bold: [42, 46], soft: [36, 34], neutral: [18, 14] },
+    linear: { bold: [34, 45], soft: [34, 34], neutral: [14, 16] },
+    horizon: { bold: [36, 46], soft: [36, 34], neutral: [18, 14] },
   } as Record<string, Record<string, number[]>>)[t.background]?.[t.surface] ?? [0, 0];
   const mixes = (light: string, dark: string) => `light-dark(color-mix(in oklab,var(--brand) ${tint[0]}%,${light}),color-mix(in oklab,var(--brand) ${tint[1]}%,${dark}))`;
   const plain = t.background === 'flat' ? '--page-bg:var(--page);' : '';
@@ -658,31 +664,36 @@ const consoleShots: DocsShot[] = [
   // Edges
   {
     name: 'console/edges-list', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
-    before: async page => { await expect(page.getByRole('button', { name: 'Delete edge edge-default' })).toBeVisible(); },
+    before: async page => {
+      await expect(page.getByRole('button', { name: 'Open edge edge-default' })).toBeVisible();
+      await expect(page.getByRole('columnheader')).toHaveText(['Edge', 'Tenants', 'Key', 'DPoP nonce', 'Actions']);
+    },
   },
   {
     name: 'console/edges-list-expanded', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
-      const card = page.locator('.edge-card').filter({ hasText: 'edge-default' });
-      await card.locator('.edge-header').click();
-      await expect(card.locator('.tenant-badge')).toHaveText(['acme', 'acme-fapi', 'default']);
-      await expect(card.locator('.dpop-toggle input[type="checkbox"]')).toBeChecked();
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      const edge = sidePanel(page, 'edge-default');
+      await expect(edge.getByRole('region', { name: 'Linked tenants' })).toContainText('acme');
+      await expect(edge.getByRole('region', { name: 'DPoP nonce' })).toContainText('Required on every proxied call');
     },
   },
   {
     name: 'console/edge-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
-      await page.getByRole('button', { name: 'Edit edge edge-default' }).click();
-      await expect(page.getByRole('heading', { name: 'Edit Edge', exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Rotate Key', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit dpop nonce', exact: true }).click();
+      await expect(sidePanelDialog(page, 'Edit DPoP nonce')).toBeVisible();
+      await expect(sidePanel(page, 'Edit DPoP nonce').getByRole('button', { name: 'Save DPoP nonce' })).toBeVisible();
     },
   },
   {
     name: 'console/edge-form', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Edge' }).click();
-      await expect(page.getByRole('heading', { name: 'Create New Edge', exact: true })).toBeVisible();
-      await expect(page.locator('versola-edge-form .input-prefix')).toHaveText('edge-');
+      await expect(sidePanelDialog(page, 'Register edge')).toBeVisible();
+      await expect(sidePanel(page, 'Register edge').getByText('Registered as')).toBeVisible();
+      await expect(sidePanel(page, 'Register edge').getByLabel('Edge ID *')).toBeVisible();
     },
   },
 
@@ -985,136 +996,150 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/tenants-list', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`,
     state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }, { id: 'acme-prod', description: 'Acme production', edgeId: null, securityProfile: 'standard' }] },
-    before: async page => { await expect(page.locator('.tenant-card')).toHaveCount(3); },
+    before: async page => {
+      await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open tenant/ })).toHaveCount(3);
+    },
   },
   {
     name: 'console/tenant-create-profile-fapi2', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Tenant', exact: true }).click();
-      await page.getByLabel('Tenant ID *').fill('acme-prod');
-      await page.getByLabel('Description').fill('Acme production');
-      await expect(page.locator('#tenant-security-profile')).toHaveValue('fapi2');
+      const dialog = sidePanel(page, 'Create tenant');
+      await dialog.getByLabel('Tenant ID *').fill('acme-prod');
+      await dialog.getByLabel('Description *').fill('Acme production');
+      await expect(dialog.getByRole('button', { name: /FAPI 2\.0/ })).toHaveAttribute('aria-pressed', 'true');
     },
   },
   {
     name: 'console/tenant-create-profile-standard', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Tenant', exact: true }).click();
-      await page.getByLabel('Tenant ID *').fill('acme-prod');
-      await page.getByLabel('Description').fill('Acme production');
-      await page.getByLabel('Security profile').selectOption('standard');
-      await expect(page.getByText('Also admits client secrets, RS256 keys and public native clients. Fixed once the tenant is created.')).toBeVisible();
+      const dialog = sidePanel(page, 'Create tenant');
+      await dialog.getByLabel('Tenant ID *').fill('acme-prod');
+      await dialog.getByLabel('Description *').fill('Acme production');
+      await dialog.getByRole('button', { name: /^Standard/ }).click();
+      await expect(dialog.getByText('Also admits client secrets, RS256 keys and public native clients.')).toBeVisible();
     },
   },
   {
     name: 'entities/tenant-form-empty', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Tenant', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create Tenant', exact: true })).toBeVisible();
+      await expect(sidePanelDialog(page, 'Create tenant')).toBeVisible();
     },
   },
   {
     name: 'entities/tenant-form-filled', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Tenant', exact: true }).click();
-      await page.getByLabel('Tenant ID *').fill('acme-prod');
-      await page.getByLabel('Description').fill('Acme production');
-      await expect(page.getByLabel('Tenant ID *')).toHaveValue('acme-prod');
+      const dialog = sidePanel(page, 'Create tenant');
+      await dialog.getByLabel('Tenant ID *').fill('acme-prod');
+      await dialog.getByLabel('Description *').fill('Acme production');
+      await expect(dialog.getByLabel('Tenant ID *')).toHaveValue('acme-prod');
     },
   },
 
   // Scopes
   {
     name: 'entities/scopes-list', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.locator('.scope-card')).toHaveCount(scopes.length); },
+    before: async page => {
+      await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open scope/ })).toHaveCount(scopes.length);
+    },
   },
   {
     name: 'entities/scopes-list-expanded', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.locator('.scope-card').filter({ hasText: 'OpenID scope' }).first().locator('.scope-header').click();
-      await expect(page.getByText('Subject')).toBeVisible();
+      await page.getByRole('button', { name: 'Open scope openid' }).click();
+      await expect(sidePanel(page, 'OpenID scope').getByRole('region', { name: 'Claims' })).toContainText('Subject');
     },
   },
   {
     name: 'entities/scope-form-empty', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Scope', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create New Scope', exact: true })).toBeVisible();
+      await expect(sidePanelDialog(page, 'Create scope')).toBeVisible();
     },
   },
   {
     name: 'entities/scope-form-filled', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Scope', exact: true }).click();
-      await page.getByLabel('Scope ID *').fill('orders_read');
-      await page.getByLabel('Description *').fill('Read order history');
-      await page.getByLabel('Claim ID').fill('order_count');
-      await page.getByLabel('Claim Description').fill('Number of orders placed');
-      await page.getByRole('button', { name: 'Add Claim', exact: true }).click();
-      await expect(page.getByText('order_count')).toBeVisible();
+      const dialog = sidePanel(page, 'Create scope');
+      await dialog.getByLabel('Scope ID *').fill('orders_read');
+      await dialog.locator('#scope-description').fill('Read order history');
+      await dialog.getByRole('button', { name: '+ Add claim' }).click();
+      await dialog.getByLabel('Claim ID').fill('order_count');
+      await dialog.locator('versola-localized-text-editor').nth(1).locator('input').fill('Number of orders placed');
+      await expect(dialog.getByLabel('Claim ID')).toHaveValue('order_count');
     },
   },
 
   // Permissions
   {
     name: 'entities/permissions-list', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.locator('.permission-card')).toHaveCount(permissions.length); },
+    before: async page => {
+      await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open permission/ })).toHaveCount(permissions.length);
+    },
   },
   {
     name: 'entities/permissions-list-expanded', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.locator('.permission-card').filter({ hasText: 'orders.read' }).first().click();
-      await expect(page.locator('.endpoint-row').filter({ hasText: '/orders' }).first()).toBeVisible();
+      await page.getByRole('button', { name: 'Open permission orders.read' }).click();
+      await expect(sidePanel(page, 'Read orders').getByRole('region', { name: 'Endpoints' })).toContainText('/orders');
     },
   },
   {
     name: 'entities/permission-form-empty', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create Permission', exact: true })).toBeVisible();
+      await expect(sidePanelDialog(page, 'Create permission')).toBeVisible();
     },
   },
   {
     name: 'entities/permission-form-filled', kind: 'frame', fullPage: true, path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
-      await page.getByLabel('Permission ID *').fill('orders.cancel');
-      await page.getByLabel('English description').fill('Cancel orders');
-      await page.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
-      await page.getByRole('button', { name: 'Add resource', exact: true }).click();
-      await page.getByLabel(/Add endpoint for/).selectOption({ label: 'POST /orders' });
-      await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-      await expect(page.locator('.endpoint-row').filter({ hasText: '/orders' })).toBeVisible();
+      const dialog = sidePanel(page, 'Create permission');
+      await dialog.getByLabel('Permission ID *').fill('orders.cancel');
+      await dialog.locator('#permission-description').fill('Cancel orders');
+      await dialog.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
+      await dialog.getByRole('button', { name: 'Add resource', exact: true }).click();
+      await dialog.getByLabel(/Add endpoint for/).selectOption({ label: 'POST /orders' });
+      await dialog.getByRole('button', { name: 'Add endpoint', exact: true }).click();
+      await expect(dialog.locator('.endpoint-path', { hasText: '/orders' })).toBeVisible();
     },
   },
 
   // Roles
   {
     name: 'entities/roles-list', kind: 'frame', path: `/?view=roles&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.locator('.role-card')).toHaveCount(2); },
+    before: async page => {
+      await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open role/ })).toHaveCount(2);
+    },
   },
   {
     name: 'entities/roles-list-expanded', kind: 'frame', path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.locator('.role-card').filter({ hasText: 'Alpha admin' }).first().locator('.role-header').click();
-      await expect(page.locator('.permission-item').filter({ hasText: 'orders.read' })).toBeVisible();
+      await page.getByRole('button', { name: 'Open role alpha_admin' }).click();
+      await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('orders.read');
     },
   },
   {
     name: 'entities/role-form-empty', kind: 'frame', fullPage: true, path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Role', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create New Role', exact: true })).toBeVisible();
+      await expect(sidePanelDialog(page, 'Create role')).toBeVisible();
     },
   },
   {
     name: 'entities/role-form-filled', kind: 'frame', fullPage: true, path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Role', exact: true }).click();
-      await page.getByLabel('Role ID *').fill('support');
-      await page.getByLabel('Description *').fill('Customer support agent');
-      await page.getByRole('checkbox', { name: /orders\.read/ }).check();
-      await expect(page.getByRole('checkbox', { name: /orders\.read/ })).toBeChecked();
+      const dialog = sidePanel(page, 'Create role');
+      await dialog.getByLabel('Role ID *').fill('support');
+      await dialog.locator('#role-description').fill('Customer support agent');
+      await dialog.getByRole('checkbox', { name: /orders\.read/ }).check();
+      await expect(dialog.getByRole('checkbox', { name: /orders\.read/ })).toBeChecked();
     },
   },
 ];

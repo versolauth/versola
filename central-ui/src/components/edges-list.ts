@@ -1,329 +1,262 @@
-import { LitElement, html, css } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { LitElement, html, css, nothing } from 'lit';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
+import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type { Edge, Tenant } from '../types';
-import {
-  deleteEdge,
-  deleteOldEdgeKey,
-  fetchEdges,
-  fetchTenants,
-  registerEdge,
-  rotateEdgeKey,
-  setEdgeDpopNonce,
-} from '../utils/central-api';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
-import './edge-form';
+import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { confirmDiscardDraft } from '../utils/draft-guard';
+import { validateEdgeId } from '../utils/validators';
+import { statusIcon } from './status-icon';
+import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
+import './danger-card';
+import './data-table';
+import './empty-state';
 import './error-card';
+import './filter-bar';
 import './loading-cards';
+import './record-card';
+import './record-header';
+import './side-panel';
 
+type EdgeFilter = 'all' | 'rotation' | 'no-tenants';
+type GeneratedKey = { edgeId: string; keyId: string; privateKey: string; action: 'created' | 'rotated' };
+
+/**
+ * Edges: the table of every registered edge and, for the one selected, the side panel with its
+ * signing key (rotate, retire the old one), the DPoP nonce requirement, the tenants bound to it,
+ * the Fixed group and the danger card. Registering an edge happens in the same panel and ends
+ * on the new record with the one-time private-key banner, which is never shown again.
+ */
 @customElement('versola-edges-list')
 export class VersolaEdgesList extends LitElement {
-  @property({ type: String }) expandEdgeId: string | null = null;
   @property({ type: Boolean }) canManage = false;
+  @property({ attribute: false }) route: RecordRoute = EMPTY_RECORD_ROUTE;
 
   @state() private edges: Edge[] = [];
   @state() private tenants: Tenant[] = [];
+  @state() private searchQuery = '';
+  @state() private filter: EdgeFilter = 'all';
   @state() private isLoading = false;
   @state() private errorMessage = '';
-  @state() private showCreateForm = false;
-  @state() private editingEdge: Edge | null = null;
-  @state() private expandedEdges: Set<string> = new Set();
-  @state() private generatedKey: { edgeId: string; keyId: string; privateKey: string; action: 'created' | 'rotated' } | null = null;
+  /** The private key central answered register or rotate with; shown once, on that edge's panel. */
+  @state() private generatedKey: GeneratedKey | null = null;
   @state() private copyFeedback = '';
-  @state() private openInfoKey: string | null = null;
-  @state() private savingDpopEdgeId: string | null = null;
-
-  connectedCallback() {
-    super.connectedCallback();
-    void this.loadData();
-  }
+  @state() private isWorking = false;
+  @state() private draftId = '';
+  @state() private draftDpop = true;
+  @state() private formError = '';
+  @state() private isSaving = false;
+  @state() private submitted = false;
+  @query('versola-data-table') private table?: VersolaDataTable<Edge>;
+  private draftKey = '';
 
   static styles = [
     theme,
-    badgeStyles,
     buttonStyles,
     cardStyles,
+    chipStyles,
+    tagStyles,
+    bannerStyles,
     formStyles,
+    editorStyles,
+    iconButtonStyles,
+    recordStyles,
     css`
       :host {
         display: block;
       }
 
-      .edge-card {
-        background: var(--surface);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
-        margin-bottom: var(--spacing-md);
-        transition: border-color var(--transition-base);
-      }
-
-      .edge-card:hover {
-        border-color: var(--accent);
-      }
-
-      .edge-header {
+      .list-toolbar {
         display: flex;
-        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: var(--spacing-md);
         align-items: center;
-        padding: var(--spacing-lg);
-        cursor: pointer;
-        user-select: none;
+        margin-bottom: var(--spacing-lg);
       }
 
-      .edge-info {
-        flex: 1;
+      .search-input {
+        flex: 1 1 14rem;
+        max-width: 28rem;
         min-width: 0;
       }
 
-      .edge-id {
+      .muted {
+        color: var(--text-secondary);
+      }
+
+      .mono {
         font-family: var(--font-mono);
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--accent);
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        /* A long id and the "Key Rotation" badge can't share one line on a
-           phone; let the badge drop below rather than overflow the card. */
-        flex-wrap: wrap;
+        font-size: var(--text-sm);
         overflow-wrap: anywhere;
       }
 
-      .edge-actions {
-        display: flex;
-        gap: var(--spacing-sm);
-        margin-left: var(--spacing-md);
+      .row-title.mono {
+        font-size: var(--text-base);
       }
 
-      .edge-body {
-        padding: 0 var(--spacing-lg) var(--spacing-lg) var(--spacing-lg);
-        border-top: 1px solid var(--border-default);
+      .key-banner {
+        display: block;
       }
 
-      .edge-body-content {
-        padding-top: var(--spacing-lg);
+      .key-banner .banner-text {
+        flex: 1 1 100%;
       }
 
-      .info-text {
+      .secret-rows {
+        display: grid;
+        gap: 0.5rem;
+        margin: 0.75rem 0;
+      }
+
+      .secret-label {
+        font-size: var(--text-xs);
         color: var(--text-secondary);
-        font-size: 0.875rem;
-        margin-bottom: var(--spacing-md);
-      }
-
-      .edge-actions-row {
-        display: flex;
-        gap: var(--spacing-md);
-        align-items: center;
-      }
-
-      .icon-action {
-        background: none;
-        border: none;
-        padding: 0.5rem;
-        cursor: pointer;
-        color: var(--text-secondary);
-        font-size: 1.25rem;
-        transition: all var(--transition-fast);
-      }
-
-      .icon-action:hover {
-        color: var(--accent);
-      }
-
-      .icon-action.danger:hover {
-        color: var(--danger);
-      }
-
-      .secret-banner {
-        background: var(--accent-subtle);
-        border: 1px solid var(--accent);
-        border-radius: var(--radius-lg);
-        padding: var(--spacing-lg);
-        margin-bottom: var(--spacing-lg);
-      }
-
-      .secret-banner-header {
-        font-size: 1.125rem;
-        font-weight: 600;
-        margin-bottom: var(--spacing-md);
-        color: var(--accent);
-      }
-
-      .secret-row {
-        margin-bottom: var(--spacing-md);
-      }
-
-      .secret-row:last-child {
-        margin-bottom: 0;
-      }
-
-      .secret-row-label {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0.125rem;
       }
 
       .secret-value {
-        padding: var(--spacing-md);
-        background: var(--surface-inset);
+        margin: 0;
+        padding: 0.625rem 0.75rem;
+        background: var(--bg-page);
         border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        word-break: break-all;
         color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
       }
 
-      .secret-banner-actions {
+      .banner-actions {
         display: flex;
-        gap: var(--spacing-md);
-        margin-top: var(--spacing-lg);
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
       }
 
       .copy-feedback {
-        color: var(--success);
-        font-size: 0.875rem;
+        font-size: var(--text-sm);
+        color: var(--success-text);
       }
 
-      .linked-tenants {
-        margin-bottom: var(--spacing-lg);
-      }
-
-      .linked-tenants-label {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        margin-bottom: var(--spacing-sm);
-      }
-
-      .no-tenants {
-        font-size: 0.875rem;
-        color: var(--text-secondary);
-        font-style: italic;
-      }
-
-      .tenant-badges {
+      .key-actions {
         display: flex;
         flex-wrap: wrap;
         gap: 0.5rem;
       }
 
-      .tenant-badge {
-        display: inline-flex;
+      .input-with-prefix {
+        display: flex;
+        align-items: stretch;
+        max-width: min(100%, 22.8rem);
+      }
+
+      .input-prefix {
+        display: flex;
         align-items: center;
-        padding: 0.25rem 0.75rem;
-        background: var(--accent-subtle);
-        border: 1px solid var(--accent-border);
-        border-radius: 999px;
-        color: var(--accent);
-        font-size: 0.8125rem;
-        font-weight: 600;
+        padding: 0 0.75rem;
+        background: var(--surface-inset);
+        border: 1px solid var(--border-input);
+        border-right: 0;
+        border-radius: var(--radius-md) 0 0 var(--radius-md);
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: var(--text-base);
+        user-select: none;
+      }
+
+      .input-with-prefix input {
+        border-radius: 0 var(--radius-md) var(--radius-md) 0;
+        flex: 1;
+        min-width: 0;
+        max-width: none;
+      }
+
+      .toggle-row {
+        display: flex;
+        gap: 0.625rem;
+        align-items: flex-start;
+        font-size: var(--text-base);
+        color: var(--text-primary);
+        cursor: pointer;
+        text-transform: none;
+        letter-spacing: 0;
+        font-weight: 400;
+        margin: 0;
+      }
+
+      .toggle-row input {
+        margin: 0.2rem 0 0;
+        width: 1rem;
+        height: 1rem;
+        flex: none;
+        accent-color: var(--accent);
+      }
+
+      .toggle-row input:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+
+      .explain {
+        display: grid;
+        gap: 0.5rem;
+        margin: var(--spacing-md) 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+      }
+
+      .explain code {
         font-family: var(--font-mono);
       }
 
-      .dpop-section {
-        margin-bottom: var(--spacing-lg);
-      }
-
-      .dpop-label-row {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        margin-bottom: var(--spacing-sm);
-      }
-
-      .dpop-label {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-      }
-
-      .dpop-toggle {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-        font-size: 0.875rem;
-        color: var(--text-primary);
-        cursor: pointer;
-      }
-
-      .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
-      .option-info-button {
-        flex: none;
-        border: 1px solid var(--accent-border);
-        border-radius: 999px;
-        background: var(--accent-subtle);
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 700;
-        line-height: 1;
-        padding: 0.25rem 0.45rem;
-        cursor: pointer;
-        font-family: var(--font-family);
-      }
-      .option-info-button:hover { background: var(--accent-subtle); border-color: var(--accent); }
-      .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-      .option-tooltip {
-        position: absolute;
-        left: 0;
-        top: calc(100% + 0.4rem);
-        z-index: var(--z-dropdown);
-        min-width: 18rem;
-        max-width: min(28rem, 75vw);
-        padding: 0.75rem;
-        border: 1px solid var(--accent-border);
-        border-radius: var(--radius-md);
-        background: var(--surface-raised);
-        box-shadow: var(--shadow-lg);
-        display: none;
-      }
-      .option-info.option-info-open .option-tooltip { display: block; }
-      .option-tooltip-title { margin-bottom: 0.5rem; color: var(--accent); font-size: 0.8125rem; font-weight: 600; }
-      .option-tooltip-item { color: var(--text-primary); font-size: 0.75rem; line-height: 1.45; }
-      .option-tooltip-item + .option-tooltip-item { margin-top: 0.375rem; }
-
-      .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: var(--text-secondary);
-      }
-
-      .empty-state-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-      }
-
-      /* This screen was the only list without a narrow-screen rule for its card
-         header. A long edge id plus the "Key Rotation" badge plus two icon
-         buttons don't fit one row on a phone, so the row is stacked to match
-         the other lists. */
-      @media (max-width: 720px) {
-        .edge-header {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-
-        .edge-actions {
-          margin-left: 0;
-        }
+      .record-page .record-card {
+        margin-bottom: var(--spacing-md);
       }
     `,
   ];
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
+    void this.loadData();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
+    super.disconnectedCallback();
+  }
+
+  private readonly handleBeforeUnload = (event: BeforeUnloadEvent) => {
+    if (this.generatedKey) event.preventDefault();
+  };
+
+  updated(changed: Map<string, unknown>) {
+    if (changed.has('route') || changed.has('edges')) {
+      const mode = this.editorMode;
+      const draftKey = mode === 'view' ? '' : `${mode}:${this.route.id ?? ''}:${this.route.edit ?? ''}`;
+      if (draftKey !== this.draftKey) {
+        this.draftKey = draftKey;
+        if (mode !== 'view') this.resetDraft();
+      }
+      // The key is for the edge it was issued to; leaving that edge's panel is the one chance gone.
+      const previous = changed.get('route') as RecordRoute | undefined;
+      if (this.generatedKey && previous?.id === this.generatedKey.edgeId && this.route.id !== this.generatedKey.edgeId) this.dismissKey();
+    }
+  }
 
   private async loadData() {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [edges, tenants] = await Promise.all([
-        fetchEdges(),
-        fetchTenants(),
-      ]);
+      const [edges, tenants] = await Promise.all([fetchEdges(), fetchTenants().catch(() => [] as Tenant[])]);
       this.edges = edges;
       this.tenants = tenants;
     } catch (error) {
@@ -335,361 +268,448 @@ export class VersolaEdgesList extends LitElement {
     }
   }
 
+  // ── routing ──
+
+  private get openEdge(): Edge | null {
+    return this.route.id ? this.edges.find(edge => edge.id === this.route.id) ?? null : null;
+  }
+
+  private get editorMode(): 'view' | 'edit' | 'create' {
+    return this.route.create ? 'create' : this.route.edit === 'dpop' && this.openEdge ? 'edit' : 'view';
+  }
+
+  /** The private key is shown once: leaving its edge asks first. */
+  private async confirmLeaveKey(nextId: string | null): Promise<boolean> {
+    const key = this.generatedKey;
+    if (!key || nextId === key.edgeId) return true;
+    return confirmDestructiveAction({
+      title: 'Leave without saving the private key?',
+      message: 'The private key is shown only once. After you leave it cannot be retrieved; you would have to rotate the key.',
+      confirmLabel: 'Leave',
+      cancelLabel: 'Stay',
+    });
+  }
+
+  private async openView(edge: Edge) {
+    if (!await this.confirmLeaveKey(edge.id)) return;
+    dispatchRecordRoute(this, { id: edge.id, edit: null, create: false });
+  }
+
+  private async closePanel() {
+    const key = this.route.id;
+    if (!await this.confirmLeaveKey(null)) return;
+    dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
+    if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
+  }
+
+  private openEditor() {
+    dispatchRecordRoute(this, { edit: 'dpop', create: false });
+  }
+
+  private draftBaseline = '';
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draftId, this.draftDpop]);
+  }
+
+  /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
+  private async cancelEditor() {
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
+    dispatchRecordRoute(this, { edit: null, create: false });
+  }
+
   private handleCreateClick() {
-    this.showCreateForm = true;
-    this.editingEdge = null;
-    this.generatedKey = null;
-    this.copyFeedback = '';
+    dispatchRecordRoute(this, { id: null, edit: null, create: true, layout: null });
   }
 
-  private handleEditClick(edge: Edge) {
-    this.showCreateForm = true;
-    this.editingEdge = edge;
-    this.generatedKey = null;
-    this.copyFeedback = '';
+  // ── draft ──
+
+  private resetDraft() {
+    this.draftId = '';
+    this.draftDpop = this.openEdge?.requireDpopNonce ?? true;
+    this.formError = '';
+    this.submitted = false;
+    this.isSaving = false;
+    this.draftBaseline = this.draftSnapshot;
   }
 
-  private toggleExpand(edgeId: string) {
-    const newExpanded = new Set(this.expandedEdges);
-    if (newExpanded.has(edgeId)) {
-      newExpanded.delete(edgeId);
-    } else {
-      newExpanded.add(edgeId);
-    }
-    this.expandedEdges = newExpanded;
+  private get draftIdError(): string {
+    const suffix = this.draftId.trim();
+    if (!suffix) return this.submitted ? 'An edge ID is required.' : '';
+    const id = `edge-${suffix}`;
+    if (!validateEdgeId(id)) return 'Lowercase letters, digits and dashes.';
+    if (this.edges.some(edge => edge.id === id)) return 'An edge with this ID already exists.';
+    return '';
   }
 
-  private async handleEdgeSubmit(e: CustomEvent) {
-    this.errorMessage = '';
+  private async handleSubmit(event: Event) {
+    event.preventDefault();
+    if (this.isSaving) return;
+    this.submitted = true;
+    const mode = this.editorMode;
+    if (mode === 'create' && this.draftIdError) return;
+
+    this.isSaving = true;
+    this.formError = '';
     try {
-      const { id } = e.detail;
-      const result = await registerEdge(id);
-      this.generatedKey = { edgeId: id, keyId: result.keyId, privateKey: result.privateKey, action: 'created' };
-      this.edges = [...this.edges, { id, hasOldKey: false, requireDpopNonce: true }];
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to register edge';
-    }
-  }
-
-  private async handleRotateKeyFromForm(e: CustomEvent) {
-    const edgeId = e.detail.edgeId;
-    const confirmed = await confirmDestructiveAction({
-      title: 'Rotate Edge Key',
-      messagePrefix: 'Rotate key for edge ',
-      messageSubject: edgeId,
-      messageSuffix: '? Both the old and new keys will work during the transition period. Update your edge configuration with the new private key when ready.',
-      confirmLabel: 'Rotate Key',
-    });
-    if (!confirmed) return;
-
-    this.errorMessage = '';
-    try {
-      const result = await rotateEdgeKey(edgeId);
-      this.generatedKey = { edgeId, keyId: result.keyId, privateKey: result.privateKey, action: 'rotated' };
-      this.edges = this.edges.map(e => e.id === edgeId ? { ...e, hasOldKey: true } : e);
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to rotate key';
-    }
-  }
-
-  private async handleDeleteOldKeyFromForm(e: CustomEvent) {
-    const edgeId = e.detail.edgeId;
-    const confirmed = await confirmDestructiveAction({
-      title: 'Delete Old Edge Key',
-      messagePrefix: 'Delete the old key for edge ',
-      messageSubject: edgeId,
-      messageSuffix: '? Only the new key will work after deletion. Make sure all edge instances are using the new key.',
-      confirmLabel: 'Delete Old Key',
-    });
-    if (!confirmed) return;
-
-    this.errorMessage = '';
-    try {
-      await deleteOldEdgeKey(edgeId);
-      this.edges = this.edges.map(e => e.id === edgeId ? { ...e, hasOldKey: false } : e);
-      if (this.editingEdge && this.editingEdge.id === edgeId) {
-        this.editingEdge = { ...this.editingEdge, hasOldKey: false };
+      if (mode === 'create') {
+        const id = `edge-${this.draftId.trim()}`;
+        const key = await registerEdge(id);
+        this.edges = [...this.edges, { id, hasOldKey: false, requireDpopNonce: true }].sort((a, b) => a.id.localeCompare(b.id));
+        this.generatedKey = { edgeId: id, keyId: key.keyId, privateKey: key.privateKey, action: 'created' };
+        this.copyFeedback = '';
+        dispatchRecordRoute(this, { id, edit: null, create: false });
+      } else {
+        const edge = this.openEdge!;
+        await setEdgeDpopNonce(edge.id, this.draftDpop);
+        this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, requireDpopNonce: this.draftDpop } : candidate);
+        dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to delete old key';
+      this.formError = error instanceof Error ? error.message : 'Failed to save edge';
+    } finally {
+      this.isSaving = false;
     }
   }
 
-  private async handleDeleteEdge(edge: Edge) {
+  private async handleRotateKey(edge: Edge) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Rotate edge key',
+      messagePrefix: 'Rotate the key of edge ',
+      messageSubject: edge.id,
+      messageSuffix: '? Both keys verify until the old one is retired. Put the new private key into every edge instance.',
+      confirmLabel: 'Rotate key',
+    });
+    if (!confirmed) return;
+    this.isWorking = true;
+    this.errorMessage = '';
+    try {
+      const key = await rotateEdgeKey(edge.id);
+      this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, hasOldKey: true } : candidate);
+      this.generatedKey = { edgeId: edge.id, keyId: key.keyId, privateKey: key.privateKey, action: 'rotated' };
+      this.copyFeedback = '';
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : 'Failed to rotate the key';
+    } finally {
+      this.isWorking = false;
+    }
+  }
+
+  private async handleRetireOldKey(edge: Edge) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Retire old key',
+      messagePrefix: 'Retire the old key of edge ',
+      messageSubject: edge.id,
+      messageSuffix: '? Only the new key verifies afterwards. Every edge instance must already run the new one.',
+      confirmLabel: 'Retire old key',
+    });
+    if (!confirmed) return;
+    this.isWorking = true;
+    this.errorMessage = '';
+    try {
+      await deleteOldEdgeKey(edge.id);
+      this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, hasOldKey: false } : candidate);
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : 'Failed to retire the old key';
+    } finally {
+      this.isWorking = false;
+    }
+  }
+
+  private async handleDelete(edge: Edge) {
     const confirmed = await confirmDestructiveAction({
       title: 'Delete edge',
       messagePrefix: 'Delete edge ',
       messageSubject: edge.id,
-      messageSuffix: '?',
+      messageSuffix: '? Tenants bound to it are no longer served by any edge until they are moved.',
       confirmLabel: 'Delete',
     });
     if (!confirmed) return;
-
     this.errorMessage = '';
     try {
       await deleteEdge(edge.id);
-      this.edges = this.edges.filter(e => e.id !== edge.id);
+      this.edges = this.edges.filter(candidate => candidate.id !== edge.id);
+      if (this.route.id === edge.id) dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to delete edge';
     }
   }
 
-  private handleCancelForm() {
-    this.showCreateForm = false;
+  private dismissKey() {
     this.generatedKey = null;
     this.copyFeedback = '';
-  }
-
-  private handleDismissKey() {
-    this.generatedKey = null;
-    this.copyFeedback = '';
-    // If we're in create form, close it and return to list
-    if (this.showCreateForm) {
-      this.showCreateForm = false;
-    }
   }
 
   private async handleCopyKey() {
     if (!this.generatedKey) return;
-    await copyToClipboard(this.generatedKey.privateKey);
-    this.copyFeedback = 'Copied!';
-    setTimeout(() => {
-      this.copyFeedback = '';
-    }, 2000);
+    const copied = await copyToClipboard(this.generatedKey.privateKey);
+    this.copyFeedback = copied ? 'Private key copied.' : 'Could not copy the private key.';
   }
 
-  private get sortedEdges() {
-    return [...this.edges].sort((a, b) => a.id.localeCompare(b.id));
+  // ── list ──
+
+  private linkedTenants(edge: Edge): Tenant[] {
+    return this.tenants.filter(tenant => tenant.edgeId === edge.id);
   }
 
-  private getLinkedTenants(edgeId: string): Tenant[] {
-    return this.tenants.filter(tenant => tenant.edgeId === edgeId);
-  }
-
-  private toggleInfo(key: string) {
-    this.openInfoKey = this.openInfoKey === key ? null : key;
-  }
-
-  private async handleDpopNonceChange(edge: Edge, requireDpopNonce: boolean) {
-    this.errorMessage = '';
-    this.savingDpopEdgeId = edge.id;
-    try {
-      await setEdgeDpopNonce(edge.id, requireDpopNonce);
-      this.edges = this.edges.map(e => e.id === edge.id ? { ...e, requireDpopNonce } : e);
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to update the DPoP nonce requirement';
-    } finally {
-      this.savingDpopEdgeId = null;
+  private matchesFilter(edge: Edge, filter: EdgeFilter = this.filter): boolean {
+    switch (filter) {
+      case 'rotation': return !!edge.hasOldKey;
+      case 'no-tenants': return this.linkedTenants(edge).length === 0;
+      default: return true;
     }
   }
 
-  private renderDpopSection(edge: Edge) {
-    const saving = this.savingDpopEdgeId === edge.id;
+  private get filteredEdges(): Edge[] {
+    const query = this.searchQuery.trim().toLowerCase();
+    return this.edges.filter(edge => this.matchesFilter(edge) && (!query || edge.id.toLowerCase().includes(query)));
+  }
 
+  private count(filter: EdgeFilter): number {
+    return this.edges.filter(edge => this.matchesFilter(edge, filter)).length;
+  }
+
+  private keyChip(edge: Edge) {
+    return edge.hasOldKey
+      ? html`<span class="chip warn">Key rotation</span>`
+      : html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Key current</span>`;
+  }
+
+  private renderToolbar() {
+    const options: Array<{ id: EdgeFilter; label: string }> = [
+      { id: 'all', label: 'All' },
+      { id: 'rotation', label: 'Key rotation' },
+      ...(this.tenants.length ? [{ id: 'no-tenants' as const, label: 'No tenants' }] : []),
+    ];
     return html`
-      <div class="dpop-section">
-        <div class="dpop-label-row">
-          <span class="dpop-label">DPoP Nonce</span>
-          <div
-            class=${`option-info ${this.openInfoKey === edge.id ? 'option-info-open' : ''}`}
-            @click=${(event: Event) => event.stopPropagation()}
-          >
-            <button
-              type="button"
-              class="option-info-button"
-              aria-label="DPoP nonce requirement info"
-              aria-expanded=${this.openInfoKey === edge.id ? 'true' : 'false'}
-              @click=${() => this.toggleInfo(edge.id)}
-            >i</button>
-            <div class="option-tooltip" role="tooltip">
-              <div class="option-tooltip-title">Require a DPoP nonce</div>
-              <div class="option-tooltip-item">A DPoP nonce (RFC 9449 section 9) is a short-lived value this edge issues and the client must sign into its next proof. It bounds how long a captured proof stays usable on a proxied call — the one place a stolen proof is actually worth replaying, since it buys the attacker a real API request.</div>
-              <div class="option-tooltip-item">On, every proof this edge checks must carry a nonce it issued. A call without one is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client is expected to retry over. The cost is one extra round trip per client per nonce lifetime, not per request.</div>
-              <div class="option-tooltip-item">Off is not "prefer a nonce": the claim stops being read and no nonce is ever issued. A challenge over a nonce this edge does not insist on is one a nonce-less retry walks straight past, so there is no middle setting to offer.</div>
-              <div class="option-tooltip-item">Before turning it off: nothing breaks, and it takes effect on this edge's next configuration sync. Before turning it on: every client calling through this edge with DPoP must implement the <code>use_dpop_nonce</code> retry, or its proxied calls start failing.</div>
-              <div class="option-tooltip-item">Governs this edge only, and only the calls it proxies. Auth's own <code>/token</code> and <code>/userinfo</code> follow the tenant's <strong>Require DPoP nonce</strong> setting instead.</div>
-            </div>
-          </div>
-        </div>
-        ${this.canManage ? html`
-          <label class="dpop-toggle">
-            <input
-              type="checkbox"
-              .checked=${edge.requireDpopNonce}
-              ?disabled=${saving}
-              @change=${(event: Event) =>
-                this.handleDpopNonceChange(edge, (event.target as HTMLInputElement).checked)}
-            />
-            Required on every proxied call
-          </label>
-        ` : html`
-          <div class="info-text">${edge.requireDpopNonce ? 'Required on every proxied call' : 'Not required'}</div>
-        `}
+      <div class="list-toolbar">
+        <input class="search-input" type="search" aria-label="Search edges" placeholder="Search edges by ID"
+          .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
+        <versola-filter-bar label="Filter edges"
+          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .value=${this.filter}
+          @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as EdgeFilter}></versola-filter-bar>
       </div>
     `;
   }
 
-  private renderLinkedTenants(edgeId: string) {
-    const linkedTenants = this.getLinkedTenants(edgeId);
-
-    if (linkedTenants.length === 0) {
-      return html`
-        <div class="linked-tenants">
-          <div class="linked-tenants-label">Linked Tenants</div>
-          <div class="no-tenants">No tenants assigned to this edge</div>
-        </div>
-      `;
-    }
-
+  private renderTable() {
+    const columns: DataTableColumn<Edge>[] = [
+      { id: 'edge', label: 'Edge', cell: edge => html`
+        <button type="button" class="row-link" aria-label=${`Open edge ${edge.id}`}>
+          <span class="row-title">${edge.id}</span>
+        </button>` },
+      ...(this.tenants.length ? [{ id: 'tenants', label: 'Tenants', cell: (edge: Edge) => {
+        const linked = this.linkedTenants(edge);
+        return linked.length
+          ? html`<div class="chips"><span>${linked.length}</span>${linked.slice(0, 3).map(tenant => html`<span class="chip">${tenant.id}</span>`)}${linked.length > 3 ? html`<span class="muted">+${linked.length - 3}</span>` : ''}</div>`
+          : html`<span class="muted">0</span>`;
+      } }] : []),
+      { id: 'key', label: 'Key', cell: edge => html`<div class="chips">${this.keyChip(edge)}</div>` },
+      { id: 'dpop', label: 'DPoP nonce', class: 'muted', cell: edge => edge.requireDpopNonce ? 'Required' : 'Not required' },
+    ];
+    const menuItems = (edge: Edge): RowMenuItem[] => [
+      { label: 'Open', onSelect: () => this.openView(edge) },
+      { label: 'Copy edge ID', onSelect: () => void copyToClipboard(edge.id) },
+      ...(this.canManage ? [{ label: 'Delete edge', danger: true, ariaLabel: `Delete edge ${edge.id}`, onSelect: () => void this.handleDelete(edge) }] : []),
+    ];
     return html`
-      <div class="linked-tenants">
-        <div class="linked-tenants-label">Linked Tenants</div>
-        <div class="tenant-badges">
-          ${linkedTenants.map(tenant => html`
-            <span class="tenant-badge">${tenant.id}</span>
-          `)}
+      <versola-data-table selectable
+        .columns=${columns}
+        .rows=${this.filteredEdges}
+        .rowKey=${(edge: Edge) => edge.id}
+        .selectedKey=${this.route.id}
+        .menuItems=${menuItems}
+        .menuLabel=${(edge: Edge) => `Actions for ${edge.id}`}
+        @row-select=${(e: CustomEvent<{ row: Edge }>) => this.openView(e.detail.row)}
+      ></versola-data-table>
+    `;
+  }
+
+  // ── record ──
+
+  private row(label: string, value: unknown, fixed = '') {
+    return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
+  }
+
+  private renderGroups(edge: Edge) {
+    const linked = this.linkedTenants(edge);
+    return html`
+      <versola-record-card heading="Signing key" subheading="Central keeps the public half; the private key was shown once." .body=${html`
+        ${this.row('Status', edge.hasOldKey ? 'Rotation open — the old key still verifies' : 'Current')}
+        ${this.canManage ? html`
+          <versola-record-row .value=${html`<div class="key-actions">
+            <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isWorking} @click=${() => this.handleRotateKey(edge)}>Rotate key</button>
+            ${edge.hasOldKey ? html`<button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isWorking} @click=${() => this.handleRetireOldKey(edge)}>Retire old key</button>` : ''}
+          </div>`}></versola-record-row>` : ''}
+      `}></versola-record-card>
+
+      <versola-record-card heading="DPoP nonce" subheading="RFC 9449 section 9 on the calls this edge proxies." ?editable=${this.canManage} .body=${html`
+        ${this.row('Proxied calls', edge.requireDpopNonce ? 'Required on every proxied call' : 'Not required')}
+      `} @edit=${() => this.openEditor()}></versola-record-card>
+
+      <versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
+        ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
+          : html`<span class="muted">No tenants assigned to this edge.</span>`)}
+      `}></versola-record-card>
+
+      <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
+        ${this.row('Edge ID', html`<span class="mono">${edge.id}</span>`, 'Set at registration')}
+      `}></versola-record-card>
+
+      ${this.canManage ? html`
+        <versola-danger-card heading="Delete edge" text="Tenants bound to it are no longer served by any edge until they are moved. This can't be undone."
+          actionLabel="Delete edge" .actionAriaLabel=${`Delete edge ${edge.id}`}
+          @action=${() => this.handleDelete(edge)}></versola-danger-card>` : ''}
+    `;
+  }
+
+  private renderBanners(edge: Edge) {
+    const key = this.generatedKey?.edgeId === edge.id ? this.generatedKey : null;
+    return html`
+      ${key ? html`
+        <div class="banner ok key-banner" role="status">
+          <div class="banner-text">
+            <div class="banner-title">${statusIcon('check')}Edge key ${key.action === 'created' ? 'generated' : 'rotated'}</div>
+            <div>Save the private key now. It is not shown again.</div>
+            <div class="secret-rows">
+              <div><div class="secret-label">Edge ID</div><pre class="secret-value">${key.edgeId}</pre></div>
+              <div><div class="secret-label">Key ID</div><pre class="secret-value">${key.keyId}</pre></div>
+              <div><div class="secret-label">Private key</div><pre class="secret-value">${key.privateKey}</pre></div>
+            </div>
+            <div class="banner-actions">
+              <button type="button" class="btn btn-primary btn-sm" @click=${this.handleCopyKey}>Copy private key</button>
+              <button type="button" class="btn btn-secondary btn-sm" @click=${this.dismissKey}>I've saved it</button>
+              ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
+            </div>
+          </div>
+        </div>` : ''}
+      ${edge.hasOldKey ? html`
+        <div class="banner warn" role="status">
+          <div class="banner-text">
+            <div class="banner-title">${statusIcon('alert')}A key rotation is open: both keys verify</div>
+            <div>Retire the old key once every edge instance runs the new one.</div>
+          </div>
+        </div>` : ''}
+    `;
+  }
+
+  private renderMeta(edge: Edge) {
+    return html`${this.keyChip(edge)}`;
+  }
+
+  private renderRecordPage(edge: Edge) {
+    return html`
+      <versola-record-header
+        .crumbs=${[{ label: 'Edges', onSelect: () => this.closePanel() }, { label: edge.id }]}
+        .heading=${edge.id} .recordId=${edge.id} idLabel="edge ID"
+        .meta=${html`<span class="chip">Edge</span>${this.renderMeta(edge)}`}
+      ></versola-record-header>
+      ${this.renderBanners(edge)}
+      <div class="record-page">${this.renderGroups(edge)}</div>
+    `;
+  }
+
+  // ── editor ──
+
+  private renderEditor() {
+    const mode = this.editorMode;
+    const idError = this.draftIdError;
+    return html`
+      <form id="edge-editor" novalidate @submit=${this.handleSubmit}>
+        ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
+        ${mode === 'create' ? html`
+          <div class="editor-box">
+            <h3>Registration</h3>
+            <p class="editor-sub">Central answers with the edge's private key, once. The DPoP nonce requirement starts on and can be changed afterwards.</p>
+            <div class="form-group">
+              <label for="edge-id">Edge ID *</label>
+              <div class="input-with-prefix">
+                <span class="input-prefix" aria-hidden="true">edge-</span>
+                <input type="text" id="edge-id" class="compact-input mono ${idError ? 'input-error' : ''}" .value=${this.draftId} required
+                  aria-invalid=${idError ? 'true' : nothing} aria-describedby="edge-id-hint" placeholder="eu-west-1"
+                  @input=${(e: Event) => this.draftId = (e.target as HTMLInputElement).value} />
+              </div>
+              ${idError ? html`<div class="error-message" id="edge-id-hint" role="alert">${idError}</div>`
+                : html`<div class="hint" id="edge-id-hint">Registered as <span class="mono">edge-${this.draftId.trim() || '…'}</span>. Lowercase letters, digits and dashes.</div>`}
+            </div>
+          </div>
+        ` : html`
+          <div class="editor-box">
+            <h3>DPoP nonce</h3>
+            <p class="editor-sub">Whether a DPoP proof on a call this edge proxies must carry a nonce it issued.</p>
+            <label class="toggle-row">
+              <input type="checkbox" .checked=${this.draftDpop} @change=${(e: Event) => this.draftDpop = (e.target as HTMLInputElement).checked} />
+              <span>Required on every proxied call</span>
+            </label>
+            <ul class="explain">
+              <li>A DPoP nonce (RFC 9449 section 9) is a short-lived value this edge issues and the client must sign into its next proof. It bounds how long a captured proof stays usable on a proxied call.</li>
+              <li>On, a call without one is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client retries over: one extra round trip per client per nonce lifetime. Every client calling through this edge with DPoP must implement that retry.</li>
+              <li>Off, the claim is not read and no nonce is issued; it takes effect on this edge's next configuration sync.</li>
+              <li>Governs this edge only. Auth's own <code>/token</code> and <code>/userinfo</code> follow the tenant's setting under Challenges &amp; Security.</li>
+            </ul>
+          </div>
+        `}
+      </form>
+    `;
+  }
+
+  private renderPanel(edge: Edge | null) {
+    const mode = this.editorMode;
+    if (mode === 'view' && !edge) return '';
+    const heading = mode === 'create' ? 'Register edge' : mode === 'edit' ? 'Edit DPoP nonce' : edge!.id;
+    const submitLabel = mode === 'create' ? 'Register edge' : 'Save DPoP nonce';
+    return html`
+      <versola-side-panel kind="Edge" .heading=${heading} .recordId=${edge?.id ?? ''} idLabel="edge ID" .mode=${mode}
+        .parentLabel=${edge?.id ?? ''} .subtitle=${mode === 'create' ? 'The ID is fixed once registered.' : ''}
+        .meta=${edge && mode === 'view' ? this.renderMeta(edge) : null}
+        @close=${() => mode === 'view' ? this.closePanel() : this.cancelEditor()}
+        @back=${() => this.cancelEditor()}
+        @open-page=${() => dispatchRecordRoute(this, { layout: 'page' })}>
+        <div class="record-compact">
+          ${mode === 'view' ? html`${this.renderBanners(edge!)}${this.renderGroups(edge!)}` : this.renderEditor()}
         </div>
-      </div>
+        ${mode !== 'view' ? html`
+          <div slot="footer">
+            <button type="button" class="btn btn-secondary" @click=${() => this.cancelEditor()} ?disabled=${this.isSaving}>Cancel</button>
+            <button type="submit" form="edge-editor" class="btn btn-primary" ?disabled=${this.isSaving}>${this.isSaving ? 'Saving…' : submitLabel}</button>
+          </div>` : ''}
+      </versola-side-panel>
     `;
   }
 
   render() {
-    if (this.showCreateForm) {
-      // If we have a generated key, only show the banner (hide the form)
-      if (this.generatedKey) {
-        return html`${this.renderKeyBanner()}`;
-      }
-
-      return html`
-        <versola-edge-form
-          .edge=${this.editingEdge}
-          .availableEdgeIds=${this.edges.map(e => e.id)}
-          @submit=${this.handleEdgeSubmit}
-          @cancel=${this.handleCancelForm}
-          @rotate-key=${this.handleRotateKeyFromForm}
-          @delete-old-key=${this.handleDeleteOldKeyFromForm}
-        ></versola-edge-form>
-      `;
+    const edge = this.openEdge;
+    const panel = this.renderPanel(edge);
+    if (edge && this.route.layout === 'page') {
+      return html`${this.renderRecordPage(edge)}${this.editorMode === 'view' ? '' : panel}`;
     }
 
     return html`
-      <content-header
-        title="Edges"
-      >
-        ${this.canManage && this.edges.length > 0 ? html`
-          <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
-            + Create Edge
-          </button>
-        ` : ''}
+      <content-header title="Edges" description="The authenticating reverse proxies that serve tenants and sync their configuration from central.">
+        ${this.edges.length > 0 && this.canManage ? html`
+          <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>+ Create Edge</button>` : ''}
       </content-header>
 
       ${this.isLoading ? html`
-        <versola-loading-cards count="3"></versola-loading-cards>
+        <versola-loading-cards .count=${3}></versola-loading-cards>
       ` : this.errorMessage ? html`
         <versola-error-card heading="Could not load edges" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
-      ` : this.sortedEdges.length === 0 ? html`
-        <div class="card">
-          <div class="empty-state">
-            <h3>No edges yet</h3>
-            ${this.canManage ? html`
-            <p>Create your first edge to get started</p>
-            <button class="btn btn-primary" @click=${this.handleCreateClick} style="margin-top: 1rem;">
-              + Create Edge
-            </button>` : html`<p>No edges available.</p>`}
-          </div>
-        </div>
+      ` : this.edges.length === 0 ? html`
+        <versola-empty-state heading="No edges yet" text=${this.canManage ? 'Create your first edge to get started' : 'No edges available.'}>
+          ${this.canManage ? html`<button class="btn btn-primary" @click=${this.handleCreateClick}>+ Create Edge</button>` : ''}
+        </versola-empty-state>
       ` : html`
-        ${this.sortedEdges.map(edge => {
-          const isExpanded = this.expandedEdges.has(edge.id);
-          const hasGeneratedKey = this.generatedKey?.edgeId === edge.id;
-
-          return html`
-            <div class="edge-card">
-              <div class="edge-header" @click=${() => this.toggleExpand(edge.id)}>
-                <div class="edge-info">
-                  <div class="edge-id">
-                    ${edge.id}
-                    ${edge.hasOldKey ? html`
-                      <span class="badge badge-warning">Key Rotation</span>
-                    ` : ''}
-                  </div>
-                </div>
-                ${this.canManage ? html`
-                <div class="edge-actions" @click=${(e: Event) => e.stopPropagation()}>
-                  <button
-                    class="icon-action"
-                    @click=${() => this.handleEditClick(edge)}
-                    title="Edit edge"
-                    aria-label="Edit edge ${edge.id}"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    class="icon-action danger"
-                    @click=${() => this.handleDeleteEdge(edge)}
-                    title="Delete edge"
-                    aria-label="Delete edge ${edge.id}"
-                  >
-                    ✕
-                  </button>
-                </div>` : ''}
-              </div>
-
-              ${isExpanded ? html`
-                <div class="edge-body">
-                  <div class="edge-body-content">
-                    ${hasGeneratedKey ? this.renderKeyBanner() : html`
-                      ${this.renderLinkedTenants(edge.id)}
-                      ${this.renderDpopSection(edge)}
-                    `}
-                  </div>
-                </div>
-              ` : ''}
-            </div>
-          `;
-        })}
+        ${this.renderToolbar()}
+        ${this.filteredEdges.length === 0 ? html`<versola-empty-state heading="No edges match"></versola-empty-state>` : this.renderTable()}
       `}
-    `;
-  }
-
-  private renderKeyBanner() {
-    if (!this.generatedKey) return '';
-
-    return html`
-      <div class="secret-banner">
-        <div class="secret-banner-header">
-          🔑 Edge Key ${this.generatedKey.action === 'created' ? 'Generated' : 'Rotated'}
-        </div>
-        <p style="color: var(--text-secondary); margin-bottom: var(--spacing-lg);">
-          ⚠️ <strong>Save this private key now!</strong> You won't be able to see it again.
-        </p>
-
-        <div class="secret-row">
-          <div class="secret-row-label">Edge ID</div>
-          <div class="secret-value">${this.generatedKey.edgeId}</div>
-        </div>
-
-        <div class="secret-row">
-          <div class="secret-row-label">Key ID</div>
-          <div class="secret-value">${this.generatedKey.keyId}</div>
-        </div>
-
-        <div class="secret-row">
-          <div class="secret-row-label">Private Key</div>
-          <div class="secret-value">${this.generatedKey.privateKey}</div>
-        </div>
-
-        <div class="secret-banner-actions">
-          <button class="btn btn-primary" @click=${this.handleCopyKey}>
-            Copy Private Key
-          </button>
-          ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
-          <button class="btn btn-secondary" @click=${this.handleDismissKey}>
-            I've Saved It
-          </button>
-        </div>
-      </div>
+      ${panel}
     `;
   }
 }
 
+declare global {
+  interface HTMLElementTagNameMap {
+    'versola-edges-list': VersolaEdgesList;
+  }
+}

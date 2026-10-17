@@ -583,7 +583,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               body.indexOf(".extra { top: 0; }") < body.indexOf("--brand:#112233;"),
               body.indexOf("--brand:#5b5bd6;") < body.indexOf("--brand:#112233;"),
               // bold is written out, to undo the neutral page of the theme under it
-              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 22%"),
+              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 9%"),
             )
         },
         test("go after the CSS of a stylesheet theme") {

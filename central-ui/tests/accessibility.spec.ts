@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
-import { loadAdminApp } from './fixtures';
+import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 
 /**
  * Automated accessibility scan (axe-core) of the admin console's list screens, in both themes.
@@ -10,7 +10,7 @@ import { loadAdminApp } from './fixtures';
  * that catches missing labels, low contrast and similar, next to looking at the screenshots
  * (see .claude/rules/frontend.md). Tags are the WCAG 2.0/2.1 levels A and AA axe documents.
  */
-const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users'];
+const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges'];
 const themes = ['light', 'dark'] as const;
 
 /** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */
@@ -157,6 +157,45 @@ for (const theme of themes) {
     await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
     await clean();
   });
+}
+
+/**
+ * The side panel of each small-entity section (G1): the record in view mode, one group editor
+ * (modal) and the create form, in both themes. The panel is slotted light DOM inside a shadow
+ * dialog, so axe sees it as the browser does: through the flattened tree.
+ */
+const panelSections = [
+  { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: 'Open scope openid', title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
+  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: 'Open permission alpha.read', title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
+  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: 'Open role alpha-admin', title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
+  { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: 'Open tenant tenant-bravo', title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
+  { view: 'edges', path: '/?view=edges', open: 'Open edge edge-alpha', title: 'edge-alpha', edit: 'Edit dpop nonce', editor: 'Edit DPoP nonce', create: '+ Create Edge', creator: 'Register edge' },
+] as const;
+
+for (const theme of themes) {
+  for (const section of panelSections) {
+    test(`the ${section.view} panel, its group editor and its create form have no axe violations in the ${theme} theme`, async ({ page }) => {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+      await loadAdminApp(page, { path: section.path, state: { edges: [{ id: 'edge-alpha', hasOldKey: true, requireDpopNonce: true }] } });
+      const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+      await page.getByRole('button', { name: section.open, exact: true }).click();
+      await expect(sidePanelDialog(page, section.title)).toBeVisible();
+      await expect(page.getByText('Loading…')).toHaveCount(0);
+      await clean();
+
+      await sidePanel(page, section.title).getByRole('button', { name: section.edit, exact: true }).click();
+      await expect(sidePanelDialog(page, section.editor)).toBeVisible();
+      await clean();
+
+      await sidePanel(page, section.editor).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await sidePanel(page, section.title).getByRole('button', { name: 'Close panel' }).click();
+      await page.getByRole('button', { name: section.create, exact: true }).click();
+      await expect(sidePanelDialog(page, section.creator)).toBeVisible();
+      await clean();
+    });
+  }
 }
 
 for (const theme of themes) {

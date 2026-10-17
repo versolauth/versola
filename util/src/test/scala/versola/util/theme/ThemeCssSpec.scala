@@ -94,13 +94,13 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val css = ThemeCss.generate(resolved("#155e75"))
         assertTrue(!css.contains("--page-"), !css.contains("color-scheme"), css.contains("--rf:14px;--rb:14px;--rs:24px;"))
       },
-      test("a soft or neutral page sets the page colours and the ink of the brand above the card") {
+      test("a soft or neutral page sets the page colours and the halo of the glow in both schemes") {
         val soft = ThemeCss.generate(resolved("#f5c518", surface = Surface.soft))
         val neutral = ThemeCss.generate(resolved("#5b5bd6", surface = Surface.neutral))
         assertTrue(
           soft.contains("--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);"),
-          soft.contains("--page-ink:light-dark(#1c1b19,#f3f2f0);"),
-          neutral.contains("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;"),
+          soft.contains("--glow-light:color-mix(in oklab,var(--brand) 16%,transparent);"),
+          neutral.contains("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-light:transparent;--glow-dark:transparent;"),
         )
       },
       test("a fixed scheme is written as color-scheme") {
@@ -166,10 +166,10 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val css =
           ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.bold), brand = None, shape = None, mode = None, background = None))
         assertTrue(
-          css.contains("--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);"),
+          css.contains("--page-light:color-mix(in oklab,var(--brand) 9%,#f6f4ef);"),
           css.contains("--page-dark:"),
+          css.contains("--glow-light:"),
           css.contains("--glow-dark:"),
-          css.contains("--page-ink:"),
         )
       },
       test("soft and neutral write their page variables") {
