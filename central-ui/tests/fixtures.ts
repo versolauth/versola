@@ -63,3 +63,11 @@ export function sidePanel(page: Page, heading: string) {
 export function sidePanelDialog(page: Page, heading: string) {
   return sidePanel(page, heading).getByRole('dialog');
 }
+
+/** A sheet fills the viewport. The page's own scrollbar (15px where scrollbars are classic, as on
+ *  the Linux CI browser) stays visible beside it, so the width is the viewport minus at most that. */
+export async function expectSheetWidth(page: Page, width: number | undefined) {
+  const viewport = await page.evaluate(() => window.innerWidth);
+  expect(width).toBeGreaterThanOrEqual(viewport - 15);
+  expect(width).toBeLessThanOrEqual(viewport);
+}
