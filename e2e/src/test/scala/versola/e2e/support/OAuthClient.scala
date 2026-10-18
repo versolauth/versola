@@ -636,6 +636,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
         * a secret and Basic, neither of which are then sent. */
       assertion: Option[String] = None,
+      /** RFC 9449 §10.1: a proof sent to `/par`, which binds the authorization code to its key. */
+      dpop: Option[DpopProver] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -658,7 +660,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth && assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/par")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(proofed).provide(ZLayer.succeed(client))
+        .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    yield result
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
   def parRaw(method: Method): Task[Response] =
