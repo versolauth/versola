@@ -133,6 +133,64 @@ secrets:
   #            clusters already running Stakater Reloader.
   restartStrategy: none
 
+# The migration Job (#209): applies the Flyway migrations of every enabled service once per
+# release, with versola-tools' `migrate`, before the new pods start. The services themselves never
+# migrate (RUN_MIGRATIONS is "false" in their Deployments); they validate the schema at boot and
+# refuse to start when a migration is missing. Turn the Job off only if something else migrates
+# (`versola-tools migrate` by hand, k8s/README.md section 5).
+#
+# It reads what the Deployments read: each enabled service's `config.existingSecret` env.conf and
+# its POSTGRES_PASSWORD from `secrets.existingSecret`, nothing else. Both Secrets must therefore
+# exist BEFORE `helm install`: a hook runs ahead of every other resource of the release, so a Secret
+# created by the same release (or by an operator that has not synced it yet) is not there for it.
+# The connection has to reach Postgres itself, not a transaction-pooling PgBouncer in front of it.
+#
+# Releases stay compatible with their predecessor (.claude/rules/database-migrations.md): the
+# previous version keeps serving while the Job runs and `helm rollback` works on the migrated
+# schema, which is what makes a rolling update safe. A migration is never undone by a rollback.
+migrations:
+  enabled: true
+  # true: a Helm hook (`pre-install,pre-upgrade`). The release waits for the Job and fails, without
+  # touching the Deployments, when it fails; a succeeded Job is deleted, a failed one stays for its
+  # logs. false: an ordinary Job for tools that apply manifests and do not run Helm hooks (Argo CD,
+  # Flux with hooks disabled), named after a hash of what it runs so a changed spec is a new Job.
+  # Order it yourself there, with `annotations` below, e.g. for Argo CD
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  # (Argo CD ignores `helm.sh/hook` as soon as any `argocd.argoproj.io/hook` exists, and runs
+  # PreSync before the Secrets of the same Application, so those must live elsewhere.)
+  hook: true
+  annotations: {}
+  # Report what would be applied and apply nothing.
+  dryRun: false
+  image:
+    repository: versola-tools
+    tag: "" # defaults to .Chart.AppVersion
+  # Retries of the whole Job after a pod fails for a reason of its own (a node drain); the tool
+  # retries lock timeouts and connections itself.
+  backoffLimit: 1
+  # Hard deadline of the Job. Keep it BELOW the `--timeout` of `helm upgrade` (5m unless set), or
+  # Helm gives up while the Job keeps going; raise both for a migration that needs longer.
+  activeDeadlineSeconds: 270
+  # How long a finished Job (a failed one, or any when hook is false) stays for its logs.
+  ttlSecondsAfterFinished: 86400
+  # A statement that waits longer than this for a lock gives up (and is retried), instead of
+  # queueing every query behind it while the previous version serves. 0: wait as long as it takes.
+  lockTimeoutMs: 5000
+  lockRetries: 3
+  connectRetries: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 256Mi
+  extraEnv: []
+  # Replace `global.*` when non-empty, like the services' own.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # auth, central, edge: the three JVM services described by VersolaApp.scala.
 # Keyed by name so templates/deployment.yaml and templates/service.yaml can
 # render one Deployment + Service per entry instead of repeating themselves.
