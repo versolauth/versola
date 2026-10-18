@@ -385,7 +385,7 @@ export class VersolaPermissionsList extends LitElement {
   private renderTable() {
     const columns: DataTableColumn<Permission>[] = [
       { id: 'permission', label: 'Permission', cell: permission => html`
-        <button type="button" class="row-link" aria-label=${`Open permission ${permission.id}`}>
+        <button type="button" class="row-link" aria-label=${`Open permission ${getLocalizedDescription(permission.description) || permission.id} ${permission.id}`}>
           <span class="row-title">${getLocalizedDescription(permission.description) || permission.id}</span>
           <span class="row-id">${permission.id}</span>
         </button>` },

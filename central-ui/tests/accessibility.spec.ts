@@ -45,7 +45,7 @@ for (const theme of themes) {
   test(`a client's page and its section editor have no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
     await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });
-    await page.getByRole('button', { name: 'Open client alpha-web', exact: true }).click();
+    await page.getByRole('button', { name: /^Open client (.* )?alpha-web$/ }).click();
     await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 
     const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
@@ -83,7 +83,7 @@ for (const theme of themes) {
         formPreviews: [consentPreviews],
       },
     });
-    await page.getByRole('button', { name: 'Open client partner-app', exact: true }).click();
+    await page.getByRole('button', { name: /^Open client (.* )?partner-app$/ }).click();
     await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
     // The preview is part of the block: scan it drawn, not while central is still rendering it.
@@ -165,10 +165,10 @@ for (const theme of themes) {
  * dialog, so axe sees it as the browser does: through the flattened tree.
  */
 const panelSections = [
-  { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: 'Open scope openid', title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
-  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: 'Open permission alpha.read', title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
-  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: 'Open role alpha-admin', title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
-  { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: 'Open tenant tenant-bravo', title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
+  { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: /^Open scope (.* )?openid$/, title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
+  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha\.read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
+  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
+  { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: /^Open tenant (.* )?tenant-bravo$/, title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
   { view: 'edges', path: '/?view=edges', open: 'Open edge edge-alpha', title: 'edge-alpha', edit: 'Edit dpop nonce', editor: 'Edit DPoP nonce', create: '+ Create Edge', creator: 'Register edge' },
 ] as const;
 
@@ -180,7 +180,7 @@ for (const theme of themes) {
       const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
       const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
 
-      await page.getByRole('button', { name: section.open, exact: true }).click();
+      await page.getByRole('button', { name: section.open }).click();
       await expect(sidePanelDialog(page, section.title)).toBeVisible();
       await expect(page.getByText('Loading…')).toHaveCount(0);
       await clean();

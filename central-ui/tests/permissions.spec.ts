@@ -54,7 +54,7 @@ test('opens a permission and shows its endpoints, who grants it, the detached ba
     },
   });
 
-  await page.getByRole('button', { name: 'Open permission reports.read' }).click();
+  await page.getByRole('button', { name: /^Open permission (.* )?reports\.read$/ }).click();
   const dialog = panel(page, 'Read reports');
   await expect(dialog.getByRole('dialog')).toBeVisible();
   await expect(dialog.getByText('1 linked endpoint no longer exists in Resources')).toBeVisible();
@@ -70,7 +70,7 @@ test('opens a permission and shows its endpoints, who grants it, the detached ba
 
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Open permission reports.read' })).toBeFocused();
+  await expect(page.getByRole('button', { name: /^Open permission (.* )?reports\.read$/ })).toBeFocused();
 });
 
 test('creates a permission bound to a selected resource endpoint', async ({ page }) => {
@@ -109,7 +109,7 @@ test('refuses an invalid permission ID with a red border before submitting', asy
 test('edits the endpoints group and sends the full endpoint list', async ({ page }) => {
   const api = await loadAdminApp(page, { path: permissionsPath, state: { permissions: { 'tenant-alpha': [alphaRead] }, resources } });
 
-  await page.getByRole('button', { name: 'Open permission alpha.read' }).click();
+  await page.getByRole('button', { name: /^Open permission (.* )?alpha\.read$/ }).click();
   await panel(page, 'Read alpha resources').getByRole('button', { name: 'Edit endpoints' }).click();
   const editor = panel(page, 'Edit endpoints');
   await editor.getByRole('button', { name: 'Remove endpoint GET /alpha/items' }).click();
@@ -126,7 +126,7 @@ test('edits the endpoints group and sends the full endpoint list', async ({ page
 test('edits the general group and sends only the description patch', async ({ page }) => {
   const api = await loadAdminApp(page, { path: permissionsPath, state: { permissions: { 'tenant-alpha': [alphaRead] }, resources } });
 
-  await page.getByRole('button', { name: 'Open permission alpha.read' }).click();
+  await page.getByRole('button', { name: /^Open permission (.* )?alpha\.read$/ }).click();
   await panel(page, 'Read alpha resources').getByRole('button', { name: 'Edit general' }).click();
   await panel(page, 'Edit general').locator('#permission-description').fill('Update alpha resources');
   await panel(page, 'Edit general').getByRole('button', { name: 'Save general' }).click();
@@ -140,7 +140,7 @@ test('edits the general group and sends only the description patch', async ({ pa
 test('deletes a permission from the panel through the confirm dialog', async ({ page }) => {
   const api = await loadAdminApp(page, { path: permissionsPath, state: { permissions: { 'tenant-alpha': [alphaRead] }, resources } });
 
-  await page.getByRole('button', { name: 'Open permission alpha.read' }).click();
+  await page.getByRole('button', { name: /^Open permission (.* )?alpha\.read$/ }).click();
   await panel(page, 'Read alpha resources').getByRole('button', { name: 'Delete permission alpha.read' }).click();
   await page.getByRole('dialog', { name: 'Delete permission' }).getByRole('button', { name: 'Delete', exact: true }).click();
 

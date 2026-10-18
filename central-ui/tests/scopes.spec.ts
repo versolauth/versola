@@ -75,7 +75,7 @@ test('opens the panel from the row, shows the groups, and the URL follows', asyn
 test('opens with Enter on the row and Escape closes it and returns focus to the row', async ({ page }) => {
   await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] } } });
 
-  const row = page.getByRole('button', { name: 'Open scope openid' });
+  const row = page.getByRole('button', { name: /^Open scope (.* )?openid$/ });
   await row.focus();
   await page.keyboard.press('Enter');
   await expect(sidePanelDialog(page, 'OpenID scope')).toBeVisible();
@@ -149,7 +149,7 @@ test('refuses an invalid scope ID and a claim without an English description bef
 test('edits the general group and sends only the description patch', async ({ page }) => {
   const api = await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] }, locales } });
 
-  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
   await panel(page, 'OpenID scope').getByRole('button', { name: 'Edit general' }).click();
   const editor = panel(page, 'Edit general');
   await expect(editor.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
@@ -169,7 +169,7 @@ test('edits the general group and sends only the description patch', async ({ pa
 test('edits the claims group and sends patch-style claim changes', async ({ page }) => {
   const api = await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] }, locales } });
 
-  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
   await panel(page, 'OpenID scope').getByRole('button', { name: 'Edit claims' }).click();
   const editor = panel(page, 'Edit claims');
   await expect(editor.getByLabel('Claim ID').first()).toHaveAttribute('readonly', '');
@@ -199,7 +199,7 @@ test('edits the claims group and sends patch-style claim changes', async ({ page
 test('deletes a scope from the panel through the confirm dialog and reaches the empty state', async ({ page }) => {
   const api = await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] } } });
 
-  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
   await panel(page, 'OpenID scope').getByRole('button', { name: 'Delete scope openid' }).click();
   await page.getByRole('dialog', { name: 'Delete scope' }).getByRole('button', { name: 'Delete', exact: true }).click();
 
@@ -234,7 +234,7 @@ test('read-only console: no create, no Edit, no danger card, row menu without De
 test('opens the scope as a page from the panel', async ({ page }) => {
   await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] } } });
 
-  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
   await panel(page, 'OpenID scope').getByRole('button', { name: 'Open page' }).click();
   await expect(page).toHaveURL(/layout=page/);
   await expect(page.getByRole('heading', { name: 'OpenID scope', level: 1 })).toBeVisible();
@@ -262,7 +262,7 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
 test('asks before Escape drops an edited draft, and closes straight away when nothing changed', async ({ page }) => {
   await loadAdminApp(page, { path: scopesPath, state: { scopes: { 'tenant-alpha': [openidScope] }, locales } });
 
-  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
   await panel(page, 'OpenID scope').getByRole('button', { name: 'Edit general' }).click();
   await panel(page, 'Edit general').getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page).not.toHaveURL(/edit=general/);

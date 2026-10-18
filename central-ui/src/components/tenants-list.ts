@@ -341,7 +341,7 @@ export class VersolaTenantsList extends LitElement {
   private renderTable() {
     const columns: DataTableColumn<Tenant>[] = [
       { id: 'tenant', label: 'Tenant', cell: tenant => html`
-        <button type="button" class="row-link" aria-label=${`Open tenant ${tenant.id}`}>
+        <button type="button" class="row-link" aria-label=${`Open tenant ${tenant.description || tenant.id} ${tenant.id}`}>
           <span class="row-title">${tenant.description || tenant.id}</span>
           <span class="row-id">${tenant.id}</span>
         </button>

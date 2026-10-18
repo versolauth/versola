@@ -106,7 +106,7 @@ function clientCard(page: Page, text: string) {
 
 /** A client's page: read-only, with an Edit button per group of settings. */
 async function openClientPage(page: Page, id: string) {
-  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
   await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 }
 

@@ -83,7 +83,7 @@ test('below 720px the rows are cards that keep the table semantics and show the 
   const table = page.getByRole('table');
   await expect(table).toBeVisible();
   await expect(table.getByRole('columnheader', { name: 'Authenticates with' })).toHaveCount(1);
-  const row = table.getByRole('row').filter({ has: page.getByRole('button', { name: 'Open client alpha-web' }) });
+  const row = table.getByRole('row').filter({ has: page.getByRole('button', { name: /^Open client (.* )?alpha-web$/ }) });
   await expect(row.getByRole('cell')).toHaveCount(5);
   const label = await row.getByRole('cell').nth(2).evaluate(cell => getComputedStyle(cell, '::before').content);
   expect(label).toBe('"Authenticates with"');

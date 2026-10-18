@@ -1264,7 +1264,7 @@ export class VersolaClientsList extends LitElement {
   private renderClientTable() {
     const columns: DataTableColumn<OAuthClient>[] = [
       { id: 'client', label: 'Client', cell: client => html`
-        <button type="button" class="row-link" @click=${() => this.openView(client)} aria-label=${`Open client ${client.id}`}>
+        <button type="button" class="row-link" @click=${() => this.openView(client)} aria-label=${`Open client ${getLocalizedDescription(client.clientName)} ${client.id}`}>
           <span class="row-title">${getLocalizedDescription(client.clientName)}</span>
           <span class="row-id">${client.id}</span>
         </button>` },
