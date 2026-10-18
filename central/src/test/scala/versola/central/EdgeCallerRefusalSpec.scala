@@ -52,6 +52,16 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
       headers = Map("edge_id" -> edgeId.toString),
     )
 
+  /** What someone with a rebuilt edge could mint: the edge's own key, the `edge_id` header left out so the
+    * token no longer says it is an edge's. With no `edge_id` central verifies against the secret shared
+    * with auth, which an edge never holds, so the signature cannot be valid. */
+  private val edgeTokenWithoutEdgeId: Task[String] =
+    JWT.serialize(
+      JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+      1.minute,
+      JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+    )
+
   private val authToken: Task[String] =
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
@@ -176,6 +186,24 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
       registered = false,
       expectedStatus = Status.Unauthorized,
       verify = services => ZIO.succeed(assertTrue(services.jwks.getRaw.calls.isEmpty)),
+    ),
+    // Taking `edge_id` out of the header does not turn an edge's token into auth's: the key that decides
+    // is picked by that header, and without it the token is checked against a secret the edge lacks.
+    suite("an edge's token with the edge_id left out is unauthenticated, and nothing behind the route runs")(
+      testCase(
+        description = "GET /configuration/jwks/signing-keys/sync",
+        request = Request.get(URL.root / "configuration" / "jwks" / "signing-keys" / "sync"),
+        authorization = edgeTokenWithoutEdgeId.map(token => Some(Header.Authorization.Bearer(token))),
+        expectedStatus = Status.Unauthorized,
+        verify = services => ZIO.succeed(assertTrue(services.jwks.getSigningKeys.calls.isEmpty)),
+      ),
+      testCase(
+        description = "POST /users/registrations",
+        request = registration,
+        authorization = edgeTokenWithoutEdgeId.map(token => Some(Header.Authorization.Bearer(token))),
+        expectedStatus = Status.Unauthorized,
+        verify = services => ZIO.succeed(assertTrue(services.users.indexRegistered.calls.isEmpty)),
+      ),
     ),
     suite("everyone else is the route's own business")(
       testCase(

@@ -53,7 +53,9 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val requested = Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName)))
           .map(san => GeneralNames.getInstance(san.getParsedValue).getNames.toList).getOrElse(Nil)
         // A CA that adds a name of its own to what it signs, as a misconfigured template would.
-        val names = requested ++ addedUri.map(uri => org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.uniformResourceIdentifier, uri))
+        val names = requested ++ addedUri.map(uri =>
+          org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.uniformResourceIdentifier, uri),
+        )
         if names.nonEmpty then builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
         val signer = JcaContentSignerBuilder("SHA256withRSA").build(ca.privateKey)
         val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
