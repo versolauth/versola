@@ -26,7 +26,7 @@ npm run build:forms       # forms -> ../central/src/main/resources/forms/, commo
 ## Forms
 
 - `central/src/main/resources/forms/` and `util/src/main/resources/versola/forms/` are **generated and gitignored**; edit `central-ui/forms/`,
-  never the output. `central` fails at runtime without the built forms (`deploy.md` 9.2), and CI and
+  never the output. `central` fails at runtime without the built forms (`deploy.md` 6.2), and CI and
   the Docker build run `build:forms` before staging.
 - `scripts/build-forms.mjs` lists the forms by hand. A new form directory must be added to that list
   or it is silently not built.

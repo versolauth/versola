@@ -21,7 +21,7 @@ object ReloadingCache:
     * central during their own startup) fails its first load whenever it wins the race against that
     * service. Without a retry the failure propagates out of layer construction and takes the whole
     * application down - observed in production, with central becoming ready ~0.4s after auth had
-    * already given up (see deploy.md 9.5). Waiting is better than dying and relying on the
+    * already given up (see deploy.md 6.5). Waiting is better than dying and relying on the
     * orchestrator to restart us.
     *
     * The wait only recovers with a `dynamic` outbound pool. A `fixed` pool (the default) keeps
