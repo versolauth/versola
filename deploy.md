@@ -90,13 +90,15 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - **A second DNS name for central's edge surface** (#554), for example `central.versola.kz` next to
   `id.versola.kz`, pointing at the same host. A deployment is addressed by two hostnames:
   `id.<domain>` is auth (browsers, `--auth-url`, behind the proxy and Let's Encrypt), and
-  `central.<domain>` is where edges reach central's mutual-TLS listener (`MPORT`, `8093`), which
-  terminates TLS itself and is **not** behind the proxy. An edge's `central.url` is
-  `https://central.<domain>:8093` (gen-env's `--central-mutual-tls-url`). The name is only an address:
-  edge authenticates central by pinning its leaf certificate, so no public certificate is needed for
-  it, but it must resolve and the port must be open to the edges (see
-  [Mutual TLS certificates](#mutual-tls-certificates)). It is not needed when every edge runs on the
-  same host as central (`127.0.0.1`).
+  `central.<domain>` is **routed to central's mutual-TLS port** (`MPORT`, `8093`): the proxy in front
+  forwards that name's TCP/TLS to `127.0.0.1:8093` by SNI, **without terminating TLS** -- the
+  handshake and the edge's client certificate must reach central untouched. An edge's `central.url`
+  is `https://central.<domain>` (gen-env's `--central-mutual-tls-url`). The name is only an
+  address: edge authenticates central by pinning its leaf certificate, so no public certificate is
+  needed for it. It is not needed when every edge runs on the same host as central
+  (`https://127.0.0.1:8093`). The routing itself belongs to the proxy that `versola-cli` writes (its
+  own repository); until it forwards that name, edges outside the host must use the host's address and
+  port `8093` directly (see [Mutual TLS certificates](#mutual-tls-certificates)).
 - `versola-cli`: `curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh`,
   then `export PATH="$HOME/.local/bin:$PATH"`. `versola upgrade` updates it later.
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
