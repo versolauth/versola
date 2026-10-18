@@ -272,9 +272,18 @@ Two Secrets of its own, because it needs the configs under their own names and t
 by *variable* name rather than by the chart's key naming:
 
 - `versola-migrate-config` — keys `auth.conf`, `central.conf`, `edge.conf`.
-- `versola-migrate-env` — the union of the three `*.generated-secrets.env` files. The tool calls
-  `ConfigFactory.parseFile(...).resolve()`, which resolves the whole document, so *every*
-  placeholder in all three files must be satisfied — not only the Postgres block it reads.
+- `versola-migrate-env` — the database credentials the three files reference (`POSTGRES_PASSWORD`
+  and whatever else `postgres.*` points at). The tool reads only `postgres.url`/`user`/`password`
+  (and `ssl-root-cert`) and tolerates every other unresolved placeholder, so the token, signing and
+  client secrets do not have to be in the Job's environment. Name the services to migrate with
+  repeated `--service` flags (`args: ["migrate", "--service", "auth", "--service", "central"]`);
+  without one it needs all three files.
+
+Two settings come from the environment: `MIGRATE_LOCK_TIMEOUT_MS` (default `5000`, `0` disables)
+makes a statement that cannot get a lock within that time fail instead of queueing every query
+behind it while the previous version still serves, and `MIGRATE_LOCK_RETRIES` (default `3`) retries
+the service's migration after such a failure. `MIGRATE_CONNECT_RETRIES` (default `3`, 5 s apart)
+covers a database that is not accepting connections yet.
 
 It creates each schema if absent, then migrates each service independently. `--dry-run` reports
 what would be applied, including against a database with no history at all, without touching
