@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Versola">
-	<rect width="64" height="64" rx="14" fill="#155e75"/>
-	<path d="M14 18 L32 46 L50 18" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-	<circle cx="32" cy="24.5" r="6" fill="#a7ecf8"/>
+	<rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14" fill="#ffffff" stroke="#d9d6cf" stroke-width="1.5"/>
+	<path d="M14 18 L32 46 L50 18" fill="none" stroke="#1d1b19" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+	<circle cx="32" cy="24.5" r="6" fill="#155e75"/>
 </svg>
