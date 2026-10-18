@@ -75,6 +75,8 @@ Two things in it come from the setup, not from Versola:
 
 ## State of the work
 
+Per-module results of the last recorded run: [RESULTS.md](RESULTS.md).
+
 First run: 2026-10-09 against a development build (47 modules: 41 passed, 4 failed, 1 warning, 1
 skipped; the fixes it prompted were never merged).
 
