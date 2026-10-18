@@ -90,7 +90,7 @@ error but cannot sign it off), 1 needs a person (`user-rejects-authentication`),
 | `ensure-response-type-code-idtoken-fails` | `response_type=code id_token` (hybrid) is served to a `fapi2` client, with the code in the fragment |
 | `dpop-negative-tests` | `/userinfo` rejects a proof whose `htu` differs only in scheme/host case or carries the scheme's default port (RFC 9449 §4.3 asks for the RFC 3986 §6.2.2 normalisation) |
 | `attempt-reuse-authorization-code-after-one-second` | After a second use of an authorization code, the access token issued from it still works at `/userinfo` (warning) |
-| `refresh-token` | A refresh with a DPoP key other than the one the code was exchanged with is refused (`invalid_grant`); RFC 9449 §5 does not bind a confidential client's refresh token to a key |
+| `refresh-token` | A refresh with a DPoP key other than the one the code was exchanged with is refused (`invalid_grant`); most likely the refresh token is bound to the first DPoP key, which RFC 9449 §5 does not do for a confidential client (cause not yet confirmed in the code) |
 
 Not covered yet: the `mtls` sender constraint and `tls_client_auth` / `self_signed_tls_client_auth`
 variants (the suite's mTLS endpoint is on port 8444 and needs client certificates the runner does not
