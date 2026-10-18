@@ -82,13 +82,6 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(!remaining.exists(session => str(session, "id").contains(stale.sessionId)))
           .label("the revoked session must be gone from the page")
     },
-    test("changes the password when the current password is correct") {
-      for
-        (s, auth) <- setup(Flows.Id.LoginPassword)
-        caller <- login(s, auth)
-        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, "NewPass-Changed-1!")
-      yield assertTrue(result.status == Status.NoContent)
-    },
     test("rejects a password change when the current password is wrong") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -128,6 +121,18 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(deleted.status == Status.NoContent) &&
         assertTrue(!afterDelete.exists(passkey => str(passkey, "id").contains(credential.id)))
           .label("the deleted passkey must be gone from the page")
+    },
+    test("changes the password when the current password is correct") {
+      val changed = "NewPass-Changed-1!"
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, changed)
+        restorer <- login(s.copy(password = changed), auth)
+        restored <- auth.edgeChangePassword(Some(restorer.accessToken), changed, s.password)
+      yield assertTrue(result.status == Status.NoContent) &&
+        assertTrue(restored.status == Status.NoContent)
+          .label(s"the shared user's password must be restored, got: ${restored.status} ${restored.body}")
     },
   ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
 
