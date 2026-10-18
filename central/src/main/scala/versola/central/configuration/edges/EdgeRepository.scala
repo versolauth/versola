@@ -15,7 +15,8 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
 
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
 
-  def rotateCertificate(id: EdgeId, thumbprint: String): Task[Unit]
+  /** Replaces both pinned thumbprints at once. */
+  def setCertificates(id: EdgeId, current: String, old: Option[String]): Task[Unit]
 
   def deleteOldCertificate(id: EdgeId): Task[Unit]
 

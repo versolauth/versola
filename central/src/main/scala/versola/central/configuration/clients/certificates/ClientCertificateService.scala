@@ -61,6 +61,18 @@ object ClientCertificateService:
   case class SigningRefused(clientId: ClientId, reason: String)
     extends RuntimeException(s"client '$clientId': $reason")
 
+  /** `client-certificates`, or -- for a deployment that only has the earlier
+    * `client-certificate-authority` -- its own validity with the renewal defaults. */
+  def settingsOf(config: CentralConfig): CentralConfig.ClientCertificatesConfig =
+    config.certificateBackends.getOrElse:
+      val defaults = CentralConfig.ClientCertificatesConfig()
+      config.clientCertificateAuthority.fold(defaults): authority =>
+        defaults.copy(validity =
+          Duration.fromSeconds(
+            authority.validityDays.getOrElse(ClientCertificateAuthority.DefaultValidityDays) * 86400L,
+          ),
+        )
+
   val live: URLayer[
     ClientCertificateIssuer & OAuthClientService & ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository & CentralConfig,
@@ -77,15 +89,7 @@ object ClientCertificateService:
 
     /** `client-certificates`, or -- for a deployment that only has the earlier
       * `client-certificate-authority` -- its own validity with the renewal defaults. */
-    private val settings: CentralConfig.ClientCertificatesConfig =
-      config.certificateBackends.getOrElse:
-        val defaults = CentralConfig.ClientCertificatesConfig()
-        config.clientCertificateAuthority.fold(defaults): authority =>
-          defaults.copy(validity =
-            Duration.fromSeconds(
-              authority.validityDays.getOrElse(ClientCertificateAuthority.DefaultValidityDays) * 86400L,
-            ),
-          )
+    private val settings: CentralConfig.ClientCertificatesConfig = ClientCertificateService.settingsOf(config)
 
     private case class Issued(certificate: PrivateClientCertificate, serial: String, notAfter: Instant)
 

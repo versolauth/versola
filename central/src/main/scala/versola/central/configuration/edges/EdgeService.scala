@@ -21,6 +21,11 @@ trait EdgeService:
     * PEM is not one certificate. */
   def rotateCertificate(id: EdgeId, pemCertificate: String): Task[Unit]
 
+  /** Pins `current` as the edge's certificate, keeping `old` accepted beside it. What central does
+    * after signing the edge's own request: `old` is the certificate that request was made with,
+    * so an edge whose answer was lost and which asks again is still let in. */
+  def pinCertificates(id: EdgeId, current: String, old: Option[String]): Task[Unit]
+
   def deleteOldCertificate(id: EdgeId): Task[Unit]
 
   def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
@@ -68,8 +73,12 @@ object EdgeService:
     override def rotateCertificate(id: EdgeId, pemCertificate: String): Task[Unit] =
       for
         thumbprint <- ZIO.fromEither(EdgeCertificate.thumbprintOfPem(pemCertificate)).mapError(BadRequest(_))
-        _ <- edgeRepository.rotateCertificate(id, thumbprint)
+        previous <- edgeRepository.find(id).map(_.flatMap(_.certificateThumbprint))
+        _ <- edgeRepository.setCertificates(id, thumbprint, previous)
       yield ()
+
+    override def pinCertificates(id: EdgeId, current: String, old: Option[String]): Task[Unit] =
+      edgeRepository.setCertificates(id, current, old)
 
     override def deleteOldCertificate(id: EdgeId): Task[Unit] =
       edgeRepository.deleteOldCertificate(id)

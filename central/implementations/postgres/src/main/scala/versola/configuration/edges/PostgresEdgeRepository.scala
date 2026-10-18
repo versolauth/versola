@@ -48,12 +48,12 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
       """.update.run()
     .unit
 
-  override def rotateCertificate(id: EdgeId, thumbprint: String): Task[Unit] =
-    xa.connectMeasured("rotate-edge-certificate"):
+  override def setCertificates(id: EdgeId, current: String, old: Option[String]): Task[Unit] =
+    xa.connectMeasured("set-edge-certificates"):
       sql"""
         UPDATE edges
-        SET old_certificate_thumbprint = certificate_thumbprint,
-            certificate_thumbprint = $thumbprint
+        SET old_certificate_thumbprint = $old,
+            certificate_thumbprint = $current
         WHERE id = $id
       """.update.run()
     .unit

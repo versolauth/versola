@@ -36,6 +36,7 @@ import versola.central.configuration.{
   GetResourcesSyncResponse,
   GetRolesSyncResponse,
   ResourceUri,
+  SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.http.Observability
@@ -261,6 +262,18 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       services.jwks.getRaw.succeedsWith(jwks) *>
       services.metadata.getMetadata.succeedsWith(None)
 
+  /** Records what it is asked and answers by the request: "refuse" is refused, anything else is
+    * "signed:<csr>". The real service is `EdgeCertificateServiceSpec`'s. */
+  private class FakeEdgeCertificates extends EdgeCertificateService:
+    var calls: List[(EdgeId, String, String)] = Nil
+
+    override def sign(edgeId: EdgeId, presented: String, csrPem: String) =
+      ZIO.succeed { calls = calls :+ ((edgeId, presented, csrPem)) } *>
+        (if csrPem == "refuse" then ZIO.fail(EdgeCertificateService.SigningRefused(edgeId, "wrong subject"))
+         else ZIO.succeed(s"signed:$csrPem"))
+
+  private val edgeCertificates = FakeEdgeCertificates()
+
   private def testCase(
       description: String,
       request: Request,
@@ -295,6 +308,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             EdgeSyncController.routes.provideEnvironment(
               ZEnvironment[OAuthClientService](services.clients) ++
                 ZEnvironment[ClientCertificateService](certificates) ++
+                ZEnvironment[EdgeCertificateService](edgeCertificates) ++
                 ZEnvironment[AuthorizationPresetService](services.presets) ++
                 ZEnvironment[ResourceService](services.resources) ++
                 ZEnvironment[RoleService](services.roles) ++
@@ -562,6 +576,42 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request.get(sync("clients")),
         certificate = Some(rotatedCertificate.certificate),
         expectedStatus = Status.Unauthorized,
+      ),
+    ),
+    suite("an edge renews its own certificate")(
+      testCase(
+        description = "signs the request, naming the certificate the call was made with so it stays accepted",
+        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-1"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.Ok,
+        verify = (response, _) =>
+          for payload <- decodeBody[SignEdgeCertificateResponse](response)
+          yield assertTrue(
+            payload.certificate == "signed:csr-1",
+            edgeCertificates.calls.contains((edgeId, EdgeCertificate.thumbprint(edgeCertificate.certificate), "csr-1")),
+          ),
+      ),
+      testCase(
+        description = "a request the service refuses is a 422",
+        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"refuse"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.UnprocessableEntity,
+      ),
+      testCase(
+        description = "401 without a certificate in the handshake, and nothing is signed",
+        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-2"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        certificate = None,
+        expectedStatus = Status.Unauthorized,
+        verify = (_, _) => ZIO.succeed(assertTrue(!edgeCertificates.calls.exists(_._3 == "csr-2"))),
+      ),
+      testCase(
+        description = "401 for a certificate registered for nobody, and nothing is signed",
+        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-3"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        certificate = Some(strangerCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, _) => ZIO.succeed(assertTrue(!edgeCertificates.calls.exists(_._3 == "csr-3"))),
       ),
     ),
     suite("what only an edge may be sent travels encrypted to its key alone")(

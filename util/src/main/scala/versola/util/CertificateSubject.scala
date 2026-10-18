@@ -51,6 +51,22 @@ case class CertificateSubject(
 
 object CertificateSubject:
 
+  /** What the certificate an edge presents to central must say about the edge: `CN=<id>` and a
+    * `urn:versola:edge:<id>` URI name. A function of the id alone, so central, which checks the
+    * request it is sent, and the edge that makes it agree without either telling the other. */
+  def forEdge(edgeId: String): CertificateSubject =
+    CertificateSubject(
+      distinguishedName = X500Principal(s"CN=${escapeRdn(edgeId)},OU=edge,O=Versola").getName(X500Principal.RFC2253),
+      commonName = edgeId,
+      dnsNames = Nil,
+      uris = List(s"urn:versola:edge:$edgeId"),
+      emailAddresses = Nil,
+      ipAddresses = Nil,
+    )
+
+  private def escapeRdn(value: String): String =
+    value.flatMap(c => if ",+\"\\<>;=#".contains(c) then s"\\$c" else c.toString)
+
   /** A fresh EC P-256 key pair and the PKCS#10 request for [[CertificateSubject]] it signs. */
   case class Generated(privateKeyPem: String, csrPem: String)
 

@@ -177,7 +177,10 @@ object CentralConfig:
   )
 
   object BootstrapConfig:
-    case class EdgeSeed(id: EdgeId, publicKeyJwk: Json.Obj)
+    /** @param certificate PEM path to the certificate the edge first presents on the mutual-TLS
+      *   listener, issued by the deployment (the edge cannot ask central for one before it can
+      *   connect). Pinned when the edge has none; central issues every one after it. */
+    case class EdgeSeed(id: EdgeId, publicKeyJwk: Json.Obj, certificate: Option[String] = None)
 
     /** The credential is operator-supplied rather than generated, for the reason
       * `authResourceSecret` is: a caller such as loadgen has to be configured with its other half
