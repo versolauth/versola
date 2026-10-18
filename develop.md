@@ -55,7 +55,7 @@ The script first asks for the environment **Name** (default `local`):
   Postgres is a throwaway container this same run also creates, while vps's Postgres
   role lives on a server this script doesn't control — the password generated here
   becomes the real one only on the first `configure` against an empty OpenBao, and
-  `versola-cli` then prints the SQL to give the role that password (deploy.md, 3.3).
+  `versola-cli` then prints the SQL to give the role that password (deploy.md, "Database, role and schemas").
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).
@@ -343,7 +343,7 @@ versola secrets login vps http://<address> <role-id>
 `bao kv patch` merges into a path; `bao kv put` **replaces the whole path**
 and would wipe every other key there. Then run `versola configure <target>
 <version>` again with the same flags as the deployment (for `vps`, see
-[`deploy.md`](deploy.md#4-deploying-a-new-version)) and `versola up`, so the
+[`deploy.md`](deploy.md#deploying-a-new-version)) and `versola up`, so the
 new value reaches the services:
 
 ```bash
@@ -459,7 +459,7 @@ stateful lives in them (Postgres is native, OpenBao's volume is external).
    cutting a release. The tag can't be `latest` or an existing git tag.
 
 Nothing here deploys: production is updated with `versola-cli` from the server
-itself — see [`deploy.md`](deploy.md#4-deploying-a-new-version).
+itself — see [`deploy.md`](deploy.md#deploying-a-new-version).
 
 ## HTTP Server
 
