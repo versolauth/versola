@@ -361,7 +361,7 @@ export class VersolaRolesList extends LitElement {
   private renderTable() {
     const columns: DataTableColumn<Role>[] = [
       { id: 'role', label: 'Role', cell: role => html`
-        <button type="button" class="row-link" aria-label=${`Open role ${role.id}`}>
+        <button type="button" class="row-link" aria-label=${`Open role ${getLocalizedDescription(role.description) || role.id} ${role.id}`}>
           <span class="row-title">${getLocalizedDescription(role.description) || role.id}</span>
           <span class="row-id">${role.id}</span>
         </button>` },

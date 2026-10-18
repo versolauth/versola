@@ -334,7 +334,7 @@ export class TenantSelector extends LitElement {
 
     return html`
       <div class="selector-label">Tenant</div>
-      <button class="selector-button" type="button" aria-label="Select tenant" aria-haspopup="listbox" aria-expanded=${this.isOpen}
+      <button class="selector-button" type="button" aria-label=${`Select tenant: ${this.isLoading ? 'Loading tenants...' : selectedTenant?.id || 'Select Tenant'}`} aria-haspopup="listbox" aria-expanded=${this.isOpen}
         @click=${(e: Event) => this.toggleDropdown(e)} ?disabled=${this.isLoading}>
         <span class="tenant-name">
           ${this.isLoading ? 'Loading tenants...' : selectedTenant?.id || 'Select Tenant'}

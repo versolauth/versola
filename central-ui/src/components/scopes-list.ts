@@ -405,7 +405,7 @@ export class VersolaScopesList extends LitElement {
   private renderTable() {
     const columns: DataTableColumn<OAuthScope>[] = [
       { id: 'scope', label: 'Scope', cell: scope => html`
-        <button type="button" class="row-link" aria-label=${`Open scope ${scope.id}`}>
+        <button type="button" class="row-link" aria-label=${`Open scope ${getLocalizedDescription(scope.description) || scope.id} ${scope.id}`}>
           <span class="row-title">${getLocalizedDescription(scope.description) || scope.id}</span>
           <span class="row-id">${scope.id}</span>
         </button>` },

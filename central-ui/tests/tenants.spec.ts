@@ -59,7 +59,7 @@ test('opens a tenant, reads its security profile from the challenge settings and
     state: { challengeSettings: { 'tenant-bravo': { ...defaultChallengeSettings('tenant-bravo'), securityProfile: 'standard' } } },
   });
 
-  await page.getByRole('button', { name: 'Open tenant tenant-bravo' }).click();
+  await page.getByRole('button', { name: /^Open tenant (.* )?tenant-bravo$/ }).click();
   const dialog = panel(page, 'Bravo Workspace');
   await expect(dialog.getByRole('dialog')).toBeVisible();
   await expect(page).toHaveURL(/id=tenant-bravo/);
@@ -72,7 +72,7 @@ test('opens a tenant, reads its security profile from the challenge settings and
 
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Open tenant tenant-bravo' })).toBeFocused();
+  await expect(page.getByRole('button', { name: /^Open tenant (.* )?tenant-bravo$/ })).toBeFocused();
 });
 
 test('creates a tenant in the panel, selects it, opens it and refreshes the selector', async ({ page }) => {
@@ -139,7 +139,7 @@ test('refuses an invalid tenant ID before submitting', async ({ page }) => {
 test('edits the general group and keeps the edge; edits the edge and keeps the description', async ({ page }) => {
   const api = await loadAdminApp(page, { path: tenantsPath, state: { tenants: [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: 'edge-alpha' }], edges } });
 
-  await page.getByRole('button', { name: 'Open tenant tenant-alpha' }).click();
+  await page.getByRole('button', { name: /^Open tenant (.* )?tenant-alpha$/ }).click();
   await panel(page, 'Alpha Workspace').getByRole('button', { name: 'Edit general' }).click();
   await panel(page, 'Edit general').getByLabel('Description *').fill('Alpha Platform');
   await panel(page, 'Edit general').getByRole('button', { name: 'Save general' }).click();
@@ -167,7 +167,7 @@ test('selects a tenant from the row menu', async ({ page }) => {
 test('deletes a tenant from the panel through the confirm dialog and removes it from the selector', async ({ page }) => {
   const api = await loadAdminApp(page, { path: tenantsPath });
 
-  await page.getByRole('button', { name: 'Open tenant tenant-bravo' }).click();
+  await page.getByRole('button', { name: /^Open tenant (.* )?tenant-bravo$/ }).click();
   await panel(page, 'Bravo Workspace').getByRole('button', { name: 'Delete tenant tenant-bravo' }).click();
   const confirm = page.getByRole('dialog', { name: 'Delete tenant' });
   await expect(confirm).toContainText('Delete tenant');

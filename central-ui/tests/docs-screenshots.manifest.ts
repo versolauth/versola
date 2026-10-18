@@ -401,7 +401,7 @@ const realServerMetadata: Act = async page => {
 // Actions shared by several entries
 
 const openClient = (id: string): Act => async page => {
-  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
   await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 };
 
@@ -1049,7 +1049,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/scopes-list-expanded', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open scope openid' }).click();
+      await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
       await expect(sidePanel(page, 'OpenID scope').getByRole('region', { name: 'Claims' })).toContainText('Subject');
     },
   },
@@ -1084,7 +1084,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/permissions-list-expanded', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open permission orders.read' }).click();
+      await page.getByRole('button', { name: /^Open permission (.* )?orders\.read$/ }).click();
       await expect(sidePanel(page, 'Read orders').getByRole('region', { name: 'Endpoints' })).toContainText('/orders');
     },
   },
@@ -1120,7 +1120,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/roles-list-expanded', kind: 'frame', path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open role alpha_admin' }).click();
+      await page.getByRole('button', { name: /^Open role (.* )?alpha_admin$/ }).click();
       await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('orders.read');
     },
   },

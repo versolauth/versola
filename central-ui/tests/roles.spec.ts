@@ -45,7 +45,7 @@ test('lists roles with their status, filters by chip and searches by ID or descr
 test('opens a role and shows its permissions grouped by category, Fixed and the danger card', async ({ page }) => {
   await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] }, permissions } });
 
-  await page.getByRole('button', { name: 'Open role alpha-admin' }).click();
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   const dialog = panel(page, 'Alpha admin');
   await expect(dialog.getByRole('dialog')).toBeVisible();
   await expect(page).toHaveURL(/id=alpha-admin/);
@@ -61,7 +61,7 @@ test('opens a role and shows its permissions grouped by category, Fixed and the 
 
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Open role alpha-admin' })).toBeFocused();
+  await expect(page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ })).toBeFocused();
 });
 
 test('creates a role with permissions picked by group and with the search', async ({ page }) => {
@@ -102,7 +102,7 @@ test('refuses an invalid role ID with a red border before submitting', async ({ 
 test('edits the permissions group and sends patch-style changes', async ({ page }) => {
   const api = await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] }, permissions } });
 
-  await page.getByRole('button', { name: 'Open role alpha-admin' }).click();
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   await panel(page, 'Alpha admin').getByRole('button', { name: 'Edit permissions (2)' }).click();
   const editor = panel(page, 'Edit permissions');
   await expect(page).toHaveURL(/edit=permissions/);
@@ -119,7 +119,7 @@ test('edits the permissions group and sends patch-style changes', async ({ page 
 test('edits the general group', async ({ page }) => {
   const api = await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] } } });
 
-  await page.getByRole('button', { name: 'Open role alpha-admin' }).click();
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   await panel(page, 'Alpha admin').getByRole('button', { name: 'Edit general' }).click();
   await panel(page, 'Edit general').locator('#role-description').fill('Platform admins');
   await panel(page, 'Edit general').getByRole('button', { name: 'Save general' }).click();
@@ -133,7 +133,7 @@ test('edits the general group', async ({ page }) => {
 test('deletes a role from the panel through the confirm dialog', async ({ page }) => {
   const api = await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] } } });
 
-  await page.getByRole('button', { name: 'Open role alpha-admin' }).click();
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   await panel(page, 'Alpha admin').getByRole('button', { name: 'Delete role alpha-admin' }).click();
   await page.getByRole('dialog', { name: 'Delete role' }).getByRole('button', { name: 'Delete', exact: true }).click();
 
@@ -162,7 +162,7 @@ test('read-only console: no create, no Edit, no danger card', async ({ page }) =
   await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] }, myPermissions: readOnly } });
 
   await expect(page.getByRole('button', { name: '+ Create Role' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Open role alpha-admin' }).click();
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   const dialog = panel(page, 'Alpha admin');
   await expect(dialog.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'Delete role' })).toHaveCount(0);

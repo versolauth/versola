@@ -31,7 +31,7 @@ const renders = (api: Awaited<ReturnType<typeof loadAdminApp>>) =>
   api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/themes/css').map(request => request.body as Record<string, unknown>);
 
 async function openBranding(page: Page) {
-  await page.getByRole('button', { name: 'Open client acme-app', exact: true }).click();
+  await page.getByRole('button', { name: /^Open client (.* )?acme-app$/ }).click();
   await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
 }
