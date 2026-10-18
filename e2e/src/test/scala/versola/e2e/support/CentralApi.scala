@@ -122,7 +122,8 @@ final class CentralApi(
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))
       // Without a certificate the connection still has to trust central's own, or it would fail on that
       // instead of on the missing certificate this exists to show.
-      pinned = if edgeSurface.exists(_.isEmpty) then client.ssl(ClientSSLConfig.FromCertFile(config.centralMutualTlsServerCertificate)) else connection
+      pinned =
+        if edgeSurface.exists(_.isEmpty) then client.ssl(ClientSSLConfig.FromCertFile(config.centralMutualTlsServerCertificate)) else connection
       response <- Client.batched(authorized).provide(ZLayer.succeed(pinned))
       result <- ApiResult.of(response)
     yield result

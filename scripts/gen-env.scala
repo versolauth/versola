@@ -330,7 +330,23 @@ def genCentralMutualTlsCertificate(dir: File, edgeId: String): Unit =
     val key = File(dir, s"$name.key").getPath
     val csr = File(dir, s"$name.csr").getPath
     run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", subject, "-addext", s"subjectAltName=$san")
-    run("x509", "-req", "-in", csr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial", "-out", File(dir, s"$name.crt").getPath, "-days", "3650", "-copy_extensions", "copy")
+    run(
+      "x509",
+      "-req",
+      "-in",
+      csr,
+      "-CA",
+      caCert,
+      "-CAkey",
+      caKey,
+      "-CAcreateserial",
+      "-out",
+      File(dir, s"$name.crt").getPath,
+      "-days",
+      "3650",
+      "-copy_extensions",
+      "copy",
+    )
 
   run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCert, "-days", "3650", "-subj", "/CN=versola-central-mtls-ca")
   leaf("server", "/CN=localhost", "DNS:localhost")

@@ -320,7 +320,9 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             path <- writeCertificate(directory, "central-ca.pem", ca.certificatePem)
             config = baseConfig(None)
             exit <- ZIO.service[EdgeConfig]
-              .provideLayer(ZLayer.succeed(config.copy(central = config.central.copy(mutualTls = Some(centralMutualTls(path))))) >>> EdgeConfig.validated)
+              .provideLayer(ZLayer.succeed(config.copy(central =
+                config.central.copy(mutualTls = Some(centralMutualTls(path))),
+              )) >>> EdgeConfig.validated)
               .exit
           yield assertTrue(exit.isFailure)
       },
