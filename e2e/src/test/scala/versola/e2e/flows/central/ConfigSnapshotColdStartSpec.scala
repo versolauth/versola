@@ -106,8 +106,7 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
     * write instead of poisoning every later run. Edge's key carries the edge id in front, so
     * the record is matched by the path it ends with.
     */
-  private def forgeClients(table: String): ZIO[Scope, Throwable, Unit] =
-    val keyPattern = "%/configuration/clients/sync"
+  private def forgeClients(table: String, keyPattern: String): ZIO[Scope, Throwable, Unit] =
     def connect[A](f: java.sql.Connection => A): Task[A] =
       for
         url <- System.env("E2E_DB_URL").map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
@@ -188,7 +187,9 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
     test("with a forged snapshot and central unreachable, auth and edge refuse to start") {
       for
         config <- ZIO.service[E2EConfig]
-        _ <- forgeClients("auth_config_snapshots") *> forgeClients("edge_config_snapshots")
+        _ <- forgeClients("auth_config_snapshots", "%/configuration/clients/sync") *>
+          // Edge reads its clients from the edge surface (#554), not the route auth reads.
+          forgeClients("edge_config_snapshots", "%/edge/sync/clients")
         (coldAuth, coldEdge) <- coldServices(config)
         exits <- awaitExit(coldAuth).zipWithPar(awaitExit(coldEdge))((a, e) => (a, e))
         ((authExit, authLog), (edgeExit, edgeLog)) = exits
