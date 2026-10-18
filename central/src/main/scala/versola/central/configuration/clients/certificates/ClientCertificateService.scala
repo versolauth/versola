@@ -2,7 +2,7 @@ package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
 import versola.central.configuration.clients.*
-import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
 import versola.util.http.Observability
@@ -196,6 +196,11 @@ object ClientCertificateService:
           java.security.cert.CertificateFactory.getInstance("X.509")
             .generateCertificates(java.io.ByteArrayInputStream(chain.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
             .iterator.next.asInstanceOf[java.security.cert.X509Certificate]
+        // Whatever was asked for, a certificate that names an edge is never handed to a client: it would
+        // pass `authorizeEdge` on central's mutual-TLS listener (the CA signing here may be one that
+        // listener trusts).
+        _ <- ZIO.fail(refused("the issued certificate carries a name that identifies an edge to central"))
+          .when(EdgeCertificate.edgeIds(leaf).nonEmpty)
         // What the CA returned must say what the client is registered by, or auth would never
         // accept it: refuse here, with the reason, rather than hand the edge a certificate it
         // would present to a 401.
@@ -283,6 +288,9 @@ object ClientCertificateService:
         certificate = PrivateClientCertificate(chain.trim + "\n" + generated.privateKeyPem)
         material <- ZIO.fromEither(certificate.material)
           .mapError(reason => RuntimeException(s"the CA returned a certificate central cannot use: $reason"))
+        // See `sign`: never a certificate that names an edge.
+        _ <- ZIO.fail(RuntimeException("the issued certificate carries a name that identifies an edge to central"))
+          .when(EdgeCertificate.edgeIds(material.leaf).nonEmpty)
         // The issued certificate must name what the registration compares it against; refuse
         // here, with a reason, rather than store one auth would never accept.
         _ <- ZIO.foreachDiscard(auth match

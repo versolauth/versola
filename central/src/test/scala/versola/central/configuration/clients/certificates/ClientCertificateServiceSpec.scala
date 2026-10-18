@@ -34,7 +34,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** A CA that signs whatever request it is handed, as the real ones do for an authorised one:
     * the subject and SANs come from the request, the lifetime from `validity`. */
-  private class FakeCa extends ClientCertificateIssuer:
+  private class FakeCa(addedUri: Option[String] = None) extends ClientCertificateIssuer:
     var requests: List[CertificateSigningRequest] = Nil
 
     override def sign(request: CertificateSigningRequest): Task[String] =
@@ -50,8 +50,11 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           csr.getSubject,
           csr.getPublicKey,
         )
-        Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName))).foreach: san =>
-          builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames.getInstance(san.getParsedValue))
+        val requested = Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName)))
+          .map(san => GeneralNames.getInstance(san.getParsedValue).getNames.toList).getOrElse(Nil)
+        // A CA that adds a name of its own to what it signs, as a misconfigured template would.
+        val names = requested ++ addedUri.map(uri => org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.uniformResourceIdentifier, uri))
+        if names.nonEmpty then builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
         val signer = JcaContentSignerBuilder("SHA256withRSA").build(ca.privateKey)
         val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
         ClientCertificateRequests.pem("CERTIFICATE", certificate.getEncoded)
@@ -399,6 +402,25 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           material.subjectValues("san_dns") == Set(dnsName),
           enrollments.issued.map(entry => (entry._1, entry._3)) == List((clientId, EdgeId("edge-1"))),
         )
+      },
+      // Even a CA that signs a name nobody asked for must not yield a certificate that passes for an edge.
+      test("refuses a signed chain that carries a name identifying an edge") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val service = ClientCertificateService.Impl(FakeCa(Some("urn:versola:edge:edge-1")), clients, Issuances(), enrollments, config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
+          generated <- CertificateSubject.generate(subject)
+          exit <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem).exit
+        yield assertTrue(exit.isFailure, enrollments.issued.isEmpty)
+      },
+      test("refuses to store a certificate it issued that carries a name identifying an edge") {
+        val clients = stub[OAuthClientService]
+        val service = ClientCertificateService.Impl(FakeCa(Some("urn:versola:edge:edge-1")), clients, Issuances(), Enrollments(), config)
+        for exit <- service.register(createRequest).exit
+        yield assertTrue(exit.isFailure, clients.registerClient.calls.isEmpty)
       },
       test("refuses a client the edge is not served, whatever the CSR says") {
         val clients = stub[OAuthClientService]

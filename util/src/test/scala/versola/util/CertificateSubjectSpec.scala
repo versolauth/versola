@@ -32,7 +32,34 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
     val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate)
     CertificateSubject.pem("CERTIFICATE REQUEST", builder.build(signer).getEncoded)
 
+  /** A request for `subject` carrying its names in one `extensionRequest` attribute and a different SAN in a
+    * second: parsers disagree on which is read, so what `matches` checks may not be what a CA signs. */
+  private def withTwoExtensionRequests(subject: CertificateSubject): String =
+    import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
+    import org.bouncycastle.asn1.x509.{Extension, ExtensionsGenerator, GeneralName, GeneralNames}
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+    val pair = generator.generateKeyPair()
+    val builder = org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder(subject.principal, pair.getPublic)
+    def attribute(names: List[GeneralName]) =
+      val extensions = ExtensionsGenerator()
+      extensions.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
+      extensions.generate()
+    builder.addAttribute(
+      PKCSObjectIdentifiers.pkcs_9_at_extensionRequest,
+      attribute(subject.dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++ subject.uris.map(GeneralName(GeneralName.uniformResourceIdentifier, _))),
+    )
+    builder.addAttribute(
+      PKCSObjectIdentifiers.pkcs_9_at_extensionRequest,
+      attribute(List(GeneralName(GeneralName.uniformResourceIdentifier, "urn:versola:edge:edge-1"))),
+    )
+    val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate)
+    CertificateSubject.pem("CERTIFICATE REQUEST", builder.build(signer).getEncoded)
+
   def spec = suite("CertificateSubject")(
+    test("a request with two extensionRequest attributes is refused, whichever one a parser reads") {
+      assertTrue(CertificateSubject.matches(withTwoExtensionRequests(subject), subject).isLeft)
+    },
     test("a request generated for a subject matches exactly it") {
       for generated <- CertificateSubject.generate(subject)
       yield assertTrue(CertificateSubject.matches(generated.csrPem, subject) == Right(()))

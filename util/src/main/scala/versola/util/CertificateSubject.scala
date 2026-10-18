@@ -101,7 +101,10 @@ object CertificateSubject:
         names(GeneralName.uniformResourceIdentifier) == subject.uris.toSet &&
         names(GeneralName.rfc822Name) == subject.emailAddresses.toSet &&
         names(GeneralName.iPAddress) == expectedIps
-      (signedByItsKey, sameSubject, sans)
+      // A request with two `extensionRequest` attributes is read differently by different parsers (one
+      // takes the first, another the last): what this checks may not be what a CA then signs.
+      val oneExtensionRequest = csr.getAttributes(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest).length <= 1
+      (signedByItsKey, sameSubject, sans && oneExtensionRequest)
     .toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
       case (false, _, _) => Left("the request is not signed by the key it names")
       case (_, false, _) => Left("the request's subject is not the one the client is registered by")
