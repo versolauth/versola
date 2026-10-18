@@ -9,7 +9,7 @@
 # It used to validate with Flyway's defaults, which report a migration that
 # simply hasn't been applied yet as "Detected resolved migration not applied
 # to database": every dry run with pending migrations failed on the first
-# service. Against that build this fails at step 7.
+# service. Against that build this fails at step 8.
 #
 #   1. a fresh database is fully migrated by migrate-tool itself;
 #   2. a dry run against it reports every service up to date;
@@ -17,7 +17,8 @@
 #   4. only the postgres block has to resolve;
 #   5. a lock held for a moment is waited out (lock_timeout plus retries);
 #   6. with no retries left the same lock fails the run;
-#   7. with the newest auth migration's history row removed (so Flyway sees it
+#   7. the configured CA is used when the URL names sslmode but no sslrootcert;
+#   8. with the newest auth migration's history row removed (so Flyway sees it
 #      as pending), a dry run exits 0 and lists exactly that one migration.
 #
 # Expects a staged migrate-tool (sbt "migrateTool/stage"), run from the repo
@@ -112,8 +113,30 @@ hold_lock 4
 MIGRATE_LOCK_TIMEOUT_MS=1000 MIGRATE_LOCK_RETRIES=0 "$TOOL" --service auth >/dev/null 2>&1 && fail "a held lock did not fail a run without retries"
 wait
 
+echo "== 7. the configured CA is used when the URL names sslmode but no sslrootcert"
+# The form the chart's env.conf files take. Nothing here has TLS, so the connection fails; what
+# matters is which CA file the driver went looking for. Without the fix it was
+# ~/.postgresql/root.crt, as if no ssl-root-cert had been configured.
+cat > "$CONFIG_DIR/auth.conf" <<CONF
+postgres {
+  url = "jdbc:postgresql://localhost:$PG_PORT/$DB?currentSchema=auth&sslmode=verify-full"
+  user = "dev"
+  password = "1234"
+  ssl-root-cert = "/nonexistent/ca.pem"
+}
+CONF
+out=$("$TOOL" --dry-run --service auth 2>&1) && fail "a run against a missing CA file succeeded"
+grep -q "/nonexistent/ca.pem" <<<"$out" || { echo "$out" | head -20; fail "the configured ssl-root-cert was not the one the driver looked for"; }
+cat > "$CONFIG_DIR/auth.conf" <<CONF
+postgres {
+  url = "jdbc:postgresql://localhost:$PG_PORT/$DB?currentSchema=auth"
+  user = "dev"
+  password = "1234"
+}
+CONF
+
 # Last, because it leaves the auth history without its newest row for good.
-echo "== 7. dry run, one auth migration pending"
+echo "== 8. dry run, one auth migration pending"
 latest=$(psql -d "$DB" -tAc "SELECT version FROM auth.flyway_schema_history WHERE version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1")
 [ -n "$latest" ] || fail "no applied auth migration found"
 psql -d "$DB" -v ON_ERROR_STOP=1 -c "DELETE FROM auth.flyway_schema_history WHERE version = '$latest'"

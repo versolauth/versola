@@ -108,17 +108,24 @@ object MigrateTool:
   /** The URL as the services themselves would connect with it. They verify the database's
     * certificate (`sslmode=verify-full`, see `PostgresTls`), against `postgres.ssl-root-cert` when
     * the config names one -- a plain pgjdbc URL does neither, so without this the migrations of a
-    * deployment with its own CA would run over a connection nothing verified. Only applied when a
-    * CA is configured: without one this tool keeps connecting exactly as before, and a URL that
-    * already carries its own `sslmode`/`sslrootcert` is left alone, as for the services.
+    * deployment with its own CA would run over a connection nothing verified. Each of the two is
+    * added only when the URL does not carry its own, independently of the other, as for the
+    * services: a URL with `sslmode=verify-full` and no `sslrootcert` is the common form, and
+    * leaving the CA out there made pgjdbc look for `~/.postgresql/root.crt` instead. Without a CA
+    * in the config this tool keeps connecting exactly as before.
     */
   private def withTls(connection: PgConnection): String =
     connection.sslRootCert match
-      case Some(path) if !connection.url.contains("sslmode=") =>
-        val separator = if connection.url.contains("?") then "&" else "?"
-        val rootCert = if connection.url.contains("sslrootcert=") then "" else s"&sslrootcert=$path"
-        s"${connection.url}${separator}sslmode=verify-full$rootCert"
-      case _ => connection.url
+      case None => connection.url
+      case Some(path) =>
+        val missing = List(
+          Option.when(!connection.url.contains("sslmode="))("sslmode=verify-full"),
+          Option.when(!connection.url.contains("sslrootcert="))(s"sslrootcert=$path"),
+        ).flatten
+        if missing.isEmpty then connection.url
+        else
+          val separator = if connection.url.contains("?") then "&" else "?"
+          s"${connection.url}$separator${missing.mkString("&")}"
 
   private def intEnv(name: String, default: Int): Int =
     Option(System.getenv(name)).map(_.trim).filter(_.nonEmpty) match
