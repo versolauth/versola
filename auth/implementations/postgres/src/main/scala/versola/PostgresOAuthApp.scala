@@ -165,7 +165,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
     ZIO.serviceWith[CoreConfig](
       _.mutualTls.map(mtls =>
-        Server.Config.default.binding(bindHost, mutualTlsPort).ssl(
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
           SSLConfig.fromFile(
             behaviour = SSLConfig.HttpBehaviour.Fail,
             certPath = mtls.certificate,

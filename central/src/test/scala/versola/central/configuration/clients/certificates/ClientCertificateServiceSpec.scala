@@ -250,6 +250,16 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for exit <- service.register(createRequest.copy(authMethod = AuthMethod.client_secret)).exit
       yield assertTrue(exit.isFailure)
     },
+    // `urn:versola:edge:<id>` names an edge to central's mutual-TLS listener; the CA that signs a client's
+    // certificate may be one that listener trusts, so no client is issued a certificate carrying it.
+    test("refuses to issue a certificate carrying the URI name that makes it an edge's") {
+      val clients = stub[OAuthClientService]
+      val fakeCa = FakeCa()
+      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config)
+      val asEdge = createRequest.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge:edge-default")))
+      for exit <- service.register(asEdge).exit
+      yield assertTrue(exit.isFailure, fakeCa.requests.isEmpty, clients.registerClient.calls.isEmpty)
+    },
     test("says so when central has no CA to issue from") {
       val service = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, stub[OAuthClientService], Issuances(), Enrollments(), config)
       for exit <- service.register(createRequest).exit

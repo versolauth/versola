@@ -18,9 +18,9 @@ import scala.util.Try
   */
 object EdgeCertificate:
   private val UriNameType = 6
-  private val Prefix = "urn:versola:edge:"
+  val NamePrefix: String = "urn:versola:edge:"
 
-  def uriFor(edgeId: EdgeId): String = s"$Prefix$edgeId"
+  def uriFor(edgeId: EdgeId): String = s"$NamePrefix$edgeId"
 
   /** The edge ids `certificate` carries a name for. Unreadable alternative names read as none. */
   def edgeIds(certificate: Certificate): Set[String] =
@@ -30,7 +30,7 @@ object EdgeCertificate:
           .collect:
             case entry if entry.size == 2 && entry.get(0) == Integer.valueOf(UriNameType) => String.valueOf(entry.get(1))
           .collect:
-            case name if name.startsWith(Prefix) => name.stripPrefix(Prefix)
+            case name if name.startsWith(NamePrefix) => name.stripPrefix(NamePrefix)
           .toSet
       case _ => Set.empty
 

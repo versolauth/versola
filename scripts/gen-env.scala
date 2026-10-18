@@ -309,6 +309,33 @@ def genAuthMutualTlsCertificate(dir: File): Unit =
     "copy",
   )
 
+/** The listener central serves the edge surface on (#554), plus the certificate edge presents to
+  * it: a CA that issues edge certificates and nothing else, central's own leaf (edge pins it), and
+  * `edge-default`'s client certificate, which names it with the URI `urn:versola:edge:edge-default`
+  * -- what `authorizeEdge` requires the handshake's certificate to carry for the edge the token
+  * names. Their own CA, not [[genAuthMutualTlsCertificate]]'s: the listener's trust anchors must
+  * vouch for edges alone, so that nothing else's certificate, however legitimately issued, can
+  * be presented to it.
+  */
+def genCentralMutualTlsCertificate(dir: File, edgeId: String): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  def leaf(name: String, subject: String, san: String): Unit =
+    val key = File(dir, s"$name.key").getPath
+    val csr = File(dir, s"$name.csr").getPath
+    run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", subject, "-addext", s"subjectAltName=$san")
+    run("x509", "-req", "-in", csr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial", "-out", File(dir, s"$name.crt").getPath, "-days", "3650", "-copy_extensions", "copy")
+
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCert, "-days", "3650", "-subj", "/CN=versola-central-mtls-ca")
+  leaf("server", "/CN=localhost", "DNS:localhost")
+  leaf("edge-client", s"/CN=$edgeId/OU=edge/O=Versola", s"URI:urn:versola:edge:$edgeId")
+
 /** The certificate edge presents as `central-admin` (#353): RFC 8705 §2.1 `tls_client_auth`,
   * which is what the default tenant's FAPI 2.0 profile admits for an edge-fronted web client.
   * Written to `dir/central-admin.{crt,key}` and returned as the one PEM (certificate, then its
@@ -1369,6 +1396,79 @@ def defaultServerMetadata(authUrl: String): String =
          |}
          |""".stripMargin
 
+  // #554: central serves the edge surface (`/edge/*`) on its own mutual-TLS listener (MPORT), the
+  // only place it does, and a public one: an edge connects from wherever it runs. The handshake
+  // demands a certificate from the CA that issues edge certificates (`trusted-certificates`),
+  // and `authorizeEdge` requires it to carry `urn:versola:edge:<edge id>` for the edge the token
+  // names. Edge pins central's own leaf. docker-local/vps: issued by the bundle's `mtls-init`
+  // into the shared volume at /app/mtls; k8s: by the chart's `pki` block (cert-manager); local:
+  // generated here.
+  val centralMutualTlsDir = File("central/dev/mtls")
+  val centralMutualTlsPort = 9011
+  val edgeId = "edge-default"
+  val centralMutualTlsCertificate =
+    if isKubernetes then "/app/central-mtls/server/tls.crt" else "/app/mtls/central-server.crt"
+  val centralMutualTlsKey =
+    if isKubernetes then "/app/central-mtls/server/tls.key" else "/app/mtls/central-server.key"
+  val centralMutualTlsTrust =
+    if isKubernetes then "/app/central-mtls/trust/ca.crt" else "/app/mtls/ca.crt"
+  val edgeCentralCertificate =
+    if isKubernetes then "/app/central-mtls/client/tls.crt" else "/app/mtls/edge-client.crt"
+  val edgeCentralKey =
+    if isKubernetes then "/app/central-mtls/client/tls.key" else "/app/mtls/edge-client.key"
+  val edgeCentralPin =
+    if isKubernetes then "/app/central-mtls/server-pin/tls.crt" else "/app/mtls/central-server.crt"
+  val centralMutualTlsUrlDefault =
+    if isDockerLocal then "https://central:8093"
+    else if isVps then "https://127.0.0.1:8093"
+    else s"https://localhost:$centralMutualTlsPort"
+  val centralMutualTlsUrl = prompt(
+    s"  Central mutual-TLS URL, how edge reaches the edge surface [$centralMutualTlsUrlDefault]: ",
+    centralMutualTlsUrlDefault,
+    flag = "central-mutual-tls-url",
+  )
+  val centralMutualTlsBlock =
+    if isLocal then
+      s"""
+         |# #554: the listener the edge surface is served on, and nowhere else.
+         |mutual-tls {
+         |  certificate          = "${File(centralMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  private-key          = "${File(centralMutualTlsDir, "server.key").getAbsolutePath}"
+         |  trusted-certificates = "${File(centralMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |}
+         |""".stripMargin
+    else
+      s"""
+         |# #554: the listener the edge surface is served on (MPORT), and nowhere else. The files are put
+         |# there by whatever issues them: the `mtls-init` service in the compose bundle (step-ca), or
+         |# the chart's `pki` block (cert-manager). `trusted-certificates` must vouch for edge
+         |# certificates only -- see develop.md "Certificate storage and rotation".
+         |mutual-tls {
+         |  certificate          = "$centralMutualTlsCertificate"
+         |  private-key          = "$centralMutualTlsKey"
+         |  trusted-certificates = "$centralMutualTlsTrust"
+         |}
+         |""".stripMargin
+  val edgeCentralBlock =
+    val (certificate, key, pin) =
+      if isLocal then
+        (
+          File(centralMutualTlsDir, "edge-client.crt").getAbsolutePath,
+          File(centralMutualTlsDir, "edge-client.key").getAbsolutePath,
+          File(centralMutualTlsDir, "server.crt").getAbsolutePath,
+        )
+      else (edgeCentralCertificate, edgeCentralKey, edgeCentralPin)
+    s"""central {
+       |  url = "$centralMutualTlsUrl"
+       |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
+       |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
+       |  mutual-tls {
+       |    certificate          = "$certificate"
+       |    private-key          = "$key"
+       |    trusted-certificates = ["$pin"]
+       |  }
+       |}""".stripMargin
+
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
   // Reverted to 9001 (not 8090, which every other branch here uses) --
@@ -1802,7 +1902,7 @@ def defaultServerMetadata(authUrl: String): String =
        |auth {
        |  url = "$authInternalUrl"
        |}
-       |$centralClientCertificateAuthorityBlock
+       |$centralClientCertificateAuthorityBlock$centralMutualTlsBlock
        |user-outbox {
        |  poll-interval = 1 second
        |  batch-size = 32
@@ -1920,9 +2020,7 @@ def defaultServerMetadata(authUrl: String): String =
        |  nonce-ttl = "600 seconds"
        |}
        |
-       |central {
-       |  url = "$centralUrl"
-       |}
+       |$edgeCentralBlock
        |
        |versola-url = "$authUrl"
        |versola-internal-url = "$edgeInternalUrl"
@@ -1940,6 +2038,7 @@ def defaultServerMetadata(authUrl: String): String =
     // The CA and server certificate were generated with central-admin's certificate, above.
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
+    genCentralMutualTlsCertificate(centralMutualTlsDir, edgeId)
     writeFile(
       authMutualTlsDir,
       authMutualTlsTrustedClients.getName,
@@ -1959,6 +2058,9 @@ def defaultServerMetadata(authUrl: String): String =
          |  - auth/dev/mtls/{ca.*,server.*,client.*,trusted-clients.crt} (auth's own RFC 8705 §5 listener --
          |    no terminator to start, auth serves it itself on MPORT=$authMutualTlsPort;
          |    client.crt/client.key are the certificate e2e's MutualTlsListenerSpec presents)
+         |  - central/dev/mtls/{ca.*,server.*,edge-client.*} (central's own listener for the edge surface,
+         |    #554 -- served by central itself on MPORT=$centralMutualTlsPort; edge-client.* is the certificate
+         |    edge presents there and e2e's EdgeSyncSurfaceSpec uses)
          |""".stripMargin,
     )
   else

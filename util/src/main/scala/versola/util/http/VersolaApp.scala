@@ -101,6 +101,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
 
+  /** Where the mutual-TLS listener binds, `MBIND_HOST`; [[bindHost]] unless set. Separate because the
+    * listener is the one surface a deployment may need reachable from outside the host or
+    * cluster (central's edge surface, #554) while everything else on this process stays internal:
+    * its handshake demands a client certificate, which the other listeners do not.
+    */
+  def mutualTlsBindHost: String =
+    Option(java.lang.System.getenv("MBIND_HOST")).getOrElse(bindHost)
+
   /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
     * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
     * flags below gate whether this process touches the database at all, so guessing at a
