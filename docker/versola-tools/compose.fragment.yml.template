@@ -341,23 +341,41 @@ services:
         cp /home/step/secrets/central-provisioner.json /central-ca/provisioner.json
         cp /home/step/certs/root_ca.crt /central-ca/root_ca.crt
         chmod 600 /central-ca/provisioner.json
-        # One leaf per name, each issued once: re-issuing would change the leaf edge pins. `ca.crt` holds
-        # root and intermediate, because zio-http presents only a client's leaf and the listener must be
-        # able to complete the chain itself.
+        # One leaf per name. Issued when missing and again when a third of its lifetime or less is left
+        # (`step certificate needs-renewal`: exit 0 = due, 1 = not due, anything else is an error), so
+        # that running this service on a schedule -- `versola certs renew` -- keeps them valid. A leaf is
+        # never replaced before then: re-issuing changes what `edge` pins. The services read their
+        # certificates at startup, so a renewal only takes effect when they are restarted; the line
+        # `mtls-init: changed` tells the caller that something was issued. `ca.crt` holds root and
+        # intermediate, because zio-http presents only a client's leaf and the listener must be able to
+        # complete the chain itself.
+        changed=false
         issue() {
           name=$$1; cn=$$2; shift 2
           if [ -f /mtls/$$name.crt ] && [ -f /mtls/$$name.key ]; then
-            echo "mtls-init: $$name already present, leaving it"; return 0
+            due=0
+            step certificate needs-renewal /mtls/$$name.crt --expires-in 33% >/dev/null 2>&1 || due=$$?
+            if [ "$$due" -eq 1 ]; then
+              echo "mtls-init: $$name is valid, leaving it"; return 0
+            fi
+            if [ "$$due" -ne 0 ]; then
+              echo "mtls-init: cannot read /mtls/$$name.crt (step exit $$due)" >&2; exit 1
+            fi
+            echo "mtls-init: $$name is due for renewal"
           fi
-          step certificate create "$$cn" /mtls/$$name.crt /mtls/$$name.pem \
+          # Written beside the old pair and moved into place, so a failure midway leaves the old pair.
+          step certificate create "$$cn" /mtls/.$$name.new.crt /mtls/.$$name.new.pem \
             --ca /home/step/certs/intermediate_ca.crt --ca-key /home/step/secrets/intermediate_ca_key \
             --ca-password-file /home/step/secrets/password \
             "$$@" --kty RSA --size 2048 --not-after 17520h --insecure --no-password --force
           # Netty reads PKCS#8 only; step writes PKCS#1.
-          step crypto key format --pkcs8 --pem --insecure --no-password /mtls/$$name.pem > /mtls/$$name.key
-          rm /mtls/$$name.pem
-          chmod 644 /mtls/$$name.crt
-          chmod 600 /mtls/$$name.key
+          step crypto key format --pkcs8 --pem --insecure --no-password /mtls/.$$name.new.pem > /mtls/.$$name.new.key
+          chmod 644 /mtls/.$$name.new.crt
+          chmod 600 /mtls/.$$name.new.key
+          mv /mtls/.$$name.new.key /mtls/$$name.key
+          mv /mtls/.$$name.new.crt /mtls/$$name.crt
+          rm -f /mtls/.$$name.new.pem
+          changed=true
           echo "mtls-init: issued $$name"
         }
         # auth's mutual-TLS listener
@@ -368,6 +386,7 @@ services:
         issue edge-client edge-default --san urn:versola:edge:edge-default
         cat /home/step/certs/root_ca.crt /home/step/certs/intermediate_ca.crt > /mtls/ca.crt
         chmod 644 /mtls/ca.crt
+        if [ "$$changed" = true ]; then echo "mtls-init: changed"; fi
 
   # No reverse-proxy service here: versola-cli writes its own proxy.yml (official nginx
   # image, config from its own templates, central-ui/ from this bundle) and starts it in this

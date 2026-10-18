@@ -460,10 +460,16 @@ design**: an edge connects from wherever it runs. It answers only a handshake wh
 chains to the internal CA, and then only a call whose signed token names the same edge the
 certificate's `urn:versola:edge:<id>` name does. Open `8093` to the edges that need it and, where
 you can, to nothing else; an edge on the same host reaches it on `127.0.0.1` and needs no opening.
-The `edge-client` certificate, like the listener certificates, is valid two years; renewing it is
-re-running `mtls-init` after deleting the files and restarting `central` and `edge` (central keeps
-nothing registered, so no other step is needed). The listener certificate is valid two years and is
-not renewed automatically: rotating it needs the two-pin procedure in `develop.md`. A step-ca volume
+The three leaves `mtls-init` issues (`server` for `auth`'s listener, `central-server`, `edge-client`) are
+valid two years and are **renewed by running `versola certs renew` on a schedule** (a daily cron or
+systemd timer is plenty; the command does nothing until a leaf has a third of its lifetime or less left).
+It re-runs `mtls-init`, which re-issues only the leaves that are due, and when it changed any it restarts
+`central`, `auth` and `edge`: they read their certificates at startup. Central keeps nothing registered
+for the edge's certificate (an edge is recognised by the name in it), so renewing `edge-client` needs no
+other step. Replacing `central-server` or `server` changes the leaf `edge` pins; `edge` reads the same
+volume and is restarted with them, so the pin follows, with a short gap in which syncs fail and `edge`
+keeps serving the configuration it last loaded. For a rotation with no gap use the two-pin procedure in
+`develop.md`. Without the schedule nothing renews: the first leaf expires two years after install. A step-ca volume
 from before its client template existed keeps issuing certificates with the subject rewritten to the
 bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` volume to lift it.
 
