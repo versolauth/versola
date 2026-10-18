@@ -579,6 +579,21 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
+#### Breaking change: edge reaches `/userinfo` over mutual TLS, not with an edge assertion
+
+An edge no longer sends `Versola-Edge-Assertion`, and `auth` no longer reads it. When an edge-served endpoint needs
+`/userinfo` for a key-bound (DPoP) token, the edge calls auth's mutual-TLS listener with the certificate it holds for
+the client, and auth honours the `Bearer` call without a proof only for an edge-fronted native client (`native`,
+`tls_client_auth`) whose registered certificate was presented in the handshake. Anything else is refused as before.
+Central's `GET /configuration/edges/registry`, which only auth used to fetch the edges' keys, is removed, and so are the
+`dpop_edge_assertion_*` metrics.
+
+What breaks: a key-bound token of a client that does not authenticate by certificate behind an edge (a web client with
+`client_secret` or `private_key_jwt` and `dpopBoundAccessTokens`) can no longer be used on an endpoint with
+`fetchUserInfo`; the edge refuses the call. Such clients need a certificate, or the endpoint must not need `/userinfo`.
+Upgrade `auth` and `edge` together: an old edge's assertion is ignored by the new `auth`, and a new edge sends none to
+an old one.
+
 #### Breaking change: the identity provider logo is a per-tenant light/dark pair
 
 The logo above the sign-in card is no longer a system setting. `identityProviderLogo` is gone from

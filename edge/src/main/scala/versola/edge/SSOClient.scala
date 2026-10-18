@@ -12,7 +12,7 @@ import versola.edge.model.{
   State,
   TokenResponse,
 }
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
+import versola.util.{Base64, ClientAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
 import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
@@ -63,21 +63,37 @@ object SSOClient:
   case object InvalidGrant
   case object UserInfoUnauthorized
 
-  /** What a token's `cnf` claim obliges a call made with it to bring along. Auth enforces the
-    * binding on `/userinfo` too, and the two bindings are honoured in different places -- a
-    * key by an assertion in a header, a certificate by the handshake itself -- so the caller
-    * names which one it holds rather than this guessing from the token.
+  /** What a token's `cnf` claim says about the call made with it. Auth enforces the binding on
+    * `/userinfo` too, so the caller names which one it holds rather than this guessing from the
+    * token.
+    *
+    * Both bindings are answered by the connection: this edge presents the certificate it
+    * authenticates the client with, in a mutual-TLS handshake, whatever the token is bound to.
     */
   enum TokenBinding:
     /** A plain bearer token: auth asks nothing of the call beyond the token. */
     case Unbound
 
-    /** RFC 9449 §6.1 `cnf.jkt`. */
-    case Key
+    /** RFC 9449 §6.1 `cnf.jkt`. The key is the device's, and edge has already checked its proof
+      * at its own boundary; it holds no key to mint another for this call. What lets auth tell
+      * this call from the `Bearer` downgrade of a key-bound token (RFC 9449 §7.2) is the
+      * certificate the handshake presents, which only the edge fronting this client holds. */
+    case Key(clientId: ClientId, credential: ClientCredential)
 
     /** RFC 8705 §3.1 `cnf.x5t#S256`: the token is honoured only over the certificate it names,
       * which is the one this client authenticates with. */
     case Certificate(clientId: ClientId, credential: ClientCredential)
+
+  /** A key-bound token for a client whose credential central sent this edge is not a
+    * certificate: auth accepts a bound token without a proof only from the edge's mutual-TLS
+    * handshake, so there is nothing else to call with. Raised rather than sending a request
+    * auth is certain to refuse as a `Bearer` downgrade.
+    */
+  case class KeyBoundTokenNeedsCertificate(clientId: ClientId)
+    extends RuntimeException(
+      s"the access token of client '$clientId' is bound to a key, and auth honours it without a proof " +
+        "only over this edge's client certificate, but central sent some other credential",
+    )
 
   /** A token bound to a certificate this edge does not hold -- central registered the client
     * for some other credential after the token was issued. Raised rather than calling without
@@ -442,40 +458,29 @@ object SSOClient:
         binding: SSOClient.TokenBinding,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
-        // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
-        // own: the client's key signed the one edge already checked, and edge does not hold
-        // that key to mint another. The assertion is how auth tells this call apart from the
-        // `Bearer` downgrade of a key-bound token -- minted only when the token is bound to a
-        // key, since nothing else needs such an exemption, and per call because it is bound to the token
-        // below: one captured elsewhere buys nothing for any other token.
-        assertion <- EdgeAssertion.issue(
-          edgeId = config.id,
-          keyId = config.keyId,
-          privateKey = config.privateKey,
-          accessToken = accessToken.toString,
-        ).when(binding == SSOClient.TokenBinding.Key)
-
-        // RFC 8705 §3: the other binding is answered by the connection rather than by a
-        // header -- auth hashes the certificate this handshake presents and refuses the token
-        // unless it is the one `cnf.x5t#S256` names. The same certificate this client
-        // authenticates with, which is why there is nothing to exempt it from here: proving
-        // the binding and authenticating are the same act.
-        certificateBound = binding match
-          case SSOClient.TokenBinding.Certificate(_, credential @ ClientCredential.MutualTls(_)) => Some(credential)
+        // auth enforces RFC 9449 §7 and RFC 8705 §3 on this token too. Neither binding is
+        // proved with a header here: a certificate-bound token is checked against the handshake
+        // itself, and a key-bound one is accepted without a proof from the edge that fronts the
+        // client and verified the proof already. The same certificate this client authenticates
+        // with, so proving the binding and authenticating are the same act.
+        mutual = binding match
+          case SSOClient.TokenBinding.Key(clientId, credential @ ClientCredential.MutualTls(_)) => Some(clientId -> credential)
+          case SSOClient.TokenBinding.Certificate(clientId, credential @ ClientCredential.MutualTls(_)) => Some(clientId -> credential)
           case _ => None
-        userInfo = certificateBound.fold(userInfoUrl)(endpoint(_, "userinfo"))
-        connection <- binding match
-          case SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificate)) =>
+        userInfo = mutual.fold(userInfoUrl)((_, credential) => endpoint(credential, "userinfo"))
+        connection <- (binding, mutual) match
+          case (_, Some((clientId, ClientCredential.MutualTls(certificate)))) =>
             mutualTlsConnection(clientId, certificate, userInfo).asSome
-          case SSOClient.TokenBinding.Certificate(clientId, _) =>
+          case (SSOClient.TokenBinding.Certificate(clientId, _), _) =>
             ZIO.fail(SSOClient.TokenBoundToAbsentCertificate(clientId))
-          case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.Unbound =>
+          case (SSOClient.TokenBinding.Key(clientId, _), _) =>
+            ZIO.fail(SSOClient.KeyBoundTokenNeedsCertificate(clientId))
+          case _ =>
             ZIO.none
 
         request = Request
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
-          .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
 
         response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
 

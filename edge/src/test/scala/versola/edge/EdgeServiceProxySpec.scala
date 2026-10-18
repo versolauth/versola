@@ -2451,23 +2451,28 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.Unbound),
       )
     },
-    test("tells ssoClient a DPoP-bound token is bound to a key") {
+    // A key-bound token is vouched for by the certificate the call presents, so the client's
+    // credential has to travel with it.
+    test("tells ssoClient a DPoP-bound token is bound to a key, with the client's certificate") {
       val env = new Env
       val endpoint = usersEndpoint(fetchUserInfo = true)
       for
         _ <- env.setupDefaults()
+        _ <- env.withClients(certificateClient)
         _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
         _ <- captureUpstream()
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
-        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        token <- env.signToken(clientId = certificateClient.id.toString, cnfJkt = Some(dpopJkt))
         proof <- dpopProof(token, "/users")
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
       yield assertTrue(
         response.status == Status.Ok,
-        env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.Key),
+        env.ssoClient.userInfo.calls.map(_._2) == List(
+          SSOClient.TokenBinding.Key(certificateClient.id, certificateClient.credential),
+        ),
       )
     },
     test("returns 401 when userInfo is unauthorized") {
