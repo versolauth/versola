@@ -1312,6 +1312,36 @@ jobs:
       - name: Check chart ingress class contract
         run: .github/scripts/check-chart-ingress.sh
 
+  # Install-level checks (versolauth/versola#391): every helm-* job above asserts on `helm template`
+  # output, and the failures the charts actually hit rendered cleanly and broke only once installed.
+  # This installs into an ephemeral kind cluster: k8s/loadgen with only mockapi (needs no database and
+  # no Secrets), the scheduler honouring nodeSelector and tolerations, and k8s/versola's Ingress as the
+  # API server accepts it.
+  #
+  # Its own job: it is the only one that needs a cluster and pulls an image from ghcr, so it is the
+  # slowest of the helm-* jobs. Same event guard, and for the same reason as helm-images: it pulls the
+  # chart's default mockapi tag, which the docker-* jobs are pushing on release/workflow_dispatch.
+  helm-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          node_image: kindest/node:v1.31.2
+          cluster_name: chart-install
+
+      - name: Check chart installs
+        run: .github/scripts/check-chart-install.sh
+
   # central-ui's own checks: type-check, Vitest (unit tests), and Playwright (the admin console's
   # UI tests, which also include the axe accessibility scan, tests/accessibility.spec.ts). Nothing here needs the Scala build or a
   # backend -- the admin console is tested against mocked API responses (tests/mocks.ts) -- so it
