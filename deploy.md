@@ -87,6 +87,16 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - A DNS record for the `--auth-url` host pointing at the host's public IP **before `versola up`**
   (Let's Encrypt validates over port 80). Behind Cloudflare it must be *DNS only* while the
   certificate is issued.
+- **A second DNS name for central's edge surface** (#554), for example `central.versola.kz` next to
+  `id.versola.kz`, pointing at the same host. A deployment is addressed by two hostnames:
+  `id.<domain>` is auth (browsers, `--auth-url`, behind the proxy and Let's Encrypt), and
+  `central.<domain>` is where edges reach central's mutual-TLS listener (`MPORT`, `8093`), which
+  terminates TLS itself and is **not** behind the proxy. An edge's `central.url` is
+  `https://central.<domain>:8093` (gen-env's `--central-mutual-tls-url`). The name is only an address:
+  edge authenticates central by pinning its leaf certificate, so no public certificate is needed for
+  it, but it must resolve and the port must be open to the edges (see
+  [Mutual TLS certificates](#mutual-tls-certificates)). It is not needed when every edge runs on the
+  same host as central (`127.0.0.1`).
 - `versola-cli`: `curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh`,
   then `export PATH="$HOME/.local/bin:$PATH"`. `versola upgrade` updates it later.
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,

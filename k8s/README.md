@@ -589,7 +589,9 @@ does, so a renewal needs only the restart Reloader gives edge and central. The c
 a ClusterIP. To let edges outside the cluster in, publish the port with a `LoadBalancer` or a
 TLS-**passthrough** route (ingress-nginx `ssl-passthrough`, a Gateway `TLSRoute`) -- never a
 terminating one, which would swallow the certificate -- add the public name to
-`pki.centralServer.dnsNames`, and restrict the source addresses where you can. With `pki.issuerRef`
+`pki.centralServer.dnsNames`, and restrict the source addresses where you can. A deployment is therefore
+addressed by two hostnames: `id.<domain>` for auth (the ingress) and `central.<domain>` for central's
+mutual-TLS port, which edges outside the cluster use as `central.url`. With `pki.issuerRef`
 left empty the issuing CA also signs edge-fronted clients' certificates; central refuses to issue
 one carrying an edge's URI name, but a CA used for nothing else is the cleaner setup
 (`pki.issuerRef`).
