@@ -115,7 +115,6 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(Permission("users:read")),
     theme = "",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -137,6 +136,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = Some(ClientTemplate(ClientKind.web)),
     createdAt = registeredAt,
+    themeOverrides = None,
   )
 
   private val clientA = client("web-a", tenantA)
