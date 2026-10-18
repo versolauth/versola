@@ -157,6 +157,11 @@ VERSOLA=(
   # The default pki.enabled=true renders cert-manager Certificates and fails to install on a cluster
   # without its CRDs (documented in values.yaml); the PKI is not what is under test here.
   --set pki.enabled=false
+  # The migration Job is a pre-install hook that waits for a database this cluster does not have
+  # (and for config Secrets that hold real connection settings), so with it on `helm install` fails
+  # with DeadlineExceeded. Its rendering is asserted by check-chart-migrations.sh; what it does is
+  # covered by the install on a real cluster described in the PR that added it.
+  --set migrations.enabled=false
   --set ingress.enabled=true
   --set ingress.hosts[0].host=id.example.com
   --set ingress.hosts[0].routes[0]=oidc

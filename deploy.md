@@ -309,6 +309,17 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the first successful sync, and rows stop verifying after `central.secret-key` or edge's
   `private-key` is rotated, until the next sync.
 
+The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
+(`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
+
+`versola migrate` (and that Job) waits at most 5 seconds for any lock (`MIGRATE_LOCK_TIMEOUT_MS`,
+`0` waits forever) and retries the service's migration 3 times (`MIGRATE_LOCK_RETRIES`) before it
+fails, so a statement that has to wait for a long transaction of the version still serving does not
+queue the logins behind it. Postgres not yet accepting connections is retried too
+(`MIGRATE_CONNECT_RETRIES`, 3 times, 5 seconds apart). All three are environment variables of the
+`migrate` container. Only `postgres.url`, `user`, `password` and `ssl-root-cert` of each config have to
+resolve; other unset placeholders no longer stop it.
+
 ---
 
 ## 4. Operations
