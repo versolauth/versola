@@ -13,6 +13,10 @@ updates:
       interval: weekly
     open-pull-requests-limit: 3
     groups:
+      # init, analyze and upload-sarif must run the same version (the analyze step fails with a
+      # configuration error otherwise), so they move together, majors included.
+      codeql-action:
+        patterns: ["github/codeql-action/*"]
       actions:
         patterns: ["*"]
         update-types: ["minor", "patch"]
