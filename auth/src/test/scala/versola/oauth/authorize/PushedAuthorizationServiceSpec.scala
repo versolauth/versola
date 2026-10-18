@@ -6,8 +6,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.client.model.SecurityProfile
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.dpop.DpopService
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.util.{ClientAssertion, Dpop, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
@@ -212,7 +212,6 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     yield env
 
   private def proof(jkt: String) = Dpop.Proof(jkt, "jti-1", java.time.Instant.EPOCH, None, None)
-
 
   private val assertionCredentials = ClientIdWithAssertion(clientId, "client-assertion")
 

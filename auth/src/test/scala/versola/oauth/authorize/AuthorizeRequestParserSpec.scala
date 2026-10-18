@@ -763,9 +763,13 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           // flow itself before this check is reached.
           _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(authMethod = AuthMethod.none)))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Fragment)))
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          responseMode = ResponseMode.Fragment,
+        )))
       },
-
       test("rejects the hybrid flow for a client of a fapi2 tenant, answering in the fragment") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
@@ -773,9 +777,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, Some(State("test-state")), "code id_token", responseMode = ResponseMode.Fragment)))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          "code id_token",
+          responseMode = ResponseMode.Fragment,
+        )))
       },
-
       test("still accepts plain code for a client of a fapi2 tenant") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams))

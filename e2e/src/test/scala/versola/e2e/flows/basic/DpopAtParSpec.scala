@@ -56,7 +56,6 @@ object DpopAtParSpec extends E2ESpec:
         ).success
       yield assertTrue(token.tokenType == "DPoP")
     },
-
     test("a code pushed with a proof is refused at /token to a proof from another key") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -73,7 +72,6 @@ object DpopAtParSpec extends E2ESpec:
         )
       yield assertTrue(result.isInstanceOf[TokenResult.Failure])
     },
-
     test("a dpop_jkt that names another key than the proof's is refused at /par") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -91,7 +89,6 @@ object DpopAtParSpec extends E2ESpec:
         result.asInstanceOf[PushedAuthorizationResult.Failure].error.contains("invalid_dpop_proof"),
       )
     },
-
     test("a dpop_jkt that agrees with the proof is accepted") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)

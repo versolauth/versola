@@ -3,8 +3,8 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationRecord, PushedAuthorizationResponse}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientCredentials, ClientId}
-import versola.oauth.dpop.DpopService
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.dpop.DpopService
 import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.{CoreConfig, Dpop, RequestObject, Secret, SecureRandom, SecurityService}
@@ -147,6 +147,7 @@ object PushedAuthorizationService:
         case Some(jkt) =>
           val stated = params.get(Dpop.Jkt.Parameter).map(_.toList).getOrElse(Nil)
           if stated.forall(_ == jkt) then ZIO.succeed(params.updated(Dpop.Jkt.Parameter, Chunk(jkt)))
-          else ZIO.fail(PushedAuthorizationError.InvalidDpopProof(
-            s"the ${Dpop.Jkt.Parameter} parameter does not match the key of the DPoP proof",
-          ))
+          else
+            ZIO.fail(PushedAuthorizationError.InvalidDpopProof(
+              s"the ${Dpop.Jkt.Parameter} parameter does not match the key of the DPoP proof",
+            ))

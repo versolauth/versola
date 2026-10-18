@@ -189,7 +189,13 @@ object AuthorizeRequestParser:
             case "code id_token" =>
               oauthClientService.getSecurityProfile(clientId).flatMap: profile =>
                 if profile == SecurityProfile.fapi2 then
-                  ZIO.fail(Error.UnsupportedResponseType(clientId, redirectUri, stateForErrors, "code id_token", responseMode = responseModeForErrors))
+                  ZIO.fail(Error.UnsupportedResponseType(
+                    clientId,
+                    redirectUri,
+                    stateForErrors,
+                    "code id_token",
+                    responseMode = responseModeForErrors,
+                  ))
                 else ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
             case other =>
               ZIO.fail(Error.UnsupportedResponseType(clientId, redirectUri, stateForErrors, other, responseMode = responseModeForErrors))
