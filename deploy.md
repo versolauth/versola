@@ -582,9 +582,9 @@ older releases, up to `v0.2.5`, had the prefix).
 #### Breaking change: edge reaches `/userinfo` over mutual TLS, not with an edge assertion
 
 An edge no longer sends `Versola-Edge-Assertion`, and `auth` no longer reads it. When an edge-served endpoint needs
-`/userinfo` for a key-bound (DPoP) token, the edge calls auth's mutual-TLS listener with the certificate it holds for
-the client, and auth honours the `Bearer` call without a proof only for an edge-fronted native client (`native`,
-`tls_client_auth`) whose registered certificate was presented in the handshake. Anything else is refused as before.
+`/userinfo` for a key-bound (DPoP) token, the edge presents the certificate it holds for the client (to auth's mutual-TLS listener, or
+through the tenant's terminator, which forwards it as for any other mTLS call), and auth honours the `Bearer` call without a proof only for an edge-fronted native client (`native`,
+`tls_client_auth`) whose registered certificate was presented. Anything else is refused as before.
 Central's `GET /configuration/edges/registry`, which only auth used to fetch the edges' keys, is removed, and so are the
 `dpop_edge_assertion_*` metrics.
 

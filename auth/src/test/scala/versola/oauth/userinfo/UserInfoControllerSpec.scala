@@ -491,7 +491,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
         )
         val bearer = Request.get(url = URL.empty / "userinfo")
           .addHeader(Header.Authorization.Bearer(boundAccessToken))
-        val withCertificate = bearer.copy(remoteCertificate = Some(TestCertificates.generate().certificate))
         def refused(response: Response) =
           for
             wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
@@ -500,53 +499,55 @@ object UserInfoControllerSpec extends UnitSpecBase:
         suite("a key-bound token under Bearer, from the edge fronting its client")(
           userInfoTestCase(
             description = "honour it over the registered certificate of an edge-fronted native client",
-            request = withCertificate,
+            request = bearer,
             expectedStatus = Status.Ok,
             setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
             oAuthConfigurationSetup = service =>
               service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
                 service.requireDpopNonce.succeedsWith(false) *>
                 service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
-            clientAuthenticationSetup = _.authenticate.succeedsWith(edgeFrontedClient),
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.succeedsWith(edgeFrontedClient),
             verify = response =>
               for
                 body <- response.body.asString
                 userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
               yield assertTrue(userInfo.claims.contains("sub")),
-            dispatchDirectly = true,
           ),
           userInfoTestCase(
             description = "refuse it when the certificate is not the one the client registered",
-            request = withCertificate,
+            request = bearer,
             expectedStatus = Status.Unauthorized,
             oAuthConfigurationSetup = service =>
               service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
                 service.requireDpopNonce.succeedsWith(false) *>
                 service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
-            clientAuthenticationSetup = _.authenticate.failsWith(()),
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.failsWith(()),
             verify = refused,
             dispatchDirectly = true,
           ),
           userInfoTestCase(
             description = "refuse it for a client that is not fronted by an edge, whatever certificate is presented",
-            request = withCertificate,
+            request = bearer,
             expectedStatus = Status.Unauthorized,
             // client1 is a web client authenticating by secret: nothing about it says an edge
             // verified a proof for it, and a backend holding both its token and a certificate
             // must not be able to shed the key binding.
-            clientAuthenticationSetup = _.authenticate.succeedsWith(client1),
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.succeedsWith(client1),
             verify = refused,
             dispatchDirectly = true,
           ),
           userInfoTestCase(
-            description = "refuse it when no certificate comes off the handshake, even if a proxy header names one",
-            request = bearer.addHeader(Header.Custom("X-Client-Cert", "forwarded-by-anyone")),
+            description = "refuse it when the request carries no certificate",
+            request = bearer,
             expectedStatus = Status.Unauthorized,
             oAuthConfigurationSetup = service =>
               service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
                 service.requireDpopNonce.succeedsWith(false) *>
                 service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
-            clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(clientCertificate)),
+            clientAuthenticationSetup = _.certificateForClient.succeedsWith(None),
             verify = refused,
             dispatchDirectly = true,
           ),

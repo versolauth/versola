@@ -9,7 +9,6 @@ import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
-import versola.oauth.mtls.ClientCertificate
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, Dpop, JWT}
@@ -21,7 +20,6 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.security.cert.X509Certificate
 import java.util.Date
 import scala.jdk.CollectionConverters.*
 
@@ -240,8 +238,10 @@ object UserInfoController extends Controller:
     *  - the client is an edge-fronted native app ([[OAuthClientRecord.isEdgeFrontedNative]]):
     *    its certificate is edge's, held by no installation, and central refuses to register it
     *    without DPoP-bound tokens and pushed requests;
-    *  - the request carries a certificate off the TLS handshake this process performed, not one
-    *    named in a header, which anything able to reach this port could write;
+    *  - the request carries a certificate, read the way every other endpoint reads one: off the
+    *    TLS handshake of auth's own mutual-TLS listener, or, behind the tenant's terminator, from
+    *    the header it sets (`certificateForClient` puts the handshake first and never consults the
+    *    header on a request that has one);
     *  - that certificate is the one the client registered, checked the way `/token` checks it.
     *
     * The proof is not skipped for anyone else: a stolen token presented without the key still
@@ -251,21 +251,21 @@ object UserInfoController extends Controller:
       request: Request,
       clientId: ClientId,
   ): ZIO[ClientAuthentication & OAuthConfigurationService, Throwable, Boolean] =
-    request.remoteCertificate match
-      case Some(x509: X509Certificate) =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId)).flatMap:
-          case Some(client) if client.isEdgeFrontedNative =>
-            ZIO.serviceWithZIO[ClientAuthentication](
-              _.authenticate(
-                ClientIdWithSecret(clientId, None),
-                Some(ClientCertificate.of(x509)),
-                AuthenticatedEndpoint.UserInfo,
-              ),
-            ).as(true).catchAll:
-              case error: Throwable => ZIO.fail(error)
-              case _ => ZIO.succeed(false)
-          case _ =>
-            ZIO.succeed(false)
+    ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId)).flatMap:
+      case Some(client) if client.isEdgeFrontedNative =>
+        ZIO.serviceWithZIO[ClientAuthentication](_.certificateForClient(request, clientId))
+          // A header that cannot be read is a refusal, not a server error: the call is
+          // answered as the downgrade it would otherwise be.
+          .orElseSucceed(None)
+          .flatMap:
+            case None =>
+              ZIO.succeed(false)
+            case certificate =>
+              ZIO.serviceWithZIO[ClientAuthentication](
+                _.authenticate(ClientIdWithSecret(clientId, None), certificate, AuthenticatedEndpoint.UserInfo),
+              ).as(true).catchAll:
+                case error: Throwable => ZIO.fail(error)
+                case _ => ZIO.succeed(false)
       case _ =>
         ZIO.succeed(false)
 
