@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
-import zio.http.{ClientSSLConfig, URL}
+import zio.http.{ClientSSLConfig, Scheme, URL}
 import zio.{Duration, Task, ZIO, ZLayer}
 
 import java.io.FileInputStream
@@ -98,6 +98,7 @@ object EdgeConfig:
             ),
         )
         _ <- refuseNativeWithoutDpop(config)
+        _ <- refuseCentralWithoutMutualTls(config)
       yield config,
     )
 
@@ -118,6 +119,26 @@ object EdgeConfig:
         ),
       ),
     ).unit
+
+  /** Central serves the edge surface only on its mutual-TLS listener, over HTTPS, to an edge
+    * that presents its registered certificate; and zio-http authenticates a server only by a
+    * pin (see `versolaInternalTrustedCertificates`). Anything less is a configuration central
+    * cannot be reached with, refused here rather than at the first sync.
+    */
+  private def refuseCentralWithoutMutualTls(config: EdgeConfig): Task[Unit] =
+    config.central.mutualTls match
+      case None =>
+        ZIO.fail(IllegalArgumentException(
+          "central.mutual-tls is required: central serves the edge surface only over mutual TLS, " +
+            "to an edge that presents the certificate registered for it",
+        ))
+      case Some(mtls) =>
+        ZIO.fail(IllegalArgumentException(s"central.url must be https, got '${config.central.url.encode}'"))
+          .unless(config.central.url.scheme.contains(Scheme.HTTPS)) *>
+          refuseEmptyPins("central.mutual-tls.trusted-certificates", mtls.trustedCertificates) *>
+          ZIO.foreachDiscard(mtls.trustedCertificates)(
+            refuseCertificateAuthority("central.mutual-tls.trusted-certificates", _),
+          )
 
   private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
     ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
@@ -178,8 +199,29 @@ object EdgeConfig:
         ttl: Duration,
     )
 
+  /** @param url central's mutual-TLS listener (`MPORT`), the only place the edge surface is
+    *   served (#554). It is reachable from outside the cluster, so the connection is
+    *   authenticated both ways.
+    * @param mutualTls the certificate this edge presents there and the pin it holds central's
+    *   own certificate to. Absent is refused at startup by [[validated]]: central would turn
+    *   this edge away in the handshake, so every sync would fail one request at a time instead.
+    */
   case class CentralConfig(
       url: URL,
+      mutualTls: Option[CentralMutualTls] = None,
+  )
+
+  /** @param certificate PEM path to the client certificate registered for this edge in central
+    *   (`PUT /configuration/edges/certificate`).
+    * @param privateKey PEM path to its key, unencrypted PKCS#8.
+    * @param trustedCertificates PEM paths of central's own leaf certificate(s), a pin and not a
+    *   CA for the reasons given on `versolaInternalTrustedCertificates`; several so the pin can
+    *   be rotated.
+    */
+  case class CentralMutualTls(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: Set[String],
   )
 
   /** @param reloadInterval how often the in-memory revocation list is reconciled with the

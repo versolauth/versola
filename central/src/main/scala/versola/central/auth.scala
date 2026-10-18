@@ -1,6 +1,6 @@
 package versola.central
 
-import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.edges.{EdgeCertificate, EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.util.http.{Observability, Unauthorized}
 import versola.util.{JWT, Secret}
@@ -48,12 +48,21 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
     case _ =>
       ZIO.fail(Unauthorized)
 
-/** The edge-facing surface's check (#554): the caller is a registered edge, proven by the key it
-  * signed the token with, and is served as that edge and no other. Auth's token names no edge and
-  * is refused: what auth needs, it reads under `/configuration`.
+/** The edge-facing surface's check (#554): the caller is a registered edge, proven twice. The
+  * key it signed the token with says which edge it claims to be; the client certificate the TLS
+  * handshake presented, on central's mutual-TLS listener, must be the one registered for that
+  * edge. A certificate the trust anchors vouch for is therefore not enough to impersonate
+  * another edge, and a stolen token is not enough without the certificate. The caller is served
+  * as that edge and no other. Auth's token names no edge and is refused: what auth needs, it
+  * reads under `/configuration`.
   */
 def authorizeEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeId] =
-  authorizeInternal(request).someOrFail(Unauthorized)
+  for
+    edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
+    edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
+    presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
+    _ <- ZIO.fail(Unauthorized).unless(edge.certificateThumbprints.contains(EdgeCertificate.thumbprint(presented)))
+  yield edgeId
 
 /** Refuses an edge token on every route it wraps (#554). The edge-facing surface is
   * `EdgeSyncController` alone; everything else central serves belongs to auth or to the admin

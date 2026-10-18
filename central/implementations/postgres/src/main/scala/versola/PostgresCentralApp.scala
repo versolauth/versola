@@ -130,7 +130,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       JwksService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
-    // #554: an edge reaches central through `EdgeSyncController` and nothing else. Every other
+    // #554: an edge reaches central through `EdgeSyncController`, on the mutual-TLS listener,
+    // and nothing else. Every other
     // controller is auth's or the admin console's and refuses an edge token here, as a group,
     // so a controller added to this list is auth-only without doing anything about it.
     val authOnly = List(
@@ -153,7 +154,31 @@ object PostgresCentralApp extends VersolaApp("central"):
       ServerMetadataController.routes,
       ServiceController.routes,
     ).reduce(_ ++ _)
-    (authOnly @@ refuseEdgeCallers) ++ EdgeSyncController.routes
+    authOnly @@ refuseEdgeCallers
+
+  /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
+    * authenticated by the certificate it presents in the handshake as well as by its token. */
+  override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(EdgeSyncController.routes)
+
+  /** `ClientAuth.Required` for the reasons given on `PostgresOAuthApp.mutualTlsServerConfig`:
+    * `Optional` with `includeClientCert` drops the connection of a client that sends no
+    * certificate, and no edge route is reachable without one anyway. */
+  override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
+    ZIO.serviceWith[CentralConfig](
+      _.mutualTls.map(mtls =>
+        Server.Config.default.binding(bindHost, mutualTlsPort).ssl(
+          SSLConfig.fromFile(
+            behaviour = SSLConfig.HttpBehaviour.Fail,
+            certPath = mtls.certificate,
+            keyPath = mtls.privateKey,
+            clientAuth = Some(ClientAuth.Required),
+            trustCertCollectionPath = Some(mtls.trustedCertificates),
+            includeClientCert = true,
+          ),
+        ),
+      ),
+    )
 
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>

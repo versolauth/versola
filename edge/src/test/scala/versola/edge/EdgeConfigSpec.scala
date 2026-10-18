@@ -76,6 +76,20 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |$dpopBlock
        |""".stripMargin
 
+  /** Central's own leaf certificate, written once: what `central.mutual-tls` pins, which every
+    * validated config needs since central is reachable over nothing else. */
+  private val centralLeafPath: Path =
+    val path = Files.createTempFile("edge-config-spec-central", ".pem").nn
+    path.toFile.nn.deleteOnExit()
+    Files.write(path, TestCertificates.generate(subject = "CN=central.internal,O=Versola,C=KZ").certificatePem.getBytes(StandardCharsets.UTF_8))
+    path
+
+  private def centralMutualTls(trusted: Path*) = EdgeConfig.CentralMutualTls(
+    certificate = "/edge/central-client.crt",
+    privateKey = "/edge/central-client.key",
+    trustedCertificates = trusted.map(_.toString).toSet,
+  )
+
   private def baseConfig(trustPath: Option[Path]): EdgeConfig = EdgeConfig(
     id = EdgeId("edge-default"),
     keyId = "test-key",
@@ -84,7 +98,10 @@ object EdgeConfigSpec extends ZIOSpecDefault:
       tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32.fromBase64Url(secret32).toOption.get),
       edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32.fromBase64Url(secret32).toOption.get, 30.days),
     ),
-    central = EdgeConfig.CentralConfig(url = URL.decode("http://central:8090").toOption.get),
+    central = EdgeConfig.CentralConfig(
+      url = URL.decode("https://central:8093").toOption.get,
+      mutualTls = Some(centralMutualTls(centralLeafPath)),
+    ),
     versolaUrl = URL.decode("http://localhost:8080").toOption.get,
     versolaInternalTrustedCertificates = trustPath.map(_.toString).toSet,
     edgeUrl = URL.decode("http://edge:8095").toOption.get,
@@ -267,6 +284,45 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .provideLayer(ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig()))) >>> EdgeConfig.validated)
             .exit
         yield assertTrue(exit.isFailure)
+      },
+      // Central serves the edge surface only on its mutual-TLS listener: an edge configured for
+      // anything else cannot reach it, and is refused at startup instead of at the first sync.
+      test("refuses a central block with no mutual-tls") {
+        for
+          exit <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(baseConfig(None).copy(central = baseConfig(None).central.copy(mutualTls = None))) >>> EdgeConfig.validated)
+            .exit
+        yield assertTrue(exit.isFailure)
+      },
+      test("refuses a central url that is not https") {
+        for
+          exit <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(baseConfig(None).copy(central = baseConfig(None).central.copy(url = URL.decode("http://central:8093").toOption.get))) >>>
+                EdgeConfig.validated,
+            ).exit
+        yield assertTrue(exit.isFailure)
+      },
+      test("refuses central's pin when it names no certificate") {
+        for
+          exit <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(baseConfig(None).copy(central = baseConfig(None).central.copy(mutualTls = Some(centralMutualTls())))) >>>
+                EdgeConfig.validated,
+            ).exit
+        yield assertTrue(exit.isFailure)
+      },
+      test("refuses a certificate authority pinned for central's mutual-TLS listener") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            ca = TestCertificates.generate(subject = "CN=central-ca,O=Versola,C=KZ", ca = true)
+            path <- writeCertificate(directory, "central-ca.pem", ca.certificatePem)
+            config = baseConfig(None)
+            exit <- ZIO.service[EdgeConfig]
+              .provideLayer(ZLayer.succeed(config.copy(central = config.central.copy(mutualTls = Some(centralMutualTls(path))))) >>> EdgeConfig.validated)
+              .exit
+          yield assertTrue(exit.isFailure)
       },
       test("passes an absent trust anchor through unexamined") {
         for

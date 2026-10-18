@@ -25,6 +25,10 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
+      * central has no such listener and no edge can sync from it -- there is deliberately no
+      * fallback to the main listener, which is the admin console's and auth's. */
+    mutualTls: Option[CentralConfig.MutualTlsConfig] = None,
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
@@ -37,6 +41,24 @@ object CentralConfig:
   val defaultTenantId: TenantId = TenantId("default")
 
   case class AuthConfig(url: URL)
+
+  /** Central terminates mutual TLS itself for the edge surface, which is reachable from outside
+    * the cluster: the handshake demands a client certificate that chains to
+    * [[trustedCertificates]], and `authorizeEdge` then requires it to be the one registered for
+    * the edge the token names (`PUT /configuration/edges/certificate`).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8 -- the only form the TLS stack
+    *   here reads back.
+    * @param trustedCertificates PEM path to the anchors an edge's certificate is validated
+    *   against. Required, with no default: left unset, Netty falls back to the JDK's trust store
+    *   and every publicly-trusted CA would vouch for edges.
+    */
+  case class MutualTlsConfig(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+  )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge
     *                    presents an issued certificate to trusts: auth's

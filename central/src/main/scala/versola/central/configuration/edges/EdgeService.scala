@@ -1,6 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
+import versola.util.http.BadRequest
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
@@ -14,6 +15,13 @@ trait EdgeService:
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]
 
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
+
+  /** Pins the client certificate the edge presents to central's mutual-TLS listener, keeping
+    * the previous one valid until [[deleteOldCertificate]]. Fails with `BadRequest` if the
+    * PEM is not one certificate. */
+  def rotateCertificate(id: EdgeId, pemCertificate: String): Task[Unit]
+
+  def deleteOldCertificate(id: EdgeId): Task[Unit]
 
   def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
 
@@ -56,6 +64,15 @@ object EdgeService:
 
     override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
       edgeRepository.deleteOldEdgeKey(id)
+
+    override def rotateCertificate(id: EdgeId, pemCertificate: String): Task[Unit] =
+      for
+        thumbprint <- ZIO.fromEither(EdgeCertificate.thumbprintOfPem(pemCertificate)).mapError(BadRequest(_))
+        _ <- edgeRepository.rotateCertificate(id, thumbprint)
+      yield ()
+
+    override def deleteOldCertificate(id: EdgeId): Task[Unit] =
+      edgeRepository.deleteOldCertificate(id)
 
     override def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit] =
       edgeRepository.setRequireDpopNonce(id, requireDpopNonce)

@@ -49,6 +49,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.security.KeyPairGenerator
+import java.security.cert.Certificate
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.UUID
@@ -79,7 +80,19 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
   /** A key central never registered, for the token that names `edge-a` without holding its key. */
   private val strangerKeyPair = rsaKeyPair("stranger-key")
 
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true)
+  /** The certificate edge-a presents in the handshake, and one that chains to the same anchors
+    * but is registered for nobody. */
+  private val edgeCertificate = TestCertificates.generate()
+  private val strangerCertificate = TestCertificates.generate()
+  private val rotatedCertificate = TestCertificates.generate()
+
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    certificateThumbprint = Some(EdgeCertificate.thumbprint(edgeCertificate.certificate)),
+  )
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
     * `CentralSyncTokenService` mints it. */
@@ -252,13 +265,17 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description: String,
       request: Request,
       token: Task[String] = edgeToken(),
+      // A property of the connection: `ClientAuth.Required` puts one on every request that
+      // reaches a handler on the mutual-TLS listener. `TestClient`'s simulated round trip does
+      // not carry one, so the request is dispatched straight at the routes.
+      certificate: Option[Certificate] = Some(edgeCertificate.certificate),
+      edge: EdgeRecord = edgeRecord,
       expectedStatus: Status,
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Services) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
-        httpClient <- ZIO.service[Client]
         security <- (SecureRandom.live >>> SecurityService.live).build.map(_.get[SecurityService])
         services = Services(
           clients = stub[OAuthClientService],
@@ -273,7 +290,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         certificates = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config)
         tracing <- tracingLayer.build
-        _ <- TestClient.addRoutes(
+        routes =
           Observability.handleErrors(
             EdgeSyncController.routes.provideEnvironment(
               ZEnvironment[OAuthClientService](services.clients) ++
@@ -289,16 +306,15 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[CentralConfig](config) ++
                 tracing,
             ),
-          ),
-        )
-        _ <- services.edges.find.succeedsWith(Some(edgeRecord))
+          )
+        _ <- services.edges.find.succeedsWith(Some(edge))
         _ <- scoped(services)
         _ <- setup(services)
         raw <- token
-        response <- httpClient.batched(request.addHeader(Header.Authorization.Bearer(raw)))
+        response <- routes.runZIO(request.addHeader(Header.Authorization.Bearer(raw)).copy(remoteCertificate = certificate))
         verifyResult <- verify(response, services)
       yield assertTrue(response.status == expectedStatus) && verifyResult
-    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+    } @@ TestAspect.silentLogging
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
@@ -480,6 +496,71 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         description = "an empty bearer token",
         request = Request.get(sync("clients")),
         token = ZIO.succeed(""),
+        expectedStatus = Status.Unauthorized,
+      ),
+    ),
+    // The surface is public, reached on the mutual-TLS listener: a valid token alone is not
+    // enough, the handshake's certificate has to be the one registered for the edge it names.
+    suite("an edge is held to its registered certificate")(
+      suite("no certificate in the handshake")(
+        syncResources.map(resource =>
+          testCase(
+            description = s"$resource: 401, and no service is asked",
+            request = Request.get(sync(resource)),
+            certificate = None,
+            expectedStatus = Status.Unauthorized,
+            verify = (_, services) =>
+              ZIO.succeed(assertTrue(
+                services.clients.getClientsForSync.calls.isEmpty,
+                services.resources.getResourcesForSync.calls.isEmpty,
+                services.roles.getRolesForSync.calls.isEmpty,
+                services.permissions.getPermissionsForSync.calls.isEmpty,
+                services.presets.getPresetsForSync.calls.isEmpty,
+                services.jwks.getRaw.calls.isEmpty,
+                services.metadata.getMetadata.calls.isEmpty,
+              )),
+          ),
+        )*,
+      ),
+      testCase(
+        description = "a certificate registered for nobody, with edge-a's genuine token",
+        request = Request.get(sync("clients")),
+        certificate = Some(strangerCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      testCase(
+        description = "an edge with no certificate registered cannot call at all",
+        request = Request.get(sync("clients")),
+        edge = edgeRecord.copy(certificateThumbprint = None),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      testCase(
+        description = "edge-certificate signing: 401 without a certificate",
+        request = Request.post(
+          URL.root / "edge" / "clients" / "edge-certificate" / "sign",
+          Body.fromString("""{"clientId":"web-a","csr":"x"}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        certificate = None,
+        expectedStatus = Status.Unauthorized,
+      ),
+      // A rotation leaves the edge on the old certificate until it is moved: both are accepted
+      // until the old one is deleted.
+      testCase(
+        description = "the previous certificate is accepted during a rotation",
+        request = Request.get(sync("clients")),
+        certificate = Some(rotatedCertificate.certificate),
+        edge = edgeRecord.copy(
+          certificateThumbprint = Some(EdgeCertificate.thumbprint(edgeCertificate.certificate)),
+          oldCertificateThumbprint = Some(EdgeCertificate.thumbprint(rotatedCertificate.certificate)),
+        ),
+        expectedStatus = Status.Ok,
+      ),
+      testCase(
+        description = "a certificate whose rotation was completed (old one deleted) is refused",
+        request = Request.get(sync("clients")),
+        certificate = Some(rotatedCertificate.certificate),
         expectedStatus = Status.Unauthorized,
       ),
     ),
