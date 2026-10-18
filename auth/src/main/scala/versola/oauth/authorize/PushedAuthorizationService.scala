@@ -75,7 +75,6 @@ object PushedAuthorizationService:
         // what `dpop_jkt` states outright -- so the proof is turned into that parameter, and
         // `/authorize` and the token endpoint then need to know of nothing else.
         dpopJkt <- verifyDpopProof(client.id, dpopProofs, request)
-        boundParams <- bindDpopKey(params, dpopJkt)
 
         _ <- ZIO.fail(PushedAuthorizationError.RequestUriNotAllowed).when(params.contains("request_uri"))
         // A client_id that contradicts the authenticated one is already rejected while the
@@ -92,8 +91,12 @@ object PushedAuthorizationService:
         // here rather than at redemption so that the object is verified while the client that
         // signed it is authenticated, and so that what is stored is the request it stated --
         // by the time the user finishes logging in, the object's own `exp` may have passed.
-        authorizationParams <- requestObjectService.resolve(boundParams -- CredentialParams)
+        resolvedParams <- requestObjectService.resolve(params -- CredentialParams)
           .mapError(PushedAuthorizationError.from)
+        // After resolution: a request object's claims replace the form's parameters wholesale,
+        // so the binding applied before it would be dropped (or overridden by the object's own
+        // `dpop_jkt`) and the stored request would not be held to the proven key.
+        authorizationParams <- bindDpopKey(resolvedParams, dpopJkt)
         _ <- parser.validate(authorizationParams, request).mapError(PushedAuthorizationError.from)
 
         reference <- secureRandom.nextBytes(ReferenceLength).map(RequestUriReference(_))
@@ -146,7 +149,11 @@ object PushedAuthorizationService:
         case None => ZIO.succeed(params)
         case Some(jkt) =>
           val stated = params.get(Dpop.Jkt.Parameter).map(_.toList).getOrElse(Nil)
-          if stated.forall(_ == jkt) then ZIO.succeed(params.updated(Dpop.Jkt.Parameter, Chunk(jkt)))
+          if stated match
+              case Nil => true
+              case single :: Nil => single == jkt
+              case _ => false
+          then ZIO.succeed(params.updated(Dpop.Jkt.Parameter, Chunk(jkt)))
           else
             ZIO.fail(PushedAuthorizationError.InvalidDpopProof(
               s"the ${Dpop.Jkt.Parameter} parameter does not match the key of the DPoP proof",

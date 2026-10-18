@@ -485,6 +485,16 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           env.repository.create.calls.isEmpty,
         )
       },
+      test("a dpop_jkt sent twice is refused even when both agree with the proof") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          result <- service.push(validParams("dpop_jkt" -> Chunk("proof-jkt", "proof-jkt")), credentials, None, request, List("proof")).either
+        yield assertTrue(
+          result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]),
+          env.repository.create.calls.isEmpty,
+        )
+      },
       test("a proof that does not verify is refused") {
         for
           env <- dpopEnv(ZIO.fail(DpopService.Error.InvalidProof(Dpop.Error.InvalidSignature)))

@@ -15,6 +15,7 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.Locale
 import scala.util.Try
 
 /** RFC 9449 DPoP proof JWTs.
@@ -254,7 +255,7 @@ object Dpop:
     Try(new URI(htu)).toOption.filter(_.getScheme != null).map: uri =>
       // RFC 3986 §6.2.2.1: the scheme and the host are case-insensitive, and every other part is
       // not -- the path in particular is compared exactly.
-      val scheme = uri.getScheme.toLowerCase
+      val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
       val authority = Option(uri.getRawAuthority).getOrElse("")
       val at = authority.lastIndexOf('@')
       val (userInfo, hostAndPort) = (authority.take(at + 1), authority.drop(at + 1))
@@ -271,7 +272,7 @@ object Dpop:
         case _ => ""
       val keptPort = if port.isEmpty || port == defaultPort then "" else s":$port"
       val path = Option(uri.getRawPath).filter(_.nonEmpty).getOrElse("/")
-      s"$scheme://$userInfo${host.toLowerCase}$keptPort$path"
+      s"$scheme://$userInfo${host.toLowerCase(Locale.ROOT)}$keptPort$path"
 
   /** RFC 9449 §4.2: `ath` is base64url(SHA-256(ASCII(access token))) -- what a resource
     * request's proof `ath` claim is checked against. Shared by every resource server that
