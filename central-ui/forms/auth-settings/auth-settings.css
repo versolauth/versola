@@ -78,6 +78,8 @@
   width: auto;
   padding: 8px 14px;
   font-size: 0.85rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .account-rename {
   flex: 1;
