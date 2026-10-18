@@ -1,4 +1,133 @@
-## Environment Config Generation
+# Development
+
+How to run, test and build Versola locally. For production see [`deploy.md`](deploy.md); for
+Kubernetes see [`k8s/README.md`](k8s/README.md).
+
+1. [Running Versola locally](#running-versola-locally) — with `versola-cli`, or from source
+2. [Testing and formatting](#testing-and-formatting)
+3. [Environment config generation](#environment-config-generation) — `scripts/gen-env.scala`
+4. [Docker images](#docker-images)
+5. [Services, ports and certificates](#services-ports-and-certificates) — probes, native apps, mTLS
+6. [Secrets (OpenBao)](#secrets-openbao)
+7. [CI/CD pipeline](#cicd-pipeline)
+
+---
+
+## Running Versola locally
+
+### With versola-cli
+
+To run a **released** version without building anything, use
+[`versola-cli`](https://github.com/versolauth/versola-cli). It needs only Docker; it generates the
+config and secrets and starts Postgres, `central`, `auth`, `edge`, the admin console and a reverse
+proxy (published on `127.0.0.1:2821` only) with Compose.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh
+versola doctor                      # Docker, Compose, port 2821, memory
+versola bootstrap local <version>   # release tag without a leading "v"; opens the console, prints the admin login
+versola status
+versola down                        # add --volumes to delete the Postgres data too
+versola uninstall                   # remove everything it deployed
+```
+
+`bootstrap` is `configure`, `migrate` and `up` back to back; `versola-cli`'s README describes each,
+and the secrets it keeps in OpenBao are covered under [Secrets](#secrets-openbao). It uses the
+`docker-local` target of [gen-env](#environment-config-generation).
+
+### From source
+
+Use this to work on the code. Requires a JDK, [sbt](https://www.scala-sbt.org/), Docker,
+[scala-cli](https://scala-cli.virtuslab.org/install), nginx, Node.js/npm and an OpenSSL 3 `openssl`
+on `PATH` (macOS's LibreSSL lacks `-copy_extensions`; e.g. `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`).
+
+1. **Generate the dev config.** Answer `local` at the Name prompt
+   ([details](#environment-config-generation)); it writes `auth/dev/env.conf`, `central/dev/env.conf`,
+   `edge/dev/env.conf`, and the certificates under `edge/dev/internal-tls/` and `auth/dev/mtls/`:
+   ```bash
+   scala-cli run scripts/gen-env.scala
+   ```
+2. **Start Postgres** (and optionally Jaeger):
+   ```bash
+   docker-compose -f services.yml up -d postgres
+   docker-compose -f services.yml up -d jaeger
+   ```
+3. **Build the login forms** that `central`, `auth` and `util` need (generated, gitignored):
+   ```bash
+   cd central-ui
+   npm install
+   npm run build:forms   # forms -> central/src/main/resources/forms, common.css -> util/src/main/resources/versola/forms
+   npm run dev           # optional: the admin dashboard on port 3000
+   ```
+4. **Start the services**, each in its own terminal. They need `RUN_MIGRATIONS=true` against a fresh
+   Postgres: without it a service only *validates* its schema on startup (deliberate for real
+   deployments, see [`RUN_MIGRATIONS`](deploy.md#run_migrations)) and fails at once.
+   ```bash
+   PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
+   PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
+   nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"      # TLS terminator in front of auth; start it before edge
+   PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
+   ```
+   `MPORT` does anything only when `auth/dev/env.conf` has a `mutual-tls` block (the `local` target
+   writes it).
+5. **Log in** at <http://localhost:9005/login/central-admin> with `admin` / `Admin1234!`, OTP `123456`.
+
+**Why the nginx terminator is not optional.** `central-admin` is registered as `tls_client_auth` by
+edge (#353: the `default` tenant is on the FAPI 2.0 security profile, which admits no `client_secret`
+client). Its certificate, `edge/dev/internal-tls/central-admin.{crt,key}`, is signed by the
+terminator's CA and carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`. Edge reaches
+auth through the terminator (`versola-internal-url`) because an RFC 8705 client certificate is
+presented in a TLS handshake and auth reads one only from a header; the terminator forwards it in
+`ssl-client-cert`. Without it every edge → auth call is refused, and edge cannot push
+`central-admin`'s request to `/par`.
+
+The other targets differ. `docker-local` and `vps` need neither the terminator nor a certificate in
+the config: central issues `central-admin`'s certificate itself through step-ca and renews it, and edge
+presents it to auth's own mutual-TLS listener (`native` in `edge.conf`); the proxy in front of auth
+clears `ssl-client-cert`, so a certificate cannot be asserted from outside. Redeploying over a
+deployment from before this keeps `central-admin` on its `client_secret` and central then refuses to
+boot ("A client's authentication method is fixed when it is created"): delete the `central-admin`
+client or start from empty volumes. The interactive and k8s targets get no `central-admin-mtls`, so
+`central-admin` stays on its `client_secret` there and central logs that it is outside the tenant's profile.
+
+---
+
+## Testing and formatting
+
+```bash
+sbt compile                      # all services
+sbt Test/compile                 # also compiles e2e
+sbt test                         # unit tests; needs Postgres and the built forms, see below
+sbt e2e/test                     # end-to-end; needs the services staged as in CI's "Stage services for e2e tests" step
+sbt tools/test                   # scripts/gen-env.scala
+cd central-ui && npm run test:unit && npm run test:ui   # Vitest, Playwright
+```
+
+**Postgres for `sbt test`:** `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and
+still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it
+generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on
+Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another
+stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with
+`POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec
+connects and which CA it trusts.
+
+### Formatting
+
+Scala code is formatted with scalafmt per `.scalafmt.conf` (CLI: `scalafmt`; it reads the pinned version
+from the config). Before a push run `scalafmt --mode diff --diff-branch origin/main` and commit the
+result; `scalafmt --test` checks without writing.
+
+The project-wide reformat commit is listed in `.git-blame-ignore-revs`, so it does not hide the real
+author of each line in `git blame`. GitHub honours that file on its own; for local `git blame` (and IDE
+annotate) run once per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+---
+
+## Environment config generation
 
 The `scripts/gen-env.scala` script generates HOCON config files for all three services
 (`auth`, `central`, `edge`) with freshly generated RSA-2048 key pairs and random secrets.
@@ -39,7 +168,7 @@ The script first asks for the environment **Name** (default `local`):
     `versolaUrl` when it's absent, so configs generated before this field existed
     keep working. Getting this backwards doesn't fail loudly; it 404s or
     connection-refuses partway through a login that otherwise looks like it's
-    working — confirmed by hand while testing `versola bootstrap local`.
+    working.
 - **`vps`** — also runs non-interactively, for a real server deployed with
   `versola bootstrap vps` / `versola configure vps` (see [`deploy.md`](deploy.md)).
   auth/central/edge run with `network_mode: host` there, and Postgres is a native
@@ -60,72 +189,9 @@ The script first asks for the environment **Name** (default `local`):
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).
 
-## Local Development
+---
 
-1. Compilation - `compile`
-2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, start postgres - `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with `POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec connects and which CA it trusts.
-4. ```bash
-    cd central-ui
-    npm install
-    npm run build:forms   # compile auth forms into central/src/main/resources/forms, and copy common.css to util/src/main/resources/versola/forms (auth, central and util need it)
-    npm run dev           # run admin dashboard on port 3000
-    ```
-5. Start server locally
-    - `docker-compose -f services.yml up -d postgres` - Database
-    - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - Each service below needs `RUN_MIGRATIONS=true` against a fresh Postgres --
-      without it, a service only *validates* its schema on startup rather than
-      applying migrations to it (deliberate for real deployments, see
-      [deploy.md's `RUN_MIGRATIONS`](deploy.md#run_migrations)), which fails immediately with no schema yet.
-    - `PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
-    - `PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
-      (`MPORT` only does anything when `auth/dev/env.conf` carries a `mutual-tls` block -- see below)
-    - `nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"` - the TLS terminator in
-      front of auth. Edge reaches auth through it (`versola-internal-url`), because
-      an RFC 8705 client certificate is presented in a handshake and auth reads one
-      only from a header. Start it before edge; without it every edge -> auth call
-      is refused a connection.
-    - `PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
-    - `central-admin` is registered as `tls_client_auth` by edge (#353: the `default` tenant is on
-      the FAPI 2.0 security profile, which admits no `client_secret` client). Its certificate
-      is `edge/dev/internal-tls/central-admin.{crt,key}`, signed by the terminator's CA and
-      carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`; edge presents it to
-      the nginx terminator above, which forwards it to auth in `ssl-client-cert`. So the
-      terminator is not optional for the console login: without it edge cannot push
-      `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
-      `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
-      `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
-      docker-local and vps need neither the terminator nor a certificate in the config: their
-      `central-admin-mtls` names only the header, and central issues `central-admin`'s
-      certificate itself through step-ca (the one it issues edge-fronted clients' from) and
-      renews it. Edge presents it to auth's own mutual-TLS listener (`native` in `edge.conf`).
-      The proxy in front of auth clears `ssl-client-cert`, so a certificate cannot be asserted
-      from outside. Redeploying over a deployment from before this keeps `central-admin` on its
-      `client_secret`, and central then refuses to boot ("A client's authentication method is
-      fixed when it is created"): delete the `central-admin` client, or start from empty
-      volumes. The interactive and k8s targets still get no `central-admin-mtls`, so central
-      keeps `central-admin` on its `client_secret` there and logs that it is outside the
-      tenant's profile.
-    - go to http://localhost:9005/login/central-admin
-    - enter admin/Admin1234!
-    - enter otp code 123456
-
-### Formatting
-
-Scala code is formatted with scalafmt per `.scalafmt.conf` (CLI: `scalafmt`; it reads the pinned version from the config).
-Before a push run `scalafmt --mode diff --diff-branch origin/main` and commit the result; `scalafmt --test` checks without writing.
-
-The project-wide reformat commit is listed in `.git-blame-ignore-revs`, so it does not hide the real author of each line in `git blame`.
-GitHub honours that file on its own; for local `git blame` (and IDE annotate) run once per clone:
-
-```bash
-git config blame.ignoreRevsFile .git-blame-ignore-revs
-```
-
-## Docker
-
-### Build Locally
+## Docker images
 
 The runtime images no longer bundle sbt -- `docker build` copies an already
 built application from `<module>/target/universal/stage` (same as CI, see
@@ -153,10 +219,7 @@ sbt "edge-postgres-impl/stage"
 docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
 
-(`central` additionally expects `central-ui`'s forms already built into
-`central/src/main/resources` (and `auth` and `central` the base stylesheet in
-`util/src/main/resources/versola/forms`, written by the same step) -- see the `npm run build:forms` step above --
-before staging, same as CI's `build` job.)
+(`central` additionally expects the forms already built (`npm run build:forms`, see [From source](#from-source)) before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:
 ```bash
@@ -168,6 +231,148 @@ docker run -p 8080:8080 -p 8081:8081 \
 
 (The Dockerfiles `EXPOSE 8080 9345`, but the diagnostics server listens on
 `DPORT`, 8081 by default — publish that one.)
+
+---
+
+## Services, ports and certificates
+
+### HTTP Server
+
+Metrics, liveness, and readiness probes are served on the diagnostics port (`DPORT`, default 8081):
+- `GET /metrics`
+- `GET /liveness`
+- `GET /readiness`
+
+The application API is served on the main port (`PORT`, default 8080). Services may expose a
+separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
+Auth alone may also expose a third surface on `MPORT` (default 8083): RFC 8705 §5's mutual-TLS
+listener, terminating TLS itself and demanding a client certificate on the handshake, rather
+than reading one from a header a proxy forwarded. It is served only when `auth/dev/env.conf`
+carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
+`local` target writes that block, plus the certificate it presents and a client certificate
+signed by the same CA (`auth/dev/mtls/{ca,server,client}.{crt,key}`) for e2e's own use --
+see `MutualTlsListenerSpec`. The `docker-local`/`vps`/`k8s` configs do carry the block, and the bundle / chart
+issue the certificate it names -- see [Certificate storage and rotation](#certificate-storage-and-rotation-440).
+
+The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
+
+### Native apps through edge (#420)
+
+`edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's
+`POST /native/{start,complete,token,revoke}/{clientId}` endpoints: edge authenticates to auth
+as an edge-fronted native client (`applicationType = native`, `tls_client_auth`) straight on
+auth's `MPORT` listener, pinning `auth/dev/mtls/server.crt`. The client certificate edge
+presents is the `edgeClientCertificate` central syncs, and must be issued by a CA in auth's
+`mutual-tls.trusted-certificates` -- zio-http hands auth the leaf only. Without the block every
+native endpoint answers 404.
+
+A registration can ask central to issue that certificate (`issueEdgeClientCertificate`, #440)
+instead of supplying it: central signs one from its `client-certificate-authority` and registers
+the client `tls_client_auth` by its subject (`CN=<client>,OU=<tenant>,O=Versola`). The `local`
+target points that CA at the terminator's (`edge/dev/internal-tls/ca.{crt,key}`), the one issuer
+nginx advertises, and writes `auth/dev/mtls/trusted-clients.crt` -- the listener's own CA plus the
+terminator's -- as the listener's `trusted-certificates`, so one issued certificate serves an
+edge-fronted web client through nginx and a native one on `MPORT`. Without a
+`client-certificate-authority`, central refuses such a registration.
+
+### Certificate storage and rotation (#440)
+
+Three certificate relationships exist in the mTLS work, with different rotation properties:
+
+| | What | Shape in config | Rotation |
+|---|---|---|---|
+| 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
+| 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
+| 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
+
+**(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
+`ClientCaBundleRotationSpec` proves that clients issued by either CA connect while both are in
+the file and that dropping one ends it. The order matters: add the incoming CA and restart auth
+(it reads the file at startup); reissue every client certificate from the incoming CA and let
+`cert-sync` (or a human) put it into central; only then remove the outgoing CA. Under Kubernetes
+trust-manager maintains that union (`pki.trustBundle`, [k8s/README.md](k8s/README.md)).
+
+**(2) Pin rotation.** Both fields are lists, e.g.
+
+```hocon
+native {
+  trusted-certificates = ["/certs/auth-mtls-old.crt", "/certs/auth-mtls-new.crt"]
+}
+versola-internal-trusted-certificates = ["/certs/auth-internal.crt"]
+```
+
+and the TLS client accepts a server certificate matching *any* entry. Roll it out as: (a) put
+`{old, new}` on every edge and restart them; (b) switch auth to the new certificate and restart
+it; (c) once every edge has the new set, drop the old entry. Edge reads the files at startup, so
+a changed file needs a restart. A single-element list is the previous behaviour; the previous
+bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
+
+**(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
+`"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
+Central stores **neither a certificate nor a key** -- only that the client is enrolled
+(`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
+replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
+what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
+`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
+syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
+is enrolled and that the request is signed by its own key and names exactly the registered subject and
+alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and
+returns the chain. The edge renews when a third of the lifetime is left -- on its ordinary client sync, so
+no new schedule -- keeps the current certificate if the CA is briefly unavailable, and enrols again after a
+restart. Replicas hold different certificates carrying the same subject, which is what auth recognises the
+client by. Mutually exclusive with `issueEdgeClientCertificate` and with supplying `edgeClientCertificate`, and only for a native app fronted by edge (`applicationType: native`): a web client's tokens are bound to its certificate (RFC 8705 §3) and replicas enrolling separately would not share it, so a web client takes `issueEdgeClientCertificate`.
+
+**(3b) Client certificates issued by central** (`issueEdgeClientCertificate`), where central generates the key
+pair and stores the certificate and key encrypted, then renews it itself. Kept for deployments that have
+clients registered this way; (3a) is the one to use for new ones.
+
+**Issuing, and the CAs both modes sign through.** For (3b), register an edge-fronted client with
+`"issueEdgeClientCertificate": true` (and `mtlsAuth`) and central generates an EC P-256 key pair and
+a PKCS#10 request whose subject and SAN are built from the `mtlsAuth` it registers, has a CA sign it,
+validates that the result names what `mtlsAuth` expects, and stores it as `edgeClientCertificate`. It
+renews every certificate it issued once less than `renew-before` remains (checked every
+`check-interval`), and `POST /configuration/clients/edge-certificate/renew?clientId=` renews one now.
+A certificate you supply yourself through an update stops central renewing that client's.
+
+Where `mtlsAuth` is left out, the client is recognised by the subject `CN=<client>,OU=<tenant>,O=Versola`
+(what a registration has always got from `client-certificate-authority`, above). Central normally
+holds **no CA key**: the signing is delegated through `ClientCertificateIssuer`, configured by the
+`client-certificates` block of `central.conf`:
+
+```hocon
+client-certificates {
+  validity     = "14 days"
+  renew-before = "4 days"
+  # exactly one of:
+  step-ca       { url = "https://step-ca:9000", root-certificate = "/app/ca/root_ca.crt",
+                  provisioner = "central", provisioner-key = "/app/ca/provisioner.json" }
+  cert-manager  { issuer-name = "versola-client-ca" }   # + issuer-kind, issuer-group, namespace
+}
+```
+
+- **step-ca** (docker-local, vps): a one-time token from a JWK provisioner (`central`, which the
+  compose file creates with a 14-day maximum and a template that keeps the request's subject and
+  limits the certificate to client authentication). The provisioner key is the only thing central
+  holds; a CA created before that template existed keeps the default one, which rewrites the subject
+  to the bare CN -- central then refuses a longer `subject_dn` registration with that reason.
+- **cert-manager** (k8s): a `CertificateRequest` created with the pod's service account, which may only
+  create, get and delete those in its namespace.
+- **`client-certificate-authority`** (the `local` stack, or any deployment that already has one): the one
+  backend where central holds the CA's certificate *and key*. Used when no `client-certificates` block
+  names a CA; it signs the request itself, leaf only, and gets the same renewal. Prefer the other two.
+
+Which clients central issued for is recorded in `client_certificate_issuance` (serial, expiry; no key
+material) -- the beginning of the audit trail #462 designs. Generating keys on edge instead of in
+central is #463.
+
+**Externally issued certificates.** `versola-tools`' `cert-sync` command (`migrate-tool`'s
+`CertSyncTool`) still copies certificates something else issued (cert-manager through the chart's
+`pki.clients`, or by hand) into central: it reads `$CERT_SYNC_DIR/<client-id>/tls.{crt,key}` and `PUT`s
+`/configuration/clients` with only `edgeClientCertificate` whenever the content changes
+(`CENTRAL_URL`, `CENTRAL_SECRET`/`CENTRAL_SECRET_FILE`/`CENTRAL_RESOURCE_SECRET`,
+`CERT_SYNC_INTERVAL_SECONDS`; `0` runs one pass). Off by default. Keys must be unencrypted PKCS#8.
+
+---
 
 ## Secrets (OpenBao)
 
@@ -195,7 +400,7 @@ gen-env generates each run, and central's public half is taken from it, so the p
 reconfigure. `configure` leaves the resolved key in the bundle directory as `utils.private-key.jwk`
 (mode 0600).
 
-### Secret schema
+### Secret schema (adding a secret)
 
 `scripts/gen-env.scala` declares every secret in one list, `SecretSchema.specs`, and writes it next to
 the configs as `secrets.schema.json` (one per target; no values, so it needs no special permissions).
@@ -442,9 +647,11 @@ If containers named `versola-auth`/`versola-central`/`versola-edge` are already
 running under a different Compose project, the first `configure`/`up` fails
 with a container-name conflict (the vps compose file is always project
 `versola-vps`). Stop and remove those containers by name first — nothing
-stateful lives in them (Postgres is native, OpenBao's volume is external).
+stateful lives in them (OpenBao's volume is external).
 
-## CI/CD Pipeline
+---
+
+## CI/CD pipeline
 
 `.github/workflows/ci-cd.yml`:
 
@@ -460,137 +667,3 @@ stateful lives in them (Postgres is native, OpenBao's volume is external).
 
 Nothing here deploys: production is updated with `versola-cli` from the server
 itself — see [`deploy.md`](deploy.md#deploying-a-new-version).
-
-## HTTP Server
-
-Metrics, liveness, and readiness probes are served on the diagnostics port (`DPORT`, default 8081):
-- `GET /metrics`
-- `GET /liveness`
-- `GET /readiness`
-
-The application API is served on the main port (`PORT`, default 8080). Services may expose a
-separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
-Auth alone may also expose a third surface on `MPORT` (default 8083): RFC 8705 §5's mutual-TLS
-listener, terminating TLS itself and demanding a client certificate on the handshake, rather
-than reading one from a header a proxy forwarded. It is served only when `auth/dev/env.conf`
-carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
-`local` target writes that block, plus the certificate it presents and a client certificate
-signed by the same CA (`auth/dev/mtls/{ca,server,client}.{crt,key}`) for e2e's own use --
-see `MutualTlsListenerSpec`. The `docker-local`/`vps`/`k8s` configs do carry the block, and the bundle / chart
-issue the certificate it names -- see [Certificate storage and rotation](#certificate-storage-and-rotation-440).
-
-The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
-### Native apps through edge (#420)
-
-`edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's
-`POST /native/{start,complete,token,revoke}/{clientId}` endpoints: edge authenticates to auth
-as an edge-fronted native client (`applicationType = native`, `tls_client_auth`) straight on
-auth's `MPORT` listener, pinning `auth/dev/mtls/server.crt`. The client certificate edge
-presents is the `edgeClientCertificate` central syncs, and must be issued by a CA in auth's
-`mutual-tls.trusted-certificates` -- zio-http hands auth the leaf only. Without the block every
-native endpoint answers 404.
-
-A registration can ask central to issue that certificate (`issueEdgeClientCertificate`, #440)
-instead of supplying it: central signs one from its `client-certificate-authority` and registers
-the client `tls_client_auth` by its subject (`CN=<client>,OU=<tenant>,O=Versola`). The `local`
-target points that CA at the terminator's (`edge/dev/internal-tls/ca.{crt,key}`), the one issuer
-nginx advertises, and writes `auth/dev/mtls/trusted-clients.crt` -- the listener's own CA plus the
-terminator's -- as the listener's `trusted-certificates`, so one issued certificate serves an
-edge-fronted web client through nginx and a native one on `MPORT`. Without a
-`client-certificate-authority`, central refuses such a registration.
-### Certificate storage and rotation (#440)
-
-Three certificate relationships exist in the mTLS work, with different rotation properties:
-
-| | What | Shape in config | Rotation |
-|---|---|---|---|
-| 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
-| 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
-| 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
-
-**(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
-`ClientCaBundleRotationSpec` proves that clients issued by either CA connect while both are in
-the file and that dropping one ends it. The order matters: add the incoming CA and restart auth
-(it reads the file at startup); reissue every client certificate from the incoming CA and let
-`cert-sync` (or a human) put it into central; only then remove the outgoing CA. Under Kubernetes
-trust-manager maintains that union (`pki.trustBundle`, [k8s/README.md](k8s/README.md)).
-
-**(2) Pin rotation.** Both fields are lists, e.g.
-
-```hocon
-native {
-  trusted-certificates = ["/certs/auth-mtls-old.crt", "/certs/auth-mtls-new.crt"]
-}
-versola-internal-trusted-certificates = ["/certs/auth-internal.crt"]
-```
-
-and the TLS client accepts a server certificate matching *any* entry. Roll it out as: (a) put
-`{old, new}` on every edge and restart them; (b) switch auth to the new certificate and restart
-it; (c) once every edge has the new set, drop the old entry. Edge reads the files at startup, so
-a changed file needs a restart. A single-element list is the previous behaviour; the previous
-bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
-
-**(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
-`"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
-Central stores **neither a certificate nor a key** -- only that the client is enrolled
-(`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
-replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
-what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
-`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
-syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
-is enrolled and that the request is signed by its own key and names exactly the registered subject and
-alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and
-returns the chain. The edge renews when a third of the lifetime is left -- on its ordinary client sync, so
-no new schedule -- keeps the current certificate if the CA is briefly unavailable, and enrols again after a
-restart. Replicas hold different certificates carrying the same subject, which is what auth recognises the
-client by. Mutually exclusive with `issueEdgeClientCertificate` and with supplying `edgeClientCertificate`, and only for a native app fronted by edge (`applicationType: native`): a web client's tokens are bound to its certificate (RFC 8705 §3) and replicas enrolling separately would not share it, so a web client takes `issueEdgeClientCertificate`.
-
-**(3b) Client certificates issued by central** (`issueEdgeClientCertificate`), where central generates the key
-pair and stores the certificate and key encrypted, then renews it itself. Kept for deployments that have
-clients registered this way; (3a) is the one to use for new ones.
-
-**Issuing, and the CAs both modes sign through.** For (3b), register an edge-fronted client with
-`"issueEdgeClientCertificate": true` (and `mtlsAuth`) and central generates an EC P-256 key pair and
-a PKCS#10 request whose subject and SAN are built from the `mtlsAuth` it registers, has a CA sign it,
-validates that the result names what `mtlsAuth` expects, and stores it as `edgeClientCertificate`. It
-renews every certificate it issued once less than `renew-before` remains (checked every
-`check-interval`), and `POST /configuration/clients/edge-certificate/renew?clientId=` renews one now.
-A certificate you supply yourself through an update stops central renewing that client's.
-
-Where `mtlsAuth` is left out, the client is recognised by the subject `CN=<client>,OU=<tenant>,O=Versola`
-(what a registration has always got from `client-certificate-authority`, above). Central normally
-holds **no CA key**: the signing is delegated through `ClientCertificateIssuer`, configured by the
-`client-certificates` block of `central.conf`:
-
-```hocon
-client-certificates {
-  validity     = "14 days"
-  renew-before = "4 days"
-  # exactly one of:
-  step-ca       { url = "https://step-ca:9000", root-certificate = "/app/ca/root_ca.crt",
-                  provisioner = "central", provisioner-key = "/app/ca/provisioner.json" }
-  cert-manager  { issuer-name = "versola-client-ca" }   # + issuer-kind, issuer-group, namespace
-}
-```
-
-- **step-ca** (docker-local, vps): a one-time token from a JWK provisioner (`central`, which the
-  compose file creates with a 14-day maximum and a template that keeps the request's subject and
-  limits the certificate to client authentication). The provisioner key is the only thing central
-  holds; a CA created before that template existed keeps the default one, which rewrites the subject
-  to the bare CN -- central then refuses a longer `subject_dn` registration with that reason.
-- **cert-manager** (k8s): a `CertificateRequest` created with the pod's service account, which may only
-  create, get and delete those in its namespace.
-- **`client-certificate-authority`** (the `local` stack, or any deployment that already has one): the one
-  backend where central holds the CA's certificate *and key*. Used when no `client-certificates` block
-  names a CA; it signs the request itself, leaf only, and gets the same renewal. Prefer the other two.
-
-Which clients central issued for is recorded in `client_certificate_issuance` (serial, expiry; no key
-material) -- the beginning of the audit trail #462 designs. Generating keys on edge instead of in
-central is #463.
-
-**Externally issued certificates.** `versola-tools`' `cert-sync` command (`migrate-tool`'s
-`CertSyncTool`) still copies certificates something else issued (cert-manager through the chart's
-`pki.clients`, or by hand) into central: it reads `$CERT_SYNC_DIR/<client-id>/tls.{crt,key}` and `PUT`s
-`/configuration/clients` with only `edgeClientCertificate` whenever the content changes
-(`CENTRAL_URL`, `CENTRAL_SECRET`/`CENTRAL_SECRET_FILE`/`CENTRAL_RESOURCE_SECRET`,
-`CERT_SYNC_INTERVAL_SECONDS`; `0` runs one pass). Off by default. Keys must be unencrypted PKCS#8.

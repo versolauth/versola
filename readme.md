@@ -44,23 +44,33 @@ For the full request-routing picture and why things are split this way, see [`de
 
 ## Getting started
 
-Requires a JDK, [sbt](https://www.scala-sbt.org/), Docker, [scala-cli](https://scala-cli.virtuslab.org/install) and an OpenSSL 3 `openssl` on `PATH` (for local config generation; macOS's LibreSSL is too old), nginx, and Node.js/npm (to build the login forms `central` serves).
+### Try a release with `versola-cli`
+
+The quickest way to run Versola is [`versola-cli`](https://github.com/versolauth/versola-cli): it pulls a released version, generates its configuration and secrets, and starts Postgres, `central`, `auth`, `edge`, the admin console and a reverse proxy with Docker Compose. It needs only Docker.
 
 ```bash
-# 1. Generate local dev config for auth/central/edge (writes auth/dev/env.conf, etc.)
-scala-cli run scripts/gen-env.scala   # answer "local" at the Name prompt
+curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh
+versola doctor                      # checks Docker, Compose, free port 2821, memory
+versola bootstrap local <version>   # a release tag without a leading "v", e.g. 0.7.1
+versola status
+versola down                        # stop; `versola uninstall` removes everything
+```
 
-# 2. Start Postgres
+The console opens at `http://localhost:2821/central/admin/` and the admin login is printed when `bootstrap` finishes. The same CLI deploys to a server: see [`deploy.md`](deploy.md).
+
+### Run from source
+
+To work on Versola itself you run the services from sbt. You need a JDK, [sbt](https://www.scala-sbt.org/), Docker, [scala-cli](https://scala-cli.virtuslab.org/install), an OpenSSL 3 `openssl` on `PATH` (macOS's LibreSSL is too old), nginx, and Node.js/npm. In short:
+
+```bash
+scala-cli run scripts/gen-env.scala                      # answer "local" at the Name prompt
 docker-compose -f services.yml up -d postgres
-
-# 3. Build the login forms that central and the other services need
 cd central-ui && npm install && npm run build:forms && cd ..
 ```
 
-Then start `central`, `auth`, the nginx TLS terminator in front of `auth`, and `edge`, and log in at
-`http://localhost:9005/login/central-admin` (`admin` / `Admin1234!`, OTP `123456`). Each service needs
-`RUN_MIGRATIONS=true` against a fresh database, and `edge` cannot reach `auth` without the terminator, so
-use the exact commands in [`develop.md`](develop.md#local-development) rather than starting them by hand.
+and then start `central`, `auth`, an nginx TLS terminator in front of `auth`, and `edge`, and open
+`http://localhost:9005/login/central-admin` (`admin` / `Admin1234!`, OTP `123456`). The exact commands, ports
+and flags are in [`develop.md`](develop.md#from-source).
 
 ## Testing
 
