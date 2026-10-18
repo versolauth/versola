@@ -22,8 +22,6 @@ object EdgeController extends Controller:
     deleteOldEdgeKeyEndpoint,
     deleteEdgeEndpoint,
     setEdgeDpopEndpoint,
-    setEdgeCertificateEndpoint,
-    deleteOldEdgeCertificateEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -38,8 +36,6 @@ object EdgeController extends Controller:
               id = edge.id,
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
-              hasCertificate = edge.certificateThumbprint.isDefined,
-              hasOldCertificate = edge.oldCertificateThumbprint.isDefined,
             ),
           ).toList,
         )
@@ -92,35 +88,6 @@ object EdgeController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
-  /** Pins the client certificate the edge presents on central's mutual-TLS listener -- the
-    * only place the edge surface is served (`authorizeEdge`). Repeating it rotates: the
-    * previous certificate stays accepted until `DELETE /configuration/edges/old-certificate`,
-    * so the edge can be moved to the new one without a window in which it is refused.
-    */
-  val setEdgeCertificateEndpoint =
-    Method.PUT / "configuration" / "edges" / "certificate" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[EdgeService]
-        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
-        body <- request.bodyAs[SetEdgeCertificateRequest]
-        edge <- service.find(edgeId)
-        response <-
-          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
-          else service.rotateCertificate(edgeId, body.certificate).as(Response.status(Status.NoContent))
-      yield response
-    }
-
-  val deleteOldEdgeCertificateEndpoint =
-    Method.DELETE / "configuration" / "edges" / "old-certificate" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[EdgeService]
-        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
-        _ <- service.deleteOldCertificate(edgeId)
-      yield Response.status(Status.NoContent)
-    }
-
   val setEdgeDpopEndpoint =
     Method.PUT / "configuration" / "edges" / "dpop" -> handler { (request: Request) =>
       for
@@ -143,13 +110,6 @@ case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
-    hasCertificate: Boolean,
-    hasOldCertificate: Boolean,
-) derives Schema, JsonCodec
-
-case class SetEdgeCertificateRequest(
-    /** One PEM-encoded X.509 certificate. */
-    certificate: String,
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(

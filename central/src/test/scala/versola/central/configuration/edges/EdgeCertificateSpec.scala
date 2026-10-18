@@ -1,32 +1,32 @@
 package versola.central.configuration.edges
 
-import versola.util.{Base64Url, TestCertificates}
+import versola.util.TestCertificates
 import zio.test.*
 
-import java.security.MessageDigest
-
 object EdgeCertificateSpec extends ZIOSpecDefault:
-  private val certificate = TestCertificates.generate()
+  private val edgeId = EdgeId("edge-a")
 
   def spec = suite("EdgeCertificate")(
-    test("the thumbprint is the base64url SHA-256 of the DER encoding (RFC 8705 §3.1)") {
-      val expected = Base64Url.encode(MessageDigest.getInstance("SHA-256").digest(certificate.certificate.getEncoded))
-      assertTrue(EdgeCertificate.thumbprint(certificate.certificate) == expected)
+    test("a certificate with the edge's URI name is issued to it") {
+      assertTrue(EdgeCertificate.isIssuedTo(TestCertificates.generate(uri = Some("urn:versola:edge:edge-a")).certificate, edgeId))
     },
-    test("a PEM and the certificate it encodes have the same thumbprint") {
-      assertTrue(
-        EdgeCertificate.thumbprintOfPem(certificate.certificatePem) ==
-          Right(EdgeCertificate.thumbprint(certificate.certificate)),
-      )
+    test("the name is built the way the check reads it") {
+      assertTrue(EdgeCertificate.uriFor(edgeId) == "urn:versola:edge:edge-a")
     },
-    test("refuse text that is not a certificate") {
-      assertTrue(EdgeCertificate.thumbprintOfPem("not a certificate").isLeft)
+    test("a certificate for another edge is not") {
+      assertTrue(!EdgeCertificate.isIssuedTo(TestCertificates.generate(uri = Some("urn:versola:edge:edge-b")).certificate, edgeId))
     },
-    test("refuse a private key") {
-      assertTrue(EdgeCertificate.thumbprintOfPem(certificate.privateKeyPem).isLeft)
+    test("a certificate naming several edges is refused for all of them") {
+      val both = TestCertificates.generate(uris = List("urn:versola:edge:edge-a", "urn:versola:edge:edge-b")).certificate
+      assertTrue(!EdgeCertificate.isIssuedTo(both, edgeId), !EdgeCertificate.isIssuedTo(both, EdgeId("edge-b")))
     },
-    test("refuse a bundle of two certificates: it would not say which one the edge presents") {
-      val bundle = certificate.certificatePem + "\n" + TestCertificates.generate().certificatePem
-      assertTrue(EdgeCertificate.thumbprintOfPem(bundle).isLeft)
+    test("a certificate whose subject CN says edge-a but carries no URI name is refused") {
+      assertTrue(!EdgeCertificate.isIssuedTo(TestCertificates.generate(subject = "CN=edge-a,O=Versola").certificate, edgeId))
+    },
+    test("a DNS name that looks like the URI is not a URI name") {
+      assertTrue(!EdgeCertificate.isIssuedTo(TestCertificates.generate(dnsName = Some("urn:versola:edge:edge-a")).certificate, edgeId))
+    },
+    test("a prefix match is not a match") {
+      assertTrue(!EdgeCertificate.isIssuedTo(TestCertificates.generate(uri = Some("urn:versola:edge:edge-a-and-more")).certificate, edgeId))
     },
   )

@@ -16,16 +16,14 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce,
-               certificate_thumbprint, old_certificate_thumbprint
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
         FROM edges
       """.query[EdgeRecord].run()
 
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce,
-               certificate_thumbprint, old_certificate_thumbprint
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
         FROM edges
         WHERE id = $id
       """.query[EdgeRecord].run().headOption
@@ -44,25 +42,6 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
         UPDATE edges
         SET old_public_key_jwk = public_key_jwk,
             public_key_jwk = $newPublicKeyJwk
-        WHERE id = $id
-      """.update.run()
-    .unit
-
-  override def setCertificates(id: EdgeId, current: String, old: Option[String]): Task[Unit] =
-    xa.connectMeasured("set-edge-certificates"):
-      sql"""
-        UPDATE edges
-        SET old_certificate_thumbprint = $old,
-            certificate_thumbprint = $current
-        WHERE id = $id
-      """.update.run()
-    .unit
-
-  override def deleteOldCertificate(id: EdgeId): Task[Unit] =
-    xa.connectMeasured("delete-old-edge-certificate"):
-      sql"""
-        UPDATE edges
-        SET old_certificate_thumbprint = NULL
         WHERE id = $id
       """.update.run()
     .unit

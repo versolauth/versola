@@ -37,7 +37,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeCertificate, EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -1481,20 +1481,8 @@ object BootstrapService:
     private def seedEdges(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
-          case Some(existing) => pinSeedCertificate(seed, existing)
-          case None =>
-            edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce) *>
-              edgeRepo.find(seed.id).flatMap(_.fold(ZIO.unit)(pinSeedCertificate(seed, _)))
-
-    /** Only an edge with no pinned certificate takes the seeded one: once it has renewed through
-      * central the record is ahead of the file, and the file must not put it back. */
-    private def pinSeedCertificate(seed: CentralConfig.BootstrapConfig.EdgeSeed, edge: EdgeRecord): Task[Unit] =
-      ZIO.foreachDiscard(seed.certificate.filter(_ => edge.certificateThumbprint.isEmpty)): path =>
-        for
-          pem <- ZIO.attemptBlocking(java.nio.file.Files.readString(java.nio.file.Path.of(path)))
-          thumbprint <- ZIO.fromEither(EdgeCertificate.thumbprintOfPem(pem)).mapError(IllegalArgumentException(_))
-          _ <- edgeRepo.setCertificates(seed.id, thumbprint, None)
-        yield ()
+          case Some(_) => ZIO.unit
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the

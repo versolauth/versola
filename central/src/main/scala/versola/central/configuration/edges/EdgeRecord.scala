@@ -21,24 +21,13 @@ import java.security.interfaces.RSAPublicKey
  * per endpoint, because a proof's `htm`/`htu` already bind it to one method and URL -- a nonce
  * accepted across one edge's resources buys an attacker nothing that splitting the space would
  * deny. Distinct from a tenant's `require_dpop_nonce`, which governs `auth`'s own endpoints.
- *
- * `certificateThumbprint` and `oldCertificateThumbprint` pin the TLS client certificate the edge
- * presents to central's mutual-TLS listener, where the edge surface is served (see
- * `authorizeEdge`). Like the keys, the old one is populated only during a rotation window.
  */
 case class EdgeRecord(
     id: EdgeId,
     publicKey: Json.Obj,
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
-    certificateThumbprint: Option[String] = None,
-    oldCertificateThumbprint: Option[String] = None,
 ):
-  /** The `x5t#S256` thumbprints of the client certificates this edge may present on central's
-    * mutual-TLS listener: the current one and, during a rotation, the one before it. */
-  def certificateThumbprints: Set[String] =
-    (certificateThumbprint.toSet ++ oldCertificateThumbprint)
-
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)
     JWT.PublicKeys.fromJson(Json.Obj("keys" -> keys))

@@ -25,7 +25,7 @@ import versola.central.configuration.clients.{
   OAuthClientService,
 }
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
-import versola.central.configuration.edges.{EdgeCertificateService, EdgeController, EdgeRepository, EdgeService, EdgeSyncController}
+import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService, EdgeSyncController}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
@@ -125,7 +125,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeCertificateEnrollmentRepository &
       ClientCertificateIssuer &
       ClientCertificateService &
-      EdgeCertificateService &
       ServerMetadataRepository &
       ServerMetadataService &
       JwksService
@@ -232,7 +231,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeService.live >++>
       RoleService.live >++>
       EdgeService.live >++>
-      EdgeCertificateService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>
       FormService.live >++>

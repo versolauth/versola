@@ -94,7 +94,7 @@ object ClientCertificateEnrollment:
         request = Request.post(SignUrl, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
-        response <- ZIO.scoped(tokens.connection(httpClient).flatMap(_.request(request)).flatMap(r => r.body.asString.map(r.status -> _)))
+        response <- ZIO.scoped(tokens.connection(httpClient).request(request).flatMap(r => r.body.asString.map(r.status -> _)))
         (status, text) = response
         _ <- ZIO.fail(RuntimeException(s"central refused the certificate request for client '$clientId' with $status: $text"))
           .unless(status.isSuccess)

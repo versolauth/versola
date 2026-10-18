@@ -6,7 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.{BadRequest, Observability}
+import versola.util.http.Observability
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -161,8 +161,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for body <- response.body.asJson[GetAllEdgesResponse]
         yield assertTrue(
           body.edges == List(
-            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true, hasCertificate = false, hasOldCertificate = false),
-            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false, hasCertificate = false, hasOldCertificate = false),
+            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true),
+            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false),
           ),
         ),
     ),
@@ -243,47 +243,5 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
-    ),
-    controllerTestCase(
-      description = "pinning an edge's certificate returns 204 No Content and hands the PEM to the service",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "certificate").addQueryParam("edgeId", edgeId.toString),
-        body = Body.fromString(SetEdgeCertificateRequest(certificate = "PEM").toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.rotateCertificate.succeedsWith(()),
-      verify = (_, service) => ZIO.succeed(assertTrue(service.rotateCertificate.calls == List((edgeId, "PEM")))),
-    ),
-    controllerTestCase(
-      description = "pinning the certificate of an unregistered edge returns 404 and writes nothing",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "certificate").addQueryParam("edgeId", "edge-missing"),
-        body = Body.fromString(SetEdgeCertificateRequest(certificate = "PEM").toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NotFound,
-      setup = service => service.find.succeedsWith(None) *> service.rotateCertificate.succeedsWith(()),
-      verify = (_, service) => ZIO.succeed(assertTrue(service.rotateCertificate.calls.isEmpty)),
-    ),
-    controllerTestCase(
-      description = "a certificate the service refuses as malformed is a 400",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "certificate").addQueryParam("edgeId", edgeId.toString),
-        body = Body.fromString(SetEdgeCertificateRequest(certificate = "not a certificate").toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.BadRequest,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.rotateCertificate.failsWith(BadRequest("Not a single PEM-encoded X.509 certificate")),
-    ),
-    controllerTestCase(
-      description = "delete old edge certificate returns 204 No Content",
-      request = Request(
-        method = Method.DELETE,
-        url = (URL.root / "configuration" / "edges" / "old-certificate").addQueryParam("edgeId", edgeId.toString),
-      ),
-      expectedStatus = Status.NoContent,
-      setup = service => service.deleteOldCertificate.succeedsWith(()),
-      verify = (_, service) => ZIO.succeed(assertTrue(service.deleteOldCertificate.calls == List(edgeId))),
     ),
   )

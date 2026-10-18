@@ -1,14 +1,12 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.util.{ConfigSnapshot, JWT, Secret, TestCertificates}
+import versola.util.{ConfigSnapshot, JWT, Secret}
 import zio.*
-import zio.http.{Client, URL}
+import zio.http.URL
 import zio.json.JsonCodec
 import zio.test.*
 
-import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 
@@ -23,17 +21,6 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
 
   private val keyId = "kid-1"
 
-  /** What the deployment puts down for `central.mutual-tls`: this edge's certificate and key, and
-    * central's own leaf to pin. */
-  private lazy val centralMtlsFiles: (Path, Path, Path) =
-    def write(suffix: String, pem: String): Path =
-      val path = Files.createTempFile("central-mtls", suffix).nn
-      path.toFile.nn.deleteOnExit()
-      Files.write(path, pem.getBytes(StandardCharsets.UTF_8)).nn
-    val edge = TestCertificates.generate(subject = "CN=edge-1,OU=edge,O=Versola")
-    val central = TestCertificates.generate(subject = "CN=central.internal,O=Versola")
-    (write(".crt", edge.certificatePem), write(".key", edge.privateKeyPem), write(".pem", central.certificatePem))
-
   private lazy val config = EdgeConfig(
     id = EdgeId("edge-1"),
     keyId = keyId,
@@ -42,16 +29,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32(Array.fill(32)(3.toByte))),
       edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32(Array.fill(32)(5.toByte)), 1.hour),
     ),
-    central = EdgeConfig.CentralConfig(
-      url = URL.decode("https://central.example").toOption.get,
-      mutualTls = Some(
-        EdgeConfig.CentralMutualTls(
-          certificate = centralMtlsFiles._1.toString,
-          privateKey = centralMtlsFiles._2.toString,
-          trustedCertificates = Set(centralMtlsFiles._3.toString),
-        ),
-      ),
-    ),
+    central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
     edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
@@ -72,8 +50,6 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       ZLayer.succeed(config),
       CentralSyncTokenService.live,
       ZLayer.succeed(ConfigSnapshot.disabled),
-      ClientCertificateFiles.live,
-      Client.default,
     )
 
   def spec = suite("CentralSyncTokenService")(

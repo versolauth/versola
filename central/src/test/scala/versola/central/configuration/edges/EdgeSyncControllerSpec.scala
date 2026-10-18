@@ -36,7 +36,6 @@ import versola.central.configuration.{
   GetResourcesSyncResponse,
   GetRolesSyncResponse,
   ResourceUri,
-  SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.http.Observability
@@ -81,19 +80,13 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
   /** A key central never registered, for the token that names `edge-a` without holding its key. */
   private val strangerKeyPair = rsaKeyPair("stranger-key")
 
-  /** The certificate edge-a presents in the handshake, and one that chains to the same anchors
-    * but is registered for nobody. */
-  private val edgeCertificate = TestCertificates.generate()
-  private val strangerCertificate = TestCertificates.generate()
-  private val rotatedCertificate = TestCertificates.generate()
+  /** The certificate edge-a presents in the handshake, and certificates the same anchors would
+    * vouch for that were issued to another edge, or to nobody in particular. */
+  private val edgeCertificate = TestCertificates.generate(uri = Some(EdgeCertificate.uriFor(edgeId)))
+  private val otherEdgeCertificate = TestCertificates.generate(uri = Some(EdgeCertificate.uriFor(EdgeId("edge-b"))))
+  private val unnamedCertificate = TestCertificates.generate(subject = "CN=edge-a,O=Versola")
 
-  private val edgeRecord = EdgeRecord(
-    edgeId,
-    edgeKeyPair.toPublicJwk,
-    None,
-    requireDpopNonce = true,
-    certificateThumbprint = Some(EdgeCertificate.thumbprint(edgeCertificate.certificate)),
-  )
+  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true)
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
     * `CentralSyncTokenService` mints it. */
@@ -262,18 +255,6 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       services.jwks.getRaw.succeedsWith(jwks) *>
       services.metadata.getMetadata.succeedsWith(None)
 
-  /** Records what it is asked and answers by the request: "refuse" is refused, anything else is
-    * "signed:<csr>". The real service is `EdgeCertificateServiceSpec`'s. */
-  private class FakeEdgeCertificates extends EdgeCertificateService:
-    var calls: List[(EdgeId, String, String)] = Nil
-
-    override def sign(edgeId: EdgeId, presented: String, csrPem: String) =
-      ZIO.succeed { calls = calls :+ ((edgeId, presented, csrPem)) } *>
-        (if csrPem == "refuse" then ZIO.fail(EdgeCertificateService.SigningRefused(edgeId, "wrong subject"))
-         else ZIO.succeed(s"signed:$csrPem"))
-
-  private val edgeCertificates = FakeEdgeCertificates()
-
   private def testCase(
       description: String,
       request: Request,
@@ -308,7 +289,6 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             EdgeSyncController.routes.provideEnvironment(
               ZEnvironment[OAuthClientService](services.clients) ++
                 ZEnvironment[ClientCertificateService](certificates) ++
-                ZEnvironment[EdgeCertificateService](edgeCertificates) ++
                 ZEnvironment[AuthorizationPresetService](services.presets) ++
                 ZEnvironment[ResourceService](services.resources) ++
                 ZEnvironment[RoleService](services.roles) ++
@@ -514,8 +494,8 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ),
     // The surface is public, reached on the mutual-TLS listener: a valid token alone is not
-    // enough, the handshake's certificate has to be the one registered for the edge it names.
-    suite("an edge is held to its registered certificate")(
+    // enough, the handshake's certificate has to have been issued to the edge the token names.
+    suite("an edge is held to the certificate issued to it")(
       suite("no certificate in the handshake")(
         syncResources.map(resource =>
           testCase(
@@ -537,16 +517,16 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )*,
       ),
       testCase(
-        description = "a certificate registered for nobody, with edge-a's genuine token",
+        description = "a certificate issued to another edge, with edge-a's genuine token",
         request = Request.get(sync("clients")),
-        certificate = Some(strangerCertificate.certificate),
+        certificate = Some(otherEdgeCertificate.certificate),
         expectedStatus = Status.Unauthorized,
         verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
       ),
       testCase(
-        description = "an edge with no certificate registered cannot call at all",
+        description = "a certificate that names no edge, whatever its subject says",
         request = Request.get(sync("clients")),
-        edge = edgeRecord.copy(certificateThumbprint = None),
+        certificate = Some(unnamedCertificate.certificate),
         expectedStatus = Status.Unauthorized,
         verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
       ),
@@ -559,59 +539,13 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificate = None,
         expectedStatus = Status.Unauthorized,
       ),
-      // A rotation leaves the edge on the old certificate until it is moved: both are accepted
-      // until the old one is deleted.
+      // A certificate is no credential on its own: edge-b's certificate with a token for an edge
+      // central never registered is turned away by the token check first.
       testCase(
-        description = "the previous certificate is accepted during a rotation",
+        description = "the right certificate with a token signed by a key central never registered",
         request = Request.get(sync("clients")),
-        certificate = Some(rotatedCertificate.certificate),
-        edge = edgeRecord.copy(
-          certificateThumbprint = Some(EdgeCertificate.thumbprint(edgeCertificate.certificate)),
-          oldCertificateThumbprint = Some(EdgeCertificate.thumbprint(rotatedCertificate.certificate)),
-        ),
-        expectedStatus = Status.Ok,
-      ),
-      testCase(
-        description = "a certificate whose rotation was completed (old one deleted) is refused",
-        request = Request.get(sync("clients")),
-        certificate = Some(rotatedCertificate.certificate),
+        token = edgeToken(strangerKeyPair),
         expectedStatus = Status.Unauthorized,
-      ),
-    ),
-    suite("an edge renews its own certificate")(
-      testCase(
-        description = "signs the request, naming the certificate the call was made with so it stays accepted",
-        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-1"}"""))
-          .addHeader(Header.ContentType(MediaType.application.json)),
-        expectedStatus = Status.Ok,
-        verify = (response, _) =>
-          for payload <- decodeBody[SignEdgeCertificateResponse](response)
-          yield assertTrue(
-            payload.certificate == "signed:csr-1",
-            edgeCertificates.calls.contains((edgeId, EdgeCertificate.thumbprint(edgeCertificate.certificate), "csr-1")),
-          ),
-      ),
-      testCase(
-        description = "a request the service refuses is a 422",
-        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"refuse"}"""))
-          .addHeader(Header.ContentType(MediaType.application.json)),
-        expectedStatus = Status.UnprocessableEntity,
-      ),
-      testCase(
-        description = "401 without a certificate in the handshake, and nothing is signed",
-        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-2"}"""))
-          .addHeader(Header.ContentType(MediaType.application.json)),
-        certificate = None,
-        expectedStatus = Status.Unauthorized,
-        verify = (_, _) => ZIO.succeed(assertTrue(!edgeCertificates.calls.exists(_._3 == "csr-2"))),
-      ),
-      testCase(
-        description = "401 for a certificate registered for nobody, and nothing is signed",
-        request = Request.post(URL.root / "edge" / "certificate" / "sign", Body.fromString("""{"csr":"csr-3"}"""))
-          .addHeader(Header.ContentType(MediaType.application.json)),
-        certificate = Some(strangerCertificate.certificate),
-        expectedStatus = Status.Unauthorized,
-        verify = (_, _) => ZIO.succeed(assertTrue(!edgeCertificates.calls.exists(_._3 == "csr-3"))),
       ),
     ),
     suite("what only an edge may be sent travels encrypted to its key alone")(

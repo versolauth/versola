@@ -25,7 +25,7 @@ import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
 import zio.http.*
-import zio.json.{EncoderOps, JsonCodec}
+import zio.json.EncoderOps
 import zio.json.ast.Json
 
 /** The surface central serves to edges and to nobody else (#554): `GET /edge/sync/<resource>`
@@ -36,7 +36,7 @@ import zio.json.ast.Json
   * token is refused ([[versola.central.refuseEdgeCallers]]).
   */
 object EdgeSyncController extends Controller:
-  type Env = Tracing & CentralConfig & EdgeService & SecurityService & OAuthClientService & ClientCertificateService & EdgeCertificateService &
+  type Env = Tracing & CentralConfig & EdgeService & SecurityService & OAuthClientService & ClientCertificateService &
     AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -49,7 +49,6 @@ object EdgeSyncController extends Controller:
     presetsEndpoint,
     serverMetadataEndpoint,
     signEdgeCertificateEndpoint,
-    signOwnCertificateEndpoint,
   )
 
   val clientsEndpoint =
@@ -190,25 +189,6 @@ object EdgeSyncController extends Controller:
         }
     }
 
-  /** The certificate the edge presents on this listener, renewed: it asks with the one it has and
-    * is answered with the next, which central has already pinned beside it. */
-  val signOwnCertificateEndpoint =
-    Method.POST / "edge" / "certificate" / "sign" -> handler { (request: Request) =>
-      (for
-        edgeId <- authorizeEdge(request)
-        presented <- ZIO.fromOption(request.remoteCertificate.map(EdgeCertificate.thumbprint)).orElseFail(Unauthorized)
-        service <- ZIO.service[EdgeCertificateService]
-        body <- request.bodyAs[SignOwnCertificateRequest]
-        chain <- service.sign(edgeId, presented, body.csr)
-      yield Response.json(SignEdgeCertificateResponse(chain).toJson))
-        .catchAll {
-          case error: EdgeCertificateService.SigningRefused =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
-          case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
-          case error: Throwable => ZIO.fail(error)
-        }
-    }
-
   /** The calling edge's record, for the routes that encrypt to its key or answer with its own
     * row. `authorizeEdge` has verified the token against this same record. */
   private def callerEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeRecord] =
@@ -243,5 +223,3 @@ object EdgeSyncController extends Controller:
         secret = encryptedSecret,
       )
     }
-
-case class SignOwnCertificateRequest(csr: String) derives JsonCodec

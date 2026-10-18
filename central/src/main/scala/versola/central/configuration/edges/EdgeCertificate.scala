@@ -1,28 +1,40 @@
 package versola.central.configuration.edges
 
-import versola.util.Base64Url
-
-import java.io.ByteArrayInputStream
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import java.security.cert.{Certificate, CertificateFactory}
+import java.security.cert.{Certificate, X509Certificate}
+import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
-/** RFC 8705 §3.1 `x5t#S256`: the base64url-encoded SHA-256 of a certificate's DER encoding.
-  * It is what an edge is registered by and what the listener compares the presented certificate
-  * to -- the certificate itself is never stored, so there is no second parse that could read it
-  * differently.
+/** What names an edge in the certificate it presents on central's mutual-TLS listener: a URI
+  * subject alternative name, `urn:versola:edge:<id>`.
+  *
+  * The TLS handshake has already established that the certificate chains to the listener's trust
+  * anchors, which are meant to be a CA that issues edge certificates and nothing else; this is the
+  * other half, that it was issued to the edge the token names. An edge's certificate is therefore
+  * provisioned and renewed by whatever deployed the edge (cert-manager, step-ca), with no
+  * registration in central that a renewal could outrun.
+  *
+  * A URI name rather than the subject CN: it is a name no human or hostname can collide with, and
+  * issuers that fill a CN from a hostname cannot be made to produce one by accident.
   */
 object EdgeCertificate:
-  def thumbprint(certificate: Certificate): String =
-    Base64Url.encode(MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded))
+  private val UriNameType = 6
+  private val Prefix = "urn:versola:edge:"
 
-  /** The thumbprint of a single PEM certificate. A bundle is refused: pinning "whichever of
-    * these" would mean the registration does not say which certificate the edge presents. */
-  def thumbprintOfPem(pem: String): Either[String, String] =
-    Try {
-      val certificates = CertificateFactory.getInstance("X.509")
-        .generateCertificates(new ByteArrayInputStream(pem.getBytes(StandardCharsets.UTF_8)))
-      require(certificates.size == 1, "expected exactly one certificate")
-      thumbprint(certificates.iterator.next)
-    }.toEither.left.map(e => s"Not a single PEM-encoded X.509 certificate: ${e.getMessage}")
+  def uriFor(edgeId: EdgeId): String = s"$Prefix$edgeId"
+
+  /** The edge ids `certificate` carries a name for. Unreadable alternative names read as none. */
+  def edgeIds(certificate: Certificate): Set[String] =
+    certificate match
+      case x509: X509Certificate =>
+        Try(Option(x509.getSubjectAlternativeNames).map(_.asScala.toList).getOrElse(Nil)).getOrElse(Nil)
+          .collect:
+            case entry if entry.size == 2 && entry.get(0) == Integer.valueOf(UriNameType) => String.valueOf(entry.get(1))
+          .collect:
+            case name if name.startsWith(Prefix) => name.stripPrefix(Prefix)
+          .toSet
+      case _ => Set.empty
+
+  /** Only a certificate that names exactly this edge, and no other: one that named several would
+    * let a holder of it call as any of them. */
+  def isIssuedTo(certificate: Certificate, edgeId: EdgeId): Boolean =
+    edgeIds(certificate) == Set(edgeId.toString)

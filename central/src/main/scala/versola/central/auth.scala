@@ -48,20 +48,19 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
     case _ =>
       ZIO.fail(Unauthorized)
 
-/** The edge-facing surface's check (#554): the caller is a registered edge, proven twice. The
-  * key it signed the token with says which edge it claims to be; the client certificate the TLS
-  * handshake presented, on central's mutual-TLS listener, must be the one registered for that
-  * edge. A certificate the trust anchors vouch for is therefore not enough to impersonate
-  * another edge, and a stolen token is not enough without the certificate. The caller is served
-  * as that edge and no other. Auth's token names no edge and is refused: what auth needs, it
-  * reads under `/configuration`.
+/** The edge-facing surface's check (#554): the caller is a registered edge, proven twice. The key
+  * it signed the token with says which edge it claims to be; the client certificate the TLS
+  * handshake presented, on central's mutual-TLS listener, must have been issued to that same edge
+  * ([[EdgeCertificate.isIssuedTo]]). A certificate for another edge is therefore not enough to
+  * use a token that names this one, and a stolen token is not enough without a certificate. The
+  * caller is served as that edge and no other. Auth's token names no edge and is refused: what auth
+  * needs, it reads under `/configuration`.
   */
 def authorizeEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeId] =
   for
     edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
-    edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
     presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
-    _ <- ZIO.fail(Unauthorized).unless(edge.certificateThumbprints.contains(EdgeCertificate.thumbprint(presented)))
+    _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId))
   yield edgeId
 
 /** Refuses an edge token on every route it wraps (#554). The edge-facing surface is
