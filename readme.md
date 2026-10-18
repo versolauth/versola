@@ -70,7 +70,7 @@ cd central-ui && npm install && npm run build:forms && cd ..
 
 and then start `central`, `auth`, an nginx TLS terminator in front of `auth`, and `edge`, and open
 `http://localhost:9005/login/central-admin` (`admin` / `Admin1234!`, OTP `123456`). The exact commands, ports
-and flags are in [`develop.md`](develop.md#from-source).
+and flags are in [`develop.md`](develop.md#running-from-source).
 
 ## Testing
 
