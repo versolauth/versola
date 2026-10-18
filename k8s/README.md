@@ -586,14 +586,20 @@ handshake's certificate chains to the issuing CA, and carries the URI name
 `env.conf` -- for the same edge the signed token names. cert-manager issues both certificates
 (`pki.centralServer`, `pki.edgeCentral`) and renews them; nothing is registered in central when it
 does, so a renewal needs only the restart Reloader gives edge and central. The chart's Service is
-a ClusterIP. To let edges outside the cluster in, publish the port with a `LoadBalancer` or a
-TLS-**passthrough** route (ingress-nginx `ssl-passthrough`, a Gateway `TLSRoute`) -- never a
-terminating one, which would swallow the certificate -- add the public name to
-`pki.centralServer.dnsNames`, and restrict the source addresses where you can. A deployment is therefore
-addressed by two hostnames: `id.<domain>` for auth (the ingress) and `central.<domain>` routed (TLS passthrough, by SNI) to central's
-mutual-TLS port, which edges outside the cluster use as `central.url = https://central.<domain>`. With `pki.issuerRef`
-left empty the issuing CA also signs edge-fronted clients' certificates; central refuses to issue
-one carrying an edge's URI name, but a CA used for nothing else is the cleaner setup
+a ClusterIP by default. To let edges outside the cluster in, set
+`services.central.mutualTlsExposure.type`: `loadBalancer` (a LoadBalancer Service on port 443, with
+`sourceRanges` to restrict who may connect), `ingressPassthrough` (an Ingress for `host` with
+`ssl-passthrough`; the controller must support it, e.g. ingress-nginx started with
+`--enable-ssl-passthrough`) or `gatewayTLSRoute` (a Gateway API `TLSRoute` on a listener in
+`Passthrough` mode). All of them carry the handshake through untouched -- a terminating route would
+swallow the certificate, so the chart renders none. Put the public name in
+`pki.centralServer.dnsNames` and point DNS at the entry point. A deployment is therefore addressed by
+two hostnames: `id.<domain>` for auth (the ingress) and `central.<domain>` routed (TLS passthrough, by
+SNI) to central's mutual-TLS port, which edges outside the cluster use as
+`central.url = https://central.<domain>`; inside the cluster edge uses
+`https://<release>-versola-central:8093` (`scripts/gen-env.scala`'s default for `k8s`). With
+`pki.issuerRef` left empty the issuing CA also signs edge-fronted clients' certificates; central
+refuses to issue one carrying an edge's URI name, but a CA used for nothing else is the cleaner setup
 (`pki.issuerRef`).
 
 A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs

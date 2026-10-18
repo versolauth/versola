@@ -1437,6 +1437,9 @@ def defaultServerMetadata(authUrl: String): String =
   val centralMutualTlsUrlDefault =
     if isDockerLocal then "https://central:8093"
     else if isVps then "https://127.0.0.1:8093"
+    // k8s: central's Service in the release, as the chart names it for a release called `versola`; an edge
+    // outside the cluster uses the public name (https://central.<domain>) instead.
+    else if isKubernetes then "https://versola-central:8093"
     else s"https://localhost:$centralMutualTlsPort"
   val centralMutualTlsUrl = prompt(
     s"  Central mutual-TLS URL, how edge reaches the edge surface [$centralMutualTlsUrlDefault]: ",

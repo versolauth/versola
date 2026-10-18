@@ -301,6 +301,25 @@ services:
     # ClusterIP: to reach it from outside the cluster put a TCP/TLS-passthrough in front of
     # it (the handshake and the edge's certificate must reach this pod untouched) -- k8s/README.md.
     mutualTlsPort: 8093
+    # Publishing `mutualTlsPort` outside the cluster, for edges that run elsewhere (#554). Off by
+    # default. Whatever carries it must pass the handshake through untouched, never terminate it:
+    # central demands the edge's client certificate in that handshake. Add the public name to
+    # `pki.centralServer.dnsNames`. The name edges use is `central.<domain>`, next to auth's
+    # `id.<domain>`.
+    #   none               -> reachable in-cluster only (the central Service)
+    #   loadBalancer       -> a LoadBalancer Service on `port` (443), point DNS at it; restrict with sourceRanges
+    #   ingressPassthrough -> an Ingress for `host` with ssl-passthrough (ingress-nginx started with
+    #                         --enable-ssl-passthrough); needs `className`
+    #   gatewayTLSRoute    -> a Gateway API TLSRoute for `host` on a Gateway listener in Passthrough mode
+    mutualTlsExposure:
+      type: none
+      host: "" # central.example.com; required for ingressPassthrough and gatewayTLSRoute
+      port: 443 # loadBalancer only
+      annotations: {} # on the Service / Ingress, e.g. cloud load balancer settings
+      sourceRanges: [] # loadBalancer only: CIDRs allowed to connect
+      className: "" # ingressPassthrough only
+      parentRefs: [] # gatewayTLSRoute only, e.g. [{name: public-gateway, sectionName: central-mtls}]
+      apiVersion: gateway.networking.k8s.io/v1alpha2 # gatewayTLSRoute only
     # Same budget and same reasoning as auth's, from docker/Dockerfile.central.
     resources:
       requests:
