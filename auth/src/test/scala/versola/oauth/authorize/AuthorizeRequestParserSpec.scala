@@ -155,6 +155,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     val configuration = stub[OAuthConfigurationService]
     configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
     configuration.getIpHeader.returnsWith(ZIO.succeed("X-Real-IP"))
+    // Overridden by the tests that are about the profile.
+    configuration.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.standard))
     val pushedAuthorizationRepository = stub[PushedAuthorizationRepository]
     val securityService = stub[SecurityService]
     // Real rather than stubbed: what a request object resolves to is the parser's input, so
@@ -757,15 +759,31 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val hybridParams = validParams ++ Map("response_type" -> "code id_token") - "code_challenge" - "code_challenge_method"
         val request = Request.get(URL.root.addQueryParams(hybridParams))
         for
+          // A public client needs PKCE on any profile; a `fapi2` tenant would refuse the hybrid
+          // flow itself before this check is reached.
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(authMethod = AuthMethod.none)))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Fragment)))
+      },
+
+      test("rejects the hybrid flow for a client of a fapi2 tenant, answering in the fragment") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMissing(
-          clientId,
-          redirectUri,
-          Some(State("test-state")),
-          responseMode = ResponseMode.Fragment,
-        )))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, Some(State("test-state")), "code id_token", responseMode = ResponseMode.Fragment)))
+      },
+
+      test("still accepts plain code for a client of a fapi2 tenant") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result.exists(_.responseType == NonEmptySet(ResponseTypeEntry.Code)))
       },
       test("query mode on CodeChallengeMethodMissing when response_type=code") {
         val env = Env()
