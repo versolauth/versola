@@ -233,21 +233,25 @@ def provision(args, suite):
     algs = {k["kid"]: k.get("alg") for k in jwks["keys"]}
     # A published key may be verify-only (no private half in central), so reuse only one this
     # runner generated earlier, and generate otherwise.
-    # FAPI 2.0 requires tokens signed with PS256 or ES256; a standard tenant keeps its own key.
-    if not fapi2:
-        pass
-    elif state.get("signingKeyId") in algs:
+    # The tenant signs with a key of the suite's algorithm (FAPI 2.0: PS256; OpenID Connect: RS256).
+    # A published key may be verify-only (no private half in central), so reuse only one this
+    # runner generated earlier, and generate otherwise.
+    alg = suite.get("signing_alg")
+    if alg and state.get("signingKeyId") in algs and state.get("signingAlg") == alg:
         s["signingKeyId"] = state["signingKeyId"]
-    elif algs.get(s.get("signingKeyId")) not in ("PS256", "ES256") or not state.get("signingKeyId"):
-        status, gen = central.call("POST", "/configuration/jwks/generate", query={"alg": "PS256"})
+    elif alg:
+        status, gen = central.call("POST", "/configuration/jwks/generate", query={"alg": alg})
         if status != 201:
-            die(f"generating a PS256 signing key: {status} {gen}")
-        state["signingKeyId"] = s["signingKeyId"] = gen["kid"]
+            die(f"generating a {alg} signing key: {status} {gen}")
+        state["signingKeyId"], state["signingAlg"] = gen["kid"], alg
+        s["signingKeyId"] = gen["kid"]
         log(f"generated signing key {gen['kid']}")
         save_state(tenant, state)
         time.sleep(3)  # the key reaches every verifier before anything signs with it
     if fapi2:
         s["clientAssertionMaxLifetimeSeconds"] = 900
+    # what the suite's plan needs of the tenant beyond the defaults (suites.py, `setup`)
+    s.update(suite.get("setup", {}).get("challenge_settings", {}))
     # Forty-odd logins in a row from one address must not be throttled.
     s["submissionLimits"] = {
         "otpRequest": [{"maxAttempts": 50, "windowSeconds": 60}],
@@ -307,6 +311,11 @@ def provision(args, suite):
         die(f"setting the user's password: {status} {body} (the endpoint is test-only: it is 404 in production)")
     state["user"] = user
     save_state(tenant, state)
+    claims = suite.get("setup", {}).get("user_claims")
+    if claims:
+        status, body = central.call("PATCH", "/users/claims", {"id": uid, "claims": claims})
+        if status not in (200, 202, 204):
+            die(f"setting the user's claims: {status} {body}")
     log("waiting for auth to pick the configuration up")
     time.sleep(args.settle)
     log(f"provisioned; credentials are in {state_path(tenant)}")
@@ -335,7 +344,7 @@ def create_plan(args, suite, state, variant):
     if suite["resource"]:
         cfg["resource"] = {"resourceUrl": iss + suite["resource"], "resourceMethod": "GET"}
     cl = suite["clients"]
-    for name, cid in zip(("client", "client2"), cl["ids"] if cl else ()):
+    for name, cid in zip(cl["config_keys"] if cl else (), cl["ids"] if cl else ()):
         cred = state["clients"][cid]
         if cl["auth"] == "private_key_jwt":
             cfg[name] = {"client_id": cid, "jwks": {"keys": [cred]}, "dpop_signing_alg": "PS256"}
@@ -359,14 +368,16 @@ class Driver:
         self.issuer = args.issuer.rstrip("/")
         self.local = args.local_issuer.rstrip("/")
         self.user = state.get("user")
+        self.verbose = args.verbose
 
-    def visit(self, url, login=True):
-        b = Browser()
+    def visit(self, b, url, login=True):
         url = url.replace(self.issuer, self.local)
         status, loc, body = b.request(url)
         if not login:
             return
         for _ in range(15):
+            if self.verbose:
+                log(f"    {status} {loc or ''} {re.findall(r'versola-step\" content=\"([^\"]+)', body)}")
             if status in (301, 302, 303, 307) and loc:
                 if "localhost.emobix.co.uk" in loc:
                     self.hand_back(b, loc)
@@ -404,12 +415,17 @@ class Driver:
                 pass
 
 
-def run_module(args, plan_id, module, driver, two_visits=()):
-    status, r = http_json("POST", f"{args.suite_url}/api/runner?test={module}&plan={plan_id}")
+def run_module(args, plan_id, module, driver, two_visits=(), variant=None):
+    # a module that runs under another variant than the plan's (client_secret_post) says so itself
+    query = f"test={module}&plan={plan_id}"
+    if variant:
+        query += "&variant=" + urllib.parse.quote(json.dumps(variant))
+    status, r = http_json("POST", f"{args.suite_url}/api/runner?{query}")
     if status not in (200, 201):
         raise RuntimeError(f"cannot start {module}: {status} {r}")
     rid = r["id"]
-    visited = 0
+    browser = Browser()  # one per module: a second visit (prompt=none, max_age) relies on the first one's session
+    seen = []  # the suite lists only the URLs outstanding now, so a visit is told by the URL itself
     deadline = time.time() + args.timeout
     info = {}
     idle = 0
@@ -420,15 +436,15 @@ def run_module(args, plan_id, module, driver, two_visits=()):
             break
         _, runner = http_json("GET", f"{args.suite_url}/api/runner/{rid}")
         urls = (runner or {}).get("browser", {}).get("urls", [])
-        idle = 0 if visited < len(urls) else idle + 1
-        while visited < len(urls):
-            visited += 1
-            url = urls[visited - 1]
-            driver.visit(url, login=not (module in two_visits and visited == 1))
+        fresh = [u for u in urls if u not in seen]
+        idle = 0 if fresh else idle + 1
+        for url in fresh:
+            seen.append(url)
+            driver.visit(browser, url, login=not (module in two_visits and len(seen) == 1))
             # what the suite's own browser automation does after a visit: some modules
             # (a request_uri used twice) wait for it
             http_json("POST", f"{args.suite_url}/api/runner/browser/{rid}/visit?url={urllib.parse.quote(url, safe='')}")
-        if visited and idle >= 5 and idle % 5 == 0 and needs_review(args, rid):
+        if seen and idle >= 5 and idle % 5 == 0 and needs_review(args, rid):
             info["result"] = "REVIEW"
             break
     return rid, info
@@ -494,6 +510,7 @@ def run(args, suite):
     variant = parse_variant(args.variant, suite)
     plan = create_plan(args, suite, state, variant)
     modules = [m["testModule"] for m in plan["modules"]]
+    module_variants = {m["testModule"]: m.get("variant") or {} for m in plan["modules"]}
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = os.path.join(HERE, "results", name, stamp)
     os.makedirs(os.path.join(out, "logs"))
@@ -513,7 +530,8 @@ def run(args, suite):
             log(f"  {short}: not run (needs a person)")
             continue
         try:
-            rid, info = run_module(args, plan["id"], module, driver, two_visits)
+            own = module_variants[module]
+            rid, info = run_module(args, plan["id"], module, driver, two_visits, {**variant, **own} if own else None)
             findings, entries = summarize(args, rid)
         except Exception as e:  # keep going: one broken module must not hide the rest
             rid, info, findings, entries = "-", {"status": "ERROR", "result": None}, [
@@ -607,6 +625,7 @@ def main():
     p.add_argument("--timeout", type=int, default=120, help="seconds a module may take (default %(default)s)")
     p.add_argument("--settle", type=int, default=20, help="provision: seconds to let auth's configuration cache catch up (default %(default)s)")
     p.add_argument("--reset", action="store_true", help="provision: register the clients again with fresh keys")
+    p.add_argument("--verbose", action="store_true", help="run: print each hop of the login the runner plays")
     p.add_argument("--record", action="store_true", help="run: write the result table to recorded/<suite>.md")
     args = p.parse_args()
 

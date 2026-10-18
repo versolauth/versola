@@ -1,1 +1,34 @@
-{"_comment": "Findings known and accepted for this suite; see expected/fapi2.json for the format."}
+{
+  "_comment": "Findings known and accepted for this suite; see expected/fapi2.json for the format.",
+  "oidcc-userinfo-post-body": {
+    "result": "WARNING",
+    "conditions": [
+      "UserInfoEndpointWithAccessTokenInBodyNotSupported"
+    ],
+    "why": "Versola refuses an access token in a form body on purpose (it was added and reverted, #543); the module only warns, and the spec leaves it optional."
+  },
+  "oidcc-ensure-request-with-acr-values-succeeds": {
+    "result": "WARNING",
+    "conditions": [
+      "ValidateIdTokenACRClaimAgainstAcrValuesRequest"
+    ],
+    "why": "A SHOULD. Versola answers acr_values with an acr claim only when an existing session already satisfies the class; a fresh login returns none. Open gap, no issue yet."
+  },
+  "oidcc-codereuse-30seconds": {
+    "result": "WARNING",
+    "conditions": [
+      "EnsureHttpStatusCodeIs4xx"
+    ],
+    "why": "A token issued from a replayed authorization code still works at /userinfo: versolauth/versola#729."
+  },
+  "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported": {
+    "result": "SKIPPED",
+    "conditions": [],
+    "why": "Skipped by the suite: 'none' is not in request_object_signing_alg_values_supported, because Versola does not accept unsigned request objects."
+  },
+  "oidcc-ensure-request-object-with-redirect-uri": {
+    "result": "SKIPPED",
+    "conditions": [],
+    "why": "Skipped by the suite for the same reason: it builds an unsigned request object."
+  }
+}

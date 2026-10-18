@@ -20,6 +20,7 @@ SUITES = {
         "alias": "versola-fapi2",
         "tenant": "fapi2",
         "security_profile": "fapi2",
+        "signing_alg": "PS256",  # FAPI 2.0 allows PS256 and ES256 only
         "variant": {
             "fapi_profile": "plain_fapi",
             "client_auth_type": "private_key_jwt",
@@ -31,6 +32,7 @@ SUITES = {
         "clients": {
             "auth": "private_key_jwt",
             "ids": ("fapi2-client", "fapi2-client2"),
+            "config_keys": ("client", "client2"),
             "scopes": ["openid", "offline_access"],
             "scope_param": "openid offline_access",
             # the plan appends two dummy query parameters to the redirect URI
@@ -50,15 +52,33 @@ SUITES = {
         "alias": "versola-basic",
         "tenant": "conformance",
         "security_profile": "standard",
+        "signing_alg": "RS256",  # OpenID Connect Core 15.1: every OP supports RS256
         "variant": {"server_metadata": "discovery", "client_registration": "static_client"},
         "clients": {
             "auth": "client_secret",
-            "ids": ("conf-client", "conf-client2"),
+            "ids": ("conf-client", "conf-client2", "conf-client-post"),
+            # the plan config keys the clients go under; oidcc-server-client-secret-post reads its own
+            "config_keys": ("client", "client2", "client_secret_post"),
             "scopes": ["openid", "profile", "email", "address", "phone", "offline_access"],
             "scope_param": None,
             "redirect_suffixes": [""],
         },
         "user": "oidctest",
+        # What the plan needs beyond the defaults, applied by `provision`: the tenant's `acr`
+        # vocabulary (acr_values must be answered with an acr claim) and a user who has the claims
+        # the scope and claims modules look for.
+        "setup": {
+            "challenge_settings": {"acrVocabulary": {"1": ["password"], "2": ["password", "otp"]}},
+            "user_claims": {
+                "name": "Oidc Test", "given_name": "Oidc", "family_name": "Test", "middle_name": "Q",
+                "nickname": "oidc", "preferred_username": "oidctest", "profile": "https://example.com/oidctest",
+                "picture": "https://example.com/oidctest.png", "website": "https://example.com",
+                "gender": "other", "birthdate": "1990-01-01", "zoneinfo": "Asia/Almaty", "locale": "en-US",
+                "email_verified": True, "updated_at": 1760000000, "phone_number": "+77001234567", "phone_number_verified": True,
+                "address": {"formatted": "1 Test St, Almaty, 050000, KZ", "street_address": "1 Test St",
+                            "locality": "Almaty", "region": "Almaty", "postal_code": "050000", "country": "KZ"},
+            },
+        },
         "resource": None,
         "manual": set(),
         "two_visits": set(),

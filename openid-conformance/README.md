@@ -7,8 +7,8 @@ local Versola, unattended. Plans are grouped into **suites** (`suites.py`); the 
 | Suite (`--suite`) | Plan | Tenant | Notes |
 |---|---|---|---|
 | `fapi2` (default) | FAPI 2.0 Security Profile (Final) | `fapi2`, profile `fapi2` | the table below |
-| `oidcc-basic` | OpenID Connect Basic OP | `conformance`, profile `standard` | static clients with a secret; defined, not yet run clean through this runner |
-| `oidcc-config` | OpenID Connect Config OP | none | discovery checks only |
+| `oidcc-basic` | OpenID Connect Basic OP | `conformance`, profile `standard` | three static clients with a secret, RS256 signing, extra setup (below) |
+| `oidcc-config` | OpenID Connect Config OP | none | discovery checks only; needs the `standard` discovery document (below) |
 
 `--suite` is repeatable and takes `all`. Each suite has its own `expected/<suite>.json`, results in
 `results/<suite>/<stamp>/` and, with `--record`, a committed table in `recorded/<suite>.md`. To add a
@@ -30,13 +30,36 @@ The table below describes the `fapi2` suite.
   document, JWKS and endpoints itself, and FAPI 2.0 wants an https issuer. `expose-local-stack.sh`
   does this with ngrok (`brew install ngrok`, `ngrok config add-authtoken …`).
 
+## Per-suite setup
+
+What a plan needs beyond a tenant and its clients is declared in the suite's entry in `suites.py` and
+applied by `provision`, so a new suite adds data rather than code:
+
+- `signing_alg`: the tenant signs tokens with a key of this algorithm, generated in central
+  (`fapi2`: PS256, `oidcc-basic`: RS256).
+- `setup.challenge_settings`: members merged into the tenant's challenge settings (`oidcc-basic`: the
+  `acrVocabulary` that lets `acr_values` be answered).
+- `setup.user_claims`: claims patched onto the test user (`oidcc-basic`: the full set of standard
+  claims, which the `scope-*` and `claims-*` modules look for).
+- `clients.config_keys`: the plan-config keys the clients go under (`oidcc-basic` registers a third
+  client, `client_secret_post`, which `oidcc-server-client-secret-post` reads).
+
+The deployment serves **one** discovery document for all its tenants (versola#553), generated with
+PS256 only. The `standard` suites need RS256 in it (OpenID Connect Core 15.1; the Config plan checks
+it), the `fapi2` suite fails the other way if it is there, so the stack is set up per profile:
+
+```bash
+./expose-local-stack.sh up standard   # before oidcc-basic / oidcc-config
+./expose-local-stack.sh up fapi2      # before fapi2 (the default)
+```
+
 ## Run it
 
 ```bash
 cd openid-conformance
-ISSUER=$(./expose-local-stack.sh up | tail -1)   # tunnel + issuer rewrite + restart of central/auth/edge
+ISSUER=$(./expose-local-stack.sh up | tail -1)   # tunnel + issuer rewrite + restart of central/auth/edge (`up standard` for the OpenID Connect suites)
 ./run.py all --issuer "$ISSUER"                  # server up, provision, run every module (fapi2)
-./run.py all --suite all --issuer "$ISSUER"      # every suite
+./run.py all --suite all --issuer "$ISSUER"      # every suite (only meaningful if the stack serves a document all of them accept; in practice one profile at a time)
 ./expose-local-stack.sh down                     # put the stack back on http://localhost:2821
 ```
 

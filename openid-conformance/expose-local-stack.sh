@@ -3,7 +3,12 @@
 # public https URL through ngrok, and points its issuer there, because the conformance suite runs in
 # docker and FAPI 2.0 wants an https issuer.
 #
-#   ./expose-local-stack.sh up       prints the issuer URL on its last line
+#   ./expose-local-stack.sh up [fapi2|standard]
+#                                    prints the issuer URL on its last line. The deployment serves one
+#                                    discovery document for all its tenants (versola#553), so the
+#                                    profile of the suite about to run picks it: `fapi2` (default) is
+#                                    the generated PS256-only document; `standard` also lists RS256,
+#                                    which OpenID Connect requires and the Basic and Config plans check.
 #   ./expose-local-stack.sh down     puts the stack's config back and stops the tunnel
 #
 # `up` rewrites the bundle's auth.conf, central.conf and edge.conf in place (a copy of the originals is
@@ -42,10 +47,16 @@ case "${1:-}" in
       mkdir -p "$BACKUP"
       for f in "${CONFS[@]}"; do cp "$BUNDLE/$f" "$BACKUP/$f"; done
     fi
+    profile="${2:-fapi2}"
     # Always rewrite from the originals, so running `up` twice (a new tunnel URL) does not stack edits.
     for f in "${CONFS[@]}"; do
       sed -e "s|$LOCAL|$url|g" -e "s|rp-id = \"localhost\"|rp-id = \"$host\"|" "$BACKUP/$f" >"$BUNDLE/$f"
     done
+    if [[ "$profile" == standard ]]; then
+      sed -i.bak -e 's|"id_token_signing_alg_values_supported": \["PS256"\]|"id_token_signing_alg_values_supported": ["RS256", "PS256"]|' \
+                 -e 's|"request_object_signing_alg_values_supported": \["ES256", "PS256"\]|"request_object_signing_alg_values_supported": ["RS256", "ES256", "PS256"]|' "$BUNDLE/central.conf"
+      rm -f "$BUNDLE/central.conf.bak"
+    fi
     restart
     for _ in $(seq 1 40); do
       doc=$(curl -s -m 5 "$url/.well-known/openid-configuration" || true)
