@@ -1,8 +1,20 @@
 # OpenID conformance
 
 Runs the [OpenID Foundation conformance suite](https://gitlab.com/openid/conformance-suite) against a
-local Versola, unattended. Today that is the **FAPI 2.0 Security Profile (Final)** plan; the evidence
-issue is [versola#486](https://github.com/versolauth/versola/issues/486).
+local Versola, unattended. Plans are grouped into **suites** (`suites.py`); the evidence issue is
+[versola#486](https://github.com/versolauth/versola/issues/486).
+
+| Suite (`--suite`) | Plan | Tenant | Notes |
+|---|---|---|---|
+| `fapi2` (default) | FAPI 2.0 Security Profile (Final) | `fapi2`, profile `fapi2` | the table below |
+| `oidcc-basic` | OpenID Connect Basic OP | `conformance`, profile `standard` | static clients with a secret; defined, not yet run clean through this runner |
+| `oidcc-config` | OpenID Connect Config OP | none | discovery checks only |
+
+`--suite` is repeatable and takes `all`. Each suite has its own `expected/<suite>.json`, results in
+`results/<suite>/<stamp>/` and, with `--record`, a committed table in `recorded/<suite>.md`. To add a
+plan, add an entry to `suites.py` (plan name, variant, how its clients are registered).
+
+The table below describes the `fapi2` suite.
 
 | | |
 |---|---|
@@ -23,16 +35,17 @@ issue is [versola#486](https://github.com/versolauth/versola/issues/486).
 ```bash
 cd openid-conformance
 ISSUER=$(./expose-local-stack.sh up | tail -1)   # tunnel + issuer rewrite + restart of central/auth/edge
-./run.py all --issuer "$ISSUER"                  # suite up, provision, run every module
+./run.py all --issuer "$ISSUER"                  # server up, provision, run every module (fapi2)
+./run.py all --suite all --issuer "$ISSUER"      # every suite
 ./expose-local-stack.sh down                     # put the stack back on http://localhost:2821
 ```
 
-`all` is `suite up`, `provision` and `run`; each is a command of its own, and `suite down` stops the
-suite (its data lives in the `versola-conformance_mongo-data` volume). A single module:
-`./run.py run --issuer "$ISSUER" --only happy-flow`.
+`all` is `server up`, `provision` and `run`; each is a command of its own, and `server down` stops the
+conformance server (its data lives in the `versola-conformance_mongo-data` volume). One suite:
+`./run.py run --suite oidcc-config --issuer "$ISSUER"`; one module: `--only happy-flow`.
 
-Exit status is 0 when every module passed or ended as recorded in `expected.json`, 1 otherwise.
-Results go to `results/<timestamp>/`: `report.md` (the table and each deviation), `results.json`, and
+Exit status is 0 when every module passed or ended as recorded in `expected/<suite>.json`, 1 otherwise.
+Results go to `results/<suite>/<timestamp>/`: `report.md` (the table and each deviation), `results.json`, and
 the suite's full log of every module under `logs/` (the same logs the suite's web UI shows, at
 `https://localhost:8443`). `.state/` holds the generated client keys and the test user's password;
 both directories are git-ignored.
@@ -55,14 +68,14 @@ throwaway `curlimages/curl` container on the `versola-local_default` network (`-
    (`/challenge/login-password`, then consent if asked), and, because the suite reads the URL
    fragment of its callback page with JavaScript, posts the fragment back to the suite by hand.
 4. The log of the module is read for `FAILURE` and `WARNING` entries; a module that is not `PASSED`
-   is looked up in `expected.json`.
+   is looked up in `expected/<suite>.json`.
 
 `user-rejects-authentication` needs a person to refuse the login, so the runner does not run it
 (reported as `manual`); do it in the suite's UI.
 
 ## Reading a result
 
-`expected.json` records what is known and accepted, keyed by module: the result it ends in, the
+`expected/<suite>.json` records what is known and accepted, keyed by module: the result it ends in, the
 suite conditions allowed to fail, and why. Anything else that is not `PASSED` is a **regression** and
 makes the run exit 1. Each entry should be removed as soon as the cause is gone.
 
@@ -75,7 +88,7 @@ Two things in it come from the setup, not from Versola:
 
 ## State of the work
 
-Per-module results of the last recorded run: [RESULTS.md](RESULTS.md).
+Per-module results of the last recorded run: [recorded/fapi2.md](recorded/fapi2.md).
 
 First run: 2026-10-09 against a development build (47 modules: 41 passed, 4 failed, 1 warning, 1
 skipped; the fixes it prompted were never merged).

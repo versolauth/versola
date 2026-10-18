@@ -29,7 +29,7 @@ restart() {
 case "${1:-}" in
   up)
     command -v ngrok >/dev/null || { echo "ngrok is not installed (brew install ngrok; ngrok config add-authtoken ...)" >&2; exit 1; }
-    pgrep -f "ngrok http 2821" >/dev/null || nohup ngrok http 2821 --log=stdout >/tmp/versola-conformance-ngrok.log 2>&1 &
+    pgrep -f "ngrok http 2821" >/dev/null || nohup ngrok http 2821 --log=stdout >/tmp/versola-conformance-ngrok.log 2>&1 </dev/null &
     url=""
     for _ in $(seq 1 20); do
       url=$(curl -s localhost:4040/api/tunnels | python3 -c 'import json,sys; t=[x["public_url"] for x in json.load(sys.stdin)["tunnels"] if x["public_url"].startswith("https")]; print(t[0] if t else "")' 2>/dev/null || true)
