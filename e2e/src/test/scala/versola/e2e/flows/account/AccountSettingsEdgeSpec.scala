@@ -82,6 +82,27 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(!remaining.exists(session => str(session, "id").contains(stale.sessionId)))
           .label("the revoked session must be gone from the page")
     },
+    test("changes the password when the current password is correct") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, "NewPass-Changed-1!")
+      yield assertTrue(result.status == Status.NoContent)
+    },
+    test("rejects a password change when the current password is wrong") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), "WrongPass1!", "NewPass-Changed-1!")
+      yield assertTrue(result.status == Status.BadRequest)
+    },
+    test("rejects a reused password on change") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, s.password)
+      yield assertTrue(result.status == Status.BadRequest)
+    },
     test("enrolls, renames and deletes a passkey through the full ceremony") {
       val name = "E2E Edge Key"
       for

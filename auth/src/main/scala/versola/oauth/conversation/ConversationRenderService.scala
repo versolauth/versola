@@ -178,6 +178,7 @@ object ConversationRenderService:
     case class AccountSettings(
         sessions: List[AccountSession],
         passkeys: List[AccountPasskey],
+        hasPassword: Boolean,
     ) extends StepView
 
     @jsonHint("access-denied")
@@ -910,6 +911,8 @@ object ConversationRenderService:
       * chrome, which is the device's scheme, not the page's (the visitor's toggle does not reach a tab strip). */
     private def faviconLink(logo: Option[TenantLogo]): String =
       logo match
+        case Some(TenantLogo(light, dark)) if light == dark =>
+          s"""<link rel="icon" href="${escapeAttribute(light)}">"""
         case Some(TenantLogo(light, dark)) =>
           s"""<link rel="icon" href="${escapeAttribute(light)}" media="(prefers-color-scheme: light)">""" +
             s"""<link rel="icon" href="${escapeAttribute(dark)}" media="(prefers-color-scheme: dark)">"""
