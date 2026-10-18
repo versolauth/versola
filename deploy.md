@@ -50,7 +50,7 @@ decide, and nothing else inbound.
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093), the only place edges reach it, and unlike every other port it is bound on all interfaces (`MBIND_HOST`) -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
@@ -278,21 +278,35 @@ versola up
 the three schemas are recreated; other applications' schemas stay.) Anything written between the
 dump and the rollback is lost.
 
-#### Behaviour change: edge syncs through `/edge/sync/*`
+#### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
 permissions,jwks,dpop,auth-request-presets,server-metadata}` and `POST
 /edge/clients/edge-certificate/sign`, each answering only for the tenants bound to the calling
-edge. Every route outside `/edge/*` -- `/configuration/**` including the `*/sync` routes auth
-reads, `/users/registrations` -- refuses an edge token with `403`. The routes edge used before
+edge, **on central's mutual-TLS listener (`MPORT`) and nowhere else**. Every route outside `/edge/*`
+-- `/configuration/**` including the `*/sync` routes auth reads, `/users/registrations` -- refuses
+an edge token with `403`. The routes edge used before
 (`/configuration/{resources,roles,permissions,auth-request-presets}/sync`,
 `/configuration/edges/dpop/sync`, `/configuration/clients/edge-certificate/sign`) are gone, and
 there is no compatibility period.
 
-- **Upgrade `central` and `edge` together** (the normal `versola up` of one release does). An
-  older edge against this central gets `403`/`404` on every sync and keeps serving the
-  configuration it last loaded; a newer edge against an older central gets `404`.
-- No schema change, no data migration, nothing to configure.
+An edge call is accepted only when the TLS handshake presented a certificate that chains to
+`central`'s `mutual-tls.trusted-certificates` **and** carries the URI name `urn:versola:edge:<id>`
+of the edge the signed token names. The listener is meant to be reachable from outside the host or
+cluster, so open its port deliberately (see [Mutual TLS certificates](#mutual-tls-certificates)).
+
+- **Upgrade `central` and `edge` together, and regenerate their configuration**
+  (`versola configure`, then `versola up`). `central.conf` gains a `mutual-tls` block, `edge.conf`'s
+  `central` block gains `mutual-tls` and its `url` points at central's `MPORT` over `https`. An edge
+  without `central.mutual-tls` refuses to start. An older edge against this central gets
+  `403`/`404`, or no connection, and keeps serving the configuration it last loaded; a newer edge
+  against an older central cannot connect.
+- The bundle's `mtls-init` issues the new certificates when it next runs; the Helm chart's `pki`
+  block does (`pki.centralServer`, `pki.edgeCentral`), with `services.central.mutualTlsPort: 8093`.
+- `MBIND_HOST` (new, defaults to `BIND_HOST`) sets where the mutual-TLS listeners bind.
+- Central refuses to issue a client certificate whose `san_uri` is in the `urn:versola:edge:`
+  namespace, so a client cannot be given a certificate that passes for an edge.
+- No schema change, no data migration.
 
 ### `RUN_MIGRATIONS`
 
@@ -423,11 +437,20 @@ three certificates are involved, each with its own rotation, described in
   certificates. To get one, register the client with `issueEdgeClientCertificate: true` and any
   `mtlsAuth`. Its first start prints the generated password of an unused `versola` provisioner once
   to `docker logs versola-step-ca`; keep that log private or remove the provisioner.
-- `mtls-init` — one-shot: signs `auth`'s listener certificate into `versola-mtls-*`. A restart leaves
-  the files alone (re-issuing would change the leaf `edge` pins). `central`, `auth` and `edge` start
-  after it; `auth.conf`'s `mutual-tls` and `edge.conf`'s `native` blocks already point at the volume.
+- `mtls-init` — one-shot: signs `auth`'s listener certificate, `central`'s listener certificate and the
+  certificate `edge` presents to `central` into `versola-mtls-*`. A restart leaves the files alone
+  (re-issuing would change the leaf `edge` pins). `central`, `auth` and `edge` start after it;
+  `auth.conf`'s `mutual-tls`, `central.conf`'s `mutual-tls` and `edge.conf`'s `native` and
+  `central.mutual-tls` blocks already point at the volume.
 
-All of it stays on loopback (`127.0.0.1:8083`). The listener certificate is valid two years and is
+`auth`'s listener stays on loopback (`127.0.0.1:8083`). **`central`'s listener (`8093`) is public by
+design**: an edge connects from wherever it runs. It answers only a handshake whose certificate
+chains to the internal CA, and then only a call whose signed token names the same edge the
+certificate's `urn:versola:edge:<id>` name does. Open `8093` to the edges that need it and, where
+you can, to nothing else; an edge on the same host reaches it on `127.0.0.1` and needs no opening.
+The `edge-client` certificate, like the listener certificates, is valid two years; renewing it is
+re-running `mtls-init` after deleting the files and restarting `central` and `edge` (central keeps
+nothing registered, so no other step is needed). The listener certificate is valid two years and is
 not renewed automatically: rotating it needs the two-pin procedure in `develop.md`. A step-ca volume
 from before its client template existed keeps issuing certificates with the subject rewritten to the
 bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` volume to lift it.

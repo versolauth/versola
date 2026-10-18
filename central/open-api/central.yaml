@@ -19,8 +19,12 @@ info:
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`) and `POST /edge/clients/edge-certificate/sign`,
-      the surface an edge reads with the key it was registered with. An edge is served only the
-      tenants bound to it; the admin credential and auth's token are refused there (`401`).
+      the surface an edge reads with the key it was registered with. It is served only on central's
+      own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
+      present a certificate that chains to the listener's trust anchors, and the certificate must carry
+      the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
+      is served only the tenants bound to it; the admin credential and auth's token are refused there
+      (`401`).
 
     ## Authentication
 

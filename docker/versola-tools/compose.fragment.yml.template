@@ -154,6 +154,9 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+      # #554: the edge surface, on central's own mutual-TLS listener -- reached by edge as
+      # https://central:8093 inside this project's network and deliberately not published.
+      MPORT: 8093
       # `versola up` assumes `versola migrate` already ran (see this
       # file's own `migrate` service, and versola-tools' migrate-tool
       # which backs it) -- this is NOT a duplicate safety net, it's the
@@ -180,6 +183,8 @@ services:
       - ./central.conf:/app/config/env.conf:ro
       - versola-central-diagnostics-local:/diagnostics
       - versola-central-ca-local:/app/ca:ro
+      # #554: central's listener certificate and the CA that vouches for edge certificates.
+      - versola-mtls-local:/app/mtls:ro
     ports:
       # Only the diagnostic port (readiness) is published, not 8090 itself
       # -- the CLI-managed proxy is still the only path to real traffic. "versola
@@ -336,21 +341,33 @@ services:
         cp /home/step/secrets/central-provisioner.json /central-ca/provisioner.json
         cp /home/step/certs/root_ca.crt /central-ca/root_ca.crt
         chmod 600 /central-ca/provisioner.json
-        if [ -f /mtls/server.crt ] && [ -f /mtls/server.key ] && [ -f /mtls/ca.crt ]; then
-          echo "mtls-init: certificates already present, leaving them"; exit 0
-        fi
-        step certificate create localhost /mtls/server.crt /mtls/server.pem \
-          --ca /home/step/certs/intermediate_ca.crt --ca-key /home/step/secrets/intermediate_ca_key \
-          --ca-password-file /home/step/secrets/password \
-          --san auth --san localhost --san 127.0.0.1 \
-          --kty RSA --size 2048 --not-after 17520h --insecure --no-password --force
-        # Netty reads PKCS#8 only; step writes PKCS#1.
-        step crypto key format --pkcs8 --pem --insecure --no-password /mtls/server.pem > /mtls/server.key
-        rm /mtls/server.pem
+        # One leaf per name, each issued once: re-issuing would change the leaf edge pins. `ca.crt` holds
+        # root and intermediate, because zio-http presents only a client's leaf and the listener must be
+        # able to complete the chain itself.
+        issue() {
+          name=$$1; cn=$$2; shift 2
+          if [ -f /mtls/$$name.crt ] && [ -f /mtls/$$name.key ]; then
+            echo "mtls-init: $$name already present, leaving it"; return 0
+          fi
+          step certificate create "$$cn" /mtls/$$name.crt /mtls/$$name.pem \
+            --ca /home/step/certs/intermediate_ca.crt --ca-key /home/step/secrets/intermediate_ca_key \
+            --ca-password-file /home/step/secrets/password \
+            "$$@" --kty RSA --size 2048 --not-after 17520h --insecure --no-password --force
+          # Netty reads PKCS#8 only; step writes PKCS#1.
+          step crypto key format --pkcs8 --pem --insecure --no-password /mtls/$$name.pem > /mtls/$$name.key
+          rm /mtls/$$name.pem
+          chmod 644 /mtls/$$name.crt
+          chmod 600 /mtls/$$name.key
+          echo "mtls-init: issued $$name"
+        }
+        # auth's mutual-TLS listener
+        issue server localhost --san auth --san localhost --san 127.0.0.1
+        # central's mutual-TLS listener (#554), and the certificate edge presents to it: the URI name
+        # is what central checks it against the edge the token names (`authorizeEdge`).
+        issue central-server central --san central --san localhost --san 127.0.0.1
+        issue edge-client edge-default --san urn:versola:edge:edge-default
         cat /home/step/certs/root_ca.crt /home/step/certs/intermediate_ca.crt > /mtls/ca.crt
-        chmod 644 /mtls/server.crt /mtls/ca.crt
-        chmod 600 /mtls/server.key
-        echo "mtls-init: issued auth's listener certificate"
+        chmod 644 /mtls/ca.crt
 
   # No reverse-proxy service here: versola-cli writes its own proxy.yml (official nginx
   # image, config from its own templates, central-ui/ from this bundle) and starts it in this
