@@ -2,8 +2,8 @@
 #
 # Asserts that `versola migrate --dry-run` (migrate-tool's checkPending) works
 # when there is something to apply -- the one case it exists for. Steps 3-6 cover
-# what the chart's migration Job relies on (#209): several --service flags,
-# only the postgres block having to resolve, and a lock held by the previous
+# what the chart's migration Job relies on (#209): --service naming one
+# service, only the postgres block having to resolve, and a lock held by the previous
 # version's traffic being waited out instead of queued behind.
 #
 # It used to validate with Flyway's defaults, which report a migration that
@@ -13,7 +13,7 @@
 #
 #   1. a fresh database is fully migrated by migrate-tool itself;
 #   2. a dry run against it reports every service up to date;
-#   3. several --service flags select exactly those services;
+#   3. --service selects exactly that service;
 #   4. only the postgres block has to resolve;
 #   5. a lock held for a moment is waited out (lock_timeout plus retries);
 #   6. with no retries left the same lock fails the run;
@@ -63,13 +63,13 @@ for service in auth central edge; do
   grep -q "^$service: up to date" <<<"$out" || fail "$service not reported up to date"
 done
 
-echo "== 3. several --service flags select exactly those services"
-out=$("$TOOL" --dry-run --service edge --service auth 2>&1) || { echo "$out"; fail "dry run with two --service flags failed"; }
+echo "== 3. --service selects exactly that service"
+out=$("$TOOL" --dry-run --service edge 2>&1) || { echo "$out"; fail "dry run of one service failed"; }
 echo "$out"
-grep -q "^auth: up to date" <<<"$out" || fail "auth was not checked"
 grep -q "^edge: up to date" <<<"$out" || fail "edge was not checked"
-! grep -q "^central:" <<<"$out" || fail "central was checked though it was not selected"
-"$TOOL" --dry-run --service auth --service nope >/dev/null 2>&1 && fail "an unknown --service was accepted"
+! grep -q "^auth:\|^central:" <<<"$out" || fail "a service was checked though it was not selected"
+"$TOOL" --dry-run --service nope >/dev/null 2>&1 && fail "an unknown --service was accepted"
+"$TOOL" --dry-run --service >/dev/null 2>&1 && fail "--service with no value was accepted"
 
 echo "== 4. only postgres.* has to resolve"
 # What a Job that was handed the database password and nothing else sees: the same files, with

@@ -23,8 +23,7 @@ import scala.util.Random
   * Two optional args, forwarded here by entrypoint.sh's own "migrate" dispatch branch (which
   * shifts argv[0] off before exec'ing this): `--dry-run` reports each target's pending migrations
   * via Flyway's own `info()` without applying anything, and `--service <name>` restricts either
-  * mode to one of "auth"/"central"/"edge" instead of all three; repeat it to pick several (the
-  * Helm chart's migration Job names exactly the services it enabled). Both back versola-cli's own
+  * mode to one of "auth"/"central"/"edge" instead of all three. Both back versola-cli's own
   * `--dry-run`/`--service` flags on `versola migrate` -- see its own comment for why a CI
   * pipeline needs both (checking what WOULD apply without a human in the loop, and being able to
   * fail on just one service's migrations rather than all three at once).
@@ -268,40 +267,42 @@ object MigrateTool:
       println(s"${target.serviceName}: ${pending.length} pending migration(s):")
       pending.foreach(m => println(s"  ${m.getVersion} - ${m.getDescription}"))
 
-  /** `--service <name>` (repeatable) restricts `targets` to the named ones -- validated against
-    * the fixed list above rather than trusting the strings, so a typo fails with a clear message
-    * instead of quietly matching nothing and reporting "0 targets" as if that were a success.
-    * They run in the fixed order of `targets`, whatever order the flags came in.
+  /** `--service <name>` restricts `targets` to just that one -- validated
+    * against the fixed list above rather than trusting the string, so a
+    * typo fails with a clear message instead of quietly matching nothing
+    * and reporting "0 targets" as if that were a success.
     */
-  private def selectTargets(serviceArgs: List[String]): List[Target] =
-    if serviceArgs.isEmpty then targets
-    else
-      serviceArgs.foreach: name =>
-        if !targets.exists(_.serviceName == name) then
-          System.err.println(
-            s"versola-tools migrate: unknown --service '$name' (expected one of ${targets.map(_.serviceName).mkString(", ")})",
-          )
-          sys.exit(1)
-      targets.filter(t => serviceArgs.contains(t.serviceName))
-
-  private def serviceArgs(args: Array[String]): List[String] =
-    args.indices
-      .filter(args(_) == "--service")
-      .map: i =>
-        // "--service" with nothing after it (e.g. it's the last token) is a malformed command, not
-        // "no --service given" -- that distinction matters because an empty list means "every
-        // target". Falling through to it here would turn a typo'd/truncated production command
-        // into migrations against every schema instead of failing loudly, the same failure mode
-        // selectTargets' own unknown-name branch exists to avoid for a bad value.
-        if i + 1 < args.length then args(i + 1)
-        else
-          System.err.println("versola-tools migrate: --service requires a value")
-          sys.exit(1)
-      .toList
+  private def selectTargets(serviceArg: Option[String]): List[Target] =
+    serviceArg match
+      case None => targets
+      case Some(name) =>
+        targets.find(_.serviceName == name) match
+          case Some(t) => List(t)
+          case None =>
+            System.err.println(
+              s"versola-tools migrate: unknown --service '$name' (expected one of ${targets.map(_.serviceName).mkString(", ")})",
+            )
+            sys.exit(1)
 
   def main(args: Array[String]): Unit =
     val dryRun = args.contains("--dry-run")
-    val selected = selectTargets(serviceArgs(args))
+    val serviceIdx = args.indexOf("--service")
+    val serviceArg =
+      if serviceIdx < 0 then None
+      else if serviceIdx + 1 < args.length then Some(args(serviceIdx + 1))
+      else
+        // "--service" present with nothing after it (e.g. it's the last
+        // token) is a malformed command, not "no --service given" -- that
+        // distinction matters because None means "every target" (see
+        // selectTargets below). Falling through to None here would turn a
+        // typo'd/truncated production command into migrations against
+        // every schema instead of failing loudly, the same failure mode
+        // selectTargets' own unknown-name branch exists to avoid for a bad
+        // value.
+        System.err.println("versola-tools migrate: --service requires a value")
+        sys.exit(1)
+
+    val selected = selectTargets(serviceArg)
 
     try selected.foreach(t => if dryRun then checkPending(t) else migrate(t))
     catch
