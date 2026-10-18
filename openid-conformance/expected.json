@@ -1,0 +1,22 @@
+{
+  "_comment": "Findings known and accepted for this setup. A module that does not pass is still reported, but only counts as a regression if its result differs from 'result' here or it fails on a condition not listed under 'conditions'. Keyed by the module's name without the 'fapi2-security-profile-final-' prefix; 'conditions' are prefixes of the suite's condition names (the 'src' of its log entries), 'why' says why it is acceptable.",
+  "happy-flow": {
+    "conditions": [
+      "RequireOnlyBCP195"
+    ],
+    "why": "The suite checks the TLS cipher suites of the issuer's host. Through an ngrok tunnel that is ngrok's configuration, not Versola's; behind our own TLS termination it is checked for real.",
+    "result": "FAILED"
+  },
+  "ensure-holder-of-key-required": {
+    "conditions": [
+      "RequireOnlyBCP195"
+    ],
+    "why": "Same TLS cipher check as happy-flow.",
+    "result": "FAILED"
+  },
+  "test-claims-parameter-identity-claims": {
+    "conditions": [],
+    "why": "Skipped by the suite: it needs a claims configuration this plan does not provide.",
+    "result": "SKIPPED"
+  }
+}
