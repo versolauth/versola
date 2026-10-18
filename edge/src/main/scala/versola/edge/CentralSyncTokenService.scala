@@ -13,21 +13,31 @@ trait CentralSyncTokenService:
     * sync client specs' fakes, which implement [[getToken]] only.
     */
   def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
-    connection(client).request(request)
+    connection(client).flatMap(_.request(request))
 
   /** `client` configured to reach central's mutual-TLS listener: this edge's certificate
     * presented, central's pinned. Every call to central goes through it. The default is the
     * client as given, for the sync client specs' fakes. */
-  def connection(client: Client): Client = client
+  def connection(client: Client): UIO[Client] = ZIO.succeed(client)
 
 object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
 
-  def live: ZLayer[Scope & EdgeConfig & ConfigSnapshot, Throwable, CentralSyncTokenService] = {
-    TokenSource >>>
-      ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
-      ZLayer.fromFunction(Impl(_, _, _))
+  def live: ZLayer[Scope & EdgeConfig & ConfigSnapshot & ClientCertificateFiles & Client, Throwable, CentralSyncTokenService] = {
+    val tokens = TokenSource >>> ZLayer(ReloadingCache.make[String](ReloadInterval))
+    // Built after the token and the certificate it renews with: the renewal signs its request
+    // with the same token every sync call carries.
+    tokens >+> ZLayer.fromZIO(
+      for
+        config <- ZIO.service[EdgeConfig]
+        files <- ZIO.service[ClientCertificateFiles]
+        client <- ZIO.service[Client]
+        cache <- ZIO.service[ReloadingCache[String]]
+        certificate <- CentralCertificate.make(config, files, cache.get, (ssl, request) => client.ssl(ssl).request(request))
+        _ <- CentralCertificate.renewing(certificate)
+      yield certificate,
+    ) >>> ZLayer.fromFunction(Impl(_, _, _, _))
   }
 
   private val TokenSource: ZLayer[EdgeConfig, Throwable, CacheSource[String]] = ZLayer:
@@ -55,16 +65,11 @@ object CentralSyncTokenService:
       cache: ReloadingCache[String],
       config: EdgeConfig,
       snapshot: ConfigSnapshot,
+      certificate: CentralCertificate,
   ) extends CentralSyncTokenService:
     override def getToken: UIO[String] = cache.get
 
-    private val ssl: Option[ClientSSLConfig] = config.central.mutualTls.map: mtls =>
-      ClientSSLConfig.FromClientAndServerCert(
-        EdgeConfig.pinnedTrust(mtls.trustedCertificates),
-        ClientSSLCertConfig.FromClientCertFile(mtls.certificate, mtls.privateKey),
-      )
-
-    override def connection(client: Client): Client = ssl.fold(client)(client.ssl)
+    override def connection(client: Client): UIO[Client] = certificate.ssl.map(client.ssl)
 
     override def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
-      snapshot.through(request)(connection(client).request(request))
+      snapshot.through(request)(connection(client).flatMap(_.request(request)))

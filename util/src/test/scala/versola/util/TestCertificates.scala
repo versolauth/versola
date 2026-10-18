@@ -62,6 +62,7 @@ object TestCertificates:
       ca: Boolean = false,
       issuer: Option[Generated] = None,
       keyUsage: Option[Int] = None,
+      validity: Option[(Date, Date)] = None,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -69,8 +70,8 @@ object TestCertificates:
     generator.setSerialNumber(BigInteger.valueOf(System.nanoTime()))
     generator.setIssuerDN(issuer.fold(principal)(_.certificate.getSubjectX500Principal.nn))
     generator.setSubjectDN(principal)
-    generator.setNotBefore(Date(System.currentTimeMillis() - 3600_000))
-    generator.setNotAfter(Date(System.currentTimeMillis() + 86_400_000))
+    generator.setNotBefore(validity.fold(Date(System.currentTimeMillis() - 3600_000))(_._1))
+    generator.setNotAfter(validity.fold(Date(System.currentTimeMillis() + 86_400_000))(_._2))
     generator.setPublicKey(keyPair.getPublic.nn)
     // The signature is made with the issuer's key, so it is the issuer's algorithm that names
     // it -- a CA of one kind may perfectly well issue to a leaf of another.

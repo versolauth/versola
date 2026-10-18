@@ -109,6 +109,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SecureRandom.live >++>
       SecurityService.live >++>
       configSnapshot >++>
+      ClientCertificateFiles.live >++>
       CentralSyncTokenService.live >++>
       AuthorizationPresetsSyncClient.live >++>
       ClientCertificateEnrollment.live >++>
@@ -127,7 +128,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PermissionService.live >++>
       JwksService.live >++>
       TokenRevocationService.live >++>
-      ClientCertificateFiles.live >++>
       SSOClient.live >++>
       DpopReplayGuard.shared >++>
       DpopVerifier.live >++>
