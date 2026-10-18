@@ -18,5 +18,20 @@
     "conditions": [],
     "why": "Skipped by the suite: it needs a claims configuration this plan does not provide.",
     "result": "SKIPPED"
+  },
+  "refresh-token": {
+    "conditions": [
+      "CheckTokenEndpointHttpStatus200",
+      "CheckIfTokenEndpointResponseError"
+    ],
+    "result": "FAILED",
+    "why": "The suite refreshes with a DPoP key other than the one the code was exchanged with; Versola holds a refresh token to the key it was issued to. RFC 9449 \u00a75 requires that only of public clients, but the binding is what protects a native client behind edge, and nothing yet tells such a client from a web one. Deliberately not relaxed: versolauth/versola#728."
+  },
+  "attempt-reuse-authorization-code-after-one-second": {
+    "conditions": [
+      "EnsureHttpStatusCodeIs4xx"
+    ],
+    "result": "WARNING",
+    "why": "After a code is replayed Versola revokes the family and pushes the revocation to the client's back channel, but /userinfo keeps no record of revoked access tokens and still accepts the first one. Needs an auth-side revocation store: versolauth/versola#729."
   }
 }
