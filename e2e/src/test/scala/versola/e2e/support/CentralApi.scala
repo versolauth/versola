@@ -18,7 +18,15 @@ import java.util.UUID
   * an endpoint reacts to the wrong secret changes one thing ([[withCredentials]]) instead of
   * every request it makes.
   */
-final class CentralApi(client: Client, val config: E2EConfig, credentials: Option[(String, String)], bearer: Option[String] = None):
+final class CentralApi(
+    client: Client,
+    val config: E2EConfig,
+    credentials: Option[(String, String)],
+    bearer: Option[String] = None,
+    /** Set for the calls made to central's mutual-TLS listener, where the edge surface is served:
+      * what the connection presents, if anything. */
+    edgeSurface: Option[Option[ClientSSLConfig]] = None,
+):
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -33,6 +41,16 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
     * every other route refuses. */
   def withBearer(token: String): CentralApi =
     CentralApi(client, config, None, Some(token))
+
+  /** The edge surface as an edge sees it (#554): over central's own mutual-TLS listener, `ssl` being what
+    * the handshake presents -- `None` presents no certificate, which that listener refuses before
+    * any request is read -- with the edge's signed token if it has one. */
+  def onEdgeSurface(
+      token: Option[String],
+      ssl: Option[ClientSSLConfig],
+      credentials: Option[(String, String)] = None,
+  ): CentralApi =
+    CentralApi(client, config, credentials, token, Some(ssl))
 
   def get(path: String, query: (String, String)*): Task[ApiResult] =
     send(Method.GET, path, query, None)
@@ -91,7 +109,8 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
       body: Option[String],
   ): Task[ApiResult] =
     for
-      base <- ZIO.fromEither(URL.decode(s"${config.centralUrl}$path")).mapError(RuntimeException(_))
+      origin = if edgeSurface.isDefined then config.centralMutualTlsUrl else config.centralUrl
+      base <- ZIO.fromEither(URL.decode(s"$origin$path")).mapError(RuntimeException(_))
       request = Request(
         method = method,
         url = base.addQueryParams(query.toList),
@@ -100,7 +119,11 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
       withType = body.fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
       withBasic = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
       authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
-      response <- Client.batched(authorized).provide(ZLayer.succeed(client))
+      connection = edgeSurface.flatten.fold(client)(client.ssl(_))
+      // Without a certificate the connection still has to trust central's own, or it would fail on that
+      // instead of on the missing certificate this exists to show.
+      pinned = if edgeSurface.exists(_.isEmpty) then client.ssl(ClientSSLConfig.FromCertFile(config.centralMutualTlsServerCertificate)) else connection
+      response <- Client.batched(authorized).provide(ZLayer.succeed(pinned))
       result <- ApiResult.of(response)
     yield result
 

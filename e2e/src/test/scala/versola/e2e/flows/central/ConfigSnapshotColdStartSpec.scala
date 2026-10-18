@@ -31,7 +31,7 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
       ),
     )
 
-  private val UnreachableCentral = "http://localhost:9"
+  private val UnreachableCentral = "https://localhost:9"
   private val StartTimeout = 4.minutes
 
   private val ColdAuthUrl = "http://localhost:9013"

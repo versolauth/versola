@@ -5,7 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.Status
+import zio.http.{ClientSSLConfig, Status}
 import zio.json.ast.Json
 import zio.test.*
 
@@ -31,6 +31,9 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
   private case class SecondEdge(
       edgeId: String,
       token: String,
+      /** What its handshake presents: a certificate carrying `urn:versola:edge:<edgeId>`, issued by
+        * the CA central's listener trusts. */
+      ssl: ClientSSLConfig,
       tenantId: String,
       ownClient: String,
       otherClient: String,
@@ -102,9 +105,11 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       keyId <- registered.stringAt("keyId")
       privateKey <- registered.stringAt("privateKey")
       token <- edgeToken(edgeId, keyId, privateKey)
+      certificate <- EdgeCertificate.forCentralListener(Some(edgeId))
+      ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
       // Central authenticates an edge against a cache a Postgres notification refreshes after
       // the registration lands; what is awaited is the new edge being known at all.
-      known <- eventually(central.withBearer(token).get("/edge/sync/dpop"))(_.status == Status.Ok)
+      known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/sync/dpop"))(_.status == Status.Ok)
       _ <- ZIO.fail(RuntimeException(s"central never authenticated the new edge: ${known.status} ${known.body}"))
         .unless(known.status == Status.Ok)
       // On `standard`, like the suite tenant: a new tenant defaults to `fapi2`, which refuses
@@ -136,6 +141,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
     yield SecondEdge(
       edgeId = edgeId,
       token = token,
+      ssl = ssl,
       tenantId = tenantId,
       ownClient = ownClient,
       otherClient = otherClient,
@@ -161,6 +167,10 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       central.delete("/configuration/tenants", "tenantId" -> edge.tenantId) *>
       central.delete("/configuration/edges", "edgeId" -> edge.edgeId)).ignore
 
+  /** The edge as central's mutual-TLS listener sees it: its certificate in the handshake and its token. */
+  private def onSurface(central: CentralApi, edge: SecondEdge): CentralApi =
+    central.onEdgeSurface(Some(edge.token), Some(edge.ssl))
+
   private def withSecondEdge[A](central: CentralApi)(use: SecondEdge => Task[A]): Task[A] =
     ZIO.acquireReleaseWith(register(central))(cleanup(central, _))(use)
 
@@ -170,7 +180,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
     * the other tenant's row is then judged on the same snapshot. A refusal reads as no ids,
     * so the assertion then reports the missing own row rather than a parse error. */
   private def syncIds(central: CentralApi, edge: SecondEdge, resource: String, items: String, id: String)(own: String): Task[Set[String]] =
-    val read = central.withBearer(edge.token).get(s"/edge/sync/$resource").flatMap: result =>
+    val read = onSurface(central, edge).get(s"/edge/sync/$resource").flatMap: result =>
       if result.status == Status.Ok then result.items(items).map(_.flatMap(_.str(id)).toSet)
       else ZIO.succeed(Set.empty[String])
     eventually(read)(_.contains(own))
@@ -200,7 +210,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       for
         central <- api
         result <- withSecondEdge(central): edge =>
-          val asEdge = central.withBearer(edge.token)
+          val asEdge = onSurface(central, edge)
           for
             dpop <- asEdge.get("/edge/sync/dpop")
             policy <- dpop.obj
@@ -219,19 +229,23 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       for
         central <- api
         result <- withSecondEdge(central): edge =>
+          // The main listener: an edge token is no better there than anywhere else but the edge surface.
           val asEdge = central.withBearer(edge.token)
           for
             clientsSync <- asEdge.get("/configuration/clients/sync")
             signingKeys <- asEdge.get("/configuration/jwks/signing-keys/sync")
             registration <- asEdge.post("/users/registrations", Json.Obj("email" -> Json.Str("edge@example.com")))
             tenants <- asEdge.get("/configuration/tenants")
-            own <- asEdge.get("/edge/sync/clients")
+            own <- onSurface(central, edge).get("/edge/sync/clients")
+            onMainListener <- asEdge.get("/edge/sync/clients")
           yield assertTrue(clientsSync.status == Status.Forbidden)
             .label("the sync route auth reads returns every tenant: an edge is not let near it") &&
             assertTrue(signingKeys.status == Status.Forbidden).label("the private halves are auth's alone") &&
             assertTrue(registration.status == Status.Forbidden).label("only auth indexes a registered user") &&
             assertTrue(tenants.status == Status.Forbidden).label("an admin route is no different") &&
-            assertTrue(own.status == Status.Ok).label("the same token is what the edge-facing surface accepts")
+            assertTrue(own.status == Status.Ok).label("the same token is what the edge-facing surface accepts") &&
+            assertTrue(onMainListener.status == Status.NotFound)
+              .label("the edge surface exists on the mutual-TLS listener only, not on the port the admin console uses")
       yield result
     },
     test("a token that only claims to be an edge is not authenticated") {
@@ -246,14 +260,37 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
             privateKey <- registered.stringAt("privateKey")
             _ <- central.delete("/configuration/edges", "edgeId" -> s"${edge.edgeId}-other")
             stranger <- edgeToken(s"${edge.edgeId}-other", keyId, privateKey)
-            onEdgeSurface <- central.withBearer(stranger).get("/edge/sync/clients")
+            onEdgeSurface <- central.onEdgeSurface(Some(stranger), Some(edge.ssl)).get("/edge/sync/clients")
             onConfiguration <- central.withBearer(stranger).get("/configuration/clients/sync")
-            anonymous <- central.anonymous.get("/edge/sync/clients")
-            asAdmin <- central.get("/edge/sync/clients")
+            anonymous <- central.onEdgeSurface(None, Some(edge.ssl)).get("/edge/sync/clients")
+            asAdmin <- central.onEdgeSurface(None, Some(edge.ssl), Some("central" -> central.config.resourceSecret)).get("/edge/sync/clients")
           yield assertTrue(onEdgeSurface.status == Status.Unauthorized, onConfiguration.status == Status.Unauthorized)
             .label("an unregistered edge gets 401, not the 403 a known edge gets: it is told nothing") &&
             assertTrue(anonymous.status == Status.Unauthorized, asAdmin.status == Status.Unauthorized)
               .label("the admin credential is not an edge either")
+      yield result
+    },
+    // The listener is reachable from outside, so the token is not the whole credential: the handshake's
+    // certificate has to have been issued to the edge the token names.
+    test("an edge's token is refused unless the handshake presents the certificate issued to that edge") {
+      for
+        central <- api
+        result <- withSecondEdge(central): edge =>
+          for
+            otherEdge <- EdgeCertificate.forCentralListener(Some(s"${edge.edgeId}-other"))
+            otherSsl <- otherEdge.clientSsl(central.config.centralMutualTlsServerCertificate)
+            unnamed <- EdgeCertificate.forCentralListener(None)
+            unnamedSsl <- unnamed.clientSsl(central.config.centralMutualTlsServerCertificate)
+            withOtherEdgesCertificate <- central.onEdgeSurface(Some(edge.token), Some(otherSsl)).get("/edge/sync/clients")
+            withUnnamedCertificate <- central.onEdgeSurface(Some(edge.token), Some(unnamedSsl)).get("/edge/sync/clients")
+            withNoCertificate <- central.onEdgeSurface(Some(edge.token), None).get("/edge/sync/clients").either
+            withItsOwn <- onSurface(central, edge).get("/edge/sync/clients")
+          yield assertTrue(withOtherEdgesCertificate.status == Status.Unauthorized)
+            .label("a certificate the CA issued to another edge cannot carry this edge's token") &&
+            assertTrue(withUnnamedCertificate.status == Status.Unauthorized)
+              .label("a certificate the CA vouches for that names no edge is not an edge's") &&
+            assertTrue(withNoCertificate.isLeft).label("without a certificate the handshake itself is refused") &&
+            assertTrue(withItsOwn.status == Status.Ok).label("the same token with its own certificate is served")
       yield result
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)
