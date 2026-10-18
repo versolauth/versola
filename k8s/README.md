@@ -224,66 +224,94 @@ three `*.generated-secrets.env` files, mapping variable names to key names by th
 ## 5. Applying migrations
 
 The services **validate** their schema at boot and fail to start when migrations are missing.
-They do not apply them: `RUN_MIGRATIONS` is hardcoded to `"false"` in the Deployment template,
-and the migration Job that will replace it is
-[#209](https://github.com/versolauth/versola/issues/209).
+They do not apply them: `RUN_MIGRATIONS` is `"false"` in the Deployment template. The chart's
+migration Job does (`migrations.*` in `values.yaml`): on every `helm install` and `helm upgrade` it
+runs `versola-tools migrate` once, before the new pods start. If it fails, the release fails and the
+Deployments are left as they were.
 
-Nor can you override it through `services.<name>.extraEnv`. That renders *after* the hardcoded
-entry, so the container ends up with two `env` entries of the same name, and Helm 4's
-server-side apply rejects that outright:
+Setting `RUN_MIGRATIONS` through `services.<name>.extraEnv` does not work: that renders after the
+hardcoded entry, so the container gets two `env` entries of the same name, and Helm 4's server-side
+apply rejects `duplicate entries for key [name="RUN_MIGRATIONS"]`.
 
+### What the Job reads
+
+Nothing the Deployments do not already read, and less of it:
+
+- **One container per enabled service** (`migrate-auth`, `migrate-central`, `migrate-edge`; a
+  disabled service is not migrated), running side by side. The three schemas are independent.
+  The Job fails if any container does.
+- Each container mounts **only its own service's** `config.existingSecret` as `<service>.conf`, and
+  gets **only that service's `POSTGRES_PASSWORD`** from `secrets.existingSecret`. The three configs
+  all say `${POSTGRES_PASSWORD}` with a different value each, which is why there is no single
+  container. The tool reads `postgres.url`, `user`, `password` and `ssl-root-cert` and tolerates every
+  other unresolved placeholder, so token, signing and client secrets never reach the Job.
+- A service's `extraVolumes` / `extraVolumeMounts` are mounted in its container too, so a
+  `postgres.ssl-root-cert` path resolves exactly as it does in the Deployment.
+
+Both Secrets must exist **before** `helm install`. A hook runs ahead of every other resource of the
+release, so a Secret created by the same release, or by an operator that has not synced it yet,
+is not there for it and the Job waits until `activeDeadlineSeconds`. The connection must reach
+Postgres itself, not a transaction-pooling PgBouncer in front of it.
+
+### Why a rolling update is safe
+
+The order is *migrate, then roll the pods*, and it holds up for two reasons that live in the code:
+
+- The old pods keep serving on the migrated schema. Migrations are written to be compatible with the
+  previous release (`.claude/rules/database-migrations.md`: add, never drop or rename in the same
+  release), and a service ignores a schema that is *ahead* of its build.
+- If the Job did not run at all (the tool does not support Helm hooks, someone deleted it), the new
+  pods stop at boot with the name of the missing migration instead of serving errors from a table that
+  is not there.
+
+`helm rollback` does not undo a migration, and does not run one. The previous version starts on the
+newer schema for the same reason the old pods above do. A migration that cannot be survived by the
+previous release has to be said so in its release notes; restoring the pre-upgrade `pg_dump` is the
+only way back from it.
+
+### Settings
+
+| Value | Default | |
+|---|---|---|
+| `migrations.enabled` | `true` | Turn off only if something else migrates (below). |
+| `migrations.hook` | `true` | A `pre-install,pre-upgrade` Helm hook. `false`: an ordinary Job. |
+| `migrations.activeDeadlineSeconds` | `270` | Keep it **below** the `--timeout` of `helm upgrade` (5m unless set), or Helm gives up while the Job keeps running. Raise both for a long migration. |
+| `migrations.lockTimeoutMs` | `5000` | A statement waiting longer for a lock gives up and the service's migration is retried, instead of queueing every query behind it while the old pods serve. `0` waits forever. |
+| `migrations.lockRetries` / `connectRetries` | `3` / `3` | |
+| `migrations.dryRun` | `false` | Reports the pending migrations and applies nothing. |
+| `migrations.backoffLimit` | `1` | Job retries after a pod dies for its own reason, such as a node drain. |
+| `migrations.ttlSecondsAfterFinished` | `86400` | How long a finished Job keeps its logs. |
+
+A failed hook Job stays for its logs (`kubectl logs job/<release>-versola-migrate --all-containers`);
+the next attempt replaces it. A succeeded one is removed.
+
+### Without Helm hooks (Argo CD, Flux, plain manifests)
+
+Set `migrations.hook=false`. The chart then renders an ordinary Job whose name carries a hash of what
+it runs (image, arguments, environment, mounts), because a Job's pod template cannot be changed in
+place. Ordering becomes the tool's job; put its annotations in `migrations.annotations`.
+
+- **Argo CD:** `argocd.argoproj.io/hook: PreSync` and
+  `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation`. Argo CD ignores every `helm.sh/hook`
+  as soon as one `argocd.argoproj.io/hook` exists, runs PreSync before the other resources of the
+  Application, and cannot tell an install from an upgrade, so the Secrets must live outside this
+  Application (or in an earlier sync wave) and the Job runs on every sync, which a migration that has
+  nothing left to apply tolerates. Without a hook the pods start first and crash-loop until the Job
+  has run.
+- **Flux:** the HelmRelease runs the Helm hooks itself, so the default works; set
+  `spec.upgrade.timeout` above `migrations.activeDeadlineSeconds`.
+- **Plain manifests:** `helm template` and apply the Job first, wait for it, then the rest.
+
+### By hand
+
+With `migrations.enabled=false`, or for a one-off (`--dry-run`, a single service), run the same Job
+yourself. It needs the same two things per service: the env.conf mounted as `<service>.conf` under
+`/opt/versola-tools/config`, and `POSTGRES_PASSWORD` in the environment.
+
+```bash
+helm template versola k8s/versola -f values.yaml --set migrations.dryRun=true \
+  -s templates/migrate-job.yaml | kubectl apply -f -
 ```
-.spec.template.spec.containers[name="auth"].env: duplicate entries for key [name="RUN_MIGRATIONS"]
-```
-
-Apply migrations with `versola-tools` instead, as a one-shot Job. It reads the *same*
-`auth.conf`/`central.conf`/`edge.conf` the services will start from, so what it applies cannot
-drift from what they expect to find:
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: versola-migrate
-  namespace: versola
-spec:
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: ghcr.io/versolauth/versola-tools:<appVersion>
-          args: ["migrate"]            # add "--dry-run" to report without applying
-          envFrom:
-            - secretRef:
-                name: versola-migrate-env
-          volumeMounts:
-            - name: config
-              mountPath: /opt/versola-tools/config
-              readOnly: true
-      volumes:
-        - name: config
-          secret:
-            secretName: versola-migrate-config
-```
-
-Two Secrets of its own, because it needs the configs under their own names and the values keyed
-by *variable* name rather than by the chart's key naming:
-
-- `versola-migrate-config` — keys `auth.conf`, `central.conf`, `edge.conf`.
-- `versola-migrate-env` — the database credentials the three files reference (`POSTGRES_PASSWORD`
-  and whatever else `postgres.*` points at). The tool reads only `postgres.url`/`user`/`password`
-  (and `ssl-root-cert`) and tolerates every other unresolved placeholder, so the token, signing and
-  client secrets do not have to be in the Job's environment. Name the services to migrate with
-  repeated `--service` flags (`args: ["migrate", "--service", "auth", "--service", "central"]`);
-  without one it needs all three files.
-
-Two settings come from the environment: `MIGRATE_LOCK_TIMEOUT_MS` (default `5000`, `0` disables)
-makes a statement that cannot get a lock within that time fail instead of queueing every query
-behind it while the previous version still serves, and `MIGRATE_LOCK_RETRIES` (default `3`) retries
-the service's migration after such a failure. `MIGRATE_CONNECT_RETRIES` (default `3`, 5 s apart)
-covers a database that is not accepting connections yet.
 
 It creates each schema if absent, then migrates each service independently. `--dry-run` reports
 what would be applied, including against a database with no history at all, without touching
@@ -567,7 +595,6 @@ All of these have open issues; none of them has a fix in the chart yet.
 | | |
 |---|---|
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
-| [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
 Observability is external by design. The Grafana dashboard is checked in under `dashboards/grafana/` at the repository root, outside both charts, and is not installed by either. Nothing here deploys Prometheus, and neither chart creates
 `ServiceMonitor` or `PodMonitor` objects — both `loadgen` and `versola` carry `prometheus.io/scrape`

@@ -712,6 +712,17 @@ fallback is a latency incident, not a degraded mode. Check `crypto_provider_nati
 
 The generated `compose.yml` sets `RUN_MIGRATIONS: "false"` on all three services.
 
+The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
+(`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
+
+`versola migrate` (and that Job) waits at most 5 seconds for any lock (`MIGRATE_LOCK_TIMEOUT_MS`,
+`0` waits forever) and retries the service's migration 3 times (`MIGRATE_LOCK_RETRIES`) before it
+fails, so a statement that has to wait for a long transaction of the version still serving does not
+queue the logins behind it. Postgres not yet accepting connections is retried too
+(`MIGRATE_CONNECT_RETRIES`, 3 times, 5 seconds apart). All three are environment variables of the
+`migrate` container. Only `postgres.url`, `user`, `password` and `ssl-root-cert` of each config have to
+resolve; other unset placeholders no longer stop it.
+
 ---
 
 ## 5. Secrets and configuration
