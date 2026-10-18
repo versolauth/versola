@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Copies the screenshots `tests/docs-screenshots.spec.ts` generated into a versola-website checkout
- * and checks that the manifest and the docs pages agree.
+ * Converts the screenshots `tests/docs-screenshots.spec.ts` generated to AVIF and writes them into a
+ * versola-website checkout, then checks that the manifest and the docs pages agree.
  *
  *   node scripts/sync-docs-screenshots.mjs <website-dir> [--dry-run] [--prune] [--source <dir>]
  *
@@ -10,9 +10,15 @@
  * The script fails when either side drifts, and when a manifest entry has no generated file (the
  * spec was not run, or a scene failed). Files in the website folder that no page references are
  * reported and left alone unless `--prune` is given. `--dry-run` prints the report without copying.
+ *
+ * Only the light theme ships (the docs site has a light theme only; `Screenshot.astro` never picks the
+ * dark twin when a light one exists), as `<name>-light.avif`. AVIF at quality 60 with full-resolution
+ * chroma keeps UI text crisp and is about half the size of the optimised PNG. Pass `--with-dark` to also
+ * write `<name>.avif` from the dark capture. `sharp` is taken from the website checkout's node_modules.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,9 +31,10 @@ if (sourceFlag >= 0) positional.splice(positional.indexOf(args[sourceFlag + 1]),
 const website = positional[0] && resolve(positional[0]);
 const dryRun = flags.has('--dry-run');
 const prune = flags.has('--prune');
+const withDark = flags.has('--with-dark');
 
 if (!website || !existsSync(join(website, 'src', 'content', 'docs'))) {
-  console.error('usage: sync-docs-screenshots.mjs <website-dir> [--dry-run] [--prune] [--source <dir>]');
+  console.error('usage: sync-docs-screenshots.mjs <website-dir> [--dry-run] [--prune] [--with-dark] [--source <dir>]');
   console.error('<website-dir> must be a versola-website checkout (src/content/docs/ was not found).');
   process.exit(2);
 }
@@ -60,8 +67,8 @@ for (const page of walk(docsDir, path => /\.mdx?$/.test(path))) {
 }
 
 const imgDir = join(website, 'public', 'img', 'docs');
-const baseName = file => relative(imgDir, file).replace(/\.png$/, '').replace(/-light$/, '');
-const siteFiles = existsSync(imgDir) ? walk(imgDir, path => path.endsWith('.png')) : [];
+const baseName = file => relative(imgDir, file).replace(/\.avif$/, '').replace(/-light$/, '');
+const siteFiles = existsSync(imgDir) ? walk(imgDir, path => path.endsWith('.avif')) : [];
 
 const unlisted = [...referencedBy.keys()].filter(name => !manifestNames.has(name)).sort();
 const unreferenced = [...manifestNames].filter(name => !referencedBy.has(name)).sort();
@@ -72,12 +79,14 @@ const missing = [...manifestNames].filter(name => generated(name).some(file => !
 
 let copied = 0;
 if (!dryRun) {
+  const sharp = createRequire(join(website, 'package.json'))('sharp');
   for (const name of manifestNames) {
     if (missing.includes(name)) continue;
     for (const file of generated(name)) {
-      const target = join(imgDir, relative(source, file));
+      if (!withDark && !file.endsWith('-light.png')) continue;
+      const target = join(imgDir, relative(source, file).replace(/\.png$/, '.avif'));
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(file, target);
+      await sharp(file).avif({ quality: 60, effort: 6, chromaSubsampling: '4:4:4' }).toFile(target);
       copied++;
     }
   }
@@ -90,7 +99,7 @@ const list = (title, items, render = item => item) => {
 };
 
 console.log(`manifest: ${manifestNames.size} images, pages reference ${referencedBy.size}, website folder holds ${siteFiles.length} files`);
-console.log(dryRun ? 'dry run: nothing copied' : `copied ${copied} files into ${relative(process.cwd(), imgDir) || '.'}`);
+console.log(dryRun ? 'dry run: nothing written' : `wrote ${copied} AVIF files into ${relative(process.cwd(), imgDir) || '.'}`);
 list('duplicate manifest names', [...new Set(duplicates)]);
 list('(a) referenced by a page but not in the manifest', unlisted, name => `${name}  <- ${[...referencedBy.get(name)].join(', ')}`);
 list('(b) in the manifest but referenced by no page', unreferenced);

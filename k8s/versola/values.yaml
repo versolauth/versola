@@ -264,7 +264,7 @@ services:
       behavior: {}
     config:
       # Name of a Secret that already contains an env.conf key (HOCON --
-      # see deploy.md 3.2/3.3), mounted at CONFIG_PATH. Left empty by
+      # see deploy.md "First-time setup"), mounted at CONFIG_PATH. Left empty by
       # default -- this chart doesn't generate one.
       existingSecret: ""
       secretKey: env.conf

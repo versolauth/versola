@@ -7,15 +7,15 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{ApplicationType, AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.ClientAuthentication
-import versola.oauth.dpop.{DpopService, EdgeAssertionService}
+import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{CoreConfig, Dpop, EdgeAssertion, TestCertificates, UnitSpecBase}
+import versola.util.{CoreConfig, Dpop, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -44,8 +44,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
   val clientCertificate: ClientCertificate = TestEnvConfig.clientCertificate
   val boundThumbprint1 = clientCertificate.thumbprint
 
-  /** The record `checkDpop` looks up to learn which tenant an edge assertion for this token's
-    * client has to be scoped to -- see `EdgeAssertionService.verify`. */
+  /** The record `checkDpop` looks up to learn whether the token's client is fronted by an edge. */
   val client1 = OAuthClientRecord(
     id = clientId1,
     tenantId = tenantId1,
@@ -126,9 +125,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       expectedStatus: Status,
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
-      edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
-      // The lookups made against the token's client: the tenant an edge assertion has to be
-      // scoped to, (RFC 9449 §8) whether that client's tenant demands a nonce, and the tenant
+      // The lookups made against the token's client: whether it is fronted by an edge, (RFC 9449 §8) whether that client's tenant demands a nonce, and the tenant
       // whose key signs a JWT-formatted response -- plus (§5.1) the deployment's advertised
       // algorithms, which are not per-client. Defaults to the fixture client every test above
       // assumes, with no nonce required.
@@ -155,7 +152,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
         client <- ZIO.service[Client]
         userInfoService = stub[UserInfoService]
         dpopService = stub[DpopService]
-        edgeAssertionService = stub[EdgeAssertionService]
         oAuthConfigurationService = stub[OAuthConfigurationService]
         clientAuthentication = stub[ClientAuthentication]
         jwksService = TestEnvConfig.jwksService
@@ -165,7 +161,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
           UserInfoController.routes
             .provideEnvironment(
               ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
-                ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++
+                ZEnvironment(dpopService) ++
                 ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
                 tracing,
             ),
@@ -173,7 +169,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(routes)
         _ <- setup(userInfoService)
         _ <- dpopSetup(dpopService)
-        _ <- edgeAssertionSetup(edgeAssertionService)
         _ <- oAuthConfigurationSetup(oAuthConfigurationService)
         _ <- clientAuthenticationSetup(clientAuthentication)
 
@@ -479,6 +474,9 @@ object UserInfoControllerSpec extends UnitSpecBase:
             )),
         )
       },
+      // The call edge makes on its own behalf for `fetchUserInfo`: the user's key-bound token and
+      // no proof -- the key is the device's, and edge already enforced RFC 9449 §7 at its own
+      // boundary. What stands in for the proof is the certificate of the TLS handshake.
       locally {
         val boundAccessToken = createAccessToken(
           userId1,
@@ -487,69 +485,72 @@ object UserInfoControllerSpec extends UnitSpecBase:
           TestEnvConfig.coreConfig,
           cnfJkt = Some(boundJkt1),
         )
-        // The call edge makes on its own behalf for `fetchUserInfo`: the user's bound token,
-        // no proof (edge cannot mint one for the client's key), and an assertion that edge
-        // already enforced §7 at its own boundary.
-        userInfoTestCase(
-          description = "honour a bound token under Bearer when a valid edge assertion vouches for it",
-          request = Request.get(url = URL.empty / "userinfo")
-            .addHeader(Header.Authorization.Bearer(boundAccessToken))
-            .addHeader(Header.Custom(EdgeAssertion.HeaderName, "edge-assertion-jwt")),
-          expectedStatus = Status.Ok,
-          setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
-          edgeAssertionSetup = _.verify.succeedsWith(Some("edge-1")),
-          verify = response =>
-            for
-              body <- response.body.asString
-              userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
-            yield assertTrue(userInfo.claims.contains("sub")),
+        val edgeFrontedClient = client1.copy(
+          applicationType = ApplicationType.native,
+          authMethod = AuthMethod.tls_client_auth,
         )
-      },
-      locally {
-        val boundAccessToken = createAccessToken(
-          userId1,
-          clientId1,
-          Set(ScopeToken.OpenId),
-          TestEnvConfig.coreConfig,
-          cnfJkt = Some(boundJkt1),
-        )
-        userInfoTestCase(
-          description = "refuse a bound token under Bearer when the edge assertion does not verify",
-          request = Request.get(url = URL.empty / "userinfo")
-            .addHeader(Header.Authorization.Bearer(boundAccessToken))
-            .addHeader(Header.Custom(EdgeAssertion.HeaderName, "not-a-valid-assertion")),
-          expectedStatus = Status.Unauthorized,
-          edgeAssertionSetup = _.verify.succeedsWith(None),
-          verify = response =>
-            for
-              wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
-                .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
-            yield assertTrue(wwwAuth.contains("invalid_dpop_proof")),
-        )
-      },
-      locally {
-        val boundAccessToken = createAccessToken(
-          userId1,
-          clientId1,
-          Set(ScopeToken.OpenId),
-          TestEnvConfig.coreConfig,
-          cnfJkt = Some(boundJkt1),
-        )
-        // Two assertions is two identity claims; honouring either silently admits the one
-        // that was never checked, so the header is read as absent instead.
-        userInfoTestCase(
-          description = "refuse a bound token under Bearer carrying more than one edge assertion",
-          request = Request.get(url = URL.empty / "userinfo")
-            .addHeader(Header.Authorization.Bearer(boundAccessToken))
-            .addHeader(Header.Custom(EdgeAssertion.HeaderName, "first-assertion"))
-            .addHeader(Header.Custom(EdgeAssertion.HeaderName, "second-assertion")),
-          expectedStatus = Status.Unauthorized,
-          edgeAssertionSetup = _.verify.succeedsWith(Some("edge-1")),
-          verify = response =>
-            for
-              wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
-                .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
-            yield assertTrue(wwwAuth.contains("invalid_dpop_proof")),
+        val bearer = Request.get(url = URL.empty / "userinfo")
+          .addHeader(Header.Authorization.Bearer(boundAccessToken))
+        def refused(response: Response) =
+          for
+            wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+              .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+          yield assertTrue(wwwAuth.contains("invalid_dpop_proof"))
+        suite("a key-bound token under Bearer, from the edge fronting its client")(
+          userInfoTestCase(
+            description = "honour it over the registered certificate of an edge-fronted native client",
+            request = bearer,
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
+                service.requireDpopNonce.succeedsWith(false) *>
+                service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.succeedsWith(edgeFrontedClient),
+            verify = response =>
+              for
+                body <- response.body.asString
+                userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
+              yield assertTrue(userInfo.claims.contains("sub")),
+          ),
+          userInfoTestCase(
+            description = "refuse it when the certificate is not the one the client registered",
+            request = bearer,
+            expectedStatus = Status.Unauthorized,
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
+                service.requireDpopNonce.succeedsWith(false) *>
+                service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.failsWith(()),
+            verify = refused,
+            dispatchDirectly = true,
+          ),
+          userInfoTestCase(
+            description = "refuse it for a client that is not fronted by an edge, whatever certificate is presented",
+            request = bearer,
+            expectedStatus = Status.Unauthorized,
+            // client1 is a web client authenticating by secret: nothing about it says an edge
+            // verified a proof for it, and a backend holding both its token and a certificate
+            // must not be able to shed the key binding.
+            clientAuthenticationSetup = auth =>
+              auth.certificateForClient.succeedsWith(Some(clientCertificate)) *> auth.authenticate.succeedsWith(client1),
+            verify = refused,
+            dispatchDirectly = true,
+          ),
+          userInfoTestCase(
+            description = "refuse it when the request carries no certificate",
+            request = bearer,
+            expectedStatus = Status.Unauthorized,
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(edgeFrontedClient)) *> service.get.succeedsWith(edgeFrontedClient) *>
+                service.requireDpopNonce.succeedsWith(false) *>
+                service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
+            clientAuthenticationSetup = _.certificateForClient.succeedsWith(None),
+            verify = refused,
+            dispatchDirectly = true,
+          ),
         )
       },
       userInfoTestCase(

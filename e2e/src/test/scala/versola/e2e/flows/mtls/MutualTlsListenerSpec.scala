@@ -92,8 +92,32 @@ object MutualTlsListenerSpec extends E2ESpec:
         authMethod = "tls_client_auth",
         mtlsAuth = Some(Fixtures.mutualTlsAuth("san_dns", clientDnsName)),
       ).success
-      _ <- auth.syncConfiguration()
+      _ <- awaitRegistered(auth, id)
     yield id
+
+  /** The sync answers before auth's cache is guaranteed to hold the client: a reload another spec
+    * started earlier can finish after this registration and leave the cache without it, so the
+    * first token call answers `invalid_client`. Sync again and probe over the real handshake until
+    * the listener knows the client, for a bounded window; the last answer is named if it expires.
+    */
+  private def awaitRegistered(auth: OAuthClient, clientId: String): Task[Unit] =
+    for
+      last <- Ref.make("no attempt made")
+      known = (auth.syncConfiguration() *> tokenOver(authenticatedSsl(auth), s"${auth.authMutualTlsUrl}/token", clientId))
+        .map:
+          case _: TokenResult.Success => true
+          case _: TokenResult.Failure => false
+        .tap(known => ZIO.unless(known)(last.set("the listener still answers invalid_client")))
+        .catchAll(error => last.set(error.getMessage).as(false))
+      settled <- known
+        .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntilEquals(true))
+        .timeout(30.seconds)
+        .withClock(Clock.ClockLive)
+      error <- last.get
+      _ <- ZIO.unless(settled.contains(true))(
+        ZIO.fail(RuntimeException(s"client '$clientId' never reached the mutual TLS listener's cache: $error")),
+      )
+    yield ()
 
   def spec = suite("Mutual TLS listener (RFC 8705 §5)")(
     test("the discovery document aliases every endpoint the listener serves at its own address") {

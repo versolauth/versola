@@ -115,8 +115,8 @@ describe('theme storage fallback', () => {
     setThemePreference('light');
     setThemePreference('dark');
 
-    expect(favicon.setAttribute).toHaveBeenNthCalledWith(1, 'href', 'logo-shield-light.svg');
-    expect(favicon.setAttribute).toHaveBeenNthCalledWith(2, 'href', 'logo-shield.svg');
+    expect(favicon.setAttribute).toHaveBeenNthCalledWith(1, 'href', 'favicon-light.svg');
+    expect(favicon.setAttribute).toHaveBeenNthCalledWith(2, 'href', 'favicon-dark.svg');
   });
 });
 

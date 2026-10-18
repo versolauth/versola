@@ -25,7 +25,7 @@ Three Scala services share one codebase, plus a static admin SPA:
 | `auth` | OAuth 2.0 / OpenID Connect provider — authorization, token, introspection, JWKS, logout endpoints | Yes |
 | `central` | Configuration store: tenants, clients, scopes, roles, permissions, forms, JWKS. Admin API. Source of truth `auth` syncs from. | No — reached only through `edge` |
 | `edge` | Authenticating/authorizing reverse proxy that offloads authn/authz from resource servers and API backends; also the login entry point for the admin console | Yes |
-| `central-ui` | Admin dashboard SPA (not a Docker service — static assets served by nginx) | Yes |
+| `central-ui` | Admin dashboard SPA (static assets, shipped in the `versola-tools` image and served by the reverse proxy in front of Versola) | Yes |
 
 `util` holds code shared across `auth`/`central`/`edge` (HTTP, JSON Schema, CEL, core types). Each service also has a `-postgres-impl` module (e.g. `auth-postgres-impl`) that wires the service to its PostgreSQL implementation and provides the runnable app.
 
@@ -38,49 +38,49 @@ For the full request-routing picture and why things are split this way, see [`de
 - **Tracing:** OpenTelemetry
 - **Secrets:** [OpenBao](https://openbao.org/) for managing per-environment secrets
 - **Admin UI:** Lit, TypeScript, Vite (`central-ui`), tested with Playwright and Vitest
-- **Forms** - Solid.js, TypeScript
-- **Packaging:** `sbt-native-packager` (`JavaAppPackaging`), Docker images published to `ghcr.io/versolauth/`
+- **Login forms:** Solid.js, TypeScript (built by `central-ui`)
+- **Packaging:** `sbt-native-packager` (`JavaAppPackaging`), Docker images (amd64 and arm64) published to `ghcr.io/versolauth/` by each release
+- **Deployment:** Docker Compose on a VM driven by [`versola-cli`](https://github.com/versolauth/versola-cli), or the Helm charts in `k8s/`
 
 ## Getting started
 
-Requires a JDK, [sbt](https://www.scala-sbt.org/), Docker, [scala-cli](https://scala-cli.virtuslab.org/install) (for local config generation), and Node.js/npm (to build `central-ui`'s login forms, which `central` needs to render `/login/central-admin`).
+### Try a release with `versola-cli`
+
+The quickest way to run Versola is [`versola-cli`](https://github.com/versolauth/versola-cli): it pulls a released version, generates its configuration and secrets, and starts Postgres, `central`, `auth`, `edge`, the admin console and a reverse proxy with Docker Compose. It needs only Docker.
 
 ```bash
-# 1. Generate local dev config for auth/central/edge (writes auth/dev/env.conf, etc.)
-scala-cli run scripts/gen-env.scala   # answer "local" at the Name prompt
+curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh
+versola doctor                      # checks Docker, Compose, free port 2821, memory
+versola bootstrap local <version>   # a release tag without a leading "v", e.g. 0.7.1
+versola status
+versola down                        # stop; `versola uninstall` removes everything
+```
 
-# 2. Start Postgres
+The console opens at `http://localhost:2821/central/admin/` and the admin login is printed when `bootstrap` finishes. The same CLI deploys to a server: see [`deploy.md`](deploy.md).
+
+### Run from source
+
+To work on Versola itself you run the services from sbt. You need a JDK, [sbt](https://www.scala-sbt.org/), Docker, [scala-cli](https://scala-cli.virtuslab.org/install), an OpenSSL 3 `openssl` on `PATH` (macOS's LibreSSL is too old), nginx, and Node.js/npm. In short:
+
+```bash
+scala-cli run scripts/gen-env.scala                      # answer "local" at the Name prompt
 docker-compose -f services.yml up -d postgres
-
-# 3. Run each service (in separate terminals)
-# RUN_MIGRATIONS=true: each service otherwise only *validates* its schema on
-# startup rather than applying migrations to it (deliberate for real
-# deployments, see deploy.md's own RUN_MIGRATIONS section) -- against the
-# fresh Postgres from step 2, that fails immediately with no schema to
-# validate against.
-PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
-PORT=9003 DPORT=9004 APORT=9007 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
-PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
+cd central-ui && npm install && npm run build:forms && cd ..
 ```
 
-Before starting `central`, build the login forms it serves:
-
-```bash
-cd central-ui
-npm install
-npm run build:forms   # compiles forms into central/src/main/resources/forms
-```
-
-Then open `http://localhost:9005/login/central-admin` (`admin` / `Admin1234!`, OTP `123456`).
+and then start `central`, `auth`, an nginx TLS terminator in front of `auth`, and `edge`, and open
+`http://localhost:9005/login/central-admin` (`admin` / `Admin1234!`, OTP `123456`). The exact commands, ports
+and flags are in [`develop.md`](develop.md#running-from-source).
 
 ## Testing
 
 ```bash
+docker-compose -f services.yml up -d --build postgres   # unit tests need it (it serves TLS)
 sbt test                 # unit tests for all modules
-sbt e2e/test             # end-to-end tests (run explicitly, not part of the default test loop)
+sbt e2e/test             # end-to-end tests against a staged stack (see develop.md); not part of the default test loop
 ```
 
-`central-ui` has its own suites: `cd central-ui && npm run test:unit` (Vitest) and `npm run test:ui` (Playwright).
+`sbt test` needs the forms built (step 3 above). `central-ui` has its own suites: `cd central-ui && npm run test:unit` (Vitest) and `npm run test:ui` (Playwright).
 
 ## Project structure
 
@@ -91,11 +91,18 @@ sbt e2e/test             # end-to-end tests (run explicitly, not part of the def
 ├── edge/                # Authn/authz-offloading reverse proxy for resource servers/APIs; also the admin console entry point
 ├── util/                # Shared library code (+ util/implementations/postgres)
 ├── e2e/                 # Cross-service end-to-end tests
-├── docker/              # Dockerfiles for each service
+├── migrate-tool/        # Runs every service's migrations (shipped in the versola-tools image)
+├── loadgen/, mockapi/   # Load emulator and the mock upstream it drives
+├── docker/              # Dockerfiles for each service and for versola-tools
+├── k8s/                 # Helm charts: versola (the system) and loadgen
+├── dashboards/          # Grafana dashboards
 ├── scripts/gen-env.scala # Generates per-environment HOCON configs + secrets
 ├── project/             # sbt build config (Dependencies.scala, plugins)
-├── develop.md           # Local development, Docker builds, OpenBao secrets setup
-└── deploy.md            # Deployment runbook and troubleshooting
+├── develop.md           # Local development, config generation, Docker builds, OpenBao secrets
+├── deploy.md            # Production deployment runbook and troubleshooting
+├── REVIEW.md            # Code review guide
+├── SECURITY.md          # Vulnerability reporting and fix SLAs
+└── CLAUDE.md            # Rules for AI-assisted work (plus .claude/rules/)
 ```
 
 ## API
@@ -112,7 +119,9 @@ Internal service-to-service endpoints (configuration sync/registry, the sign-in 
 
 ## CI/CD
 
-[`ci-cd.yml`](.github/workflows/ci-cd.yml) is the main build pipeline. It runs on every push/PR to `main`:
+[`ci-cd.yml`](.github/workflows/ci-cd.yml) is the main pipeline:
 
-1. Compile all modules and run the unit test suite (`sbt test`) against a Postgres service container.
-2. Stage `auth`, `central` and `edge`, then run the end-to-end suite (`sbt e2e/test`) against the staged services.
+- **Every push/PR to `main`:** compile, unit tests with coverage against Postgres, stage the services and run the end-to-end suite, plus the Helm chart checks and the `central-ui` type-check, Vitest and Playwright suites.
+- **A published release:** builds and pushes the `versola-auth`, `versola-central`, `versola-edge` and `versola-tools` images to `ghcr.io/versolauth/`, tagged with the release tag. Merging to `main` publishes nothing.
+
+[`security.yml`](.github/workflows/security.yml) runs the dependency, image, secret and code scanners. Nothing in CI deploys; see [`deploy.md`](deploy.md) and [`k8s/README.md`](k8s/README.md).

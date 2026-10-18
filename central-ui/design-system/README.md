@@ -136,7 +136,7 @@ and the gap shows the surface. The script also prints a note that `--info` equal
 - `src/utils/theme.ts` is the API: `getStoredPreference()`, `getResolvedTheme()`,
   `setThemePreference(pref)`, `watchSystemTheme()` (called by `admin-app`; repaints on an OS change
   while the choice is `auto`), and the `versola-theme-change` event (detail: the painted
-  `ThemeName`) for the few components that cannot follow by CSS alone (`versola-logo`).
+  `ThemeName`) for the few components that cannot follow by CSS alone.
 - The switcher is `versola-theme-switcher` in the sidebar footer: an icon button (half circle
   Auto, sun Light, moon Dark; accessible name `Colour scheme: <choice>`) that opens a listbox.
   Keyboard: arrows open and move, Enter/Space pick, Escape closes and returns focus, Tab and an
@@ -151,7 +151,7 @@ and the gap shows the surface. The script also prints a note that `--info` equal
 `<main class="main-content">` (padding 2rem, max-width 1400px). Below 768px the sidebar is an
 off-canvas drawer opened by the `versola-nav-toggle` in each page header, with a `--backdrop`.
 
-Sidebar, top to bottom: brand (logo + wordmark in `--accent`), tenant selector (looks like every
+Sidebar, top to bottom: brand (the V-and-dot mark from `versola-logo`, drawn with `--text-primary` and `--accent`, + wordmark in `--accent`), tenant selector (looks like every
 other `<select>`: same padding, chevron at the same inset), the nav (`Tenant Scoped`, `Global`;
 items are buttons with `aria-current="page"` on the active one; hover is a `--sidebar-hover-bg`
 fill, active is `--accent-subtle` with a 3px `--accent` bar on the left edge, the weight never

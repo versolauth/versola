@@ -70,7 +70,7 @@ test('follows the operating system while the choice is Auto, and only then', asy
 
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(root(page)).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'logo-shield.svg');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'favicon-dark.svg');
 
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(root(page)).toHaveAttribute('data-theme', 'light');

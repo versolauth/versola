@@ -343,7 +343,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * `gracefulShutdownTimeout` guards only the shutdown *hook*, and the JVM would not exit anyway
     * because the diagnostics server forked above holds non-daemon Netty threads. The container
     * would then never exit, `restart: unless-stopped` would never fire, and /readiness would stay
-    * false forever (see deploy.md 9.5).
+    * false forever (see deploy.md 6.5).
     *
     * So: a plain daemon JVM thread that halts once the deadline passes. Not a forked fiber - the
     * shutdown being guarded is precisely what interrupts fibers, so a fiber watchdog would be
