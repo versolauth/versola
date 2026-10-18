@@ -794,21 +794,29 @@ const consoleShots: DocsShot[] = [
   {
     name: 'console/forms-list-expanded', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
     before: async page => {
+      await realThemeCss(page);
+      // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
+      await page.reload();
       await page.locator('.form-header').filter({ hasText: 'consent' }).click();
       await page.locator('.version-card').filter({ hasText: 'v1' }).click();
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
       await page.getByRole('button', { name: 'Everything requested' }).click();
       await page.getByRole('button', { name: 'Mobile', exact: true }).click();
       await expect(page.getByRole('group', { name: 'Preview state' })).toBeVisible();
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
     },
   },
   {
     name: 'console/form-edit', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
     before: async page => {
+      await realThemeCss(page);
+      // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
+      await page.reload();
       await page.locator('.form-header').filter({ hasText: 'consent' }).click();
       await page.getByRole('button', { name: 'New Version', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'New Version', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
     },
   },
   {
