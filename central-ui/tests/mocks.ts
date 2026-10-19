@@ -20,7 +20,7 @@ function backendPath(pathname: string): string {
 }
 
 type SecurityProfileDto = 'standard' | 'fapi2';
-type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto };
+type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
@@ -206,6 +206,7 @@ type SubmissionLimitsDto = {
   otpRequest: RateLimitDto[];
   otpSubmit: RateLimitDto[];
   passwordSubmit: RateLimitDto[];
+  passkeyAssertion?: RateLimitDto[];
   banDurationSeconds: number;
 };
 type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
@@ -221,9 +222,18 @@ type ChallengeSettingsDto = {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
+  authConversationTtlSeconds?: number;
+  sessionTtlSeconds?: number;
+  sessionIdleTtlSeconds?: number | null;
+  userAgentTtlSeconds?: number;
+  ipHeader?: string;
+  acrVocabulary?: Record<string, string[]> | null;
+  postLogoutRedirectUris?: string[] | null;
   requireDpopNonce?: boolean | null;
   signingKeyId?: string | null;
   mtlsCertificateHeader?: string | null;
+  mtlsCertificateEncoding?: string | null;
+  clientAssertionMaxLifetimeSeconds?: number | null;
   logoLight?: string | null;
   logoDark?: string | null;
 };
@@ -315,6 +325,7 @@ export type MockConfigState = {
   authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
   localeActivationMissing: Record<string, string[]>;
+  serverMetadata: Record<string, unknown> | null;
   myPermissions: MyPermissionsDto;
 };
 
@@ -390,6 +401,7 @@ const defaultState: MockConfigState = {
   authorizationDetailTypes: {},
   locales: [],
   localeActivationMissing: {},
+  serverMetadata: { issuer: 'https://auth.example' },
 };
 
 function clone<T>(value: T): T {
@@ -421,6 +433,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
     localeActivationMissing: clone(overrides.localeActivationMissing ?? defaultState.localeActivationMissing),
+    serverMetadata: 'serverMetadata' in overrides ? clone(overrides.serverMetadata ?? null) : clone(defaultState.serverMetadata),
     myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
 }
@@ -560,7 +573,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
-        await route.fulfill(json({ tenants: state.tenants }));
+        // `signingKeyId` is read from the tenant's challenge settings, as central does (#713).
+        await route.fulfill(json({ tenants: state.tenants.map(tenant => ({
+          ...tenant,
+          signingKeyId: tenant.signingKeyId ?? state.challengeSettings[tenant.id]?.signingKeyId ?? null,
+        })) }));
         return;
       }
 
@@ -818,7 +835,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
-        const detailType = tenantTypes.find(candidate => candidate.type === payload.type);
+        const detailType = (state.authorizationDetailTypes[payload.tenantId] ?? []).find(candidate => candidate.type === payload.type);
         if (!detailType) {
           await route.fulfill(json({ message: `Authorization detail type ${payload.type} was not found` }, 404));
           return;
@@ -1436,15 +1453,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
         state.challengeSettings[payload.tenantId] = {
-          tenantId: payload.tenantId,
+          ...clone(payload),
           securityProfile: profileOf(state, payload.tenantId),
-          phoneRegions: payload.phoneRegions.map(r => ({ ...r })),
           passwordRegex: payload.passwordRegex ?? null,
-          emailRegistration: { ...payload.emailRegistration, domains: [...payload.emailRegistration.domains] },
-          defaultRoles: [...payload.defaultRoles],
-          submissionLimits: payload.submissionLimits,
-          otpLength: payload.otpLength,
-          otpResendAfter: payload.otpResendAfter,
           passkeySettings: payload.passkeySettings ?? null,
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
@@ -1460,6 +1471,31 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     if (pathname === '/configuration/jwks') {
       if (method === 'GET') {
         await route.fulfill(json({ keys: state.jwksKeys }));
+        return;
+      }
+
+      if (method === 'POST' || method === 'PUT') {
+        const payload = body as JwksKeyDto;
+        const existing = state.jwksKeys.findIndex(key => key.kid === payload.kid);
+        if (method === 'POST' && existing >= 0) {
+          await route.fulfill(json({ message: `Key ${payload.kid} already exists` }, 409));
+          return;
+        }
+        if (existing >= 0) state.jwksKeys[existing] = clone(payload);
+        else {
+          state.jwksKeys = [...state.jwksKeys, clone(payload)];
+          // A pasted key is its public half: central can verify with it, not sign.
+          state.jwksKeySummaries = [...state.jwksKeySummaries, { kid: payload.kid, algorithm: payload.alg ?? null, keyType: payload.kty, curve: null, canSign: false }];
+        }
+        await route.fulfill({ status: method === 'POST' ? 201 : 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const kid = url.searchParams.get('kid');
+        state.jwksKeys = state.jwksKeys.filter(key => key.kid !== kid);
+        state.jwksKeySummaries = state.jwksKeySummaries.filter(key => key.kid !== kid);
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }
@@ -1490,7 +1526,13 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/server-metadata') {
       if (method === 'GET') {
-        await route.fulfill(json({ issuer: 'https://auth.example' }));
+        await route.fulfill(json(state.serverMetadata));
+        return;
+      }
+
+      if (method === 'POST') {
+        state.serverMetadata = clone(body as Record<string, unknown>);
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }

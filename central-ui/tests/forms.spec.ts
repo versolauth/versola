@@ -6,8 +6,6 @@ import { baseStylesheetMock, type MockConfigState } from './mocks';
 
 const formsPath = '/?view=forms&tenant=tenant-alpha';
 
-const localesPath = '/?view=locales&tenant=tenant-alpha';
-
 const credentialV1 = {
   id: 'credential',
   version: 1,
@@ -101,85 +99,6 @@ test('creates a new version of an existing form', async ({ page }) => {
   await page.waitForTimeout(300);
 
   expect((await findRequest(api.requests, 'PUT', '/configuration/forms')).body).toMatchObject({ id: 'credential' });
-});
-
-test('edits locales: adds a new locale', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: localesPath, state: fullState });
-
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
-
-  await page.locator('select').selectOption('de');
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
-    add: Array<{ code: string; name: string }>;
-    delete: string[];
-  };
-  expect(body.add.find(l => l.code === 'de')).toMatchObject({ code: 'de', name: 'Deutsch' });
-  expect(body.delete).toEqual([]);
-});
-
-test('edits locales: removes an existing locale', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: localesPath, state: fullState });
-
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByRole('button', { name: 'Remove ru', exact: true }).click();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as { delete: string[] };
-  expect(body.delete).toEqual(['ru']);
-});
-
-test('activates a locale through the locales update endpoint', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: localesPath,
-    state: {
-      locales: [
-        { code: 'en', name: 'English', isDefault: true, active: true },
-        { code: 'ru', name: 'Russian', isDefault: false, active: false },
-      ],
-    },
-  });
-
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByRole('button', { name: 'Inactive', exact: true }).click();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
-    add: Array<{ code: string; active: boolean }>;
-  };
-  expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
-});
-
-test('shows missing localized fields when locale activation is rejected', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: localesPath,
-    state: {
-      locales: [
-        { code: 'en', name: 'English', isDefault: true, active: true },
-        { code: 'ru', name: 'Russian', isDefault: false, active: false },
-      ],
-      localeActivationMissing: {
-        ru: ["client 'web' name", "scope 'profile' description"],
-      },
-    },
-  });
-
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByRole('button', { name: 'Inactive', exact: true }).click();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-
-  await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
-  await expect(page.getByText("Missing: client 'web' name, scope 'profile' description", { exact: false })).toBeVisible();
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
-    add: Array<{ code: string; active: boolean }>;
-  };
-  expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
 });
 
 test('renders a live preview iframe', async ({ page }) => {

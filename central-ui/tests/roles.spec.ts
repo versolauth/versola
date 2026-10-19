@@ -154,7 +154,7 @@ test('does not let a default role for new registrations be deleted and says why'
   await expect(dialog.getByRole('region', { name: 'Delete role' })).toContainText('change it in the sign-in settings first');
 
   await dialog.getByRole('button', { name: 'Open sign-in settings' }).click();
-  await expect(page).toHaveURL(/view=challenges/);
+  await expect(page).toHaveURL(/view=security/);
   expect(api.requests.some(request => request.method === 'DELETE')).toBe(false);
 });
 

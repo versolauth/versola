@@ -10,7 +10,7 @@ import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
  * that catches missing labels, low contrast and similar, next to looking at the screenshots
  * (see .claude/rules/frontend.md). Tags are the WCAG 2.0/2.1 levels A and AA axe documents.
  */
-const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges'];
+const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges', 'security', 'otp-templates', 'authorization-details', 'keys', 'system-settings'];
 const themes = ['light', 'dark'] as const;
 
 /** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */
@@ -225,5 +225,87 @@ for (const theme of themes) {
 
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+}
+
+/**
+ * G2 screens with data: the Security page and one of its group editors, and the side panel of
+ * OTP templates, authorization details and keys (view, editor, create), in both themes.
+ */
+const g2Locales = [{ code: 'en', name: 'English', isDefault: true, active: true }, { code: 'ru', name: 'Russian', isDefault: false, active: true }];
+const g2State = {
+  locales: g2Locales,
+  challengeSettings: {
+    'tenant-alpha': {
+      tenantId: 'tenant-alpha', securityProfile: 'fapi2' as const,
+      phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
+      emailRegistration: { mode: 'allowlist' as const, domains: ['example.com'], blockSubaddress: false }, defaultRoles: ['alpha-admin'],
+      submissionLimits: { otpRequest: [{ maxAttempts: 5, windowSeconds: 600 }], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 3600 },
+      otpLength: 6, otpResendAfter: 60, authConversationTtlSeconds: 900, sessionTtlSeconds: 86400, sessionIdleTtlSeconds: null, userAgentTtlSeconds: 15552000, ipHeader: 'X-Real-IP',
+      passkeySettings: { rpId: 'example.com', rpName: 'Example', origins: ['https://example.com'], userVerification: 'required' },
+      requireDpopNonce: true, signingKeyId: 'es256-a1', clientAssertionMaxLifetimeSeconds: 300, acrVocabulary: { 'urn:example:mfa': ['password', 'otp'] }, postLogoutRedirectUris: [], logoLight: null, logoDark: null,
+    },
+  } as never,
+  otpTemplates: { 'tenant-alpha': [{ id: 'login-otp', tenantId: 'tenant-alpha', purpose: 'otp', channel: 'sms' as const, localizations: { en: 'Your code is {{code}}', ru: 'Ваш код {{code}}' } }] },
+  authorizationDetailTypes: { 'tenant-alpha': [{ type: 'payment_initiation', description: { en: 'Payment initiation' }, schema: { type: 'object', required: ['type'] } }] },
+  jwksKeys: [{ kid: 'es256-a1', kty: 'EC', alg: 'ES256', use: 'sig', crv: 'P-256', x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] as never,
+  jwksKeySummaries: [{ kid: 'es256-a1', algorithm: 'ES256', keyType: 'EC', curve: 'P-256', canSign: true }],
+};
+
+const g2Panels = [
+  { view: 'otp-templates', open: /^Open template login-otp otp sms$/, title: 'login-otp', edit: 'Edit message', editor: 'Edit message', create: '+ Create Template', creator: 'Create template' },
+  { view: 'authorization-details', open: /^Open type .*payment_initiation$/, title: 'Payment initiation', edit: 'Edit json schema', editor: 'Edit JSON Schema', create: '+ Create Type', creator: 'Create type' },
+  { view: 'keys', open: 'Open key es256-a1', title: 'es256-a1', edit: 'Edit public key', editor: 'Edit public key', create: 'Generate key', creator: 'Generate key' },
+] as const;
+
+for (const theme of themes) {
+  test(`the Security page and a group editor have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: '/?view=security&tenant=tenant-alpha', state: g2State });
+    await expect(page.getByRole('region', { name: 'Sessions', exact: true })).toBeVisible();
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    for (const group of ['Registration', 'Tokens & keys', 'Sign-in methods']) {
+      await page.getByRole('region', { name: group, exact: true }).getByRole('button', { name: /^Edit/ }).click();
+      await expect(page.getByRole('button', { name: /^Save / })).toBeVisible();
+      expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    }
+  });
+
+  for (const section of g2Panels) {
+    test(`the ${section.view} panel, its editor and its create form have no axe violations in the ${theme} theme`, async ({ page }) => {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+      await loadAdminApp(page, { path: `/?view=${section.view}&tenant=tenant-alpha`, state: g2State });
+      // The fixture template is an SMS: axe cannot inject into the sandboxed email preview (scripts
+      // are off in it) and waits for it forever, so the iframe is covered by its title, not a scan.
+      const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+      await page.getByRole('button', { name: section.open }).click();
+      await expect(sidePanelDialog(page, section.title)).toBeVisible();
+      await clean();
+      await sidePanel(page, section.title).getByRole('button', { name: section.edit, exact: true }).click();
+      await expect(sidePanelDialog(page, section.editor)).toBeVisible();
+      await clean();
+      await sidePanel(page, section.editor).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await sidePanel(page, section.title).getByRole('button', { name: 'Close panel' }).click();
+      await page.getByRole('button', { name: section.create, exact: true }).click();
+      await expect(sidePanelDialog(page, section.creator)).toBeVisible();
+      await clean();
+    });
+  }
+
+  test(`System settings with its locale form and password editor have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: '/?view=system-settings', state: g2State });
+    await page.getByRole('button', { name: '+ Add locale' }).click();
+    await expect(page.getByRole('form', { name: 'Add locale' })).toBeVisible();
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+    await page.getByRole('button', { name: 'Edit password policy' }).click();
+    await expect(page.getByRole('button', { name: 'Save password policy' })).toBeVisible();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 }

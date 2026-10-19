@@ -21,6 +21,11 @@ test('switches navigation views and keeps the url in sync', async ({ page }) => 
     { navText: 'Permissions', heading: 'Permissions', url: /view=permissions/ },
     { navText: 'Resources', heading: 'Resources', url: /view=resources/ },
     { navText: 'Roles', heading: 'Roles', url: /view=roles/ },
+    { navText: 'Security', heading: 'Sign-in and security', url: /view=security/ },
+    { navText: 'OTP templates', heading: 'OTP templates', url: /view=otp-templates/ },
+    { navText: 'Authorization details', heading: 'Authorization details', url: /view=authorization-details/ },
+    { navText: 'Keys & metadata', heading: 'Keys & metadata', url: /view=keys/ },
+    { navText: 'System settings', heading: 'System settings', url: /view=system-settings/ },
   ];
 
   for (const view of views) {
@@ -82,4 +87,20 @@ test('uses the dark favicon for a persisted dark theme on first load', async ({ 
 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'favicon-dark.svg');
+});
+
+test('the navigation lists the tenant items, then the global ones, in the agreed order', async ({ page }) => {
+  await loadAdminApp(page);
+
+  const links = page.locator('versola-navigation').getByRole('navigation', { name: 'Sections' }).getByRole('button');
+  const labels = (await links.allInnerTexts()).map(text => text.trim()).filter(Boolean);
+  expect(labels).toEqual([
+    'Security', 'Clients', 'Resources', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
+    'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Forms', 'Themes',
+  ]);
+});
+
+test('an old bookmark to a removed view falls back to the default view', async ({ page }) => {
+  await loadAdminApp(page, { path: '/?view=challenges' });
+  await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
 });
