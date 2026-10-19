@@ -93,6 +93,7 @@ test('the row menu disables Delete for a key in use and deletes one that is not'
   const used = page.getByRole('menuitem', { name: 'Delete key es256-a1' });
   await expect(used).toHaveAttribute('aria-disabled', 'true');
   await expect(used).toHaveAttribute('title', /Still selected by 2 tenants/);
+  await expect(used).toContainText('Still selected by 2 tenants');
   await used.click({ force: true });
   expect(api.requests.some(request => request.method === 'DELETE')).toBe(false);
   await page.keyboard.press('Escape');
@@ -244,4 +245,26 @@ test('with the panel open the page makes room: the row menu stays visible and op
   const item = page.getByRole('menuitem', { name: 'Open' });
   await expect(item).toBeVisible();
   await expect.poll(async () => (await rightEdge(item)) <= (await panelLeft())).toBe(true);
+});
+
+test('shows the loading skeleton, then an error with Retry that recovers, and the empty state', async ({ page }) => {
+  await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha', state: state() });
+  let attempts = 0;
+  await page.route('**/configuration/jwks', async route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    attempts += 1;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    if (attempts === 1) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'Database unavailable' }) });
+    return route.fallback();
+  });
+  await page.goto(path);
+  await expect(page.locator('versola-keys-metadata versola-loading-cards')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Could not load the keys' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open key/ })).toHaveCount(3);
+});
+
+test('with no keys it offers Generate key in the empty state', async ({ page }) => {
+  await loadAdminApp(page, { path, state: state({ jwksKeys: [], jwksKeySummaries: [] }) });
+  await expect(page.getByRole('heading', { name: 'No keys yet' })).toBeVisible();
 });

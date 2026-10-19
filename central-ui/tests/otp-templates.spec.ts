@@ -192,3 +192,19 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   await expectSheetWidth(page, box?.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+test('shows the loading skeleton, then an error with Retry that recovers', async ({ page }) => {
+  await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha', state: withTemplates(loginSms) });
+  let attempts = 0;
+  await page.route('**/configuration/challenges/otp-templates?*', async route => {
+    attempts += 1;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    if (attempts === 1) await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'Database unavailable' }) });
+    else await route.fallback();
+  });
+  await page.goto(base);
+  await expect(page.locator('versola-otp-templates-list versola-loading-cards')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Could not load OTP templates' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open template/ })).toHaveCount(1);
+});

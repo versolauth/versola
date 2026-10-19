@@ -100,7 +100,28 @@ test('the navigation lists the tenant items, then the global ones, in the agreed
   ]);
 });
 
-test('an old bookmark to a removed view falls back to the default view', async ({ page }) => {
-  await loadAdminApp(page, { path: '/?view=challenges' });
-  await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
+const renamed = [
+  { old: 'challenges', heading: 'Sign-in and security', notice: 'Challenges & Security is now Security.', url: /view=security/ },
+  { old: 'well-known', heading: 'Keys & metadata', notice: 'Well Known is now Keys & metadata.', url: /view=keys/ },
+  { old: 'locales', heading: 'System settings', notice: 'Locales live under System settings.', url: /view=system-settings/ },
+];
+
+for (const view of renamed) {
+  test(`an old bookmark to ${view.old} lands on its successor with a dismissible note`, async ({ page }) => {
+    await loadAdminApp(page, { path: `/?view=${view.old}&tenant=tenant-alpha` });
+
+    await expect(page).toHaveURL(view.url);
+    await expect(page.getByRole('heading', { name: view.heading, level: 1 })).toBeVisible();
+    const note = page.getByRole('status').filter({ hasText: view.notice });
+    await expect(note).toBeVisible();
+    await note.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(note).toHaveCount(0);
+  });
+}
+
+test('the rename note is shown once: picking another view clears it', async ({ page }) => {
+  await loadAdminApp(page, { path: '/?view=challenges&tenant=tenant-alpha' });
+  await expect(page.getByRole('status').filter({ hasText: 'Challenges & Security is now Security.' })).toBeVisible();
+  await page.locator('versola-navigation').getByText('Scopes', { exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'is now' })).toHaveCount(0);
 });

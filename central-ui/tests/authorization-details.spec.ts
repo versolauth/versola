@@ -204,3 +204,36 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   await expectSheetWidth(page, box?.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+test('shows the loading skeleton, then an error with Retry that recovers', async ({ page }) => {
+  await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha', state: withTypes(payment) });
+  let attempts = 0;
+  await page.route('**/configuration/authorization-detail-types?*', async route => {
+    attempts += 1;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    if (attempts === 1) await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'Database unavailable' }) });
+    else await route.fallback();
+  });
+  await page.goto(base);
+  await expect(page.locator('versola-authorization-details-list versola-loading-cards')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Could not load authorization detail types' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open type/ })).toHaveCount(1);
+});
+
+test('keeps the typed schema when central rejects it and announces the errors under the editor', async ({ page }) => {
+  await loadAdminApp(page, { path: `${base}&id=payment_initiation&edit=schema`, state: withTypes(payment) });
+  await page.route('**/configuration/authorization-detail-types', route => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ InvalidSchema: { errors: ['/type: unknown keyword "typo"', '/required: must be an array'] } }) })
+    : route.fallback());
+
+  const editor = sidePanel(page, 'Edit JSON Schema');
+  const field = editor.locator('versola-code-editor#detail-schema textarea');
+  await field.fill('{ "type": "object", "typo": 1 }');
+  await editor.getByRole('button', { name: 'Save JSON Schema' }).click();
+  const errors = editor.getByTestId('schema-server-error');
+  await expect(errors).toContainText('/type: unknown keyword "typo"; /required: must be an array');
+  await expect(errors).toHaveAttribute('role', 'alert');
+  await expect(errors).toHaveAttribute('aria-live', 'assertive');
+  await expect(field).toHaveValue('{ "type": "object", "typo": 1 }');
+});

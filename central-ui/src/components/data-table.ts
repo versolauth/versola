@@ -244,6 +244,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: pointer;
       }
 
+      .menu button:has(.why) {
+        padding-block: 0.375rem;
+        max-width: 16rem;
+      }
+
       .menu button:hover {
         background: var(--surface-inset);
       }
@@ -262,6 +267,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: default;
       }
 
+      .menu .why {
+        display: block;
+        margin-top: 0.125rem;
+        font-size: var(--text-xs);
+        font-weight: 400;
+        color: var(--text-secondary);
+        white-space: normal;
+      }
+
       .menu button[aria-disabled='true']:hover {
         background: none;
       }
@@ -272,6 +286,10 @@ export class VersolaDataTable<T = unknown> extends LitElement {
          roles on a display: block table), and the header row stays in the accessibility tree off
          screen. Each cell shows its column label through data-label. */
       @container table (max-width: 640px) {
+        .row-id {
+          max-width: 100%;
+        }
+
         thead {
           position: absolute;
           left: -9999px;
@@ -450,7 +468,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
               <button type="button" role="menuitem" tabindex="-1" class=${item.danger ? 'danger' : ''}
                 aria-label=${item.ariaLabel ?? nothing} aria-disabled=${item.disabledReason ? 'true' : nothing} title=${item.disabledReason || nothing}
                 @keydown=${(e: KeyboardEvent) => this.handleMenuKey(e, index)}
-                @click=${() => { if (item.disabledReason) return; this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
+                @click=${() => { if (item.disabledReason) return; this.closeMenu(false); item.onSelect(); }}>${item.label}${item.disabledReason ? html`<span class="why">${item.disabledReason}</span>` : nothing}</button>
             `)}
           </div>` : ''}
       </td>

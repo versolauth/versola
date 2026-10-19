@@ -124,9 +124,15 @@ export class VersolaOtpTemplatesList extends LitElement {
         display: block;
         width: 100%;
         min-height: 16rem;
-        border: 1px solid var(--border-default);
+        border: 1px solid var(--border-strong);
         border-radius: var(--radius-md);
         background: var(--surface);
+      }
+
+      .preview-caption {
+        margin-bottom: 0.375rem;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
       }
 
       .locale-head {
@@ -402,7 +408,7 @@ export class VersolaOtpTemplatesList extends LitElement {
   private renderMessage(template: OtpTemplateRecord, code: string) {
     const text = template.localizations[code] ?? '';
     return template.channel === 'email'
-      ? html`<iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${text}></iframe>`
+      ? html`<div class="preview-caption">Preview as the recipient sees it</div><iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${text}></iframe>`
       : html`<div class="message-text">${text}</div>`;
   }
 
@@ -491,7 +497,7 @@ export class VersolaOtpTemplatesList extends LitElement {
               </div>
               ${this.draftChannel === 'email'
                 ? preview
-                  ? html`<iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${this.draftLocalizations[code]}></iframe>`
+                  ? html`<div class="preview-caption">Preview as the recipient sees it</div><iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${this.draftLocalizations[code]}></iframe>`
                   : html`<versola-code-editor id=${fieldId} label=${this.localeName(code)} language="html" .rows=${10} .value=${this.draftLocalizations[code]} .placeholder=${placeholderExample(this.draftPurpose, 'email')} .invalid=${!!error}
                       @code-input=${(e: CustomEvent<{ value: string }>) => this.draftLocalizations = { ...this.draftLocalizations, [code]: e.detail.value }}></versola-code-editor>`
                 : html`<textarea id=${fieldId} class="message-input ${error ? 'input-error' : ''}" rows="4" .value=${this.draftLocalizations[code]} placeholder=${placeholderExample(this.draftPurpose, 'sms')}

@@ -67,6 +67,11 @@ export class ContentHeader extends LitElement {
           flex-direction: column;
         }
 
+        /* In a column the basis would be a height. */
+        .header-info {
+          flex: 0 0 auto;
+        }
+
         /* Cancels the h1's bottom margin so the button reads as vertically
            centred against the title rather than sitting low. */
         versola-nav-toggle {

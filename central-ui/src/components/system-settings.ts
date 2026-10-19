@@ -299,6 +299,17 @@ export class VersolaSystemSettings extends LitElement {
     return this.runLocaleAction(() => updateLocales([{ ...locale, active }], []));
   }
 
+  private async deactivateLocale(locale: Locale) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Deactivate locale',
+      messagePrefix: 'Deactivate ',
+      messageSubject: locale.code,
+      messageSuffix: `? Login pages stop offering ${locale.name}; users who chose it fall back to the default locale.`,
+      confirmLabel: 'Deactivate',
+    });
+    if (confirmed) await this.setActive(locale, false);
+  }
+
   private setDefault(locale: Locale) {
     return this.runLocaleAction(() => setDefaultLocale(locale.code));
   }
@@ -308,7 +319,7 @@ export class VersolaSystemSettings extends LitElement {
       title: 'Remove locale',
       messagePrefix: 'Remove locale ',
       messageSubject: locale.code,
-      messageSuffix: '? Forms stop offering it; its content stays.',
+      messageSuffix: `? Login pages stop offering ${locale.name}; its content stays, and users who chose it fall back to the default locale.`,
       confirmLabel: 'Remove',
     });
     if (!confirmed) return;
@@ -363,7 +374,7 @@ export class VersolaSystemSettings extends LitElement {
     const menuItems = (locale: Locale): RowMenuItem[] => [
       ...(locale.active && !locale.isDefault ? [{ label: 'Set as default', onSelect: () => void this.setDefault(locale) }] : []),
       locale.active
-        ? { label: 'Deactivate', ariaLabel: `Deactivate ${locale.code}`, disabledReason: locale.isDefault ? PICK_ANOTHER_DEFAULT : '', onSelect: () => void this.setActive(locale, false) }
+        ? { label: 'Deactivate', ariaLabel: `Deactivate ${locale.code}`, disabledReason: locale.isDefault ? PICK_ANOTHER_DEFAULT : '', onSelect: () => void this.deactivateLocale(locale) }
         : { label: 'Activate', ariaLabel: `Activate ${locale.code}`, onSelect: () => void this.setActive(locale, true) },
       { label: 'Remove locale', danger: true, ariaLabel: `Remove locale ${locale.code}`, disabledReason: locale.isDefault ? PICK_ANOTHER_DEFAULT : '', onSelect: () => void this.removeLocale(locale) },
     ];
@@ -413,6 +424,7 @@ export class VersolaSystemSettings extends LitElement {
           <div>
             <h2>Locales</h2>
             <div class="record-card-sub">Languages the login forms, scopes and OTP templates can be shown in. Activation is validated: every form, scope and template must have content for it.</div>
+            <div class="record-card-sub">Changes to locales apply immediately.</div>
           </div>
           ${this.canManageLocales && !this.addOpen && this.locales ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openAdd()}>+ Add locale</button>` : ''}
         </div>

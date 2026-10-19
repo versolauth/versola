@@ -17,6 +17,7 @@ const readOnly = { resources: { central: { permissions: ['security:read', 'local
 test('shows the password policy and the locales as cards with their states', async ({ page }) => {
   await loadAdminApp(page, { path, state: { systemSettings, locales } });
 
+  await expect(page.getByRole('region', { name: 'Locales' })).toContainText('Changes to locales apply immediately.');
   const policy = page.getByRole('region', { name: 'Password policy' });
   await expect(policy).toContainText('.{8,}');
   await expect(policy).toContainText('5 previous passwords');
@@ -93,6 +94,7 @@ test('the default locale can be neither deactivated nor removed, and says why', 
   const deactivate = page.getByRole('menuitem', { name: 'Deactivate en' });
   await expect(deactivate).toHaveAttribute('aria-disabled', 'true');
   await expect(deactivate).toHaveAttribute('title', 'Pick another default first');
+  await expect(deactivate).toContainText('Pick another default first');
   await deactivate.click({ force: true });
   await expect(page.getByRole('menuitem', { name: 'Remove locale en' })).toHaveAttribute('aria-disabled', 'true');
   expect(api.requests.filter(request => request.pathname === '/configuration/locales' && request.method === 'PUT')).toHaveLength(0);
@@ -108,6 +110,13 @@ test('activates and deactivates a locale', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Actions for kk' }).click();
   await page.getByRole('menuitem', { name: 'Deactivate kk' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Deactivate locale' });
+  await expect(confirm).toContainText('Login pages stop offering Kazakh');
+  await confirm.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('row').filter({ hasText: 'Kazakh' })).toContainText('Active');
+  await page.getByRole('button', { name: 'Actions for kk' }).click();
+  await page.getByRole('menuitem', { name: 'Deactivate kk' }).click();
+  await page.getByRole('dialog', { name: 'Deactivate locale' }).getByRole('button', { name: 'Deactivate', exact: true }).click();
   await expect(page.getByRole('row').filter({ hasText: 'Kazakh' })).toContainText('Inactive');
 });
 

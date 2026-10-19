@@ -434,9 +434,15 @@ export class VersolaAuthorizationDetailsList extends LitElement {
           <versola-code-editor id="detail-schema" label="Schema" language="json" .rows=${16} .value=${this.draftSchema} .invalid=${!!error}
             @code-input=${(e: CustomEvent<{ value: string }>) => this.draftSchema = e.detail.value}></versola-code-editor>
           ${error ? html`<div class="error-message" role="alert">${error}</div>` : ''}
+          ${this.schemaServerError ? html`<div class="error-message" role="alert" aria-live="assertive" data-testid="schema-server-error">${this.formError}</div>` : ''}
         </div>
       </div>
     `;
+  }
+
+  /** What central says is wrong with the schema is read under the editor, not at the top of the form. */
+  private get schemaServerError(): boolean {
+    return this.formError.startsWith('Invalid JSON Schema');
   }
 
   private renderEditor() {
@@ -445,7 +451,7 @@ export class VersolaAuthorizationDetailsList extends LitElement {
     const typeError = this.draftTypeError;
     return html`
       <form id="detail-editor" novalidate @submit=${this.handleSubmit}>
-        ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
+        ${this.formError && !this.schemaServerError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
         ${mode === 'create' ? html`
           <div class="editor-box">
             <h3>Basics</h3>

@@ -423,7 +423,7 @@ export class VersolaKeysMetadata extends LitElement {
     const menuItems = (key: StoredKey): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(key) },
       { label: 'Copy key ID', onSelect: () => void copyToClipboard(key.kid) },
-      ...(this.canManage ? [{ label: 'Delete key', danger: true, ariaLabel: `Delete key ${key.kid}`, disabledReason: this.deleteReason(key), onSelect: () => void this.handleDelete(key) }] : []),
+      ...(this.canManage ? [{ label: 'Delete key', danger: true, ariaLabel: `Delete key ${key.kid}`, disabledReason: this.deleteReason(key).split('.')[0], onSelect: () => void this.handleDelete(key) }] : []),
     ];
     return html`
       <versola-data-table selectable

@@ -1,6 +1,8 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
+import { bannerStyles, buttonStyles } from '../styles/components';
+import { statusIcon } from './status-icon';
 import type { NavItem, VersolaNavigation } from './navigation';
 import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
 import { watchSystemTheme } from '../utils/theme';
@@ -78,6 +80,8 @@ export class VersolaAdmin extends LitElement {
   // centralResourcePath in central-api.ts.
   @property({ type: String, attribute: 'console-mode' }) consoleMode: 'prefix' | 'direct' = 'prefix';
   @state() private currentView: NavItem = 'clients';
+  /** What an old bookmark was renamed to; shown once above the page it landed on. */
+  @state() private legacyNotice: string | null = null;
   /** Mobile drawer state; ignored by the layout above the 768px breakpoint. */
   @state() private navOpen = false;
   @query('.main-content') private mainContent?: HTMLElement;
@@ -185,6 +189,8 @@ export class VersolaAdmin extends LitElement {
   static styles = [
     resetStyles,
     theme,
+    bannerStyles,
+    buttonStyles,
     css`
       :host {
         display: block;
@@ -386,6 +392,7 @@ export class VersolaAdmin extends LitElement {
   }
 
   private handleNavChange(e: CustomEvent) {
+    this.legacyNotice = null;
     this.currentView = e.detail.item;
     this.recordRoute = EMPTY_RECORD_ROUTE;
     // Picking a destination on mobile should reveal it, not leave the drawer
@@ -457,6 +464,13 @@ export class VersolaAdmin extends LitElement {
     });
   }
 
+  /** Views the console had before G2: a bookmark to one lands on its successor, with a note. */
+  private static readonly RENAMED_VIEWS: Readonly<Record<string, { view: NavItem; notice: string }>> = {
+    challenges: { view: 'security', notice: 'Challenges & Security is now Security.' },
+    'well-known': { view: 'keys', notice: 'Well Known is now Keys & metadata.' },
+    locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
+  };
+
   private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'forms', 'themes']);
 
   /** The views whose records belong to the selected tenant: switching it closes the open record.
@@ -495,7 +509,11 @@ export class VersolaAdmin extends LitElement {
     // The old deep link to an edge; `id` is what every section reads now.
     const recordId = params.get('id') ?? params.get('expandEdge');
 
-    if (urlView && VersolaAdmin.VIEWS.has(urlView as NavItem)) {
+    const renamed = urlView ? VersolaAdmin.RENAMED_VIEWS[urlView] : undefined;
+    if (renamed) {
+      this.currentView = renamed.view;
+      this.legacyNotice = renamed.notice;
+    } else if (urlView && VersolaAdmin.VIEWS.has(urlView as NavItem)) {
       this.currentView = urlView as NavItem;
     }
 
@@ -641,6 +659,11 @@ export class VersolaAdmin extends LitElement {
         ></versola-navigation>
 
         <main class="main-content" tabindex="-1">
+          ${this.legacyNotice ? html`
+            <div class="banner info" role="status">
+              <div class="banner-text"><div class="banner-title">${statusIcon('info')}${this.legacyNotice}</div></div>
+              <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.legacyNotice = null; }}>Dismiss</button>
+            </div>` : ''}
           ${this.renderView()}
         </main>
       </div>
