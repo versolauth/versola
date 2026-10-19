@@ -184,6 +184,19 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         white-space: nowrap;
       }
 
+      /* A column whose ID is what the operator came for (a user): shown whole, never cut. */
+      td.full-id .row-id {
+        max-width: none;
+      }
+
+      /* In a card there is no room beside the menu: the ID wraps at its hyphens, never inside a group. */
+      @container table (max-width: 640px) {
+        td.full-id .row-id {
+          white-space: normal;
+          overflow-wrap: normal;
+        }
+      }
+
       .muted {
         color: var(--text-secondary);
       }

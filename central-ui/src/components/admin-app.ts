@@ -605,7 +605,7 @@ export class VersolaAdmin extends LitElement {
       case 'edges':
         return html`<versola-edges-list .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
       case 'users':
-        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd}></versola-users-list>`;
+        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .route=${this.recordRoute}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
       case 'themes':

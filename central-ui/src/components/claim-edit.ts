@@ -184,13 +184,14 @@ export class VersolaClaimEdit extends LitElement {
         <div class="form-header-lead">
           <versola-nav-toggle></versola-nav-toggle>
           <div class="title-stack">
-            <h1 class="form-title">Edit Claims</h1>
+            <h1 class="form-title">Edit claims</h1>
             <div class="entity-id-meta">${this.user?.id}</div>
           </div>
         </div>
       </div>
 
       <div class="card">
+        ${!this.tenantId ? html`<div class="helper">Select a tenant to choose among the claims its scopes release.</div>` : ''}
         ${this.loading ? html`<div class="helper">Loading scopes…</div>` : this.scopes.map(scope => html`
           <div class="section-label">${scope.id}</div>
           ${scope.claims.map(claim => {
@@ -199,18 +200,18 @@ export class VersolaClaimEdit extends LitElement {
                 <div class="claim-row">
                   <span></span>
                   <span class="claim-label muted" title=${claim.id}>${claim.id}</span>
-                  <input class="compact-input" type="text" disabled
+                  <input class="compact-input" type="text" disabled aria-label=${claim.id}
                     .value=${this.readOnlyValue(claim.id)} />
                 </div>`;
             }
             const enabled = this.enabledClaims.has(claim.id);
             return html`
               <div class="claim-row">
-                <input type="checkbox" .checked=${enabled}
+                <input type="checkbox" aria-label=${`Set ${claim.id}`} .checked=${enabled}
                   @change=${(e: Event) => this.toggleClaim(claim.id, (e.target as HTMLInputElement).checked)} />
                 <span class="claim-label ${enabled ? '' : 'muted'}" title=${claim.id}>${claim.id}</span>
                 ${enabled ? html`
-                  <input class="compact-input" type="text"
+                  <input class="compact-input" type="text" aria-label=${`Value of ${claim.id}`}
                     .value=${this.claimValues.get(claim.id) ?? ''}
                     @input=${(e: Event) => this.setValue(claim.id, (e.target as HTMLInputElement).value)} />
                 ` : html`<span></span>`}
@@ -220,7 +221,7 @@ export class VersolaClaimEdit extends LitElement {
 
         <div class="actions">
           <button class="btn btn-secondary" @click=${this.handleCancel}>Cancel</button>
-          <button class="btn btn-primary" @click=${this.handleSave}>Save Changes</button>
+          <button class="btn btn-primary" @click=${this.handleSave}>Save claims</button>
         </div>
       </div>
     `;
