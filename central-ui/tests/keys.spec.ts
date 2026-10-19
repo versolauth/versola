@@ -212,3 +212,19 @@ test('below 720px the panel is a full-screen sheet and nothing scrolls sideways'
   await expectSheetWidth(page, box?.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+test('a long key ID is cut with an ellipsis, never broken inside, and reads in full from its title', async ({ page }) => {
+  const long = 'partner-bank-rs256-with-a-very-long-identifier-2026';
+  await loadAdminApp(page, {
+    path: `${path}&id=es256-a1`,
+    state: state({ jwksKeys: [es256, { ...partner, kid: long }] as MockConfigState['jwksKeys'], jwksKeySummaries: [summaries[0], { ...summaries[2], kid: long }] }),
+  });
+
+  const id = page.locator('versola-data-table .row-id').filter({ hasText: 'partner-bank' });
+  await expect(id).toHaveAttribute('title', long);
+  const box = await id.boundingBox();
+  expect(box!.height).toBeLessThan(30);
+  await expect(page.locator('versola-keys-metadata content-header')).toBeVisible();
+  const title = page.locator('versola-keys-metadata content-header').getByRole('heading', { name: 'Keys & metadata' });
+  expect((await title.boundingBox())!.height).toBeLessThan(60);
+});

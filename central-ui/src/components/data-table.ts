@@ -169,7 +169,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         font-family: var(--font-mono);
         font-size: var(--text-base);
         color: var(--accent);
-        word-break: break-all;
+        /* An ID is never broken inside: it is cut with an ellipsis, the full value in its title. */
+        display: block;
+        max-width: 9.5rem;
+        min-width: 8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .muted {
@@ -370,6 +376,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
     const key = this.openMenuKey;
     this.openMenuKey = null;
     if (returnFocus && key !== null) this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
+  }
+
+  /** An ID cut by its ellipsis still reads in full from its title. */
+  protected updated() {
+    for (const id of this.shadowRoot?.querySelectorAll<HTMLElement>('.row-id') ?? []) {
+      if (!id.title) id.title = id.textContent?.trim() ?? '';
+    }
   }
 
   /** Moves focus to a row's `.row-link`: where the side panel returns focus on Escape. */

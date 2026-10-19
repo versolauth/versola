@@ -415,7 +415,7 @@ export class VersolaKeysMetadata extends LitElement {
     const columns: DataTableColumn<StoredKey>[] = [
       { id: 'kid', label: 'Key ID', cell: key => html`
         <button type="button" class="row-link" aria-label=${`Open key ${key.kid}`}><span class="row-id">${key.kid}</span></button>` },
-      { id: 'type', label: 'Type', cell: key => this.typeLabel(key) },
+      { id: 'type', label: 'Type', cell: key => html`<span style="white-space: nowrap">${this.typeLabel(key)}</span>` },
       { id: 'alg', label: 'Algorithm', cell: key => this.algorithm(key) || html`<span class="muted">—</span>` },
       { id: 'usage', label: 'Usage', cell: key => this.usageChip(key) },
       { id: 'used-by', label: 'Used by', cell: key => this.usedByCell(key) },
