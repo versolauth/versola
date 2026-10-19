@@ -115,6 +115,9 @@ test('the section rail jumps to a card and the narrow select does the same', asy
 });
 
 test('the rail items look like the sidebar nav items: active fill and bar, neutral hover', async ({ page }) => {
+  // Hover colours are transitioned; under reduced motion the design system zeroes every transition,
+  // so a computed colour read after hover is the final one, not a frame on the way there.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await loadAdminApp(page, { path: base, state: state() });
 
   const look = (locator: ReturnType<typeof page.locator>) => locator.evaluate(node => {
