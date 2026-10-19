@@ -8,7 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     /*
      * Colour tokens of the admin console, one value per theme. This is the only
@@ -20,10 +20,13 @@
      * long version); custom properties inherit through shadow boundaries, so
      * every component picks up whichever theme is current.
      *
-     * Palette "Stone": the login forms' neutrals (forms/common.css) carried
-     * into the console, with the brand's petrol accent (#155e75, the `versola`
-     * preset). Dark is the forms' dark formula: charcoal with a little brand
-     * mixed in, not an inverted light.
+     * The brand palette: the tokens of the `default` login theme
+     * (forms/common.css) and of the website (versola-website
+     * public/css/tokens.css), so the console, the login forms and the site
+     * read as one brand. Warm neutrals, the petrol brand colour (#155e75) as
+     * the accent, ink as the primary button. Dark is the forms' dark scheme:
+     * brand-tinted near-black, not an inverted light. Values that depart from
+     * the site (for contrast) are listed in design-system/README.md.
      *
      * `data-theme` is the resolved theme (light|dark); `data-theme-pref` is the
      * stored choice (auto|light|dark). Both are set by the pre-paint script
@@ -33,29 +36,38 @@
     :root[data-theme='light'] {
       color-scheme: light;
 
-      /* Surfaces */
+      /* Surfaces. --sidebar-bg is the site's page tint (brand 9% over
+         #f6f4ef in oklab, the header behind versola.kz); --surface-inset and
+         --field are the forms' soft field fill. */
       --bg-page: #faf9f7;
       --surface: #ffffff;
-      --surface-inset: #f3f1ed;
+      --surface-inset: #f5f3ee;
       --surface-raised: #ffffff;
-      --sidebar-bg: #f3f1ed;
-      --sidebar-hover-bg: #e9e6e0;
-      --code-bg: #f3f1ed;
+      --sidebar-bg: #e2e6e4;
+      --sidebar-hover-bg: #d6d9d6;
+      --code-bg: #f5f3ee;
       --selection-bg: #cfe3ea;
       --backdrop: rgba(28, 27, 25, 0.5);
 
-      /* Borders */
-      --border-subtle: #ebe8e2;
-      --border-default: #dbd7cf;
-      --border-strong: #847e74;
-      --border-input: #7c766b;
+      /* Fields: the forms' filled field (--field / --field-hover in common.css). */
+      --field: #f5f3ee;
+      --field-hover: #edeae3;
 
-      /* Text */
+      /* Borders. --border-default is the site's --line; --border-input is
+         darker than the site's --line-strong (#cfc9bb, 1.6:1) because a field
+         boundary must reach 3:1 on --surface, --field and --sidebar-bg. */
+      --border-subtle: #ebe8e2;
+      --border-default: #e6e2d8;
+      --border-strong: #847e74;
+      --border-input: #857e72;
+
+      /* Text. --text-muted is a step darker than the forms' #6b6a66 so it
+         reads at 4.5:1 on the sidebar tint too. */
       --text-primary: #1c1b19;
       --text-secondary: #55534e;
-      --text-muted: #6b6a66;
+      --text-muted: #656460;
 
-      /* Accent */
+      /* Accent: the brand colour, for links, IDs, the active nav item, focus. */
       --accent: #155e75;
       --accent-hover: #104c5f;
       --on-accent: #ffffff;
@@ -63,6 +75,11 @@
       --accent-text: #114d61;
       --accent-border: #74b2c4;
       --focus-ring: #155e75;
+
+      /* The primary button: ink, as on the site and in the login forms. */
+      --btn: #1c1b19;
+      --btn-hover: #000000;
+      --on-btn: #ffffff;
 
       /* Semantic: X on a surface, X-subtle as a fill, X-text on X-subtle, X-border around X-subtle */
       --success: #2a7a35;
@@ -91,10 +108,13 @@
          var() inside its data URL, so the colour is repeated here per theme. */
       --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%2355534e' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
 
-      /* Elevation */
+      /* Elevation: --shadow-card is the site's layered card shadow,
+         --shadow-sheet the login sheet's (the side panel). */
       --shadow-sm: 0 1px 2px rgba(28, 27, 25, 0.06);
       --shadow-md: 0 4px 12px rgba(28, 27, 25, 0.10);
       --shadow-lg: 0 12px 32px rgba(28, 27, 25, 0.16);
+      --shadow-card: 0 1px 1px rgba(16, 24, 40, 0.02), 0 4px 10px rgba(16, 24, 40, 0.04), 0 20px 48px rgba(16, 24, 40, 0.09);
+      --shadow-sheet: 0 30px 60px -24px rgba(0, 0, 0, 0.45);
 
       /* Syntax-highlight tokens (GitHub Light-derived; comment and selector
          darkened to pass 4.5:1 on --code-bg), consumed by
@@ -119,32 +139,46 @@
     :root[data-theme='dark'] {
       color-scheme: dark;
 
-      --bg-page: #121617;
-      --surface: #1b2123;
-      --surface-inset: #232a2c;
-      --surface-raised: #20272a;
-      --sidebar-bg: #151a1b;
-      --sidebar-hover-bg: #20272a;
-      --code-bg: #121617;
-      --selection-bg: #244a56;
+      /* The forms' dark scheme (common.css): page = brand 10% on #060707,
+         sheet = brand 7% on #1f1f20, field = brand 9% on #2b2b2d, resolved
+         to hex. */
+      --bg-page: #080f11;
+      --surface: #1e2324;
+      --surface-inset: #292f31;
+      --surface-raised: #262c2e;
+      --sidebar-bg: #0c1416;
+      --sidebar-hover-bg: #1b2426;
+      --code-bg: #080f11;
+      --selection-bg: #2a4a54;
       --backdrop: rgba(0, 0, 0, 0.6);
 
-      --border-subtle: #272e30;
-      --border-default: #323a3d;
-      --border-strong: #616d70;
-      --border-input: #6d797c;
+      --field: #292f31;
+      --field-hover: #30383b;
 
-      --text-primary: #f0f1f0;
-      --text-secondary: #acb4b4;
-      --text-muted: #8f9a9a;
+      /* --border-input: the forms' --line-strong (#55535a) is 2.1:1 on the
+         sheet; this one keeps 3:1 on --surface and --field. */
+      --border-subtle: #2b3133;
+      --border-default: #353d3f;
+      --border-strong: #7a8689;
+      --border-input: #7a8689;
 
-      --accent: #62b9d0;
-      --accent-hover: #7ec8db;
+      --text-primary: #f3f2f0;
+      --text-secondary: #b4b6b8;
+      --text-muted: #a9a9b0;
+
+      /* The forms' dark focus colour: color-mix(in oklab, #155e75 50%, white). */
+      --accent: #8dacb8;
+      --accent-hover: #a3c1ca;
       --on-accent: #0c1a1e;
-      --accent-subtle: #1a3940;
-      --accent-text: #8fd0e2;
-      --accent-border: #2c5f6c;
-      --focus-ring: #62b9d0;
+      --accent-subtle: #1f3a42;
+      --accent-text: #9fc6d2;
+      --accent-border: #3a5f69;
+      --focus-ring: #8dacb8;
+
+      /* The primary button inverts in dark, as the forms' does. */
+      --btn: #f3f2f0;
+      --btn-hover: #ffffff;
+      --on-btn: #1c1b19;
 
       --success: #62c472;
       --success-subtle: #1a3121;
@@ -159,19 +193,21 @@
       --danger-subtle: #3c201c;
       --danger-text: #ffab98;
       --danger-border: #80362c;
-      --info: #62b9d0;
-      --info-subtle: #1a3940;
-      --info-text: #8fd0e2;
-      --info-border: #2c5f6c;
+      --info: #8dacb8;
+      --info-subtle: #1f3a42;
+      --info-text: #9fc6d2;
+      --info-border: #3a5f69;
 
-      --toggle-track-off: #616d70;
-      --toggle-knob-off: #f0f1f0;
+      --toggle-track-off: #7a8689;
+      --toggle-knob-off: #f3f2f0;
 
-      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%23acb4b4' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
+      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%23b4b6b8' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
 
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
       --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+      --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.3), 0 20px 48px rgba(0, 0, 0, 0.45);
+      --shadow-sheet: 0 30px 60px -24px rgba(0, 0, 0, 0.8);
 
       /* GitHub Dark-derived; checked against --code-bg by design-system/contrast.mjs. */
       --ch-comment: #8b949e;
@@ -219,7 +255,7 @@
     body {
       margin: 0;
       padding: 0;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg-page);
       color: var(--text-primary);
       -webkit-font-smoothing: antialiased;
