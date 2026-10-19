@@ -18,6 +18,7 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
@@ -326,6 +327,75 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.getSessions.succeedsWith(Nil),
       verify = (response, service) =>
         ZIO.succeed(assertTrue(service.getSessions.calls == List(userId))),
+    ),
+    controllerTestCase(
+      description = "get user devices returns signed-in and signed-out devices, session null for the latter",
+      request = Request(
+        method = Method.GET,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getDevices.succeedsWith(
+          List(
+            DeviceResponse(
+              userAgent = Some(UserAgentResponse(
+                id = "ua-1",
+                userAgent = Some("raw"),
+                platform = Some("desktop"),
+                os = None,
+                browser = None,
+                version = None,
+                createdAt = Instant.parse("2024-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2024-06-01T00:00:00Z"),
+              )),
+              session = None,
+              endedSessionIds = List("old-1"),
+            ),
+          ),
+        ),
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          service.getDevices.calls == List(userId),
+          body.contains(""""session":null"""),
+          body.contains(""""endedSessionIds":["old-1"]"""),
+          body.contains(""""expiresAt":"2024-06-01T00:00:00Z""""),
+        ),
+    ),
+    controllerTestCase(
+      description = "get user devices without the user id is refused",
+      request = Request(method = Method.GET, url = URL.empty / "users" / "user-agents"),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.getDevices.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "forget a device returns 204 No Content when auth forgot it",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString).addQueryParam("userAgentId", "ua-1"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.forgetUserAgent.succeedsWith(true),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.forgetUserAgent.calls == List((userId, "ua-1")))),
+    ),
+    controllerTestCase(
+      description = "forget a device returns 404 Not Found when the user agent is not the user's",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString).addQueryParam("userAgentId", "ua-1"),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.forgetUserAgent.succeedsWith(false),
+    ),
+    controllerTestCase(
+      description = "forget a device without a userAgentId is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.forgetUserAgent.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "invalidate session returns 204 No Content",
