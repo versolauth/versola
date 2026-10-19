@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
+import { segmentedStyles } from '../styles/components';
 import type { ResolvedThemeTokens, ThemeBackground, ThemeMode, ThemeOverrides, ThemeShape, ThemeSurface } from '../types';
 
 const HEX = /^#?[0-9a-fA-F]{6}$/;
@@ -46,6 +47,8 @@ export class VersolaThemeTokenControls extends LitElement {
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
+  /** Each token is a row divided from the next by a line (the theme editor's Look card). */
+  @property({ type: Boolean, reflect: true }) ruled = false;
 
   @state() private brandText = '';
 
@@ -69,29 +72,29 @@ export class VersolaThemeTokenControls extends LitElement {
 
   static styles = [
     theme,
+    segmentedStyles,
     css`
       :host { display: block; }
-      .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .field-label { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 0.5rem; white-space: nowrap; }
+      .hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.5rem; }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--field); border: 1.5px solid var(--border-input); border-radius: var(--radius-md); font-size: var(--text-base); color: var(--text-primary); box-sizing: border-box; }
       .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
-      .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      :host([ruled]) .group + .group { margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-subtle); }
+      .group-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 var(--spacing-sm); }
+      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--warning-text); background: var(--warning-subtle); border: 1px solid var(--warning-border); border-radius: var(--radius-pill); padding: 0.125rem 0.5rem; white-space: nowrap; }
       .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
-      .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
+      .reset { font: inherit; font-size: var(--text-sm); color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
-      .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); cursor: pointer; }
-      .seg-btn:hover { color: var(--text-primary); }
-      .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+      .seg-control { gap: 0.375rem; }
 
       .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
       .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-default); cursor: pointer; padding: 0; }
       .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
+      .swatch:focus-visible, .bg-card:focus-visible, .reset:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
-      .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
+      .hex-row .bad { color: var(--danger-text); font-size: var(--text-sm); }
       /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
          repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
          --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
@@ -99,8 +102,8 @@ export class VersolaThemeTokenControls extends LitElement {
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
       .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .bg-card:hover { border-color: var(--text-secondary); }
-      .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-      .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
+      .bg-card.sel { border-color: var(--text-primary); background: var(--surface-inset); }
+      .bg-card b { display: block; font-size: var(--text-sm); margin-top: 0.3125rem; }
       .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
       .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 9%, #f6f4ef); --lin: 34%; --hor: 36%; --glow-x: 30%; }
       .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
