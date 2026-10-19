@@ -146,11 +146,11 @@ object ChallengeSettingsService:
         candidate <- ZIO.fromEither(patch.applyTo(stored)).mapError(ValidationError.Invalid(_))
         _ <- validateSigningKey(candidate.signingKeyId, candidate.securityProfile)
         _ <- validateDefaultRoles(candidate)
-        patched <- repository.patch(patch.tenantId, patch.applyTo)
+        patched <- repository.patch(patch.tenantId, patch)
         _ <- patched match
-          case None => ZIO.fail(SettingsNotFound(patch.tenantId))
-          case Some(Left(reason)) => ZIO.fail(ValidationError.Invalid(reason))
-          case Some(Right(_)) => ZIO.unit
+          case ChallengeSettingsPatchResult.NotFound => ZIO.fail(SettingsNotFound(patch.tenantId))
+          case ChallengeSettingsPatchResult.Invalid(reason) => ZIO.fail(ValidationError.Invalid(reason))
+          case ChallengeSettingsPatchResult.Patched(_) => ZIO.unit
       yield ()
 
     override def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit] =

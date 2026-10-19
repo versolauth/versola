@@ -259,14 +259,11 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val patch = noChange.copy(otpLength = Some(Patch.Modified(8)))
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings))
-          _ <- env.repository.patch.succeedsWith(Some(Right(settings.copy(otpLength = 8))))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(otpLength = 8)))
           _ <- env.service.patchSettings(patch)
-          (patchedTenant, change) = env.repository.patch.calls.head
         yield assertTrue(
-          env.repository.patch.calls.size == 1,
-          patchedTenant == tenantId,
-          // what the repository runs on the locked row is this patch, not a snapshot of the row read here
-          change(settings.copy(ipHeader = "X-Other")) == Right(settings.copy(ipHeader = "X-Other", otpLength = 8)),
+          // the repository gets the patch itself, to merge into the row it has locked, not a snapshot of the row read here
+          env.repository.patch.calls == List((tenantId, patch)),
           env.repository.upsert.calls.isEmpty,
         )
       },
@@ -284,7 +281,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings))
-          _ <- env.repository.patch.succeedsWith(None)
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.NotFound)
           result <- env.service.patchSettings(noChange).either
         yield assertTrue(result == Left(ChallengeSettingsService.SettingsNotFound(tenantId)))
       },
@@ -321,7 +318,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings))
-          _ <- env.repository.patch.succeedsWith(Some(Left("logoLight and logoDark must be set or cleared together")))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Invalid("logoLight and logoDark must be set or cleared together"))
           result <- env.service.patchSettings(noChange).either
         yield assertTrue(
           result == Left(ChallengeSettingsService.ValidationError.Invalid("logoLight and logoDark must be set or cleared together")),
@@ -353,7 +350,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings.copy(signingKeyId = Some("ps-kid"))))
-          _ <- env.repository.patch.succeedsWith(Some(Right(settings)))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings))
           _ <- env.service.patchSettings(noChange.copy(signingKeyId = Some(Patch.Deleted)))
         yield assertTrue(env.jwksRepository.find.calls.isEmpty, env.repository.patch.calls.size == 1)
       },
@@ -373,7 +370,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings))
           _ <- env.roleRepository.findRole.succeedsWith(Some(userRole))
-          _ <- env.repository.patch.succeedsWith(Some(Right(settings.copy(emailRegistration = open))))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(emailRegistration = open)))
           _ <- env.service.patchSettings(noChange.copy(emailRegistration = Some(Patch.Modified(open))))
         yield assertTrue(env.roleRepository.findRole.calls == List((tenantId, ChallengeSettingsRecord.DefaultRoleId)))
       },
@@ -381,7 +378,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.repository.findByTenant.succeedsWith(Some(settings))
-          _ <- env.repository.patch.succeedsWith(Some(Right(settings.copy(otpLength = 8))))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(otpLength = 8)))
           _ <- env.service.patchSettings(noChange.copy(otpLength = Some(Patch.Modified(8))))
         yield assertTrue(env.roleRepository.findRole.calls.isEmpty)
       },
