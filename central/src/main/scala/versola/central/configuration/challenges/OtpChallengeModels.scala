@@ -122,54 +122,56 @@ case class PatchChallengeSettingsRequest(
     * has locked. */
   def applyTo(current: ChallengeSettingsRecord): Either[String, ChallengeSettingsRecord] =
     for
-      phoneRegions <- required("phoneRegions", this.phoneRegions, current.phoneRegions)
-      emailRegistration <- required("emailRegistration", this.emailRegistration, current.emailRegistration)
-      defaultRoles <- required("defaultRoles", this.defaultRoles, current.defaultRoles)
-      submissionLimits <- required("submissionLimits", this.submissionLimits, current.submissionLimits)
-      otpLength <- required("otpLength", this.otpLength, current.otpLength)
-      otpResendAfter <- required("otpResendAfter", this.otpResendAfter, current.otpResendAfter)
-      passkeySettings <- required("passkeySettings", this.passkeySettings, current.passkeySettings)
-      authConversationTtlSeconds <- required("authConversationTtlSeconds", this.authConversationTtlSeconds, current.authConversationTtlSeconds)
-      sessionTtlSeconds <- required("sessionTtlSeconds", this.sessionTtlSeconds, current.sessionTtlSeconds)
-      userAgentTtlSeconds <- required("userAgentTtlSeconds", this.userAgentTtlSeconds, current.userAgentTtlSeconds)
-      ipHeader <- required("ipHeader", this.ipHeader, current.ipHeader)
-      postLogoutRedirectUris <- required("postLogoutRedirectUris", this.postLogoutRedirectUris, current.postLogoutRedirectUris)
-      requireDpopNonce <- required("requireDpopNonce", this.requireDpopNonce, current.requireDpopNonce)
+      phoneRegions <- required(name = "phoneRegions", patch = this.phoneRegions, current = current.phoneRegions)
+      emailRegistration <- required(name = "emailRegistration", patch = this.emailRegistration, current = current.emailRegistration)
+      defaultRoles <- required(name = "defaultRoles", patch = this.defaultRoles, current = current.defaultRoles)
+      submissionLimits <- required(name = "submissionLimits", patch = this.submissionLimits, current = current.submissionLimits)
+      otpLength <- required(name = "otpLength", patch = this.otpLength, current = current.otpLength)
+      otpResendAfter <- required(name = "otpResendAfter", patch = this.otpResendAfter, current = current.otpResendAfter)
+      passkeySettings <- required(name = "passkeySettings", patch = this.passkeySettings, current = current.passkeySettings)
+      authConversationTtlSeconds <-
+        required(name = "authConversationTtlSeconds", patch = this.authConversationTtlSeconds, current = current.authConversationTtlSeconds)
+      sessionTtlSeconds <- required(name = "sessionTtlSeconds", patch = this.sessionTtlSeconds, current = current.sessionTtlSeconds)
+      userAgentTtlSeconds <- required(name = "userAgentTtlSeconds", patch = this.userAgentTtlSeconds, current = current.userAgentTtlSeconds)
+      ipHeader <- required(name = "ipHeader", patch = this.ipHeader, current = current.ipHeader)
+      postLogoutRedirectUris <-
+        required(name = "postLogoutRedirectUris", patch = this.postLogoutRedirectUris, current = current.postLogoutRedirectUris)
+      requireDpopNonce <- required(name = "requireDpopNonce", patch = this.requireDpopNonce, current = current.requireDpopNonce)
       clientAssertionMaxLifetimeSeconds <- required(
-        "clientAssertionMaxLifetimeSeconds",
-        this.clientAssertionMaxLifetimeSeconds,
-        current.clientAssertionMaxLifetimeSeconds,
+        name = "clientAssertionMaxLifetimeSeconds",
+        patch = this.clientAssertionMaxLifetimeSeconds,
+        current = current.clientAssertionMaxLifetimeSeconds,
       )
-      securityProfile <- required("securityProfile", this.securityProfile, current.securityProfile)
+      securityProfile <- required(name = "securityProfile", patch = this.securityProfile, current = current.securityProfile)
       _ <- Either.cond(
         securityProfile == current.securityProfile,
         (),
         s"securityProfile of tenant '${current.tenantId}' is ${current.securityProfile} and cannot be changed after the tenant is created",
       )
       record = ChallengeSettingsRecord(
-        current.tenantId,
-        phoneRegions,
-        emailRegistration,
-        defaultRoles,
-        submissionLimits,
-        otpLength,
-        otpResendAfter,
-        passkeySettings,
-        authConversationTtlSeconds,
-        sessionTtlSeconds,
-        this.sessionIdleTtlSeconds.applyTo(current.sessionIdleTtlSeconds),
-        userAgentTtlSeconds,
-        ipHeader,
-        this.acrVocabulary.applyTo(current.acrVocabulary),
-        postLogoutRedirectUris,
-        requireDpopNonce,
-        this.mtlsCertificateHeader.applyTo(current.mtlsCertificateHeader),
-        this.mtlsCertificateEncoding.applyTo(current.mtlsCertificateEncoding),
-        this.signingKeyId.applyTo(current.signingKeyId),
-        clientAssertionMaxLifetimeSeconds,
-        securityProfile,
-        this.logoLight.applyTo(current.logoLight),
-        this.logoDark.applyTo(current.logoDark),
+        tenantId = current.tenantId,
+        phoneRegions = phoneRegions,
+        emailRegistration = emailRegistration,
+        defaultRoles = defaultRoles,
+        submissionLimits = submissionLimits,
+        otpLength = otpLength,
+        otpResendAfter = otpResendAfter,
+        passkeySettings = passkeySettings,
+        authConversationTtlSeconds = authConversationTtlSeconds,
+        sessionTtlSeconds = sessionTtlSeconds,
+        sessionIdleTtlSeconds = this.sessionIdleTtlSeconds.applyTo(current.sessionIdleTtlSeconds),
+        userAgentTtlSeconds = userAgentTtlSeconds,
+        ipHeader = ipHeader,
+        acrVocabulary = this.acrVocabulary.applyTo(current.acrVocabulary),
+        postLogoutRedirectUris = postLogoutRedirectUris,
+        requireDpopNonce = requireDpopNonce,
+        mtlsCertificateHeader = this.mtlsCertificateHeader.applyTo(current.mtlsCertificateHeader),
+        mtlsCertificateEncoding = this.mtlsCertificateEncoding.applyTo(current.mtlsCertificateEncoding),
+        signingKeyId = this.signingKeyId.applyTo(current.signingKeyId),
+        clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds,
+        securityProfile = securityProfile,
+        logoLight = this.logoLight.applyTo(current.logoLight),
+        logoDark = this.logoDark.applyTo(current.logoDark),
       )
       validated <- ChallengeSettingsRecord.validate(record)
     yield validated
