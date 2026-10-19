@@ -40,6 +40,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       signingKeyId: Option[String] = None,
       clientAssertionMaxLifetimeSeconds: Int = 300,
       securityProfile: SecurityProfile = SecurityProfile.fapi2,
+      logoLight: Option[String] = None,
+      logoDark: Option[String] = None,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -63,6 +65,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       signingKeyId = signingKeyId,
       clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds,
       securityProfile = securityProfile,
+      logoLight = logoLight,
+      logoDark = logoDark,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -136,6 +140,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       regions: List[PhoneRegion] = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
       emailRegistration: EmailRegistration = EmailRegistration.Closed,
       defaultRoles: Set[RoleId] = Set(ChallengeSettingsRecord.DefaultRoleId),
+      logoLight: Option[Patch[String]] = None,
+      logoDark: Option[Patch[String]] = None,
   ): Request =
     Request(
       method = Method.PUT,
@@ -163,6 +169,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           signingKeyId = None,
           clientAssertionMaxLifetimeSeconds = None,
           securityProfile = profile,
+          logoLight = logoLight,
+          logoDark = logoDark,
         ).toJson,
       ),
     ).addHeader(Header.ContentType(MediaType.application.json))
@@ -177,6 +185,100 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
           service.upsertSettings.succeedsWith(()),
       verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("phoneRegions regex of KZ"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings stores a logo pair",
+      request = upsertWithProfile(
+        None,
+        logoLight = Some(Patch.Modified("https://cdn.example/light.svg")),
+        logoDark = Some(Patch.Modified("https://cdn.example/dark.png")),
+      ),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.upsertSettings.calls.map(r => (r.logoLight, r.logoDark)) ==
+            List((Some("https://cdn.example/light.svg"), Some("https://cdn.example/dark.png"))),
+        )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a single logo file",
+      request = upsertWithProfile(None, logoLight = Some(Patch.Modified("https://cdn.example/light.svg"))),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("set or cleared together"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses to clear one file of a stored pair",
+      request = upsertWithProfile(None, logoLight = Some(Patch.Deleted)),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(
+          logoLight = Some("https://cdn.example/light.svg"),
+          logoDark = Some("https://cdn.example/dark.svg"),
+        ))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings clears both files of a stored pair, and keeps them when omitted",
+      request = upsertWithProfile(None, logoLight = Some(Patch.Deleted), logoDark = Some(Patch.Deleted)),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(
+          logoLight = Some("https://cdn.example/light.svg"),
+          logoDark = Some("https://cdn.example/dark.svg"),
+        ))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(r => (r.logoLight, r.logoDark)) == List((None, None)))),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings keeps a stored logo pair when the request omits it",
+      request = upsertWithProfile(None),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(
+          logoLight = Some("https://cdn.example/light.svg"),
+          logoDark = Some("https://cdn.example/dark.svg"),
+        ))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.upsertSettings.calls.map(r => (r.logoLight, r.logoDark)) ==
+            List((Some("https://cdn.example/light.svg"), Some("https://cdn.example/dark.svg"))),
+        )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a logo that is not an absolute HTTP(S) URL",
+      request = upsertWithProfile(
+        None,
+        logoLight = Some(Patch.Modified("javascript:alert(1)")),
+        logoDark = Some(Patch.Modified("https://cdn.example/dark.svg")),
+      ),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("absolute HTTP(S) URLs"))),
       settingsVerify = (_, service) =>
         val upserts = service.upsertSettings.times
         ZIO.succeed(assertTrue(upserts == 0)),
@@ -437,6 +539,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -488,6 +592,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -531,6 +637,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = Some(Patch.Modified("ps-kid")),
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -570,6 +678,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = Some(Patch.Deleted),
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -608,6 +718,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -648,6 +760,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = Some(Patch.Modified("bootstrap-kid")),
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -689,6 +803,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = Some(120),
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -732,6 +848,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             clientAssertionMaxLifetimeSeconds =
               Some(ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds + 1),
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -769,6 +887,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -808,6 +928,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -848,6 +970,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = None,
             securityProfile = None,
+            logoLight = None,
+            logoDark = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),

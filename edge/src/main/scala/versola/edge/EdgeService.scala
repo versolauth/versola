@@ -763,11 +763,11 @@ object EdgeService:
         case BindingCheck.Accept => ZIO.unit
 
     /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
-      * here, so the call has to carry whatever that binding names -- and the two are carried
-      * in different places: an edge assertion in a header for a key-bound token, the
-      * certificate itself in the handshake for a certificate-bound one. Only the second needs
-      * the client looked up: its certificate is part of the registration central syncs, not
-      * of the token.
+      * here, so the call has to carry whatever that binding names -- and both are carried by
+      * the handshake: the certificate this edge holds for the client, which auth reads as the
+      * proof for a certificate-bound token and as the edge that checked the proof for a
+      * key-bound one. The client is looked up for either, as its certificate is part of the
+      * registration central syncs, not of the token.
       */
     private def fetchUserInfo(
         accessToken: AccessToken,
@@ -776,7 +776,10 @@ object EdgeService:
       for
         binding <-
           (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
-            case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
+            case (Some(_), _) =>
+              clientService.findClient(claims.clientId)
+                .someOrFail(ClientNotFound(claims.clientId))
+                .map(client => SSOClient.TokenBinding.Key(client.id, client.credential))
             case (None, Some(_)) =>
               clientService.findClient(claims.clientId)
                 .someOrFail(ClientNotFound(claims.clientId))

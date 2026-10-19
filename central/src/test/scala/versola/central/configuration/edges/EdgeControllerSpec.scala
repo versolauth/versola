@@ -77,7 +77,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     * other route here uses, so these cases build their own credentials. */
   private def internalTestCase(
       description: String,
-      url: URL = URL.root / "configuration" / "edges" / "registry",
+      url: URL,
       token: Stub[EdgeService] => Task[String],
       tenants: Vector[TenantRecord] = Vector.empty,
       expectedStatus: Status,
@@ -217,51 +217,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.deleteOldEdgeKey.succeedsWith(()),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
-    ),
-    internalTestCase(
-      description = "edges registry serves every edge's public keys and assigned tenants to auth",
-      token = authSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service =>
-        service.getAllEdges.succeedsWith(
-          Vector(
-            edgeRecord,
-            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
-          ),
-        ),
-      tenants = Vector(
-        TenantRecord(TenantId("tenant-a"), "Tenant A", edgeId = Some(edgeId)),
-        TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
-        TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
-        // Assigned to neither edge below, and must not leak into either one's tenantIds --
-        // this is the set `EdgeAssertionService` checks a token's tenant against.
-        TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
-      ),
-      verify = response =>
-        for
-          raw <- response.body.asString
-          body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
-        yield assertTrue(
-          body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
-          body.edges.head.publicKey == publicJwk,
-          // Both halves of a rotation, so auth keeps accepting assertions signed with the key
-          // being rotated out until it is removed.
-          body.edges.head.oldPublicKey.isEmpty,
-          body.edges(1).oldPublicKey.contains(publicJwk),
-          // What lets auth refuse an assertion from a real, correctly signed edge that is
-          // simply not the one this token's tenant is behind.
-          body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
-          body.edges(1).tenantIds == List(TenantId("tenant-c")),
-        ),
-    ),
-    // An edge has no business reading its peers' identities: the keys it would need to forge
-    // one are exactly what this would hand it.
-    internalTestCase(
-      description = "edges registry refuses an edge, authenticated or not",
-      token = edgeSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.getAllEdges.succeedsWith(Vector(edgeRecord)),
-      verify = response => ZIO.succeed(assertTrue(response.status == Status.Unauthorized)),
     ),
     controllerTestCase(
       description = "setting an edge's nonce requirement returns 204 No Content and records it",

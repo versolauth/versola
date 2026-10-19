@@ -30,7 +30,7 @@ import versola.oauth.conversation.{
   ConversationService,
   PostgresConversationRepository,
 }
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.identifier.{IdentifierChangeIntentService, UserContactSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
@@ -53,7 +53,7 @@ import versola.user.{
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
@@ -76,7 +76,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ClientAssertionRepository &
       ClientAssertionService &
       DpopService &
-      EdgeAssertionService &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -218,16 +217,26 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
 
+  /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
+  private val configSnapshot: ZLayer[TransactorZIO & CoreConfig, Nothing, ConfigSnapshot] =
+    (PostgresConfigSnapshotRepository.live("auth_config_snapshots") ++ ZLayer.service[CoreConfig]) >>>
+      ZLayer.fromZIO:
+        for
+          repository <- ZIO.service[ConfigSnapshot.Repository]
+          config <- ZIO.service[CoreConfig]
+          snapshot <- ConfigSnapshot.make(repository, config.central.secretKey.getEncoded)
+        yield snapshot
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >++>
       parseConfig[CoreConfig] >++>
+      configSnapshot >++>
       SecureRandom.live >++>
       securityService >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>
       DpopNonceService.live >++>
-      EdgeAssertionService.live >++>
       JsonSchemaValidator.live >++>
       OAuthConfigurationService.live >++>
       DpopService.live >++>

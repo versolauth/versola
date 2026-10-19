@@ -1,6 +1,9 @@
 package versola.util
 
 import zio.*
+import zio.metrics.Metric
+
+import java.time.Instant
 
 type ReloadingCache[A] = ReloadingCache.Type[A]
 
@@ -18,14 +21,17 @@ object ReloadingCache:
     * central during their own startup) fails its first load whenever it wins the race against that
     * service. Without a retry the failure propagates out of layer construction and takes the whole
     * application down - observed in production, with central becoming ready ~0.4s after auth had
-    * already given up (see deploy.md 9.5). Waiting is better than dying and relying on the
+    * already given up (see deploy.md 6.5). Waiting is better than dying and relying on the
     * orchestrator to restart us.
     *
     * The wait only recovers with a `dynamic` outbound pool. A `fixed` pool (the default) keeps
     * one failed connection per slot after its first refused attempt and hands out one per
     * retry, so with 128 slots the wait is over long before the pool is clean: the service exits
     * after [[DependencyWait]] and relies on the restart policy (`restart: unless-stopped`, a
-    * pod restart), whose fresh pool then connects. See `ClientRecoverySpec`.
+    * pod restart), whose fresh pool then connects. See `ClientRecoverySpec`. A cache started
+    * from the [[ConfigSnapshot]] does not exit: its background retries use the stored failures
+    * up one per attempt, so with the default 128 slots and a handful of caches the first live
+    * answer comes about a minute after central is back.
     *
     * Two minutes covers a cold Kubernetes install, where every service is scheduled at once and
     * central still has a JVM, a connection pool and a schema validation ahead of it before it
@@ -81,13 +87,24 @@ object ReloadingCache:
     * `||` recurs while *either* still wants to, at whichever delay comes first - so an
     * unclassifiable failure behaves exactly as it did before this was split in two, and only an
     * unreachable source gets the long wait.
+    *
+    * Neither runs for [[ConfigSnapshot.SourceDown]]: another cache has already waited for the
+    * source and started from the snapshot, and caches are built one after another, so waiting
+    * again would multiply the start time by their number.
     */
   private val initialLoadRetry: Schedule[Any, Throwable, Any] =
-    (Schedule.exponential(500.millis, 2.0).jittered && Schedule.recurs(6)) ||
+    ((Schedule.exponential(500.millis, 2.0).jittered && Schedule.recurs(6)) ||
       Schedule.exponential(500.millis, 2.0).jittered
         .modifyDelay((_, delay) => delay.min(MaxRetryDelay))
         .whileInput[Throwable](notUpYet)
-        .upTo(DependencyWait)
+        .upTo(DependencyWait)) &&
+      Schedule.recurWhile[Throwable](!_.isInstanceOf[ConfigSnapshot.SourceDown])
+
+  /** How often a source is tried again while the cache is served from the snapshot. */
+  private val SnapshotRetry: Schedule[Any, Any, Any] =
+    Schedule.exponential(500.millis, 2.0).jittered.modifyDelay((_, delay) => delay.min(MaxRetryDelay))
+
+  private val SnapshotAgeReportInterval: Duration = 15.seconds
 
   /** Loads once now, then every `interval`.
     *
@@ -97,9 +114,19 @@ object ReloadingCache:
     * interval for as long as it lasted — a five-minute one used to, which meant a freshly
     * registered client stayed invisible to an edge for five minutes no matter what the
     * configuration said.
+    *
+    * With `fromSnapshot`, a first load that still fails after its retries is answered from the
+    * [[ConfigSnapshot]] the source's requests go through, and the source is tried again in the
+    * background until it answers. `config_snapshot_age_seconds` is the age of what is served,
+    * zero once the source has answered. Only a source that cannot be reached or answers 5xx is
+    * stood in for (see [[snapshotCovers]]): one that answers and rejects the request -- a wrong
+    * URL, a wrong sync key -- is a configuration error that the snapshot would only hide, so it
+    * fails the load as before. Without a snapshot the failure stands as before; a snapshot that
+    * fails verification fails the load.
     */
   def make[A: Tag](
       interval: Duration = 5.minutes,
+      fromSnapshot: Boolean = false,
   ): ZIO[Scope & CacheSource[A], Throwable, ReloadingCache[A]] =
     for
       source <- ZIO.service[CacheSource[A]]
@@ -114,11 +141,55 @@ object ReloadingCache:
             case n => ZIO.logInfo(s"Still waiting for the source of cache ${Tag[A].tag} (attempt ${n + 1})")
         .retry(initialLoadRetry)
         .tapErrorCause(err => ZIO.logErrorCause(s"Couldn't initialize cache ${Tag[A].tag}", err))
-      ref <- Ref.make(values)
+        .map(_ -> Option.empty[Instant])
+        .catchAll(error => if fromSnapshot && snapshotCovers(error) then loadSnapshot(source, error) else ZIO.fail(error))
+      (initial, savedAt) = values
+      ref <- Ref.make(initial)
+      snapshotAge = Metric.gauge("config_snapshot_age_seconds").tagged("cache", cacheName[A])
       refresh = source.getAll
         .foldZIO(
           error => ZIO.logErrorCause(Cause.fail(error)),
           data => ref.set(data),
         )
-      _ <- (ZIO.sleep(interval) *> refresh.repeat(Schedule.spaced(interval))).forkScoped
+      untilLive = savedAt match
+        case None => ZIO.when(fromSnapshot)(snapshotAge.set(0)).unit
+        case Some(savedAt) =>
+          val reportAge = Clock.instant
+            .flatMap(now => snapshotAge.set(java.time.Duration.between(savedAt, now).toMillis / 1000.0))
+            .repeat(Schedule.spaced(SnapshotAgeReportInterval)) *> ZIO.never
+          source.getAll.retry(SnapshotRetry).flatMap(ref.set).race(reportAge) *>
+            snapshotAge.set(0) *>
+            ZIO.logInfo(s"Cache ${Tag[A].tag} is loaded from its source again, no longer from the configuration snapshot")
+      _ <- (untilLive *> ZIO.sleep(interval) *> refresh.repeat(Schedule.spaced(interval))).forkScoped
     yield ref
+
+  /** Whether the snapshot stands in for this failure of the first load: the source could not be
+    * reached, has already been found down by another cache, or answered that it cannot serve.
+    */
+  private def snapshotCovers(error: Throwable): Boolean = error match
+    case _: ConfigSnapshot.SourceDown | _: ConfigSnapshot.SourceFailed => true
+    case other => notUpYet(other)
+
+  /** The cache's type without packages, for a metric label: `Map[ClientId,OAuthClient]` rather
+    * than the fully qualified form the logs use.
+    */
+  private def cacheName[A: Tag]: String = Tag[A].tag.toString.replaceAll("[\\w$]+\\.", "")
+
+  private def loadSnapshot[A: Tag](source: CacheSource[A], error: Throwable): Task[(A, Option[Instant])] =
+    ConfigSnapshot.replay(source.getAll).foldZIO(
+      {
+        case missing: ConfigSnapshot.Missing =>
+          ZIO.logWarning(s"Cache ${Tag[A].tag} cannot start from the configuration snapshot: ${missing.getMessage}") *>
+            ZIO.fail(error)
+        case other =>
+          ZIO.logErrorCause(s"Cache ${Tag[A].tag} cannot start from the configuration snapshot", Cause.fail(other)) *>
+            ZIO.fail(other)
+      },
+      {
+        case result @ (_, Some(savedAt)) =>
+          ZIO.logWarning(
+            s"Serving cache ${Tag[A].tag} from the configuration snapshot saved at $savedAt: its source is unavailable",
+          ).as(result)
+        case result => ZIO.succeed(result)
+      },
+    )

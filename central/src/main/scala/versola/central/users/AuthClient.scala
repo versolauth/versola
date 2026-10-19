@@ -42,6 +42,12 @@ trait AuthClient:
 
   def invalidateSession(userId: UserId): Task[Unit]
 
+  /** Ends one session of the user. `false` when auth does not know it as this user's. */
+  def endSession(userId: UserId, sessionId: String): Task[Boolean]
+
+  /** Revokes the offline access `clientId` holds for the user: its live refresh tokens. */
+  def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
+
   /** Every currently-live refresh token issued to the user. Not derivable from
     * [[getUserSessions]]: a refresh token's expiry is fixed at issuance and independent of a
     * session's, so a token routinely outlives the session it was issued under. */
@@ -169,7 +175,6 @@ object AuthClient:
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
-    private val serviceUsersUrl: URL = config.auth.url / "service" / "users"
 
     override def upsertUser(
         id: UserId,
@@ -229,6 +234,28 @@ object AuthClient:
         Request(
           method = Method.DELETE,
           url = sessionsUrl.addQueryParam("userId", userId.toString),
+          body = Body.empty,
+        ),
+      )
+
+    override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
+      execute(
+        Request(
+          method = Method.DELETE,
+          url = sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId),
+          body = Body.empty,
+        ),
+      ): response =>
+        response.status match
+          case Status.NotFound => ZIO.succeed(false)
+          case status if status.isSuccess => ZIO.succeed(true)
+          case _ => failResponse(response)
+
+    override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
+      send(
+        Request(
+          method = Method.DELETE,
+          url = refreshTokensUrl.addQueryParam("userId", userId.toString).addQueryParam("clientId", clientId),
           body = Body.empty,
         ),
       )
@@ -301,7 +328,7 @@ object AuthClient:
       send(
         Request(
           method = Method.DELETE,
-          url = serviceUsersUrl.addQueryParam("id", userId.toString),
+          url = usersUrl.addQueryParam("id", userId.toString),
         ),
       )
 

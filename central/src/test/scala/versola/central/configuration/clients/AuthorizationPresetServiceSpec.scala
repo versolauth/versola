@@ -126,6 +126,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   override def spec = suite("AuthorizationPresetService")(

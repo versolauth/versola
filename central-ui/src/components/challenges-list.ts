@@ -14,7 +14,7 @@ import {
   getRoles,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { validateRedirectUri, validatePhoneRegions, validateRegistrationDomains } from '../utils/validators';
+import { isHttpUrl, validateRedirectUri, validatePhoneRegions, validateRegistrationDomains } from '../utils/validators';
 import { PHONE_REGION_PRESETS, appendPresets } from '../utils/phone-region-presets';
 import './content-header';
 import './code-editor';
@@ -128,6 +128,10 @@ export class VersolaChallengesList extends LitElement {
 
   @state() private signingKeyId: string | null = null;
   @state() private editSigningKeyId: string | null = null;
+  @state() private logoLight: string | null = null;
+  @state() private logoDark: string | null = null;
+  @state() private editLogoLight = '';
+  @state() private editLogoDark = '';
   @state() private signingKeys: JwksKeySummary[] = [];
   /** Whether the tenant may sign under RS256 -- false for a `fapi2` tenant, which central refuses it. */
   @state() private signingKeysIncludeRs256 = false;
@@ -287,14 +291,14 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.9375rem;
         color: var(--text-primary);
         line-height: 1.6;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         white-space: pre-wrap;
       }
       .edit-loc-card {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         margin-bottom: var(--spacing-md);
@@ -342,9 +346,9 @@ export class VersolaChallengesList extends LitElement {
         display: block;
         width: 100%;
         min-height: 360px;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        background: #fff;
+        background: var(--surface);
       }
       .edit-loc-textarea {
         box-sizing: border-box;
@@ -358,18 +362,33 @@ export class VersolaChallengesList extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .error-msg { font-size: 0.875rem; color: var(--danger); margin-top: var(--spacing-sm); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
+      .logo-previews { display: flex; gap: var(--spacing-md); flex-wrap: wrap; margin-top: var(--spacing-md); }
+      .logo-swatch {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 11rem;
+        height: 4.5rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border-color, rgba(128, 128, 128, 0.35));
+        border-radius: var(--radius-md, 8px);
+        box-sizing: border-box;
+      }
+      .logo-swatch.light { background: #ffffff; }
+      .logo-swatch.dark { background: #1f1f20; }
+      .logo-swatch img { max-height: 100%; max-width: 100%; object-fit: contain; }
       .label-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm); }
       .label-row > label { margin-bottom: 0; }
       .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -378,20 +397,20 @@ export class VersolaChallengesList extends LitElement {
         cursor: pointer;
         font-family: var(--font-family);
       }
-      .option-info-button:hover { background: rgba(var(--accent-tint), 0.18); border-color: rgba(var(--accent-tint), 0.55); }
-      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2); }
+      .option-info-button:hover { background: var(--accent-subtle); border-color: var(--accent); }
+      .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .option-tooltip {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         display: none;
       }
       .option-info.option-info-open .option-tooltip { display: block; }
@@ -409,8 +428,8 @@ export class VersolaChallengesList extends LitElement {
         font-weight: 600;
         font-size: 0.9375rem;
         color: var(--accent);
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
         /* Phone prefixes and ACR names are short, but this class also renders
@@ -435,7 +454,7 @@ export class VersolaChallengesList extends LitElement {
       .region-chip .signup-mark {
         margin-left: var(--spacing-xs);
         font-family: var(--font-family);
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--success);
         border: 1px solid var(--success);
@@ -446,10 +465,10 @@ export class VersolaChallengesList extends LitElement {
       .region-reg { display: inline-flex; align-items: center; justify-content: center; margin: 0; text-transform: none; letter-spacing: normal; font-size: 0.8125rem; color: var(--text-secondary); white-space: nowrap; }
       .region-reg input { width: 1rem; height: 1rem; accent-color: var(--accent); }
       .preset-picker {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         padding: var(--spacing-md);
         margin-bottom: var(--spacing-md);
       }
@@ -524,13 +543,13 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.8125rem;
         font-weight: 600;
         color: var(--accent);
-        background: rgba(var(--accent-tint), 0.1);
-        border: 1px solid rgba(var(--accent-tint), 0.2);
+        background: var(--accent-subtle);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
       .info-table {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         overflow: hidden;
         margin-top: var(--spacing-md);
@@ -541,7 +560,7 @@ export class VersolaChallengesList extends LitElement {
         gap: var(--spacing-lg);
         align-items: start;
         padding: 0.875rem var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
         font-size: 0.875rem;
       }
       .prop-row:last-child {
@@ -670,6 +689,8 @@ export class VersolaChallengesList extends LitElement {
         this.mtlsCertificateHeader = challengeSettings.mtlsCertificateHeader ?? null;
         this.mtlsCertificateEncoding = challengeSettings.mtlsCertificateEncoding ?? null;
         this.signingKeyId = challengeSettings.signingKeyId ?? null;
+        this.logoLight = challengeSettings.logoLight ?? null;
+        this.logoDark = challengeSettings.logoDark ?? null;
         this.clientAssertionMaxLifetimeSeconds = challengeSettings.clientAssertionMaxLifetimeSeconds ?? 300;
       } else {
         this.phoneRegions = [];
@@ -690,6 +711,8 @@ export class VersolaChallengesList extends LitElement {
         this.mtlsCertificateHeader = null;
         this.mtlsCertificateEncoding = null;
         this.signingKeyId = null;
+        this.logoLight = null;
+        this.logoDark = null;
         this.clientAssertionMaxLifetimeSeconds = 300;
       }
     } catch (e) {
@@ -1221,6 +1244,8 @@ export class VersolaChallengesList extends LitElement {
     this.editPostLogoutRedirectUris = this.postLogoutRedirectUris.map(value => ({ value }));
     this.editRequireDpopNonce = this.requireDpopNonce;
     this.editSigningKeyId = this.signingKeyId;
+    this.editLogoLight = this.logoLight ?? '';
+    this.editLogoDark = this.logoDark ?? '';
     this.settingsError = '';
   }
 
@@ -1387,6 +1412,19 @@ export class VersolaChallengesList extends LitElement {
       return;
     }
 
+    const logoLight = this.editLogoLight.trim();
+    const logoDark = this.editLogoDark.trim();
+    if (!logoLight !== !logoDark) {
+      this.settingsError = 'The logo needs both a light and a dark file, or neither.';
+      return;
+    }
+    for (const logo of [logoLight, logoDark]) {
+      if (logo && !isHttpUrl(logo)) {
+        this.settingsError = 'Logo must be an absolute http(s) URL.';
+        return;
+      }
+    }
+
     this.isSavingSettings = true;
     this.settingsError = '';
     const acrVocabulary = Object.fromEntries(
@@ -1416,6 +1454,8 @@ export class VersolaChallengesList extends LitElement {
         clientAssertionMaxLifetimeSeconds,
         emailRegistration,
         defaultRoles,
+        logoLight || null,
+        logoDark || null,
       );
       this.phoneRegions = regions;
       this.emailRegistration = emailRegistration;
@@ -1435,6 +1475,8 @@ export class VersolaChallengesList extends LitElement {
       this.mtlsCertificateHeader = mtlsCertificateHeader;
       this.mtlsCertificateEncoding = mtlsCertificateEncoding;
       this.signingKeyId = this.editSigningKeyId;
+      this.logoLight = logoLight || null;
+      this.logoDark = logoDark || null;
       this.clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
@@ -1802,6 +1844,28 @@ export class VersolaChallengesList extends LitElement {
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>Logo</label>
+          ${this.logoLight && this.logoDark
+            ? html`
+              <div class="info-table">
+                <div class="prop-row">
+                  <span class="prop-label">Light scheme</span>
+                  <span class="prop-value">${this.logoLight}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">Dark scheme</span>
+                  <span class="prop-value">${this.logoDark}</span>
+                </div>
+              </div>
+              <div class="logo-previews">
+                ${this.renderLogoPreview('light', this.logoLight)}
+                ${this.renderLogoPreview('dark', this.logoDark)}
+              </div>
+            `
+            : html`<div class="hint">Not set. The login pages of this tenant show the Versola wordmark.</div>`}
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
           <div class="label-row">
             <label>DPoP Nonce</label>
             ${this.renderDpopNonceInfo()}
@@ -2056,6 +2120,7 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderMtlsCertificateEdit()}
         ${this.renderSigningKeyEdit()}
         ${this.renderClientAssertionEdit()}
+        ${this.renderLogoEdit()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">DPoP</h3>
 
@@ -2245,6 +2310,37 @@ export class VersolaChallengesList extends LitElement {
       ${this.signingKeys.length === 0 ? html`
         <div class="hint">No signable keys are stored. Generate one under Well Known before selecting it here.</div>
       ` : nothing}
+    `;
+  }
+
+  // The logo is shown bare on the page, so each file is previewed on a swatch of the scheme it is made for: dark
+  // artwork on white, light artwork on dark.
+  private renderLogoPreview(scheme: 'light' | 'dark', url: string) {
+    return html`
+      <div class="logo-swatch ${scheme}" data-testid="logo-preview-${scheme}">
+        ${url && isHttpUrl(url) ? html`<img src=${url} alt="" referrerpolicy="no-referrer" />` : nothing}
+      </div>
+    `;
+  }
+
+  private renderLogoEdit() {
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Logo</h3>
+      <div class="hint">Shown above the sign-in card of this tenant's clients and as the favicon of its login pages. Both files are required together, or leave both empty to show the Versola wordmark. SVG is recommended; PNG and WebP work too. An SVG must have its text converted to outlines: fonts are not loaded inside an image.</div>
+      <label>Logo for the light scheme (dark artwork)</label>
+      <input type="url" class="form-control compact-input" data-testid="logo-light-input"
+        .value=${this.editLogoLight}
+        placeholder="https://example.com/logo-light.svg"
+        @input=${(e: Event) => { this.editLogoLight = (e.target as HTMLInputElement).value; }} />
+      <label style="margin-top: var(--spacing-md);">Logo for the dark scheme (light artwork)</label>
+      <input type="url" class="form-control compact-input" data-testid="logo-dark-input"
+        .value=${this.editLogoDark}
+        placeholder="https://example.com/logo-dark.svg"
+        @input=${(e: Event) => { this.editLogoDark = (e.target as HTMLInputElement).value; }} />
+      <div class="logo-previews">
+        ${this.renderLogoPreview('light', this.editLogoLight.trim())}
+        ${this.renderLogoPreview('dark', this.editLogoDark.trim())}
+      </div>
     `;
   }
 

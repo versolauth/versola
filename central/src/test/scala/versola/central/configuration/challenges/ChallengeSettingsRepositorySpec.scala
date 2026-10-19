@@ -44,6 +44,8 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =

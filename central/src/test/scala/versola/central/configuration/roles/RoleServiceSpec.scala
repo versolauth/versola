@@ -1,7 +1,14 @@
 package versola.central.configuration.roles
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, EmailRegistration, PasskeySettings, SecurityProfile, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  EmailRegistration,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.SyncEvent
@@ -29,6 +36,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = adminRoleId,
     description = Map("en" -> "Admin"),
     permissions = Set(readPermission, writePermission),
+    active = false,
   )
 
   private val updateRequest = UpdateRoleRequest(
@@ -36,6 +44,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = adminRoleId,
     description = PatchDescription(add = Map("ru" -> "Админ"), delete = Set.empty),
     permissions = PatchPermissions(add = Set(writePermission), remove = Set(readPermission)),
+    active = Some(true),
   )
 
   private val settings = ChallengeSettingsRecord(
@@ -60,6 +69,8 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   class Env(initial: Vector[RoleRecord] = Vector.empty):
@@ -91,7 +102,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createRole.succeedsWith(())
         _ <- env.service.createRole(createRequest)
       yield assertTrue(
-        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList)),
+        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList, false)),
       )
     },
     test("updateRole delegates request fields to repository") {
@@ -101,7 +112,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.updateRole.succeedsWith(())
         _ <- env.service.updateRole(updateRequest)
       yield assertTrue(
-        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions)),
+        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions, Some(true))),
       )
     },
     test("markRoleInactive delegates tenant and id to repository") {

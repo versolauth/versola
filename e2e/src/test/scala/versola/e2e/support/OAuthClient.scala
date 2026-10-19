@@ -175,6 +175,8 @@ object UserinfoResult:
       givenName: Option[String],
       familyName: Option[String],
       phoneNumber: Option[String],
+      emailVerified: Option[Boolean] = None,
+      phoneVerified: Option[Boolean] = None,
   ) extends UserinfoResult
 
   case class Failure(response: Response, body: String) extends UserinfoResult
@@ -186,6 +188,8 @@ object UserinfoResult:
       @jsonField("given_name") givenName: Option[String],
       @jsonField("family_name") familyName: Option[String],
       @jsonField("phone_number") phoneNumber: Option[String],
+      @jsonField("email_verified") emailVerified: Option[Boolean],
+      @jsonField("phone_number_verified") phoneVerified: Option[Boolean],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[UserinfoResult] =
@@ -195,7 +199,9 @@ object UserinfoResult:
           err => ZIO.succeed(Failure(response, s"JSON parse error [$err] body=$body")),
           raw =>
             ZIO.attempt(java.util.UUID.fromString(raw.sub))
-              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber))
+              .map(uuid =>
+                Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified),
+              )
               .orElse(ZIO.succeed(Failure(response, s"sub is not a valid UUID: ${raw.sub}"))),
         )
       else ZIO.succeed(Failure(response, body))
@@ -630,6 +636,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
         * a secret and Basic, neither of which are then sent. */
       assertion: Option[String] = None,
+      /** RFC 9449 §10.1: a proof sent to `/par`, which binds the authorization code to its key. */
+      dpop: Option[DpopProver] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -652,7 +660,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth && assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/par")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(proofed).provide(ZLayer.succeed(client))
+        .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    yield result
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
   def parRaw(method: Method): Task[Response] =
@@ -1411,6 +1427,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       emailRegistration: String = OAuthClient.openEmailRegistration,
       /** The role ids a self-registered account gets, as a JSON array; central wants at least one. */
       defaultRoles: String = """["user"]""",
+      /** The tenant's logo for the light and the dark colour scheme. Sent as null when `None`, which clears the
+        * stored file (central keeps what an omitted field says), so every call leaves the tenant on exactly
+        * these two. Central takes both or neither. */
+      logoLight: Option[String] = None,
+      logoDark: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1432,7 +1453,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson,
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
          |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
-         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")}
+         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")},
+         |  "logoLight": ${logoLight.fold("null")(url => s"\"$url\"")},
+         |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)

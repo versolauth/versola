@@ -541,3 +541,89 @@ Called from validate-values.yaml.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The pod spec of the migration Job (templates/migrate-job.yaml), one container per enabled
+service, expects the root context. Empty when no service is enabled.
+
+One container per service rather than one for all three, because the credentials differ:
+every service's env.conf says `${POSTGRES_PASSWORD}`, with a different value each (see
+versola.requiredSecretVars). Each container gets only its own service's env.conf and only that
+password -- not the token, signing and client secrets the Deployments carry -- and migrates
+only that service's schema (`--service`). The three schemas are independent, so the containers
+run side by side; the Job fails if any of them does.
+
+The volumes of a service (`services.<name>.extraVolumes`, typically the CA that
+`postgres.ssl-root-cert` points at) are mounted at the same paths, so the env.conf means the
+same thing here as in its Deployment.
+*/}}
+{{- define "versola.migrate.podSpec" -}}
+{{- $root := . -}}
+{{- $m := .Values.migrations -}}
+{{- $volumes := dict -}}
+{{- $containers := list -}}
+{{- range $name := list "auth" "central" "edge" -}}
+{{- $svc := index $root.Values.services $name -}}
+{{- if $svc.enabled -}}
+{{- if not $svc.config.existingSecret -}}
+{{- fail (printf "migrations.enabled needs services.%s.config.existingSecret: the Job reads the same env.conf as the service" $name) -}}
+{{- end -}}
+{{- if not $root.Values.secrets.existingSecret -}}
+{{- fail "migrations.enabled needs secrets.existingSecret: the Job reads the database password from it" -}}
+{{- end -}}
+{{- $cfg := printf "config-%s" $name -}}
+{{- $_ := set $volumes $cfg (dict "name" $cfg "secret" (dict "secretName" $svc.config.existingSecret "items" (list (dict "key" $svc.config.secretKey "path" (printf "%s.conf" $name))))) -}}
+{{- range $v := $svc.extraVolumes -}}
+{{- if and (hasKey $volumes $v.name) (ne (toJson (get $volumes $v.name)) (toJson $v)) -}}
+{{- fail (printf "services.%s.extraVolumes names a volume %q that another service defines differently; the migration Job shares one volume list" $name $v.name) -}}
+{{- end -}}
+{{- $_ := set $volumes $v.name $v -}}
+{{- end -}}
+{{- $args := list "migrate" "--service" $name -}}
+{{- if $m.dryRun -}}{{- $args = append $args "--dry-run" -}}{{- end -}}
+{{- $env := list
+  (dict "name" "POSTGRES_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" $root.Values.secrets.existingSecret "key" (include "versola.secretKeyFor" (dict "service" $name "var" "POSTGRES_PASSWORD")))))
+  (dict "name" "MIGRATE_LOCK_TIMEOUT_MS" "value" ($m.lockTimeoutMs | toString))
+  (dict "name" "MIGRATE_LOCK_RETRIES" "value" ($m.lockRetries | toString))
+  (dict "name" "MIGRATE_CONNECT_RETRIES" "value" ($m.connectRetries | toString))
+-}}
+{{- $env = concat $env ($m.extraEnv | default list) -}}
+{{- $mounts := concat (list (dict "name" $cfg "mountPath" "/opt/versola-tools/config" "readOnly" true)) ($svc.extraVolumeMounts | default list) -}}
+{{- $containers = append $containers (dict
+  "name" (printf "migrate-%s" $name)
+  "image" (include "versola.image" (dict "global" $root.Values.global "svc" $m "chart" $root.Chart))
+  "imagePullPolicy" $root.Values.global.imagePullPolicy
+  "args" $args
+  "env" $env
+  "volumeMounts" $mounts
+  "resources" $m.resources) -}}
+{{- end -}}
+{{- end -}}
+{{- if $containers -}}
+restartPolicy: Never
+{{- with $root.Values.global.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with ($m.nodeSelector | default $root.Values.global.nodeSelector) }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with ($m.tolerations | default $root.Values.global.tolerations) }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with ($m.affinity | default $root.Values.global.affinity) }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+containers:
+  {{- toYaml $containers | nindent 2 }}
+volumes:
+  {{- $ordered := list -}}
+  {{- range $k := keys $volumes | sortAlpha -}}
+  {{- $ordered = append $ordered (get $volumes $k) -}}
+  {{- end }}
+  {{- toYaml $ordered | nindent 2 }}
+{{- end -}}
+{{- end -}}

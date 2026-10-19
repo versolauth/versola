@@ -1,0 +1,4 @@
+# keys, passwords and client ids the runner generates
+.state/
+# one directory per run: results, per-test logs
+results/

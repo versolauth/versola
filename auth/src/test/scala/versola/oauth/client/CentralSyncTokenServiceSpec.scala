@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import versola.auth.TestEnvConfig
-import versola.util.{CoreConfig, JWT}
+import versola.util.{ConfigSnapshot, CoreConfig, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -34,6 +34,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     }.provide(
       configLayer,
       CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
       Client.default,
       Scope.default,
     ),
@@ -46,6 +47,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     }.provide(
       configLayer,
       CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
       Client.default,
       Scope.default,
     ),
@@ -68,6 +70,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     }.provide(
       configLayer,
       CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
       TestClient.layer,
       Scope.default,
     ),
@@ -89,6 +92,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     }.provide(
       configLayer,
       CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
       TestClient.layer,
       Scope.default,
     ),

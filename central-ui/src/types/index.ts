@@ -4,6 +4,10 @@ export interface Tenant {
   name: string;
   description?: string;
   edgeId?: string | null;
+  /** From the tenant's challenge settings; fixed when the tenant is created. */
+  securityProfile?: SecurityProfile;
+  /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
+  signingKeyId?: string | null;
 }
 
 // Authorization Preset
@@ -247,6 +251,10 @@ export interface ChallengeSettingsRecord {
   /** RFC 7523 section 3: how far into the future a `private_key_jwt` client assertion from
    * one of this tenant's clients may set its `exp`. */
   clientAssertionMaxLifetimeSeconds?: number;
+  /** The tenant's logo above its sign-in card: the file for the light colour scheme (dark artwork) and the one for the
+   * dark scheme (light artwork). Both or neither. */
+  logoLight?: string | null;
+  logoDark?: string | null;
 }
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the
@@ -264,7 +272,6 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
-  identityProviderLogo?: string | null;
 }
 
 // A registered passkey credential for a user
@@ -521,11 +528,23 @@ export interface SessionClientEntry {
 }
 
 export interface UserSession {
+  /** What `endUserSession` takes to end this one session. */
+  publicId?: string;
   clients: SessionClientEntry[];
   createdAt?: string;
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
+}
+
+/** A live refresh token, one per grant; it outlives the session it was issued under. */
+export interface UserRefreshToken {
+  sessionId: string;
+  clientId: string;
+  scope: string[];
+  issuedAt: string;
+  expiresAt: string;
+  dpopBound: boolean;
 }
 

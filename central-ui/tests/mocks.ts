@@ -75,7 +75,7 @@ type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mod
 type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
-type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
+type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -142,12 +142,14 @@ type CreateRoleRequest = {
   id: string;
   description: Record<string, string>;
   permissions: string[];
+  active?: boolean;
 };
 type UpdateRoleRequest = {
   tenantId: string;
   id: string;
   description: DescriptionPatch;
   permissions: SetPatch<string>;
+  active?: boolean | null;
 };
 type UpdateScopeRequest = {
   tenantId: string;
@@ -222,6 +224,8 @@ type ChallengeSettingsDto = {
   requireDpopNonce?: boolean | null;
   signingKeyId?: string | null;
   mtlsCertificateHeader?: string | null;
+  logoLight?: string | null;
+  logoDark?: string | null;
 };
 type JwksKeyDto = { kid: string; kty: string; alg?: string; use?: string };
 type JwksKeySummaryDto = {
@@ -253,6 +257,8 @@ export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto
   requireDpopNonce: false,
   signingKeyId: null,
   mtlsCertificateHeader: null,
+  logoLight: null,
+  logoDark: null,
 });
 
 /** A tenant's profile is seeded on the tenant (or on its challenge settings) and defaults to FAPI 2.0. */
@@ -299,6 +305,8 @@ export type MockConfigState = {
   themes: ThemeDto[];
   // The built-in themes; null stands for a central that has none.
   themePresets: ThemePresetDto[] | null;
+  // When set, central refuses to render a stylesheet with this message (a 500), to see how a preview shows it.
+  themeRenderError: string | null;
   systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
@@ -369,11 +377,11 @@ const defaultState: MockConfigState = {
   formLocales: [],
   themes: [],
   themePresets: [],
+  themeRenderError: null,
   systemSettings: {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
     passwordHistorySize: 5,
     passwordNumDifferent: 3,
-    identityProviderLogo: null,
   },
   otpTemplates: {},
   challengeSettings: {},
@@ -404,6 +412,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
     themePresets: clone(overrides.themePresets === undefined ? defaultState.themePresets : overrides.themePresets),
+    themeRenderError: overrides.themeRenderError ?? null,
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
@@ -1065,7 +1074,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           id: payload.id,
           description: { ...payload.description },
           permissions: [...payload.permissions],
-          active: true,
+          // Like central: a body without the flag creates an active role.
+          active: payload.active ?? true,
         }, ...tenantRoles];
         await route.fulfill({ status: 201, body: '' });
         return;
@@ -1082,6 +1092,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
         role.description = applyDescriptionPatch(role.description, payload.description);
         role.permissions = applyPatchSet(role.permissions, payload.permissions);
+        if (payload.active != null) role.active = payload.active;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -1249,17 +1260,29 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    // What central renders: the base stylesheet (a resource of central's util, not a stored theme), a line naming the tokens, then the theme's own CSS.
+    // What central renders: for a token theme the base stylesheet, a line naming the tokens, then the theme's own CSS; for a
+    // stylesheet theme (no tokens) its CSS alone; then, when the request carries a client's overrides, a line naming them.
     if (pathname === '/configuration/themes/css' && method === 'POST') {
-      const payload = body as { tokens: ThemeTokensDto; css?: string };
-      const base = (state.themePresets ?? []).find(preset => preset.id === payload.tokens.base);
+      const payload = body as { tokens?: ThemeTokensDto; css?: string; overrides?: ThemeOverridesDto };
+      if (state.themeRenderError !== null) {
+        await route.fulfill(json({ message: state.themeRenderError }, 500));
+        return;
+      }
+      const overridden = payload.overrides && Object.keys(payload.overrides).length > 0
+        ? `/* client overrides ${JSON.stringify(payload.overrides)} */`
+        : '';
+      if (!payload.tokens) {
+        await route.fulfill(json({ css: [payload.css ?? '', overridden].filter(Boolean).join('\n'), generated: '' }));
+        return;
+      }
+      const base = (state.themePresets ?? []).find(preset => preset.id === payload.tokens!.base);
       if (!base) {
         await route.fulfill(json({ message: `'${payload.tokens.base}' is not a built-in theme` }, 400));
         return;
       }
       const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
       const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode};--background:${resolved.background}}`;
-      await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? ''].filter(Boolean).join('\n'), generated }));
+      await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? '', overridden].filter(Boolean).join('\n'), generated }));
       return;
     }
 
@@ -1407,6 +1430,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'emailRegistration and defaultRoles are required' }) });
           return;
         }
+        // Central refuses one logo file without the other: a single file would vanish on one scheme.
+        if (!payload.logoLight !== !payload.logoDark) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'logoLight and logoDark must be set or cleared together' });
+          return;
+        }
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
           securityProfile: profileOf(state, payload.tenantId),
@@ -1421,6 +1449,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
           mtlsCertificateHeader: payload.mtlsCertificateHeader ?? null,
+          logoLight: payload.logoLight ?? null,
+          logoDark: payload.logoDark ?? null,
         };
         await route.fulfill({ status: 204, body: '' });
         return;

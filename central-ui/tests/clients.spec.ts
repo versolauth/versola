@@ -106,7 +106,7 @@ function clientCard(page: Page, text: string) {
 
 /** A client's page: read-only, with an Edit button per group of settings. */
 async function openClientPage(page: Page, id: string) {
-  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
   await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 }
 
@@ -1042,7 +1042,7 @@ test('sends no registration flow: self-registration is a tenant setting, not a c
 
   expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
   await expect(page.getByText('Assigned roles', { exact: false })).toHaveCount(0);
   await expect(page.getByLabel('Challenge', { exact: true })).toHaveCount(0);
   await saveEdit(page);
@@ -1067,7 +1067,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await expect(page.getByLabel('Reuse the grant for')).toHaveCount(0);
   await expect(page.getByLabel('Logo URI')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await checkRow(page, 'Let the user grant part of it').click();
   await page.getByLabel('Reuse the grant for').selectOption('30');
 
@@ -1101,7 +1101,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
 
@@ -1127,7 +1127,7 @@ test('marks required consent scopes and sends them with the flow', async ({ page
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
 
   const required = page.getByRole('group', { name: 'Required scopes' });
   // openid and offline_access are always required, so they are not offered as a choice.
@@ -1157,7 +1157,7 @@ test('lets the administrator allow users to turn off long-lived access', async (
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
   const toggle = page.getByLabel('Let the user turn off long-lived access');
   await expect(toggle).not.toBeChecked();
   await toggle.check();
@@ -1182,7 +1182,7 @@ test('offers required scopes only while partial grants are allowed', async ({ pa
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
   await expect(page.getByRole('group', { name: 'Required scopes' })).toHaveCount(0);
   await page.getByLabel('Let the user deselect optional scopes').check();
   await expect(page.getByRole('group', { name: 'Required scopes' })).toBeVisible();
@@ -1195,13 +1195,12 @@ test('explains consent settings with info buttons', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
+  await openEditSection(page, 'Ownership');
 
-  await page.getByRole('button', { name: 'Consent settings info' }).click();
-  await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Ownership info' }).click();
+  await expect(page.getByText('A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.', { exact: true })).toBeVisible();
 
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   const explanations = [
     ['Partial grants consent info', 'Allows the user to deselect optional scopes and approve only a subset of the requested access.'],
@@ -1242,9 +1241,8 @@ test('uses sentence case for consent property labels', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Consent');
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await openEditSection(page, 'Ownership');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   for (const id of ['consent-remember', 'consent-logo-uri', 'consent-policy-uri', 'consent-tos-uri']) {
     const label = page.locator(`label[for="${id}"]`);
@@ -1262,7 +1260,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await startCreate(page);
   await fillBasics(page, 'consenting-web', 'Consenting Web');
   await continueToThirdStep(page);
-  await expect(page.getByText('Consent', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ownership', { exact: true })).toBeVisible();
 
   // Consent is an act by a user, so the kind with none never offers it.
   await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -1271,7 +1269,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await continueToThirdStep(page);
 
-  await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Ownership', { exact: true })).toHaveCount(0);
 });
 
 test('sends no registration flow for a login+password client', async ({ page }) => {
@@ -1573,7 +1571,7 @@ test('gates the sign-in step on the consent URIs it edits', async ({ page }) => 
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await page.getByLabel('Logo URI').fill('http://logo.example/logo.png');
 
   // The field lives on this step, so this step is where it has to be answered: submitting
@@ -2057,10 +2055,11 @@ test('marks a client that asks for consent as a partner and keeps its consent sw
   await openClientPage(page, 'acme-app');
   await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
 
-  await openEditSection(page, 'Consent');
-  // Not a switch at all: there is nothing to flip, only a lock and what it holds.
-  await expect(page.locator('versola-client-form .locked-state', { hasText: 'Always on' })).toBeVisible();
-  await expect(page.getByText('A partner client asks users for consent for good')).toBeVisible();
+  await openEditSection(page, 'Ownership');
+  // Partner is the choice made for good: the other one is there, and cannot be picked.
+  await expect(page.getByRole('button', { name: 'Partner app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toBeDisabled();
+  await expect(page.getByText('it cannot be made a first party app')).toBeVisible();
 });
 
 test('registering a client that asks for consent picks the partner OTP template', async ({ page }) => {
@@ -2073,7 +2072,7 @@ test('registering a client that asks for consent picks the partner OTP template'
   await fillBasics(page, 'new-partner', 'New Partner');
   await addRedirectUri(page, 'https://partner.example/callback');
   await continueToThirdStep(page);
-  await page.getByRole('button', { name: 'Ask for consent' }).click();
+  await page.getByRole('button', { name: 'Partner app' }).click();
   await continueToReview(page);
   await submitCreate(page);
 
@@ -2268,4 +2267,130 @@ test('leaves the appearance out when central has no built-in themes to show it a
   await openEditSection(page, 'Branding and logout');
   await expect(page.getByLabel('Forms Theme')).toBeVisible();
   await expect(appearanceBlock(page)).toHaveCount(0);
+});
+
+
+async function startWizardAtStep3(page: Page, kind: string, id: string) {
+  await startCreate(page, kind);
+  await fillBasics(page, id, 'Wizard App');
+  await addRedirectUri(page, 'https://wizard.example/callback');
+  await continueToThirdStep(page);
+}
+
+for (const kind of ['Web app', 'Mobile or desktop app']) {
+  test(`${kind}: a partner is offered branding in the wizard and sends it`, async ({ page }) => {
+    const api = await loadAdminApp(page, {
+      path: clientsPath,
+      state: appearanceState(alphaClient),
+    });
+    await startWizardAtStep3(page, kind, 'branded-partner');
+    await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+    await page.getByLabel('Forms Theme').selectOption('money');
+    const appearance = page.getByRole('region', { name: 'Appearance for this app' });
+    await expect(appearance).toBeVisible();
+    await appearance.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
+    await continueToReview(page);
+    await submitCreate(page);
+
+    const body = (await findClientWrite(api.requests, 'POST')).body;
+    expect(body.theme).toBe('money');
+    expect(body.themeOverrides).toEqual({ shape: 'round' });
+    expect(body.consentFlow).not.toBeNull();
+  });
+}
+
+test('a first-party app in the wizard has no branding, and going back to it drops the partner theme', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: appearanceState(alphaClient),
+  });
+  await startWizardAtStep3(page, 'Web app', 'own-app');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await page.getByLabel('Forms Theme').selectOption('money');
+  await page.getByRole('button', { name: 'First party app', exact: true }).click();
+  await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+  await expect(page.getByLabel('Logo URI')).toHaveCount(0);
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'first party' })).toBeVisible();
+  await submitCreate(page);
+
+  const body = (await findClientWrite(api.requests, 'POST')).body;
+  expect(body.theme).toBe('default');
+  expect(body).not.toHaveProperty('themeOverrides');
+  expect(body.consentFlow).toBeNull();
+});
+
+test('a new partner has 90 days preselected, sends it, and the grant-part checkbox follows the duration', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await startWizardAtStep3(page, 'Web app', 'ninety-partner');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('90');
+  await expect(select.locator('option:checked')).toHaveText('90 days');
+
+  const selectBox = await select.boundingBox();
+  const partialBox = await checkRow(page, 'Let the user grant part of it').boundingBox();
+  expect(partialBox!.y).toBeGreaterThan(selectBox!.y + selectBox!.height - 1);
+
+  await continueToReview(page);
+  await submitCreate(page);
+  expect((await findClientWrite(api.requests, 'POST')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('a stored grant duration outside the presets is shown as its own option', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: 180 * 86400 } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
+  await expect(page.getByLabel('Remember duration in days')).toHaveValue('180');
+});
+
+test('the edit page puts the partial-grants row after the remember row', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: null } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  const remember = await page.locator('#consent-remember').boundingBox();
+  const partial = await page.getByLabel('Let the user deselect optional scopes').boundingBox();
+  expect(partial!.y).toBeGreaterThan(remember!.y);
+});
+
+test('an unlocked first-party client can be made a partner from the edit page', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('the wizard select shows a grant duration outside its presets as its own option', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await startWizardAtStep3(page, 'Web app', 'legacy-days');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  // The wizard cannot produce one itself; a value restored from elsewhere (an old client's 180) must not blank the select.
+  await page.locator('versola-client-form').evaluate((el: any) => {
+    el.formData = { ...el.formData, consentFlow: { ...el.formData.consentFlow, rememberDurationDays: 180 } };
+  });
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('180');
+  await expect(select.locator('option:checked')).toHaveText('180 days');
 });

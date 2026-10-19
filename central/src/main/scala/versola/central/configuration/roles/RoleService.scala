@@ -100,6 +100,7 @@ object RoleService:
         id = request.id,
         description = request.description,
         permissions = request.permissions.toList,
+        active = request.active,
       )
 
     override def updateRole(
@@ -110,6 +111,7 @@ object RoleService:
         id = request.id,
         description = request.description,
         permissions = request.permissions,
+        active = request.active,
       )
 
     override def sync(

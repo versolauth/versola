@@ -37,6 +37,21 @@ object TenantApiSpec extends CentralApiSpec:
         assertTrue(listed.exists(t => t.str("id").contains(id) && t.str("description").contains("billing department")))
           .label("the new tenant must appear in the listing with its description")
     },
+    test("a tenant is listed with the profile it was created on and the key its tokens are signed with") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-tenant")
+        _ <- central.post(path, Fixtures.tenant(id, securityProfile = Some("standard")))
+        _ <- SecurityProfiles.awaitProfile(central, id, "standard")
+        settings <- central.get("/configuration/challenges/challenge-settings", "tenantId" -> id).flatMap(_.obj).map(_.obj("settings"))
+        listed <- listed(central)(_.exists(t => t.str("id").contains(id) && t.str("securityProfile").contains("standard")))
+        tenant = listed.find(_.str("id").contains(id))
+        _ <- central.delete(path, "tenantId" -> id)
+      yield assertTrue(tenant.flatMap(_.str("securityProfile")).contains("standard"))
+        .label("the listing must carry the profile the challenge settings hold") &&
+        assertTrue(tenant.map(_.str("signingKeyId")) == settings.map(_.str("signingKeyId")))
+          .label("the listing must name the same signing key the challenge settings do")
+    },
     test("creation answers 201 and no body") {
       for
         central <- api

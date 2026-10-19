@@ -84,26 +84,26 @@ export class VersolaFormEdit extends LitElement {
       :host { display: block; }
       .form-title { font-size: 1.625rem; font-weight: 700; letter-spacing: -0.025em; color: var(--text-primary); margin: 0; }
       .locale-tabs { display: flex; gap: 0.5rem; margin-bottom: var(--spacing-md); flex-wrap: wrap; }
-      .locale-tab { padding: 0.375rem 0.875rem; border-radius: var(--radius-md); border: 1px solid var(--border-dark); background: transparent; color: var(--text-secondary); font-size: 0.875rem; cursor: pointer; transition: all var(--transition-fast); }
-      .locale-tab.active { background: rgba(var(--accent-tint),0.15); border-color: var(--accent); color: var(--accent); }
+      .locale-tab { padding: 0.375rem 0.875rem; border-radius: var(--radius-md); border: 1px solid var(--border-default); background: transparent; color: var(--text-secondary); font-size: 0.875rem; cursor: pointer; transition: all var(--transition-fast); }
+      .locale-tab.active { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .section-gap { margin-top: var(--spacing-xl); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint code { font-family: var(--font-mono); color: var(--accent); }
       .kv-grid { display: grid; grid-template-columns: minmax(120px, 220px) 1fr; gap: 0.5rem 0.75rem; align-items: center; }
       .kv-key { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .kv-value[type="number"]::-webkit-inner-spin-button, .kv-value[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
       .kv-value[type="number"] { -moz-appearance: textfield; appearance: textfield; }
-      .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-dark); }
+      .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-default); }
       .save-msg { font-size: 0.875rem; }
-      .save-msg.success { color: var(--success, #3fb950); }
+      .save-msg.success { color: var(--success); }
       .save-msg.error { color: var(--danger); }
-      .property-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--spacing-md); align-items: start; margin-bottom: var(--spacing-md); padding-bottom: var(--spacing-md); border-bottom: 1px solid var(--border-dark); }
+      .property-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--spacing-md); align-items: start; margin-bottom: var(--spacing-md); padding-bottom: var(--spacing-md); border-bottom: 1px solid var(--border-default); }
       .property-row:last-child { border-bottom: none; }
       .allowed-values { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-      .allowed-value-tag { display: flex; align-items: center; gap: 0.25rem; background: rgba(var(--accent-tint),0.1); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 0.125rem 0.5rem; font-size: 0.75rem; color: var(--accent); }
+      .allowed-value-tag { display: flex; align-items: center; gap: 0.25rem; background: var(--accent-subtle); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 0.125rem 0.5rem; font-size: 0.75rem; color: var(--accent); }
       .remove-tag { cursor: pointer; font-weight: bold; }
       .add-prop-actions { display: flex; gap: var(--spacing-md); margin-bottom: var(--spacing-lg); }
       .split-layout { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-xl); }
@@ -113,40 +113,40 @@ export class VersolaFormEdit extends LitElement {
       .controls-toolbar {
         display: flex; align-items: center; flex-wrap: wrap;
         gap: var(--spacing-xl); padding: var(--spacing-md) 0;
-        margin-top: var(--spacing-xl); border-top: 1px solid var(--border-dark);
+        margin-top: var(--spacing-xl); border-top: 1px solid var(--border-default);
       }
       .ctrl-group { display: inline-flex; flex-direction: column; gap: 0.25rem; }
-      .ctrl-label { font-size: 0.625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
-      .preview-bar { display: flex; justify-content: flex-start; padding: var(--spacing-md) 0; border-top: 1px solid var(--border-dark); }
-      .preview-bar .preview-toggle-btn { padding: 0 0.875rem; height: 28px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius-md); color: #fff; font-size: 0.8125rem; font-weight: 600; cursor: pointer; transition: opacity var(--transition-fast); }
+      .ctrl-label { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
+      .preview-bar { display: flex; justify-content: flex-start; padding: var(--spacing-md) 0; border-top: 1px solid var(--border-default); }
+      .preview-bar .preview-toggle-btn { padding: 0 0.875rem; height: 28px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius-md); color: var(--on-accent); font-size: 0.8125rem; font-weight: 600; cursor: pointer; transition: opacity var(--transition-fast); }
       .preview-bar .preview-toggle-btn:hover { opacity: 0.85; }
       /* Toggle switch */
       .toggle-wrap { display: inline-flex; align-items: center; gap: 0.5rem; height: 28px; }
       .toggle { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; cursor: pointer; }
       .toggle input { opacity: 0; position: absolute; width: 0; height: 0; }
-      .toggle::before { content: ''; position: absolute; inset: 0; background: var(--toggle-track-off); border: 1px solid var(--border-dark); border-radius: 9999px; transition: background 0.18s, border-color 0.18s; }
+      .toggle::before { content: ''; position: absolute; inset: 0; background: var(--toggle-track-off); border: 1px solid var(--border-default); border-radius: 9999px; transition: background 0.18s, border-color 0.18s; }
       .toggle:has(input:checked)::before { background: var(--accent); border-color: var(--accent); }
       .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--toggle-knob-off); border-radius: 50%; transition: transform 0.18s, background 0.18s; }
-      .toggle:has(input:checked)::after { transform: translateX(16px); background: #fff; }
+      .toggle:has(input:checked)::after { transform: translateX(16px); background: var(--on-accent); }
       .toggle-val { font-size: 0.8125rem; color: var(--text-secondary); min-width: 2rem; transition: color var(--transition-fast); }
       .toggle:has(input:checked) + .toggle-val { color: var(--text-primary); }
       /* Segmented control */
       .seg-control { display: inline-flex; height: 28px; }
-      .seg-btn { padding: 0 0.875rem; background: transparent; border: 1px solid var(--border-dark); border-left-width: 0; color: var(--text-secondary); font-size: 0.8125rem; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; border-radius: 0; }
+      .seg-btn { padding: 0 0.875rem; background: transparent; border: 1px solid var(--border-input); border-left-width: 0; color: var(--text-secondary); font-size: 0.8125rem; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; border-radius: 0; }
       .seg-btn:first-child { border-left-width: 1px; border-radius: var(--radius-md) 0 0 var(--radius-md); }
       .seg-btn:last-child { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
-      .seg-btn:hover:not(.seg-active) { background: rgba(255,255,255,0.05); color: var(--text-primary); }
+      .seg-btn:hover:not(.seg-active) { background: var(--surface-inset); color: var(--text-primary); }
       .seg-btn:disabled { cursor: default; }
-      .seg-btn.seg-active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+      .seg-btn.seg-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
       /* Preview size presets */
       .preview-sizes { display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
-      .size-btn { padding: 0.25rem 0.75rem; background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); color: var(--text-secondary); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all var(--transition-fast); }
+      .size-btn { padding: 0.25rem 0.75rem; background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); color: var(--text-secondary); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all var(--transition-fast); }
       .size-btn:hover { color: var(--text-primary); border-color: var(--accent); }
-      .size-btn.active { background: rgba(var(--accent-tint),0.1); border-color: var(--accent); color: var(--accent); }
+      .size-btn.active { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
       /* Preview area */
-      .preview-area { padding: var(--spacing-md) 0 var(--spacing-lg); border-top: 1px solid var(--border-dark); }
-      .preview-resizer { resize: horizontal; overflow: hidden; box-sizing: border-box; height: 600px; max-width: 100%; margin: 0 auto; border: 1px solid var(--border-dark); border-radius: var(--radius-md); background: #fff; }
-      .preview-iframe { width: 100%; height: 100%; border: none; background: #fff; display: block; }
+      .preview-area { padding: var(--spacing-md) 0 var(--spacing-lg); border-top: 1px solid var(--border-default); }
+      .preview-resizer { resize: horizontal; overflow: hidden; box-sizing: border-box; height: 600px; max-width: 100%; margin: 0 auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface); }
+      .preview-iframe { width: 100%; height: 100%; border: none; background: var(--surface); display: block; }
     `,
   ];
 
@@ -287,11 +287,11 @@ export class VersolaFormEdit extends LitElement {
         ${this.editProperties.map((prop, index) => html`
           <div class="property-row">
             <div>
-              <div class="field-label" style="font-size: 0.65rem">Name</div>
+              <div class="field-label" style="font-size: var(--text-xs)">Name</div>
               <input class="kv-value" .value=${prop.name} @input=${(e: Event) => this.updatePropertyName(index, (e.target as HTMLInputElement).value)} />
             </div>
             <div>
-              <div class="field-label" style="font-size: 0.65rem">Type: ${prop.type.replace('Property', '')}</div>
+              <div class="field-label" style="font-size: var(--text-xs)">Type: ${prop.type.replace('Property', '')}</div>
               ${prop.type === 'StringArrayProperty' ? html`
                 <div class="allowed-values">
                   ${prop.allowedValues.map((val, vIdx) => html`

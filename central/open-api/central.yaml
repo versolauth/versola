@@ -968,6 +968,33 @@ paths:
           description: No user with this `id`.
         '409':
           description: One of the identifiers is already taken by another user.
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      description: |
+        Hard-deletes the user with everything that references them, synchronously: auth is told
+        first and purges the account's sessions, refresh tokens, authorization codes, in-flight
+        conversations, passkeys, passwords, roles, consents and throttling records (the relying
+        parties of its sessions receive a back-channel logout), and only then does the index row
+        go. A failure in auth leaves the user in place, so the call can be repeated. Access tokens
+        already issued stay valid until they expire; the refresh tokens that would renew them do
+        not. The request log carries the user id and nothing else about the user.
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '204':
+          description: User deleted.
+        '400':
+          description: No `id`, or one that is not a UUID.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this `id`.
 
   /users/claims:
     patch:
@@ -1048,29 +1075,48 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Users]
-      summary: Invalidate a user's sessions
-      description: Logs the user out everywhere; subsequent authorization requires re-authentication.
+      summary: Invalidate a user's sessions, or one of them
+      description: |
+        With `userId` alone: logs the user out everywhere; subsequent authorization requires
+        re-authentication. With `id` and `sessionId` (the `publicId` from `GET /users/sessions`):
+        signs that one user agent out, the way the user's own logout would, relying parties
+        included; the other sessions stay. A `sessionId` that is not this user's is refused
+        with `404` rather than ended, since session ids travel in front-channel logout URLs.
       operationId: invalidateUserSessions
       parameters:
         - name: userId
           in: query
-          required: true
+          description: Required without `sessionId`.
           schema:
             $ref: '#/components/schemas/UserId'
+        - name: id
+          in: query
+          description: Required with `sessionId`.
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: sessionId
+          in: query
+          schema:
+            type: string
       responses:
         '204':
-          description: Sessions invalidated.
+          description: Sessions invalidated, or the one session ended.
+        '400':
+          description: Neither `userId` nor `id` with `sessionId` was supplied.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `sessionId` is not a live session of this user.
 
   /users/refresh-tokens:
     get:
       tags: [Users]
       summary: List a user's refresh tokens
       description: |
-        Independent of `GET /users/sessions`: a refresh token's expiry is fixed at issuance and
-        independent of a session's, so a token routinely outlives the session it was issued
-        under and would be invisible to an admin working from the session list alone.
+        The offline access clients hold for the user, one entry per live grant. Independent of
+        `GET /users/sessions`: a refresh token's expiry is fixed at issuance and independent of
+        a session's, so a token routinely outlives the session it was issued under and would be
+        invisible to an admin working from the session list alone.
       operationId: getUserRefreshTokens
       parameters:
         - name: id
@@ -1087,6 +1133,32 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/RefreshTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Revoke a client's offline access for a user
+      description: |
+        Expires every live refresh token `clientId` holds for the user, so the client cannot renew
+        its access without sending the user through `/authorize` again. Not a logout: the user's
+        sessions stay, and access tokens already issued run out on their own. Idempotent.
+      operationId: revokeUserRefreshTokens
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: clientId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ClientId'
+      responses:
+        '204':
+          description: Offline access revoked (or there was none).
+        '400':
+          description: "`id` or `clientId` missing."
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1569,7 +1641,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/RenderThemeResponse'
         '400':
-          description: The tokens name a base that is not built in, or a value is not allowed.
+          description: The tokens name a base that is not built in, or a value (in the tokens or the overrides) is not allowed.
           content:
             application/json:
               schema:
@@ -2266,7 +2338,22 @@ components:
           oneOf:
             - $ref: '#/components/schemas/EdgeId'
             - type: 'null'
-      required: [id, description]
+        securityProfile:
+          allOf:
+            - $ref: '#/components/schemas/SecurityProfile'
+          description: |
+            Read from the tenant's challenge settings, where it is stored (`ChallengeSettingsRecord`);
+            a tenant whose settings row is missing reads as `fapi2`, the profile it would be
+            created with.
+        signingKeyId:
+          description: |
+            The `kid` of the published JWKS key this tenant's tokens are signed with, also from its
+            challenge settings. `null` when the tenant falls back to auth's configured key, which
+            is what lets a console answer "which tenants use this key" from the listing alone.
+          oneOf:
+            - type: string
+            - type: 'null'
+      required: [id, description, securityProfile]
     GetAllTenantsResponse:
       type: object
       properties:
@@ -3879,6 +3966,13 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Permission'
+        active:
+          type: boolean
+          default: true
+          description: >-
+            Whether the role grants anything from the start. An inactive role is listed and can
+            be assigned, but `edge` resolves it to no permissions. Omitted means `true`, which
+            is what every role was created with before the field existed.
       required: [tenantId, id, description, permissions]
     UpdateRoleRequest:
       type: object
@@ -3891,6 +3985,9 @@ components:
           $ref: '#/components/schemas/PatchDescription'
         permissions:
           $ref: '#/components/schemas/PatchPermissions'
+        active:
+          type: boolean
+          description: Patch semantics like the other members, omitted or `null` leaves the flag as it is.
       required: [tenantId, id, description, permissions]
     AuthorizationDetailTypeResponse:
       type: object
@@ -4450,6 +4547,15 @@ components:
             retention. Between 30 and 900 seconds.
         securityProfile:
           $ref: '#/components/schemas/SecurityProfile'
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Absolute HTTP(S) URL of the tenant's logo for the light colour scheme (dark
+            artwork), shown bare above its sign-in card. Set together with `logoDark` or not at
+            all. When neither is set the forms show the Versola wordmark.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
         - phoneRegions
@@ -4561,6 +4667,17 @@ components:
             outside 30..900 -- below that ordinary clock skew starts rejecting honestly minted
             assertions, above it auth could no longer remember a `jti` for the whole life of
             the assertion carrying it.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Keeps the stored value when omitted; null clears it. An absolute HTTP(S) URL of the
+            logo for the light colour scheme (dark artwork). After both are applied `logoLight`
+            and `logoDark` must be set or cleared together, otherwise the request is refused
+            with 400: one file reused for both schemes would vanish on one of them. An SVG must
+            have its text converted to outlines, as fonts are not loaded inside an image.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
         - phoneRegions
@@ -4877,22 +4994,28 @@ components:
       required: [presets]
     RenderThemeRequest:
       type: object
+      description: |
+        What to render: a token theme (`tokens` present: the foundation stylesheet, what the tokens set, then `css`) or a
+        stylesheet theme (`tokens` absent: `css` alone is the stylesheet, as it replaces the foundation; with no `css` either,
+        the foundation). `overrides` are a client's own, laid after all of that exactly as the authorization server does for
+        that client, so the result is the client's effective stylesheet.
       properties:
         tokens:
           $ref: '#/components/schemas/ThemeTokens'
         css:
           type: string
-          description: The theme's own CSS, laid after the generated one; absent means none.
-      required: [tokens]
+          description: The theme's own CSS, laid after the generated one (a stylesheet theme - the whole stylesheet); absent means none.
+        overrides:
+          $ref: '#/components/schemas/ThemeOverrides'
     RenderThemeResponse:
       type: object
       properties:
         css:
           type: string
-          description: The whole stylesheet - the current default, what the tokens set, then the theme's own CSS.
+          description: The whole stylesheet - the current default, what the tokens set, the theme's own CSS, then the client's overrides.
         generated:
           type: string
-          description: Only what the tokens set.
+          description: Only what the theme's tokens set; empty for a stylesheet theme (the client's overrides are in `css` only).
       required: [css, generated]
     GetAllThemesResponse:
       type: object
@@ -4931,8 +5054,6 @@ components:
         passwordNumDifferent:
           type: integer
           description: How many characters a new password must differ by.
-        identityProviderLogo:
-          type: [string, 'null']
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────────── Edges ───────────────────────────────

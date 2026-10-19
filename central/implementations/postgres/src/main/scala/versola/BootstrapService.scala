@@ -394,6 +394,7 @@ object BootstrapService:
         endpointId("GET", "/users/passkeys"),
         endpointId("GET", "/users/roles"),
         endpointId("GET", "/users/sessions"),
+        endpointId("GET", "/users/refresh-tokens"),
       ),
     ),
     (
@@ -402,11 +403,13 @@ object BootstrapService:
       Set(
         endpointId("POST", "/users"),
         endpointId("PATCH", "/users"),
+        endpointId("DELETE", "/users"),
         endpointId("PATCH", "/users/claims"),
         endpointId("PATCH", "/users/passkeys"),
         endpointId("DELETE", "/users/passkeys"),
         endpointId("PATCH", "/users/roles"),
         endpointId("DELETE", "/users/sessions"),
+        endpointId("DELETE", "/users/refresh-tokens"),
         endpointId("POST", "/users/limits/reset"),
         endpointId("POST", "/users/password/reset"),
       ),
@@ -776,6 +779,8 @@ object BootstrapService:
       signingKeyId = None,
       clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
       securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
+      logoLight = None,
+      logoDark = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -897,6 +902,7 @@ object BootstrapService:
     "GET" -> "/users",
     "POST" -> "/users",
     "PATCH" -> "/users",
+    "DELETE" -> "/users",
     "PATCH" -> "/users/claims",
     "GET" -> "/users/passkeys",
     "PATCH" -> "/users/passkeys",
@@ -905,6 +911,8 @@ object BootstrapService:
     "PATCH" -> "/users/roles",
     "GET" -> "/users/sessions",
     "DELETE" -> "/users/sessions",
+    "GET" -> "/users/refresh-tokens",
+    "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
   )

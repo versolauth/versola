@@ -151,7 +151,7 @@ export function PhoneField(props: {
         <Show
           when={!locked}
           fallback={
-            <div class="phone-code phone-code-locked" aria-label={`${props.t().phone_country_code}: ${group().dialCode}`}>
+            <div class="phone-code phone-code-locked" aria-label={`${iso(group())} ${group().dialCode}, ${props.t().phone_country_code}`}>
               <span class="phone-iso">{iso(group())}</span>
               {group().dialCode}
             </div>
@@ -163,7 +163,7 @@ export function PhoneField(props: {
             ref={trigger}
             aria-haspopup="listbox"
             aria-expanded={open()}
-            aria-label={`${props.t().phone_country_code}: ${group().dialCode}`}
+            aria-label={`${iso(group())} ${group().dialCode}, ${props.t().phone_country_code}`}
             onClick={() => (open() ? close() : openMenu())}
           >
             <span class="phone-iso">{iso(group())}</span>

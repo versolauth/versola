@@ -35,6 +35,7 @@ import versola.oauth.client.model.{
   SubmissionLimits,
   SystemSettingsRecord,
   TenantId,
+  TenantLogo,
   ThemeRecord,
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
@@ -43,6 +44,7 @@ import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadat
 import versola.util.{
   CacheSource,
   ClientAssertion,
+  ConfigSnapshot,
   CoreConfig,
   Dpop,
   Email,
@@ -124,7 +126,9 @@ trait OAuthConfigurationService:
 
   def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
-  def getIdentityProviderLogo: UIO[Option[String]]
+  /** The logo the tenant's login pages show above the card. `None` for a tenant without one, or with only one of the
+    * two files, or one auth does not know: the forms then show the Versola wordmark. */
+  def getTenantLogo(tenantId: TenantId): UIO[Option[TenantLogo]]
 
   def getAuthConversationTtl(id: ClientId): UIO[Duration]
 
@@ -209,14 +213,14 @@ object OAuthConfigurationService:
   val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
 
   def live: ZLayer[
-    Client & SecurityService & Scope & CoreConfig & JsonSchemaValidator,
+    Client & SecurityService & Scope & CoreConfig & ConfigSnapshot & JsonSchemaValidator,
     Throwable,
     OAuthConfigurationService,
   ] = {
     def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
       ZLayer.fromZIO:
         ZIO.serviceWithZIO[CoreConfig](config =>
-          ReloadingCache.make[A](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[A](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
     // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
     // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --
@@ -492,8 +496,13 @@ object OAuthConfigurationService:
     override def getPasswordRegex: UIO[String] =
       systemSettingsCache.get.map(_.passwordRegex)
 
-    override def getIdentityProviderLogo: UIO[Option[String]] =
-      systemSettingsCache.get.map(_.identityProviderLogo)
+    override def getTenantLogo(tenantId: TenantId): UIO[Option[TenantLogo]] =
+      challengeSettingsCache.get.map:
+        _.find(_.tenantId == tenantId).flatMap: settings =>
+          for
+            light <- settings.logoLight
+            dark <- settings.logoDark
+          yield TenantLogo(light, dark)
 
     override def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits] =
       find(id).flatMap:

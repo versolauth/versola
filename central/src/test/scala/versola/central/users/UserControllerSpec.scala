@@ -2,6 +2,7 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
@@ -345,6 +346,100 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.invalidateSession.succeedsWith(()),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.invalidateSession.calls == List(userId))),
+    ),
+    controllerTestCase(
+      description = "invalidate one session returns 204 No Content when auth ended it",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("id", userId.toString).addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.endSession.succeedsWith(true),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.endSession.calls == List((userId, "c2lk")),
+          service.invalidateSession.calls.isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "invalidate one session returns 404 Not Found when the session is not the user's",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("id", userId.toString).addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.endSession.succeedsWith(false),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.invalidateSession.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "invalidate one session without the user id is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.endSession.calls.isEmpty, service.invalidateSession.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "revoke a client's refresh tokens returns 204 No Content",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "refresh-tokens").addQueryParam("id", userId.toString).addQueryParam("clientId", "app"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.revokeRefreshTokens.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.revokeRefreshTokens.calls == List((userId, ClientId("app"))))),
+    ),
+    controllerTestCase(
+      description = "revoke refresh tokens without a clientId is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "refresh-tokens").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.revokeRefreshTokens.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "delete user returns 204 No Content",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.delete.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls == List(userId))),
+    ),
+    controllerTestCase(
+      description = "delete user returns 404 Not Found for an id that is not indexed",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.delete.failsWith(UserNotFound),
+    ),
+    controllerTestCase(
+      description = "delete user without an id is refused",
+      request = Request(method = Method.DELETE, url = URL.empty / "users"),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "delete user with auth's internal token instead of the resource secret is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.Unauthorized,
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "patch user returns 202 Accepted",

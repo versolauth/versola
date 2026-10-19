@@ -53,6 +53,21 @@ object PushedAuthorizationError:
     val errorDescription = Some("The pushed authorization request exceeds the maximum allowed size")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9126#section-2.3")
 
+  /** RFC 9449 §5: the `DPoP` header of the request is not a proof this server accepts. */
+  case class InvalidDpopProof(reason: String) extends PushedAuthorizationError:
+    val status = Status.BadRequest
+    val error: String = ErrorCode.InvalidDpopProof
+    val errorDescription = Some(s"The DPoP proof is invalid: $reason")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-5")
+
+  /** RFC 9449 §8: the accompanying `nonce` is served in the response's `DPoP-Nonce` header,
+    * which the client echoes in its next proof. */
+  case class UseDpopNonce(nonce: String) extends PushedAuthorizationError:
+    val status = Status.BadRequest
+    val error: String = ErrorCode.UseDpopNonce
+    val errorDescription = Some("Authorization server requires a nonce in the DPoP proof")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-8")
+
   /** RFC 8705 §6.5: the certificate the tenant's proxy forwarded could not be read. Answered
     * as `invalid_client` because that is what it costs the request, but `reason` — which
     * describes the deployment's proxy, not the caller — is logged rather than returned. */

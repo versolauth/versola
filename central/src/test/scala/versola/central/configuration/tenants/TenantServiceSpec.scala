@@ -56,6 +56,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = profile,
+    logoLight = None,
+    logoDark = None,
   )
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
@@ -108,6 +110,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             signingKeyId = None,
             clientAssertionMaxLifetimeSeconds = 300,
             securityProfile = SecurityProfile.fapi2,
+            logoLight = None,
+            logoDark = None,
           )),
       )
     },
@@ -220,6 +224,48 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         env.challengeSettingsService.upsertSettings.calls.map(_.securityProfile) == List(SecurityProfile.standard),
       )
+    },
+    test("getTenantSummaries reads each tenant's profile and signing key off the settings cache") {
+      val env = new Env(Vector(tenantRecord2, tenantRecord1))
+      val settings1 = settingsOf(SecurityProfile.standard).copy(signingKeyId = Some("key-1"))
+      val settings2 = settingsOf(SecurityProfile.fapi2).copy(tenantId = tenant2)
+
+      for
+        _ <- env.challengeSettingsService.getAllSettings.succeedsWith(Vector(settings2, settings1))
+        result <- env.service.getTenantSummaries
+      yield assertTrue(
+        result == Vector(
+          TenantSummary(tenantRecord1, SecurityProfile.standard, Some("key-1")),
+          TenantSummary(tenantRecord2, SecurityProfile.fapi2, None),
+        ),
+        env.challengeSettingsService.getSettings.calls.isEmpty,
+      )
+    },
+    test("getTenantSummaries looks up a tenant the settings cache has not caught up with") {
+      val env = new Env(Vector(tenantRecord1, tenantRecord2))
+      val settings1 = settingsOf(SecurityProfile.fapi2).copy(signingKeyId = Some("key-1"))
+      val settings2 = settingsOf(SecurityProfile.standard).copy(tenantId = tenant2, signingKeyId = Some("key-2"))
+
+      for
+        _ <- env.challengeSettingsService.getAllSettings.succeedsWith(Vector(settings1))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(settings2))
+        result <- env.service.getTenantSummaries
+      yield assertTrue(
+        result == Vector(
+          TenantSummary(tenantRecord1, SecurityProfile.fapi2, Some("key-1")),
+          TenantSummary(tenantRecord2, SecurityProfile.standard, Some("key-2")),
+        ),
+        env.challengeSettingsService.getSettings.calls == List(tenant2),
+      )
+    },
+    test("getTenantSummaries reports the default profile and no key for a tenant without settings") {
+      val env = new Env(Vector(tenantRecord1))
+
+      for
+        _ <- env.challengeSettingsService.getAllSettings.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        result <- env.service.getTenantSummaries
+      yield assertTrue(result == Vector(TenantSummary(tenantRecord1, ChallengeSettingsRecord.DefaultSecurityProfile, None)))
     },
     test("updateTenant delegates request fields to repository") {
       val env = new Env()

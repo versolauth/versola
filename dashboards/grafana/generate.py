@@ -488,6 +488,12 @@ def outbound(b: Board) -> None:
          desc="Calls that failed: connection errors or a 5xx from the other side. Empty is healthy.")
 
 
+def snapshot(b: Board) -> None:
+    """auth and edge only: both start from the configuration snapshot when central is unreachable (#566)."""
+    b.ts("Configuration served from the snapshot — age", [(f"max by (pod, cache) (config_snapshot_age_seconds{{{b.sel}}})", "{{pod}} {{cache}}")], unit="s", minimum=0,
+         desc="Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.")
+
+
 def saturation(b: Board) -> None:
     """USE-style row: how close is the service to a limit, before latency says so."""
     b.row(f"{b.component} — Saturation")
@@ -562,17 +568,9 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, maximum=1, desc="Share of started sign-ins that completed. A drop with no traffic change means users are getting stuck -- check the step failures next.")
     b.ts("Failed attempts by step", [(f'sum by (step) (rate(auth_conversation_step_total{{{s}, result="failed"}}[$__rate_interval])) / clamp_min(sum by (step) (rate(auth_conversation_step_total{{{s}}}[$__rate_interval])), 0.001)', "{{step}}")],
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
-    b.ts("Edge assertions (DPoP): accepted and rejected", [
-        (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "accepted (bound token honoured on edge's word)"),
-        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"),
-    ], unit="ops", minimum=0,
-         desc="Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.")
-    b.ts("Edge assertions rejected, share", [
-        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval])), 0.001)", "rejected / (rejected + accepted)"),
-    ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
-         desc="Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.")
     argon2(b)
     outbound(b)
+    snapshot(b)
     saturation(b)
     runtime(b)
 
@@ -631,6 +629,7 @@ unit="s", line=steps((None, GREEN), (0.015, RED)),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
     outbound(b)
+    snapshot(b)
     saturation(b)
     runtime(b)
 

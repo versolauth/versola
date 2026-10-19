@@ -92,8 +92,8 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .metadata-json {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         font-family: var(--font-mono);
@@ -150,13 +150,13 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .key-badge {
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.04em;
         padding: 0.125rem var(--spacing-sm);
         border-radius: var(--radius-sm);
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         color: var(--text-secondary);
         white-space: nowrap;
         flex-shrink: 0;
@@ -179,8 +179,8 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .key-json {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
         font-family: var(--font-mono);
@@ -208,8 +208,8 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .add-form-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         padding: var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
@@ -229,7 +229,7 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .add-error {
-        color: var(--danger, #f85149);
+        color: var(--danger);
         font-size: 0.875rem;
         margin-top: var(--spacing-sm);
       }

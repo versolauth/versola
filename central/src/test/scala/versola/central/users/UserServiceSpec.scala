@@ -233,6 +233,20 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.service.invalidateSession(userId)
       yield assertTrue(env.authClient.invalidateSession.calls == List(userId))
     },
+    test("endSession delegates to authClient and answers whether the session was ended") {
+      val env = Env()
+      for
+        _ <- env.authClient.endSession.succeedsWith(false)
+        ended <- env.service.endSession(userId, "c2lk")
+      yield assertTrue(!ended, env.authClient.endSession.calls == List((userId, "c2lk")))
+    },
+    test("revokeRefreshTokens delegates to authClient") {
+      val env = Env()
+      for
+        _ <- env.authClient.revokeRefreshTokens.succeedsWith(())
+        _ <- env.service.revokeRefreshTokens(userId, ClientId("app"))
+      yield assertTrue(env.authClient.revokeRefreshTokens.calls == List((userId, ClientId("app"))))
+    },
     test("create fails with UserConflict when repository reports a conflict") {
       val env = Env()
       val newId = UUID.fromString("00000000-0000-0000-0000-000000000003")
@@ -300,12 +314,43 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.service.patchClaims(userId, patch)
       yield assertTrue(env.authClient.patchUserClaims.calls == List((userId, patch)))
     },
-    test("delete delegates to repository") {
+    test("delete purges the user in auth before removing the index row") {
       val env = Env()
       for
-        _ <- env.userRepository.delete.succeedsWith(())
+        order <- Ref.make(List.empty[String])
+        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.deleteUser.returnsZIO(_ => order.update(_ :+ "auth"))
+        _ <- env.userRepository.delete.returnsZIO(_ => order.update(_ :+ "index"))
         _ <- env.service.delete(userId)
-      yield assertTrue(env.userRepository.delete.calls == List(userId))
+        seen <- order.get
+      yield assertTrue(
+        seen == List("auth", "index"),
+        env.authClient.deleteUser.calls == List(userId),
+        env.userRepository.delete.calls == List(userId),
+      )
+    },
+    test("delete fails with UserNotFound for an id that is not indexed and touches nothing") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findById.succeedsWith(None)
+        exit <- env.service.delete(userId).exit
+      yield assertTrue(
+        exit == Exit.fail(UserNotFound),
+        env.authClient.deleteUser.calls.isEmpty,
+        env.userRepository.delete.calls.isEmpty,
+      )
+    },
+    test("delete leaves the index row in place when auth's purge fails") {
+      val env = Env()
+      val failure = RuntimeException("auth unavailable")
+      for
+        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.deleteUser.failsWith(failure)
+        exit <- env.service.delete(userId).exit
+      yield assertTrue(
+        exit == Exit.fail(failure),
+        env.userRepository.delete.calls.isEmpty,
+      ).label("a user auth still knows must stay findable, or the deletion could never be retried")
     },
     test("updateRoles enqueues a role update via repository") {
       val env = Env()

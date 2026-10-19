@@ -3,6 +3,7 @@ package versola.central.configuration.tenants
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.*
+import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
@@ -18,9 +19,9 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId1 = TenantId("tenant-a")
   private val tenantId2 = TenantId("tenant-b")
 
-  private val tenants = Vector(
-    TenantRecord(tenantId1, "Tenant A", None),
-    TenantRecord(tenantId2, "Tenant B", None),
+  private val summaries = Vector(
+    TenantSummary(TenantRecord(tenantId1, "Tenant A", None), SecurityProfile.fapi2, Some("key-1")),
+    TenantSummary(TenantRecord(tenantId2, "Tenant B", None), SecurityProfile.standard, None),
   )
 
   private val createRequest = CreateTenantRequest(
@@ -77,19 +78,19 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("TenantController")(
     controllerTestCase(
-      description = "return all tenants",
+      description = "return all tenants with the profile and signing key of each",
       request = Request.get(URL.empty / "configuration" / "tenants"),
       expectedStatus = Status.Ok,
       setup = service =>
-        service.getAllTenants.succeedsWith(tenants),
+        service.getTenantSummaries.succeedsWith(summaries),
       verify = (response, _) =>
         for
           payload <- response.body.asJson[GetAllTenantsResponse]
         yield assertTrue(
           payload == GetAllTenantsResponse(
             Vector(
-              TenantResponse(tenantId1, "Tenant A", None),
-              TenantResponse(tenantId2, "Tenant B", None),
+              TenantResponse(tenantId1, "Tenant A", None, SecurityProfile.fapi2, Some("key-1")),
+              TenantResponse(tenantId2, "Tenant B", None, SecurityProfile.standard, None),
             ),
           ),
         ),

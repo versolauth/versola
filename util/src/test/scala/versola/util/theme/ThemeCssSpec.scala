@@ -94,19 +94,31 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val css = ThemeCss.generate(resolved("#155e75"))
         assertTrue(!css.contains("--page-"), !css.contains("color-scheme"), css.contains("--rf:14px;--rb:14px;--rs:24px;"))
       },
-      test("a soft or neutral page sets the page colours and the ink of the brand above the card") {
+      test("a soft or neutral page sets the page colours and the halo of the glow in both schemes") {
         val soft = ThemeCss.generate(resolved("#f5c518", surface = Surface.soft))
         val neutral = ThemeCss.generate(resolved("#5b5bd6", surface = Surface.neutral))
         assertTrue(
           soft.contains("--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);"),
-          soft.contains("--page-ink:light-dark(#1c1b19,#f3f2f0);"),
-          neutral.contains("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;"),
+          soft.contains("--glow-light:color-mix(in oklab,var(--brand) 16%,transparent);"),
+          neutral.contains("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-light:transparent;--glow-dark:transparent;"),
         )
       },
       test("a fixed scheme is written as color-scheme") {
         assertTrue(
           ThemeCss.generate(resolved("#155e75", mode = Mode.dark)).contains("color-scheme:dark;"),
           ThemeCss.generate(resolved("#155e75", mode = Mode.light)).contains("color-scheme:light;"),
+        )
+      },
+      test("a fixed scheme also sets the lock marker the forms read to hide the visitor's toggle; auto does not") {
+        val dark = ThemeCss.generate(resolved("#155e75", mode = Mode.dark))
+        val light = ThemeCss.generate(resolved("#155e75", mode = Mode.light))
+        val auto = ThemeCss.generate(resolved("#155e75", mode = Mode.auto))
+        assertTrue(
+          dark.contains("color-scheme:dark;--scheme-locked:1;"),
+          light.contains("color-scheme:light;--scheme-locked:1;"),
+          !auto.contains("--scheme-locked"),
+          // in the :root rule, not behind @supports: it must hold in every browser
+          dark.indexOf("--scheme-locked") < dark.indexOf("@supports"),
         )
       },
       test("is one comment, one rule and one @supports rule, with nothing but the tokens in it") {
@@ -154,10 +166,10 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val css =
           ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.bold), brand = None, shape = None, mode = None, background = None))
         assertTrue(
-          css.contains("--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);"),
+          css.contains("--page-light:color-mix(in oklab,var(--brand) 9%,#f6f4ef);"),
           css.contains("--page-dark:"),
+          css.contains("--glow-light:"),
           css.contains("--glow-dark:"),
-          css.contains("--page-ink:"),
         )
       },
       test("soft and neutral write their page variables") {
@@ -173,6 +185,21 @@ object ThemeCssSpec extends ZIOSpecDefault:
         val dark =
           ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None, background = None))
         assertTrue(css.contains("color-scheme:light dark;"), dark.contains("color-scheme:light;"))
+      },
+      test("a mode override sets or resets the lock marker, so a client can lock an auto theme or unlock a locked one") {
+        def partial(mode: Mode) =
+          ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(mode), brand = None, shape = None, surface = None, background = None))
+        val unlockedBase = ThemeCss.generatePartial(
+          base,
+          ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None),
+        )
+        assertTrue(
+          partial(Mode.auto).contains("color-scheme:light dark;--scheme-locked:0;"),
+          partial(Mode.dark).contains("color-scheme:dark;--scheme-locked:1;"),
+          partial(Mode.light).contains("color-scheme:light;--scheme-locked:1;"),
+          // no mode override: the marker of the theme underneath stays untouched
+          !unlockedBase.contains("--scheme-locked"),
+        )
       },
       test("is one rule, so it can be appended to a stylesheet") {
         val css = ThemeCss.generatePartial(

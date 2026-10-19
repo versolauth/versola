@@ -392,7 +392,15 @@ object ConversationService:
       checkOtpCode(conversation, otp, submittedCode, authId): now =>
         val otpType = conversation.authFlow.otpType
         val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
-        conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
+        // Before the overwrite: the flag records that the OTP passed, and a lost write race on
+        // the conversation does not unmake that. The conversation then carries the fresh claims.
+        ZIO.foreach(conversation.userId.zip(conversation.credential)):
+          case (uid, cred) => userRepository.markVerified(uid, cred)
+        .map: fresh =>
+          conversation.copy(
+            amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
+            userClaims = fresh.flatten.orElse(conversation.userClaims),
+          )
 
     override def checkIdentifierOtp(
         conversation: ConversationRecord,
@@ -400,17 +408,18 @@ object ConversationService:
         submittedCode: OtpCode,
         authId: AuthId,
     ): Task[ConversationResult] =
-      checkOtpCode(conversation, otp, submittedCode, authId)(_ => conversation)
+      checkOtpCode(conversation, otp, submittedCode, authId)(_ => ZIO.succeed(conversation))
 
     /** The limits and the code check shared by both OTP checks; `passed` says what a correct code
-      * does to the conversation, which is persisted as it is returned.
+      * does to the conversation, which is persisted as it is returned. The code for a new identifier
+      * marks nothing verified: the identifier is not the user's until central has moved it.
       */
     private def checkOtpCode(
         conversation: ConversationRecord,
         otp: ConversationStep.Otp,
         submittedCode: OtpCode,
         authId: AuthId,
-    )(passed: Instant => ConversationRecord): Task[ConversationResult] =
+    )(passed: Instant => Task[ConversationRecord]): Task[ConversationResult] =
       val subject = conversation.credential.map(_.merge).getOrElse("")
       submissionLimiter.isBanned(conversation.clientId, subject, ChallengeType.OtpSubmit).flatMap:
         case LimitStatus.Banned =>
@@ -429,11 +438,11 @@ object ConversationService:
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
-                val updated = passed(now)
-                conversationRepository.overwrite(authId, updated)
-                  .flatMap:
-                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                passed(now).flatMap: updated =>
+                  conversationRepository.overwrite(authId, updated)
+                    .flatMap:
+                      case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                      case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
     override def preparePasswordStep(
         authId: AuthId,

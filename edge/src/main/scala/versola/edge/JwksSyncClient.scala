@@ -23,5 +23,5 @@ object JwksSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(JwksURL).addHeader(Header.Authorization.Bearer(token))
-        keys <- ZIO.scoped(httpClient.request(request).flatMap(_.body.asJsonFromCodec[JWT.PublicKeys]))
+        keys <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.body.asJsonFromCodec[JWT.PublicKeys]))
       yield keys

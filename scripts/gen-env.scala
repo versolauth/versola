@@ -1105,7 +1105,7 @@ def defaultServerMetadata(authUrl: String): String =
   // over this freshly generated one. So this value only becomes the real
   // password on the first `configure` against an empty OpenBao: versola-cli
   // then stores it and prints the CREATE ROLE / ALTER ROLE statement that
-  // gives the `versola_app` role this password (see deploy.md, 3.3), and
+  // gives the `versola_app` role this password (see deploy.md, "Database, role and schemas"), and
   // every later run reuses the stored one. A server whose role already has
   // a password of its own gets that one written into OpenBao instead (see
   // develop.md, "Onboarding a deployment that already has secrets").

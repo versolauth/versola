@@ -28,7 +28,7 @@ object PermissionsSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(PermissionsURL).addHeader(Header.Authorization.Bearer(token))
-        body <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetPermissionsSyncResponse]))
+        body <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetPermissionsSyncResponse]))
       yield body.permissions
         .map(p => PermissionId(p.id) -> p.endpointIds.map(ResourceEndpointId(_)))
         .toMap

@@ -38,6 +38,8 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
         securityProfile = SecurityProfile.fapi2,
+        logoLight = None,
+        logoDark = None,
       )
       for
         seen <- Ref.make(Option.empty[Request])

@@ -29,21 +29,22 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         overflow: hidden;
         transition: border-color var(--transition-fast);
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
       }
       .wrapper.invalid {
-        border-color: var(--danger, #f85149);
+        border-color: var(--danger);
       }
       .wrapper.invalid:focus-within {
-        box-shadow: 0 0 0 2px rgba(var(--danger-tint), 0.15);
+        border-color: var(--danger);
       }
       pre, textarea {
         margin: 0;
@@ -74,10 +75,11 @@ export class VersolaCodeEditor extends LitElement {
         color: transparent;
         caret-color: var(--accent);
         resize: vertical;
+        /* The wrapper draws the focus ring (:focus-within above). */
         outline: none;
         overflow: auto;
       }
-      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
+      textarea::selection { background: var(--selection-bg); color: transparent; }
     `,
   ];
 

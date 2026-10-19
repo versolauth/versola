@@ -220,6 +220,7 @@ object Flows:
         clientId,
         "Phone OTP Test Client",
         Set(redirectUri),
+        allowedScopes = Set("openid", "phone"),
         authFlow = Some(phoneOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(phone = Some(phone))
@@ -247,6 +248,7 @@ object Flows:
         clientId,
         "Registration Test Client",
         Set(redirectUri),
+        allowedScopes = Set("openid", "phone"),
         authFlow = Some(authFlow),
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, None, Some(phone), password)
@@ -263,6 +265,7 @@ object Flows:
         clientId,
         "Email Registration Test Client",
         Set(redirectUri),
+        allowedScopes = Set("openid", "email"),
         authFlow = Some(emailOtpAuthFlow),
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, Some(email), None, password)

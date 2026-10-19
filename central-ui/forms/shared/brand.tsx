@@ -1,12 +1,13 @@
 import { createSignal, Show } from 'solid-js';
 import { pickClientName } from './client-name';
-import type { ClientInfo } from './config';
+import type { ClientInfo, PageLogo } from './config';
 
-// The brand zone above the card: the identity provider's logo (from the system settings) on a light
-// tile, or the Versola wordmark when none is set or it fails to load. A client's own logo belongs
-// inside the card. The wordmark is named for assistive technology ("Versola" is a product name, not
+// The brand zone above the card: the tenant's logo, bare on the page, or the Versola wordmark when none is set or
+// either file fails to load. The logo is a pair, one file per colour scheme; both images are in the page and CSS shows
+// the one that matches the current scheme (see .page-logo), so the visitor's Auto / Light / Dark toggle applies to it
+// too. A client's own logo belongs inside the card. The wordmark is named for assistive technology ("Versola" is a product name, not
 // translatable text); a configured logo has no name to read, so it stays decorative.
-export function PageBrand(props: { logo?: string }) {
+export function PageBrand(props: { logo?: PageLogo }) {
   const [failed, setFailed] = createSignal(false);
   return (
     <div class="page-brand">
@@ -25,8 +26,9 @@ export function PageBrand(props: { logo?: string }) {
           </svg>
         }
       >
-        <span class="page-brand-tile" aria-hidden="true">
-          <img src={props.logo} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
+        <span class="page-logo" aria-hidden="true">
+          <img class="page-logo-light" src={props.logo?.light} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
+          <img class="page-logo-dark" src={props.logo?.dark} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
         </span>
       </Show>
     </div>

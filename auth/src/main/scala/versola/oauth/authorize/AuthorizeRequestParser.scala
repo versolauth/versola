@@ -184,8 +184,20 @@ object AuthorizeRequestParser:
           .flatMap:
             case "code" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code))
+            // FAPI 2.0 §5.3.1.2: only the authorization code flow, which keeps the ID token
+            // (and any code with it) out of the front channel. The check is on the tenant's
+            // profile, not a per-client flag, because no `fapi2` client may opt out of it.
             case "code id_token" =>
-              ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
+              oauthClientService.getSecurityProfile(clientId).flatMap: profile =>
+                if profile == SecurityProfile.fapi2 then
+                  ZIO.fail(Error.UnsupportedResponseType(
+                    clientId,
+                    redirectUri,
+                    stateForErrors,
+                    "code id_token",
+                    responseMode = responseModeForErrors,
+                  ))
+                else ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
             case other =>
               ZIO.fail(Error.UnsupportedResponseType(clientId, redirectUri, stateForErrors, other, responseMode = responseModeForErrors))
 

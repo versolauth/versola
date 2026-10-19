@@ -21,7 +21,7 @@ Targets we hold ourselves to (best effort until a response process is formalised
 
 Only the latest release receives security fixes. Deployments pin an image tag
 (`ghcr.io/versolauth/versola-*`); upgrade with `versola-cli` as described in
-[`deploy.md`](deploy.md#4-deploying-a-new-version).
+[`deploy.md`](deploy.md#deploying-a-new-version).
 
 ## Scope
 

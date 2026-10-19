@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
-import { loadAdminApp } from './fixtures';
+import { consentForm, consentPreviews } from './consent-preview-fixtures';
+import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 
 /**
  * Automated accessibility scan (axe-core) of the admin console's list screens, in both themes.
@@ -9,15 +10,25 @@ import { loadAdminApp } from './fixtures';
  * that catches missing labels, low contrast and similar, next to looking at the screenshots
  * (see .claude/rules/frontend.md). Tags are the WCAG 2.0/2.1 levels A and AA axe documents.
  */
-const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users'];
+const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges'];
 const themes = ['light', 'dark'] as const;
 
-for (const theme of themes) {
+/** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */
+const schemes = [
+  { pref: 'auto', os: 'dark', theme: 'dark' },
+  { pref: 'auto', os: 'light', theme: 'light' },
+  { pref: 'light', os: 'dark', theme: 'light' },
+  { pref: 'dark', os: 'light', theme: 'dark' },
+] as const;
+
+for (const scheme of schemes) {
   for (const view of views) {
-    test(`${view} has no axe violations in the ${theme} theme`, async ({ page }) => {
-      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    test(`${view} has no axe violations with the ${scheme.pref} choice on a ${scheme.os} OS`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme.os });
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme.pref);
       await loadAdminApp(page, { path: `/?view=${view}` });
-      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await expect(page.locator('html')).toHaveAttribute('data-theme', scheme.theme);
+      await expect(page.locator('html')).toHaveAttribute('data-theme-pref', scheme.pref);
 
       const results = await new AxeBuilder({ page })
         .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
@@ -34,7 +45,7 @@ for (const theme of themes) {
   test(`a client's page and its section editor have no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
     await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });
-    await page.getByRole('button', { name: 'Open client alpha-web', exact: true }).click();
+    await page.getByRole('button', { name: /^Open client (.* )?alpha-web$/ }).click();
     await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 
     const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
@@ -68,11 +79,15 @@ for (const theme of themes) {
         },
         themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
         themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
+        forms: [consentForm],
+        formPreviews: [consentPreviews],
       },
     });
-    await page.getByRole('button', { name: 'Open client partner-app', exact: true }).click();
+    await page.getByRole('button', { name: /^Open client (.* )?partner-app$/ }).click();
     await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
+    // The preview is part of the block: scan it drawn, not while central is still rendering it.
+    await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);
 
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
@@ -141,5 +156,74 @@ for (const theme of themes) {
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
     await clean();
+  });
+}
+
+/**
+ * The side panel of each small-entity section (G1): the record in view mode, one group editor
+ * (modal) and the create form, in both themes. The panel is slotted light DOM inside a shadow
+ * dialog, so axe sees it as the browser does: through the flattened tree.
+ */
+const panelSections = [
+  { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: /^Open scope (.* )?openid$/, title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
+  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha\.read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
+  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
+  { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: /^Open tenant (.* )?tenant-bravo$/, title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
+  { view: 'edges', path: '/?view=edges', open: 'Open edge edge-alpha', title: 'edge-alpha', edit: 'Edit dpop nonce', editor: 'Edit DPoP nonce', create: '+ Create Edge', creator: 'Register edge' },
+] as const;
+
+for (const theme of themes) {
+  for (const section of panelSections) {
+    test(`the ${section.view} panel, its group editor and its create form have no axe violations in the ${theme} theme`, async ({ page }) => {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+      await loadAdminApp(page, { path: section.path, state: { edges: [{ id: 'edge-alpha', hasOldKey: true, requireDpopNonce: true }] } });
+      const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+      await page.getByRole('button', { name: section.open }).click();
+      await expect(sidePanelDialog(page, section.title)).toBeVisible();
+      await expect(page.getByText('Loading…')).toHaveCount(0);
+      await clean();
+
+      await sidePanel(page, section.title).getByRole('button', { name: section.edit, exact: true }).click();
+      await expect(sidePanelDialog(page, section.editor)).toBeVisible();
+      await clean();
+
+      await sidePanel(page, section.editor).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await sidePanel(page, section.title).getByRole('button', { name: 'Close panel' }).click();
+      await page.getByRole('button', { name: section.create, exact: true }).click();
+      await expect(sidePanelDialog(page, section.creator)).toBeVisible();
+      await clean();
+    });
+  }
+}
+
+for (const theme of themes) {
+  test(`the partner step of the client wizard has no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, {
+      path: '/?view=clients&tenant=tenant-alpha',
+      state: {
+        themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
+        themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
+        forms: [consentForm],
+        formPreviews: [consentPreviews],
+      },
+    });
+    await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+    await page.getByRole('button', { name: /Web app/ }).click();
+    await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+    await page.locator('versola-client-form #client-id').fill('wizard-a11y');
+    await page.locator('versola-client-form input#client-name').fill('Wizard A11y');
+    await page.locator('#redirect-uri').fill('https://a11y.example/callback');
+    await page.locator('#redirect-uri').press('Enter');
+    await page.getByRole('button', { name: /^Continue to sign-in$/ }).click();
+    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
+    // The preview is part of the block: scan it drawn, not while central is still rendering it.
+    await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);
+
+    const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 }

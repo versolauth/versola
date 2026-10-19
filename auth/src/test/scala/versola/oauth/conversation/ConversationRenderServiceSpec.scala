@@ -152,7 +152,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(tokenTheme)))
       _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
       _ <- env.configuration.getLocales.succeedsWith(locales)
-      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getTenantLogo.succeedsWith(None)
       _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
       _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
       response <- env.service.renderStep(conversationRecord, None)
@@ -173,7 +173,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       _ <- env.configuration.getTheme.succeedsWith(Some(theme))
       _ <- env.configuration.getForm.succeedsWith(Some(form.copy(id = formId)))
       _ <- env.configuration.getLocales.succeedsWith(locales)
-      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getTenantLogo.succeedsWith(None)
       _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
       _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
       _ <- env.configuration.getScopes.succeedsWith(Vector.empty)
@@ -244,7 +244,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(theme)))
       _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = formId)))
       _ <- env.configuration.getLocales.succeedsWith(locales)
-      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getTenantLogo.succeedsWith(None)
       _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
       _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
       response <- render(env.service, knownId)
@@ -260,6 +260,21 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               status == Status.Ok,
               body.contains("--brand:#112233;"),
               body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
+            )
+        },
+        test(s"$name applies the visitor's colour scheme once, after the style block and without any configuration in it") {
+          pageOf(formId, Some(withOverrides), Some(clientId))(render).map: (status, body) =>
+            val script = ConversationRenderService.SchemeScript
+            def count(text: String) = body.sliding(text.length).count(_ == text)
+            assertTrue(
+              status == Status.Ok,
+              count(script) == 1,
+              body.indexOf("</style>") < body.indexOf(script),
+              // read before the form's own script, which is the only place the configuration is written
+              body.indexOf(script) < body.indexOf("window.__VERSOLA_FORM__"),
+              !script.contains("csrf"),
+              !script.contains("--brand"),
+              !script.contains("client"),
             )
         },
         test(s"$name shows the theme as it is when the configuration does not know the client") {
@@ -286,7 +301,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
@@ -304,20 +319,23 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("<link rel=\"icon\" href=\"data:image/svg+xml;base64,")) &&
           assertTrue(faviconSvg.exists(_.contains("<rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#faf9f7\"/>")))
       },
-      test("renders the identity provider logo as the favicon and safely in the form config") {
+      test("renders the tenant logo pair as the favicons and safely in the form config") {
         val env = Env()
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg?a=1&b=2"))
+          _ <- env.configuration.getTenantLogo.succeedsWith(Some(TenantLogo("https://acme.test/light.svg?a=1&b=2", "https://acme.test/dark.svg")))
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
-        yield assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg?a=1&amp;b=2">""")) &&
-          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg?a=1\u0026b=2""""))
+        yield assertTrue(
+          body.contains("""<link rel="icon" href="https://acme.test/light.svg?a=1&amp;b=2" media="(prefers-color-scheme: light)">"""),
+          body.contains("""<link rel="icon" href="https://acme.test/dark.svg" media="(prefers-color-scheme: dark)">"""),
+          body.contains(""""logo":{"light":"https://acme.test/light.svg?a=1\u0026b=2","dark":"https://acme.test/dark.svg"}"""),
+        )
       },
       test("escapes form config JSON so a logo cannot terminate its script element") {
         val env = Env()
@@ -327,7 +345,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some(maliciousLogo))
+          _ <- env.configuration.getTenantLogo.succeedsWith(Some(TenantLogo(maliciousLogo, maliciousLogo)))
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
@@ -351,14 +369,14 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield
-          // The page owns exactly one <style> and two <script> blocks; any extra closing tag
+          // The page owns exactly one <style> and three <script> blocks (the colour scheme script, the configuration, the form); any extra closing tag
           // means injected text ended one of them early.
           assertTrue(styleBlocksAreBalanced(body)) &&
-            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
+            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 3) &&
             assertTrue(body.contains("\\3c /style>")) &&
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
@@ -566,7 +584,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               body.indexOf(".extra { top: 0; }") < body.indexOf("--brand:#112233;"),
               body.indexOf("--brand:#5b5bd6;") < body.indexOf("--brand:#112233;"),
               // bold is written out, to undo the neutral page of the theme under it
-              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 22%"),
+              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 9%"),
             )
         },
         test("go after the CSS of a stylesheet theme") {
@@ -620,7 +638,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           firstResponse <- env.service.renderStep(conversationRecord, None)
@@ -636,7 +654,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
@@ -650,13 +668,17 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
-          assertTrue(body.contains("Page not found"))
+          assertTrue(body.contains("Page not found")) &&
+          assertTrue(
+            body.contains(ConversationRenderService.SchemeScript),
+            body.indexOf("</style>") < body.indexOf(ConversationRenderService.SchemeScript),
+          )
       },
       test("renders Otp step with resend timer") {
         val env = Env()
@@ -672,7 +694,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -691,7 +713,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -710,7 +732,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -728,7 +750,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(Vector(consentScope))
           response <- env.service.renderStep(consentRecord.copy(userEmail = Some(Email("john@example.com"))), None)
           body <- response.body.asString
@@ -747,13 +769,13 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg"))
+          _ <- env.configuration.getTenantLogo.succeedsWith(Some(TenantLogo("https://acme.test/light.svg", "https://acme.test/dark.svg")))
           _ <- env.configuration.getScopes.succeedsWith(Vector(consentScope))
           response <- env.service.renderStep(consentRecord, None)
           body <- response.body.asString
         yield assertTrue(
-          body.contains("""<link rel="icon" href="https://acme.test/logo.svg">"""),
-          body.contains(""""logo":"https://acme.test/logo.svg""""),
+          body.contains("""<link rel="icon" href="https://acme.test/light.svg" media="(prefers-color-scheme: light)">"""),
+          body.contains(""""logo":{"light":"https://acme.test/light.svg","dark":"https://acme.test/dark.svg"}"""),
         )
       },
       test("puts the openid scope first in the consent payload") {
@@ -791,7 +813,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -823,7 +845,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -854,7 +876,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -879,7 +901,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(Vector(scope))
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -907,7 +929,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(Vector(scope))
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -943,7 +965,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getScopes.succeedsWith(Vector(scope))
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -961,7 +983,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "password")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -977,7 +999,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "password")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -992,7 +1014,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "password")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1007,7 +1029,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "set-password")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1023,7 +1045,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "set-password")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1038,7 +1060,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "passkey-enroll")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
         yield assertTrue(body.contains("versola-step\" content=\"passkey-enroll\"")) &&
@@ -1052,7 +1074,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "access-denied")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
@@ -1067,7 +1089,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1082,7 +1104,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1097,7 +1119,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1113,7 +1135,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
@@ -1128,7 +1150,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
             StepView.AccountSettings(Nil, Nil, None, None),
@@ -1146,7 +1168,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil, None, None), None)
           body <- response.body.asString
         yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
@@ -1158,7 +1180,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil, None, None), None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
@@ -1177,15 +1199,15 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg"))
+          _ <- env.configuration.getTenantLogo.succeedsWith(Some(TenantLogo("https://acme.test/light.svg", "https://acme.test/dark.svg")))
           response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("conversation-expired")) &&
           assertTrue(body.contains("error=login_required")) &&
           assertTrue(body.contains("state=test-state")) &&
-          assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
-          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg"""")) &&
+          assertTrue(body.contains("""<link rel="icon" href="https://acme.test/light.svg" media="(prefers-color-scheme: light)">""")) &&
+          assertTrue(body.contains(""""logo":{"light":"https://acme.test/light.svg","dark":"https://acme.test/dark.svg"}""")) &&
           // No client badge is drawn here, so the client is not sent; the language names are.
           assertTrue(!body.contains("\"client\":")) &&
           assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
@@ -1204,7 +1226,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderExpired(
             clientId,
             redirectUri.encode,
@@ -1229,7 +1251,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderExpired(clientId, redirectUri.encode, None, ResponseMode.Query, Some(List("ru")))
           body <- response.body.asString
         yield assertTrue(body.contains("<title>Conversation expired</title>"))
@@ -1247,7 +1269,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.QueryJwt, None)
           body <- response.body.asString
         yield assertTrue(
@@ -1267,7 +1289,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Fragment, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
@@ -1281,7 +1303,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
@@ -1311,7 +1333,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(confirmForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogoutConfirm(
             session,
             "csrf-token-1",
@@ -1345,7 +1367,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogoutConfirm(session, "csrf-token-2", None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
@@ -1364,7 +1386,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(unavailableForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
@@ -1405,7 +1427,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord, None)
@@ -1538,7 +1560,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
@@ -1557,7 +1579,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogout(Nil, None, None, Some(List("fr")), None)
           body <- response.body.asString
         yield assertTrue(body.contains("<title>Connexion</title>"))
@@ -1568,7 +1590,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogout(Nil, None, None, None, None)
           body <- response.body.asString
         yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
@@ -1579,7 +1601,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogout(Nil, None, None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
@@ -1592,7 +1614,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderLogout(Nil, Some(redirectUri), None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&

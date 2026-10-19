@@ -39,7 +39,7 @@ export class ContentHeader extends LitElement {
       }
 
       .header-title {
-        font-size: 2rem;
+        font-size: var(--text-4xl);
         font-weight: 700;
         color: var(--text-primary);
         margin: 0 0 0.5rem 0;
@@ -48,7 +48,7 @@ export class ContentHeader extends LitElement {
       }
 
       .header-description {
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         color: var(--text-secondary);
         margin: 0;
       }
@@ -74,7 +74,7 @@ export class ContentHeader extends LitElement {
         /* 2rem alongside a 2.75rem button leaves too little room for longer
            titles ("Challenges & Security") on a ~390px screen. */
         .header-title {
-          font-size: 1.5rem;
+          font-size: var(--text-3xl);
         }
       }
     `,

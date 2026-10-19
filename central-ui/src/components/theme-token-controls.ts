@@ -13,7 +13,7 @@ const SURFACES: Array<[ThemeSurface, string, string]> = [
   ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
 ];
 const BACKGROUNDS: Array<[ThemeBackground, string, string]> = [
-  ['glow', 'Glow', 'The brand glowing from behind the card, in the dark scheme (the default look)'],
+  ['glow', 'Glow', 'The brand glowing from behind the card (the default look)'],
   ['linear', 'Linear', 'A soft diagonal wash of the brand colour'],
   ['horizon', 'Horizon', 'A soft light rising from the bottom edge'],
   ['flat', 'Flat', 'The plain page colour, no gradient'],
@@ -46,9 +46,6 @@ export class VersolaThemeTokenControls extends LitElement {
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
-  /** Draw a small schematic sign-in card in the resulting tokens above the controls. It is a sketch of brand,
-   *  page and corners, not a render of a form: the theme editor has the real preview. */
-  @property({ type: Boolean }) preview = false;
 
   @state() private brandText = '';
 
@@ -76,54 +73,38 @@ export class VersolaThemeTokenControls extends LitElement {
       :host { display: block; }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
       .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
-      .note-inherited { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
+      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
       .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
       .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); cursor: pointer; }
       .seg-btn:hover { color: var(--text-primary); }
       .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
       .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-dark); cursor: pointer; padding: 0; }
+      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-default); cursor: pointer; padding: 0; }
       .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
       .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
-      .sketch { display: grid; place-items: center; height: 4.5rem; border-radius: var(--radius-md); overflow: hidden; margin-bottom: var(--spacing-md); background: color-mix(in oklab, var(--b) 24%, #0c1110); }
-      .sketch[data-surface='soft'] { background: color-mix(in oklab, var(--b) 14%, #f7f4ee); }
-      .sketch[data-surface='neutral'] { background: #ecebe7; }
-      .sketch[data-surface='soft'][data-mode='dark'] { background: color-mix(in oklab, var(--b) 7%, #0e0e0d); }
-      .sketch[data-surface='neutral'][data-mode='dark'] { background: #0b0b0a; }
-      .sketch-card { width: 8rem; display: flex; flex-direction: column; gap: 0.1875rem; padding: 0.375rem 0.5rem; background: #fffdf9; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
-      .sketch[data-mode='dark'] .sketch-card { background: #262628; }
-      .sketch[data-shape='soft'] .sketch-card { border-radius: 8px; }
-      .sketch[data-shape='sharp'] .sketch-card { border-radius: 2px; }
-      .sketch i { display: block; }
-      .sketch-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--b); }
-      .sketch-field { height: 0.4375rem; background: #e6e1d6; border-radius: 6px; }
-      .sketch[data-mode='dark'] .sketch-field { background: #3a3a3d; }
-      .sketch[data-shape='sharp'] .sketch-field, .sketch[data-shape='sharp'] .sketch-btn { border-radius: 1px; }
-      .sketch-btn { height: 0.625rem; background: var(--b); border-radius: 999px; margin-top: 0.125rem; }
       /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
          repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
-         --pg is the page colour (as the sketch above), --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
-         The dark scheme is shown unless the scheme is fixed to light: the glow is only there, and the page of a bold
-         theme is dark in both. */
+         --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
+         The dark scheme is shown unless the scheme is fixed to light. */
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
-      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .bg-card:hover { border-color: var(--text-secondary); }
       .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
       .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
-      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 22%, #0c1110); --lin: 40%; --hor: 42%; --glow-x: 0%; }
+      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 9%, #f6f4ef); --lin: 34%; --hor: 36%; --glow-x: 30%; }
       .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
-      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 0%; }
+      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 16%; }
       .bg-swatch[data-surface='neutral'] { --pg: #0b0b0a; --lin: 16%; --hor: 14%; --glow-x: 0%; }
       .bg-swatch[data-surface='neutral'][data-scheme='light'] { --pg: #ecebe7; --lin: 14%; --hor: 18%; --glow-x: 0%; }
       .bg-swatch[data-bg='glow'] { background: radial-gradient(75% 70% at 50% 40%, color-mix(in oklab, var(--b) var(--glow-x), transparent), transparent 75%), var(--pg); }
@@ -131,7 +112,7 @@ export class VersolaThemeTokenControls extends LitElement {
       .bg-swatch[data-bg='horizon'] { background: radial-gradient(130% 60% at 50% 110%, color-mix(in oklab, var(--b) var(--hor), transparent), transparent 72%), var(--pg); }
       .bg-sheet { display: block; width: 46%; height: 64%; background: #fffdf9; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
       .bg-swatch[data-scheme='dark'] .bg-sheet { background: #262628; }
-      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-dark); }
+      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-default); }
     `,
   ];
 
@@ -191,12 +172,6 @@ export class VersolaThemeTokenControls extends LitElement {
     const resolved = this.resolved;
     const base = this.base;
     return html`
-      ${this.preview && resolved.brand && resolved.surface && resolved.shape && resolved.mode ? html`
-        <div class="sketch" style=${`--b:${resolved.brand}`} data-surface=${resolved.surface} data-shape=${resolved.shape} data-mode=${resolved.mode}
-          role="img" aria-label=${`Sketch of the sign-in page: ${resolved.brand}, ${resolved.surface} page, ${resolved.shape} corners, ${resolved.mode} scheme`}>
-          <i class="sketch-card"><i class="sketch-dot"></i><i class="sketch-field"></i><i class="sketch-field"></i><i class="sketch-btn"></i></i>
-        </div>
-      ` : nothing}
       <div class="group">
         <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base?.brand)}</div>
         <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
