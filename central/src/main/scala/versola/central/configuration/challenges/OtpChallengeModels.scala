@@ -3,7 +3,8 @@ package versola.central.configuration.challenges
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.Patch
-import zio.json.JsonCodec
+import versola.util.Patch.applyTo
+import zio.json.{JsonCodec, jsonNoExtraFields}
 import zio.schema.{Schema, derived}
 
 enum OtpTemplatePurpose derives Schema, JsonCodec:
@@ -76,3 +77,105 @@ case class UpsertChallengeSettingsRequest(
     logoLight: Option[Patch[String]],
     logoDark: Option[Patch[String]],
 ) derives Schema, JsonCodec
+
+/** A JSON merge patch (RFC 7396) of a tenant's [[ChallengeSettingsRecord]], at the level of the record's own members: the
+  * ones this body names are replaced, the others keep their stored value. A member's value is replaced whole, never
+  * merged into -- `submissionLimits`, `passkeySettings`, `emailRegistration` and `acrVocabulary` are sent in full.
+  *
+  * Absent keeps, a value replaces, `null` clears: only the optional members can be cleared (`sessionIdleTtlSeconds`,
+  * `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`, `signingKeyId`, `logoLight`, `logoDark`), and a
+  * `null` for any other member is refused rather than read as absent. An unknown key is refused too, so a misspelt
+  * member cannot pass for an applied change.
+  *
+  * No member has a default, for the reason `signingKeyId` of [[UpsertChallengeSettingsRequest]] gives.
+  */
+@jsonNoExtraFields
+case class PatchChallengeSettingsRequest(
+    tenantId: TenantId,
+    phoneRegions: Option[Patch[List[PhoneRegion]]],
+    emailRegistration: Option[Patch[EmailRegistration]],
+    defaultRoles: Option[Patch[Set[RoleId]]],
+    submissionLimits: Option[Patch[SubmissionLimits]],
+    otpLength: Option[Patch[Int]],
+    otpResendAfter: Option[Patch[Int]],
+    passkeySettings: Option[Patch[PasskeySettings]],
+    authConversationTtlSeconds: Option[Patch[Int]],
+    sessionTtlSeconds: Option[Patch[Int]],
+    sessionIdleTtlSeconds: Option[Patch[Int]],
+    userAgentTtlSeconds: Option[Patch[Int]],
+    ipHeader: Option[Patch[String]],
+    acrVocabulary: Option[Patch[Map[String, List[String]]]],
+    postLogoutRedirectUris: Option[Patch[List[String]]],
+    requireDpopNonce: Option[Patch[Boolean]],
+    mtlsCertificateHeader: Option[Patch[String]],
+    mtlsCertificateEncoding: Option[Patch[MtlsCertificateEncoding]],
+    signingKeyId: Option[Patch[String]],
+    clientAssertionMaxLifetimeSeconds: Option[Patch[Int]],
+    /** Fixed when the tenant is created: naming the stored profile changes nothing, naming another is refused. */
+    securityProfile: Option[Patch[SecurityProfile]],
+    logoLight: Option[Patch[String]],
+    logoDark: Option[Patch[String]],
+) derives Schema, JsonCodec:
+
+  /** `current` with this patch applied, validated as the record to be stored (the same rules as `PUT`, see
+    * [[ChallengeSettingsRecord.validate]]), or why it cannot be. Pure, so the repository can run it on the row it
+    * has locked. */
+  def applyTo(current: ChallengeSettingsRecord): Either[String, ChallengeSettingsRecord] =
+    for
+      phoneRegions <- required("phoneRegions", this.phoneRegions, current.phoneRegions)
+      emailRegistration <- required("emailRegistration", this.emailRegistration, current.emailRegistration)
+      defaultRoles <- required("defaultRoles", this.defaultRoles, current.defaultRoles)
+      submissionLimits <- required("submissionLimits", this.submissionLimits, current.submissionLimits)
+      otpLength <- required("otpLength", this.otpLength, current.otpLength)
+      otpResendAfter <- required("otpResendAfter", this.otpResendAfter, current.otpResendAfter)
+      passkeySettings <- required("passkeySettings", this.passkeySettings, current.passkeySettings)
+      authConversationTtlSeconds <- required("authConversationTtlSeconds", this.authConversationTtlSeconds, current.authConversationTtlSeconds)
+      sessionTtlSeconds <- required("sessionTtlSeconds", this.sessionTtlSeconds, current.sessionTtlSeconds)
+      userAgentTtlSeconds <- required("userAgentTtlSeconds", this.userAgentTtlSeconds, current.userAgentTtlSeconds)
+      ipHeader <- required("ipHeader", this.ipHeader, current.ipHeader)
+      postLogoutRedirectUris <- required("postLogoutRedirectUris", this.postLogoutRedirectUris, current.postLogoutRedirectUris)
+      requireDpopNonce <- required("requireDpopNonce", this.requireDpopNonce, current.requireDpopNonce)
+      clientAssertionMaxLifetimeSeconds <- required(
+        "clientAssertionMaxLifetimeSeconds",
+        this.clientAssertionMaxLifetimeSeconds,
+        current.clientAssertionMaxLifetimeSeconds,
+      )
+      securityProfile <- required("securityProfile", this.securityProfile, current.securityProfile)
+      _ <- Either.cond(
+        securityProfile == current.securityProfile,
+        (),
+        s"securityProfile of tenant '${current.tenantId}' is ${current.securityProfile} and cannot be changed after the tenant is created",
+      )
+      record = ChallengeSettingsRecord(
+        current.tenantId,
+        phoneRegions,
+        emailRegistration,
+        defaultRoles,
+        submissionLimits,
+        otpLength,
+        otpResendAfter,
+        passkeySettings,
+        authConversationTtlSeconds,
+        sessionTtlSeconds,
+        this.sessionIdleTtlSeconds.applyTo(current.sessionIdleTtlSeconds),
+        userAgentTtlSeconds,
+        ipHeader,
+        this.acrVocabulary.applyTo(current.acrVocabulary),
+        postLogoutRedirectUris,
+        requireDpopNonce,
+        this.mtlsCertificateHeader.applyTo(current.mtlsCertificateHeader),
+        this.mtlsCertificateEncoding.applyTo(current.mtlsCertificateEncoding),
+        this.signingKeyId.applyTo(current.signingKeyId),
+        clientAssertionMaxLifetimeSeconds,
+        securityProfile,
+        this.logoLight.applyTo(current.logoLight),
+        this.logoDark.applyTo(current.logoDark),
+      )
+      validated <- ChallengeSettingsRecord.validate(record)
+    yield validated
+
+  private def required[A](name: String, patch: Option[Patch[A]], current: A): Either[String, A] =
+    patch match
+      case None => Right(current)
+      case Some(Patch.Modified(value)) => Right(value)
+      case Some(Patch.Deleted) => Left(s"$name cannot be cleared: it is not optional")

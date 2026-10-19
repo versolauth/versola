@@ -1357,6 +1357,9 @@ paths:
       description: |
         Omitted TTL members keep their stored value, or fall back to the built-in default when
         the tenant has no settings yet.
+
+        The whole record is written, so a client that edits one member overwrites a concurrent edit of
+        another: change members of existing settings with `PATCH`, and use this call to create them.
       operationId: upsertChallengeSettings
       requestBody:
         required: true
@@ -1375,6 +1378,60 @@ paths:
             a profile other than the one the tenant was created with, which cannot be changed,
             or because `signingKeyId` names an RS256 key for a tenant on the `fapi2` profile
             (FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding; a `standard` tenant may select one).
+
+    patch:
+      tags: [Challenges]
+      summary: Patch a tenant's challenge settings
+      description: |
+        JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members: a member
+        the body names is replaced, one it leaves out keeps its stored value. Two admins patching
+        different members at once both land -- the merge runs on the stored row under a lock, so
+        neither overwrites the other, which a `PUT` of the whole record cannot promise.
+
+        A named member is replaced whole, never merged into: `submissionLimits`, `passkeySettings`,
+        `emailRegistration` and `acrVocabulary` are sent in full, and so are `phoneRegions` and the
+        other lists. `null` clears a member, but only the optional ones --
+        `sessionIdleTtlSeconds`, `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`,
+        `signingKeyId`, `logoLight` and `logoDark`. `null` for any other member is refused with
+        `400` rather than read as absent, and so is a key the record does not have.
+
+        The record that would result is validated exactly as a `PUT` validates its record (the
+        header/encoding pair, the logo pair, the assertion lifetime range, phone regions, email
+        domains, default roles, the signing key), and nothing is stored when it is refused.
+        Unlike `PUT`, this does not create settings: a tenant that has none gets `404`.
+      operationId: patchChallengeSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchChallengeSettingsRequest'
+            examples:
+              onlyTheSessionLifetime:
+                summary: Change one member; every other keeps its value
+                value:
+                  tenantId: acme
+                  sessionTtlSeconds: 43200
+              clearTheSigningKey:
+                summary: Clear an optional member and change a second one
+                value:
+                  tenantId: acme
+                  signingKeyId: null
+                  otpLength: 8
+      responses:
+        '204':
+          description: Settings stored.
+        '400':
+          description: |
+            Refused, with nothing stored: a key the record does not have, `null` for a member that
+            is not optional, a body without `tenantId`, or a resulting record that breaks a rule
+            of `PUT` (see above), among them a `securityProfile` other than the one the tenant
+            was created with.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The tenant has no challenge settings yet; create them with `PUT`.
+
 
   /configuration/forms:
     get:
@@ -4682,6 +4739,93 @@ components:
         - otpResendAfter
         - passkeySettings
         - ipHeader
+
+    PatchChallengeSettingsRequest:
+      type: object
+      description: >-
+        A JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members:
+        absent keeps the stored value, a value replaces it whole, `null` clears an optional member.
+        Members that are not listed here are refused. Types are those of
+        `UpsertChallengeSettingsRequest`, except that none of the members but `tenantId` is
+        required and only the ones marked nullable accept `null`.
+      additionalProperties: false
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
+          type: array
+          uniqueItems: true
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoleId'
+        submissionLimits:
+          $ref: '#/components/schemas/SubmissionLimits'
+        otpLength:
+          type: integer
+        otpResendAfter:
+          type: integer
+        passkeySettings:
+          $ref: '#/components/schemas/PasskeySettings'
+        authConversationTtlSeconds:
+          type: integer
+        sessionTtlSeconds:
+          type: integer
+        sessionIdleTtlSeconds:
+          type: [integer, 'null']
+          description: Null clears the idle timeout.
+        userAgentTtlSeconds:
+          type: integer
+        ipHeader:
+          type: string
+        acrVocabulary:
+          type: [object, 'null']
+          description: Replaced whole; null clears the vocabulary.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        postLogoutRedirectUris:
+          type: array
+          items:
+            type: string
+        requireDpopNonce:
+          type: boolean
+        mtlsCertificateHeader:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch it and mtlsCertificateEncoding must both be set or both
+            be absent.
+        mtlsCertificateEncoding:
+          oneOf:
+            - $ref: '#/components/schemas/MtlsCertificateEncoding'
+            - type: 'null'
+        signingKeyId:
+          type: [string, 'null']
+          description: >-
+            Null clears the selection, falling back to auth's configured private key. Validated as
+            in `UpsertChallengeSettingsRequest`.
+        clientAssertionMaxLifetimeSeconds:
+          type: integer
+          description: Refused outside 30..900.
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
+          description: >-
+            Fixed when the tenant is created: naming the stored profile changes nothing, any other
+            is refused with `400`.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch `logoLight` and `logoDark` must both be set or both be
+            absent.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme.
+      required:
+        - tenantId
 
     # ────────────────────────────── Forms ──────────────────────────────
     BackendProperty:

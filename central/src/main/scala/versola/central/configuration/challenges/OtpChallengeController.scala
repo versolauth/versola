@@ -22,6 +22,7 @@ object OtpChallengeController extends Controller:
     getChallengeSettingsEndpoint,
     syncChallengeSettingsEndpoint,
     upsertChallengeSettingsEndpoint,
+    patchChallengeSettingsEndpoint,
   )
 
   val getTemplatesEndpoint =
@@ -106,61 +107,43 @@ object OtpChallengeController extends Controller:
         _ <- ZIO.fail(BadRequest(
           s"securityProfile of tenant '${body.tenantId}' is $securityProfile and cannot be changed after the tenant is created",
         )).when(body.securityProfile.exists(_ != securityProfile))
-        // One setting stored in two columns: a header no encoding says how to read, and an
-        // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
-        // off while central reports it configured.
-        _ <- ZIO.fail(BadRequest("mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together"))
-          .when(mtlsCertificateHeader.isDefined != mtlsCertificateEncoding.isDefined)
         logoLight = body.logoLight.applyTo(existing.flatMap(_.logoLight))
         logoDark = body.logoDark.applyTo(existing.flatMap(_.logoDark))
-        _ <- ZIO.foreachDiscard(ChallengeSettingsRecord.validateLogo(logoLight, logoDark))(error => ZIO.fail(BadRequest(error)))
-        _ <- ZIO.fail(BadRequest(
-          s"clientAssertionMaxLifetimeSeconds must be between ${ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds}" +
-            s" and ${ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds}",
-        )).when(
-          clientAssertionMaxLifetimeSeconds < ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds ||
-            clientAssertionMaxLifetimeSeconds > ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds,
+        record = ChallengeSettingsRecord(
+          body.tenantId,
+          body.phoneRegions,
+          body.emailRegistration,
+          body.defaultRoles,
+          body.submissionLimits,
+          body.otpLength,
+          body.otpResendAfter,
+          body.passkeySettings,
+          body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
+          body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
+          body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
+          body.userAgentTtlSeconds.orElse(existing.map(_.userAgentTtlSeconds)).getOrElse(15552000),
+          body.ipHeader,
+          body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
+          body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
+          body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
+          mtlsCertificateHeader,
+          mtlsCertificateEncoding,
+          body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
+          clientAssertionMaxLifetimeSeconds,
+          securityProfile,
+          logoLight,
+          logoDark,
         )
-        _ <- ZIO.foreachDiscard(PhoneRegion.validate(body.phoneRegions))(error => ZIO.fail(BadRequest(error)))
-        emailRegistration <- ZIO.fromEither(EmailRegistration.normalize(body.emailRegistration)).mapError(BadRequest(_))
-        _ <- ZIO.fail(BadRequest("defaultRoles must name at least one role")).when(body.defaultRoles.isEmpty)
-        // Roles are only looked up while some credential can register: a tenant that registers
-        // nobody (a new tenant has no `user` role yet) must still be able to save other settings.
-        registrationPossible = emailRegistration.mode != EmailRegistrationMode.closed || body.phoneRegions.exists(_.registration)
+        validated <- ZIO.fromEither(ChallengeSettingsRecord.validate(record)).mapError(BadRequest(_))
+        // Roles are only looked up while some credential can register, see `registrationPossible`.
         roles <- ZIO.service[RoleRepository]
-        _ <- ZIO.when(registrationPossible):
-          ZIO.foreachDiscard(body.defaultRoles): roleId =>
+        _ <- ZIO.when(ChallengeSettingsRecord.registrationPossible(validated)):
+          ZIO.foreachDiscard(validated.defaultRoles): roleId =>
             roles.findRole(
               body.tenantId,
               roleId,
             ).someOrFail(BadRequest(s"defaultRoles names role '$roleId', which does not exist in tenant '${body.tenantId}'"))
-        _ <- service.upsertSettings(
-          ChallengeSettingsRecord(
-            body.tenantId,
-            body.phoneRegions,
-            emailRegistration,
-            body.defaultRoles,
-            body.submissionLimits,
-            body.otpLength,
-            body.otpResendAfter,
-            body.passkeySettings,
-            body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
-            body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
-            body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
-            body.userAgentTtlSeconds.orElse(existing.map(_.userAgentTtlSeconds)).getOrElse(15552000),
-            body.ipHeader,
-            body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
-            body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
-            body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
-            mtlsCertificateHeader,
-            mtlsCertificateEncoding,
-            body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
-            clientAssertionMaxLifetimeSeconds,
-            securityProfile,
-            logoLight,
-            logoDark,
-          ),
-        )
+        _ <- service.upsertSettings(validated)
           // A kid nothing can sign with, or one signing under a disallowed algorithm, is the
           // operator naming a key that does not fit, not a fault of this server -- and the
           // message says which of the reasons it is.
@@ -169,4 +152,20 @@ object OtpChallengeController extends Controller:
             case other => other
           }
       yield Response.status(Status.NoContent)
+    }
+
+  /** The merge patch of the record, see [[PatchChallengeSettingsRequest]]: the members named are replaced, the others
+    * keep what is stored. 404 when the tenant has no settings yet -- the first write is a `PUT`. */
+  val patchChallengeSettingsEndpoint =
+    Method.PATCH / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ChallengeSettingsService]
+        body <- request.bodyAs[PatchChallengeSettingsRequest]
+        _ <- service.patchSettings(body)
+      yield Response.status(Status.NoContent))
+        .catchAll:
+          case ChallengeSettingsService.SettingsNotFound(_) => ZIO.succeed(Response.status(Status.NotFound))
+          case error: ChallengeSettingsService.ValidationError => ZIO.fail(BadRequest(error.message))
+          case error: Throwable => ZIO.fail(error)
     }

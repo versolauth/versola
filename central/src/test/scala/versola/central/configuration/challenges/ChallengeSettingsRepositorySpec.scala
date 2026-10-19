@@ -3,6 +3,7 @@ package versola.central.configuration.challenges
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
+import zio.ZIO
 import zio.test.*
 
 /** Conformance suite for any [[ChallengeSettingsRepository]] implementation. A backend module
@@ -109,6 +110,101 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           _ <- env.repository.upsert(record)
           found <- env.repository.findByTenant(tenantA)
         yield assertTrue(found == Some(record))
+      },
+      test("patch applies the change to the stored row and returns the stored result") {
+        val original = settingsFor(tenantA)
+        for
+          _ <- env.repository.upsert(original)
+          result <- env.repository.patch(tenantA, record => Right(record.copy(otpLength = 8, sessionIdleTtlSeconds = None)))
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(
+          result == Some(Right(original.copy(otpLength = 8, sessionIdleTtlSeconds = None))),
+          found == Some(original.copy(otpLength = 8, sessionIdleTtlSeconds = None)),
+        )
+      },
+      test("patch leaves the other tenant's settings alone") {
+        val a = settingsFor(tenantA)
+        val b = settingsFor(tenantB)
+        for
+          _ <- env.repository.upsert(a)
+          _ <- env.repository.upsert(b)
+          _ <- env.repository.patch(tenantA, record => Right(record.copy(otpLength = 8)))
+          foundB <- env.repository.findByTenant(tenantB)
+        yield assertTrue(foundB == Some(b))
+      },
+      test("patch returns None and writes nothing for a tenant with no settings") {
+        for
+          result <- env.repository.patch(tenantA, record => Right(record.copy(otpLength = 8)))
+          all <- env.repository.getAll
+        yield assertTrue(result.isEmpty, all.isEmpty)
+      },
+      test("patch writes nothing when the change refuses") {
+        val original = settingsFor(tenantA)
+        for
+          _ <- env.repository.upsert(original)
+          result <- env.repository.patch(tenantA, _ => Left("refused"))
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(result == Some(Left("refused")), found == Some(original))
+      },
+      test("patch does not move the tenant's security profile") {
+        val original = settingsFor(tenantA)
+        for
+          _ <- env.repository.upsert(original)
+          _ <- env.repository.patch(tenantA, record => Right(record.copy(otpLength = 8, securityProfile = SecurityProfile.standard)))
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(found == Some(original.copy(otpLength = 8)))
+      },
+      test("patch round-trips nested and optional members") {
+        val acr = Some(Map("urn:acr:silver" -> List("pwd")))
+        for
+          _ <- env.repository.upsert(settingsFor(tenantA))
+          _ <- env.repository.patch(
+            tenantA,
+            record =>
+              Right(
+                record.copy(
+                  acrVocabulary = acr,
+                  mtlsCertificateHeader = Some("ssl-client-cert"),
+                  mtlsCertificateEncoding = Some(MtlsCertificateEncoding.base64Der),
+                  passkeySettings = passkeySettings.copy(rpId = "example.com"),
+                ),
+              ),
+          )
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(
+          found.map(_.acrVocabulary) == Some(acr),
+          found.flatMap(_.mtlsCertificateEncoding) == Some(MtlsCertificateEncoding.base64Der),
+          found.map(_.passkeySettings.rpId) == Some("example.com"),
+        )
+      },
+      // The reason `patch` locks the row: two admins patching different members at once. Without the lock both read the
+      // row before either writes, and the second write puts back the member the first one changed.
+      test("concurrent patches of different members both land") {
+        val original = settingsFor(tenantA)
+        val patches = List[ChallengeSettingsRecord => ChallengeSettingsRecord](
+          _.copy(otpLength = 8),
+          _.copy(ipHeader = "X-Real-IP"),
+          _.copy(sessionTtlSeconds = 7200),
+          _.copy(requireDpopNonce = true),
+          _.copy(userAgentTtlSeconds = 1000),
+          _.copy(otpResendAfter = 45),
+        )
+        for
+          _ <- env.repository.upsert(original)
+          _ <- ZIO.foreachParDiscard(patches)(change => env.repository.patch(tenantA, record => Right(change(record))))
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(
+          found == Some(
+            original.copy(
+              otpLength = 8,
+              ipHeader = "X-Real-IP",
+              sessionTtlSeconds = 7200,
+              requireDpopNonce = true,
+              userAgentTtlSeconds = 1000,
+              otpResendAfter = 45,
+            ),
+          ),
+        )
       },
     )
 
