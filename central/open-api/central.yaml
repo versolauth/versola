@@ -16,7 +16,7 @@ info:
     rather than with the HTTP Basic credentials below; they are not part of this document:
     the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
     `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
-    who registered themselves so that central can index them) and `POST
+    who registered themselves so that central can index them), `GET /configuration/edges/overload/sync` (an edge asks for its own overload policy) and `POST
     /configuration/clients/edge-certificate/sign` (an edge asks for a certificate for a client
     whose key it generated).
 
@@ -1917,6 +1917,45 @@ paths:
       responses:
         '204':
           description: Setting recorded.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
+  /configuration/edges/overload:
+    put:
+      tags: [Edges]
+      summary: Set what an edge does when it is asked for more than it can do
+      description: |
+        The overload policy of one edge: its inbound admission limits (with priorities, so a new
+        login is refused before work already begun, and the proxied calls last), an adaptive limit
+        inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
+        its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
+        removes it and returns the edge to the values of its own deployment.
+
+        Every field is optional and means "what the edge starts with" when absent, so a policy is
+        a patch over the deployment. `mode` is `off`, `shadow` (count what `enforce` would
+        refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
+        change up on its next configuration sync and, while central is unreachable, keeps the last
+        policy it received.
+      operationId: setEdgeOverloadPolicy
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverloadPolicy'
+      responses:
+        '204':
+          description: Policy recorded.
+        '400':
+          description: The policy does not validate; the body names the first field that is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverloadPolicyError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -5071,7 +5110,153 @@ components:
             RFC 9449 §9: whether every DPoP proof this edge checks on a proxied call must
             carry a nonce it issued. Governs that edge only, and only the calls it proxies —
             auth's own endpoints follow the tenant setting of the same name.
+        overloadPolicy:
+          $ref: '#/components/schemas/OverloadPolicy'
+          description: The edge's overload policy; absent when none is set.
       required: [id, hasOldKey, requireDpopNonce]
+    OverloadPolicy:
+      type: object
+      description: |
+        A patch over the settings an edge starts with; every field is optional.
+      properties:
+        inbound:
+          $ref: '#/components/schemas/InboundOverloadPolicy'
+        outbound:
+          $ref: '#/components/schemas/OutboundOverloadPolicy'
+    OverloadMode:
+      type: string
+      enum: [off, shadow, enforce]
+      description: |
+        `off` does nothing; `shadow` counts what `enforce` would refuse and refuses nothing;
+        `enforce` refuses.
+    InboundOverloadPolicy:
+      type: object
+      description: Admission control at the edge's entry; a refusal is `503` with `Retry-After`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxInFlight:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: Requests in flight at once; ignored while the adaptive limit is on.
+        continuationShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: |
+            The share of the limit work already begun (code exchange, logout) may use; above it
+            such requests are refused. New logins use `startShare`, proxied calls the whole limit.
+        startShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: The share of the limit a new login may use; must not exceed `continuationShare`.
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+        adaptive:
+          type: object
+          description: |
+            A limit that follows the pod: it shrinks when call times rise or the executor stalls,
+            and grows back while calls are fast, inside `[minLimit, maxLimit]`.
+          properties:
+            enabled:
+              type: boolean
+            minLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            maxLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            tolerance:
+              type: number
+              minimum: 1
+              maximum: 5
+              description: How much slower than usual a call may get before the limit shrinks.
+            smoothing:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            lagTargetMillis:
+              type: integer
+              minimum: 5
+              maximum: 10000
+              description: How late the executor may run a timer before it counts as stalled.
+    OutboundOverloadPolicy:
+      type: object
+      description: |
+        Bounds on the edge's calls to auth and to resource backends, per peer. A refusal is `503`
+        with `Retry-After`, a call that took too long is `504`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxConcurrent:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        maxQueue:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        queueTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        requestTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        breaker:
+          type: object
+          description: |
+            Opens when `failureRatio` of the calls in the window fail (a transport error, a
+            timeout, or a `502`/`503`/`504`), refuses at once while open, then lets `probeCalls`
+            probes through.
+          properties:
+            enabled:
+              type: boolean
+            failureRatio:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            minCalls:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            windowSeconds:
+              type: integer
+              minimum: 1
+              maximum: 300
+            openSeconds:
+              type: integer
+              minimum: 1
+              maximum: 600
+            probeCalls:
+              type: integer
+              minimum: 1
+              maximum: 100
+        retryBudget:
+          type: object
+          description: What retries may add to the load on a peer, as a share of its calls.
+          properties:
+            ratio:
+              type: number
+              minimum: 0
+              maximum: 1
+            minPerSecond:
+              type: number
+              minimum: 0
+              maximum: 1000
+    OverloadPolicyError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     SetEdgeDpopRequest:
       type: object
       properties:

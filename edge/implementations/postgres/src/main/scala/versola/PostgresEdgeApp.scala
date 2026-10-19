@@ -22,6 +22,8 @@ import versola.edge.{
   JwksSyncClient,
   OAuthClientService,
   OAuthClientsSyncClient,
+  OverloadPolicyService,
+  OverloadPolicySyncClient,
   PermissionService,
   PermissionsSyncClient,
   PostgresDpopProofRepository,
@@ -66,6 +68,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopAlgorithmsSyncClient &
       DpopPolicySyncClient &
       DpopPolicyService &
+      OverloadPolicySyncClient &
+      OverloadPolicyService &
       OAuthClientService &
       ResourceService &
       PermissionService &
@@ -86,6 +90,13 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       NativeService
 
   override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
+
+  // what an operator sets for this edge in central, applied to the admission and the outbound guard as it changes
+  override protected def overloadPolicy = Some(ZIO.serviceWithZIO[OverloadPolicyService](_.current))
+
+  // central is the one peer the edge cannot work without and waits for at start-up
+  override protected def guardExemptPeers =
+    ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -123,6 +134,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopAlgorithmsSyncClient.live >++>
       DpopPolicySyncClient.live >++>
       DpopPolicyService.live >++>
+      OverloadPolicySyncClient.live >++>
+      OverloadPolicyService.live >++>
       JwksSyncClient.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>

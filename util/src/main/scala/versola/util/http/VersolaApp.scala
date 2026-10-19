@@ -41,7 +41,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   private val cryptoProvider = versola.util.CryptoProvider.installFromEnv()
 
   override type Environment =
-    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client & OutboundGuard
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
     OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
@@ -61,6 +61,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * [[InboundAdmissionSettings]].
     */
   protected def admissionTiers: Option[(Method, String) => Tier] = None
+
+  /** The overload policy this service currently holds for itself (from central, for the edge), read about once a second and
+    * applied to the inbound admission and the outbound guard when it changes. `None` (the default): the settings of the
+    * process (`HTTP_ADMISSION_*`, `HTTP_CLIENT_GUARD_*`) stay as they are. A source that yields `None` or a policy that does
+    * not validate leaves the last applied settings in place.
+    */
+  protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
+
+  /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
+    * without and whose configuration it waits for at start-up (central). */
+  protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
 
   /** Optional third application surface, terminating TLS itself and demanding a client
     * certificate on the handshake -- RFC 8705 §5's `mtls_endpoint_aliases`.
@@ -225,6 +236,10 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       appDependencies <- dependencies.build
 
+      guard <- ZIO.service[OutboundGuard]
+      _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
+      baseOutbound <- guard.current
+
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
         for
           ready <- Promise.make[Throwable, Int]
@@ -295,6 +310,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               admission <- InboundAdmission.make(InboundAdmissionSettings.fromEnv)
               _ <- ZIO.logInfo(s"inbound admission: ${admission.current}")
               _ <- admission.sample.forkIn(scope)
+              _ <- ZIO.foreachDiscard(overloadPolicy)(source =>
+                OverloadPolicyApplier
+                  .run(source.provideEnvironment(appDependencies), admission, guard, admission.current, baseOutbound)
+                  .forkIn(scope),
+              )
             yield (admission, tiers)
           port <- Server.install {
             val served = Observability.handleErrors(routes) @@

@@ -4,7 +4,7 @@ import zio.*
 import zio.http.*
 import zio.metrics.{Metric, MetricLabel}
 
-import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReference, LongAdder}
 import scala.util.Try
 
 /** How much a request matters when the pod is full. A request is admitted while the calls in flight are below the tier's share
@@ -26,12 +26,15 @@ final case class InboundAdmissionSettings(
     continuationShare: Double,
     startShare: Double,
     retryAfterSeconds: Int,
+    adaptive: AdaptiveSettings = AdaptiveSettings.default,
 ):
-  /** Calls in flight a request of `tier` may find and still be admitted. */
-  def threshold(tier: Tier): Int = tier match
-    case Tier.Never | Tier.Critical => maxInFlight
-    case Tier.Continuation => math.max(1, math.ceil(maxInFlight * continuationShare).toInt)
-    case Tier.Start => math.max(1, math.ceil(maxInFlight * startShare).toInt)
+  /** Calls in flight a request of `tier` may find and still be admitted, out of `limit` places. */
+  def threshold(tier: Tier, limit: Int): Int = tier match
+    case Tier.Never | Tier.Critical => limit
+    case Tier.Continuation => math.max(1, math.ceil(limit * continuationShare).toInt)
+    case Tier.Start => math.max(1, math.ceil(limit * startShare).toInt)
+
+  def threshold(tier: Tier): Int = threshold(tier, maxInFlight)
 
 object InboundAdmissionSettings:
   val defaultMaxInFlight = 256
@@ -61,17 +64,25 @@ object InboundAdmissionSettings:
 
   def fromEnv: InboundAdmissionSettings =
     def env(n: String) = Option(java.lang.System.getenv(n))
-    parse(env("HTTP_ADMISSION_MODE"), env("HTTP_ADMISSION_MAX_IN_FLIGHT"), env("HTTP_ADMISSION_CONTINUATION_SHARE"),
-      env("HTTP_ADMISSION_START_SHARE"), env("HTTP_ADMISSION_RETRY_AFTER"))
+    parse(
+      env("HTTP_ADMISSION_MODE"),
+      env("HTTP_ADMISSION_MAX_IN_FLIGHT"),
+      env("HTTP_ADMISSION_CONTINUATION_SHARE"),
+      env("HTTP_ADMISSION_START_SHARE"),
+      env("HTTP_ADMISSION_RETRY_AFTER"),
+    )
 
 /** Admission control at the entry of a service: bounded calls in flight, refused above the tier's share of the limit, at once
   * and without a queue. A queue in front of a pod that cannot serve is where overload turns into latency for everyone.
   *
-  * The settings are replaced as a whole while the process runs ([[update]]), which is also what an adaptive limit will do.
+  * The settings are replaced as a whole while the process runs ([[update]]). With `adaptive.enabled` the limit is not
+  * `maxInFlight` but a value [[AdaptiveLimit]] keeps inside `[minLimit, maxLimit]` from the call times it observes and from
+  * the lag of the executor; `maxInFlight` then only matters while adaptation is off.
   *
   * Metrics: `http_admission_in_flight`, `http_admission_in_flight_peak` (the highest value since the previous sample: a stall
   * is over before a 10 s scrape sees its top), `http_admission_limit`, and `http_admission_refused_total` by `tier` and `mode`
-  * (in `shadow`: what `enforce` would have refused).
+  * (in `shadow`: what `enforce` would have refused). With adaptation also `http_admission_adaptive_limit_ratio` (the learned limit over its ceiling), `http_admission_rtt_seconds` by `tier` and
+  * `http_executor_lag_seconds` (the worst lateness of a 10 ms timer in the last second).
   */
 final class InboundAdmission private (settings: AtomicReference[InboundAdmissionSettings]):
   import InboundAdmission.*
@@ -79,13 +90,36 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
   private val inFlight = new AtomicInteger(0)
   private val peak = new AtomicInteger(0)
 
+  // the limit adaptation has arrived at; read only while `adaptive.enabled`
+  private val adaptation = new AtomicReference(AdaptiveLimit.initial(settings.get.adaptive, Classes, settings.get.maxInFlight))
+  private val learned = new AtomicInteger(adaptation.get.limit.toInt)
+  // what the window being collected has seen, per class: summed call time (ns) and calls completed
+  private val rttSum = Array.fill(Classes)(new LongAdder)
+  private val rttCount = Array.fill(Classes)(new LongAdder)
+  private val windowPeak = new AtomicInteger(0)
+  private val lagMax = new AtomicLong(0)
+
+  /** The number of places in force now. */
+  def limit: Int =
+    val s = settings.get
+    if s.adaptive.enabled then learned.get else s.maxInFlight
+
   def current: InboundAdmissionSettings = settings.get
-  def update(next: InboundAdmissionSettings): UIO[Unit] = ZIO.succeed(settings.set(next))
+  def update(next: InboundAdmissionSettings): UIO[Unit] =
+    ZIO.succeed:
+      val before = settings.getAndSet(next)
+      // Switched on: start from the limit the operator has been running with. Already on: what was learned stays if it is
+      // still inside the new bounds, and is brought inside them if not.
+      val state =
+        if !before.adaptive.enabled && next.adaptive.enabled then AdaptiveLimit.initial(next.adaptive, Classes, next.maxInFlight)
+        else AdaptiveLimit.rebound(adaptation.get, next.adaptive)
+      adaptation.set(state)
+      learned.set(state.limit.toInt)
   def inFlightNow: Int = inFlight.get
 
   /** Takes a place if there is one for `tier`. */
   private def tryEnter(tier: Tier, s: InboundAdmissionSettings): Boolean =
-    val limit = s.threshold(tier)
+    val limit = s.threshold(tier, if s.adaptive.enabled then learned.get else s.maxInFlight)
     var entered = false
     var done = false
     while !done do
@@ -97,6 +131,8 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
         // the highest value since the last sample
         var p = peak.get
         while cur + 1 > p && !peak.compareAndSet(p, cur + 1) do p = peak.get
+        var w = windowPeak.get
+        while cur + 1 > w && !windowPeak.compareAndSet(w, cur + 1) do w = windowPeak.get
     entered
 
   private def refusal(s: InboundAdmissionSettings): Response =
@@ -115,15 +151,69 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
             // Uninterruptible from taking the place to the `ensuring` that gives it back: an interrupt landing between the two
             // would leak a place for good, and enough leaked places refuse everything.
             ZIO.uninterruptibleMask: restore =>
-              if tryEnter(tier, s) then restore(handler(request)).ensuring(ZIO.succeed(inFlight.decrementAndGet()))
+              if tryEnter(tier, s) then served(tier, handler, request, restore)
               else
                 val tags = Set(MetricLabel("tier", tier.toString.toLowerCase), MetricLabel("mode", s.mode.toString.toLowerCase))
                 refused.tagged(tags).increment *>
                   (if enforce then ZIO.succeed(refusal(s))
                    else
                      // shadow: let it through, counted in flight like any other so the numbers stay honest
-                     ZIO.succeed(inFlight.incrementAndGet()) *>
-                       restore(handler(request)).ensuring(ZIO.succeed(inFlight.decrementAndGet())))
+                     ZIO.succeed(inFlight.incrementAndGet()) *> served(tier, handler, request, restore))
+
+  /** Runs the handler of an admitted request, gives its place back when it ends, and keeps its time for [[AdaptiveLimit]]
+    * (an interrupted request, a client that went away, says nothing about how long the work takes, so it is left out).
+    */
+  private def served[Env](
+      tier: Tier,
+      handler: Handler[Env, Response, Request, Response],
+      request: Request,
+      restore: ZIO.InterruptibilityRestorer,
+  ): ZIO[Scope & Env, Response, Response] =
+    Clock.nanoTime.flatMap: started =>
+      restore(handler(request)).onExit: exit =>
+        ZIO.succeed(inFlight.decrementAndGet()) *>
+          ZIO.when(!exit.isInterrupted && settings.get.adaptive.enabled)(
+            Clock.nanoTime.map(now => record(tier, now - started)),
+          )
+
+  private[http] def record(tier: Tier, nanos: Long): Unit =
+    val i = classOf(tier)
+    rttSum(i).add(nanos)
+    rttCount(i).increment()
+
+  /** One adaptation step over the window that just ended. */
+  private[http] val adapt: UIO[Unit] =
+    ZIO.succeed:
+      val s = settings.get.adaptive
+      val windows = Vector.tabulate(Classes): i =>
+        val n = rttCount(i).sumThenReset()
+        val sum = rttSum(i).sumThenReset()
+        RttWindow(if n > 0 then sum.toDouble / n else 0.0, n.toInt)
+      val lag = Duration.fromNanos(lagMax.getAndSet(0))
+      val peakInWindow = windowPeak.getAndSet(inFlight.get)
+      if s.enabled then
+        val next = AdaptiveLimit.step(s, adaptation.get, windows, peakInWindow, lag)
+        adaptation.set(next)
+        learned.set(next.limit.toInt)
+      (windows, lag)
+    .flatMap: (windows, lag) =>
+      lagGauge.set(lag.toNanos / 1e9) *>
+        ZIO.foreachDiscard(windows.zipWithIndex): (w, i) =>
+          ZIO.when(w.completed > 0)(rttGauge.tagged("tier", ClassNames(i)).set(w.meanRtt / 1e9))
+
+  /** Measures how late the executor runs a short timer. A stalled pod completes no calls, so call times cannot show it; a
+    * timer that fires seconds late can.
+    */
+  private[http] def recordLag(nanos: Long): Unit = lagMax.accumulateAndGet(nanos, math.max)
+
+  private val probe: UIO[Nothing] =
+    (for
+      before <- Clock.nanoTime
+      _ <- ZIO.sleep(ProbeInterval)
+      after <- Clock.nanoTime
+      late = (after - before - ProbeInterval.toNanos).max(0)
+      _ = recordLag(late)
+    yield ()).forever
 
   /** A middleware classifying every route by its method and pattern; routes the function does not name are `Critical`. */
   def middleware(tierOf: (Method, String) => Tier): Middleware[Any] = new Middleware[Any]:
@@ -132,19 +222,33 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
         route.transform(protect(tierOf(route.routePattern.method, route.routePattern.pathCodec.render))),
       ))
 
-  /** Publishes the gauges once a second; run it for the life of the service. */
+  /** Publishes the gauges and adapts the limit once a second, and runs the lag probe; run it for the life of the service. */
   val sample: ZIO[Any, Nothing, Nothing] =
     (for
+      _ <- adapt
       _ <- inFlightGauge.set(inFlight.get.toDouble)
       _ <- peakGauge.set(peak.getAndSet(inFlight.get).toDouble)
-      _ <- limitGauge.set(settings.get.maxInFlight.toDouble)
-    yield ()).repeat(Schedule.fixed(1.second)).forever
+      _ <- limitGauge.set(limit.toDouble)
+      _ <- gradientGauge.set(adaptation.get.limit / math.max(1, settings.get.adaptive.maxLimit))
+    yield ()).repeat(Schedule.fixed(1.second)).forever.race(probe)
 
 object InboundAdmission:
   private val inFlightGauge = Metric.gauge("http_admission_in_flight")
   private val peakGauge = Metric.gauge("http_admission_in_flight_peak")
   private val limitGauge = Metric.gauge("http_admission_limit")
   private val refused = Metric.counter("http_admission_refused_total")
+  private val lagGauge = Metric.gauge("http_executor_lag_seconds")
+  private val rttGauge = Metric.gauge("http_admission_rtt_seconds")
+  private val gradientGauge = Metric.gauge("http_admission_adaptive_limit_ratio")
+
+  private val Classes = 3
+  private val ClassNames = Vector("critical", "continuation", "start")
+  private val ProbeInterval: Duration = 10.millis
+
+  private def classOf(tier: Tier): Int = tier match
+    case Tier.Never | Tier.Critical => 0
+    case Tier.Continuation => 1
+    case Tier.Start => 2
 
   def make(initial: InboundAdmissionSettings): UIO[InboundAdmission] =
     ZIO.succeed(new InboundAdmission(new AtomicReference(initial)))

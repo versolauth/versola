@@ -149,6 +149,61 @@ object InboundAdmissionSpec extends ZIOSpecDefault:
         yield assertTrue(adm.inFlightNow == 0)
       },
     ),
+    suite("adaptive limit")(
+      test("the limit is the learned one while adaptation is on, and call times that worsen shrink it") {
+        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
+          initial = adm.limit
+          _ <- ZIO.foreachDiscard(1 to 20)(_ => ZIO.succeed((1 to 100).foreach(_ => adm.record(Tier.Critical, 10_000_000L))) *> adm.adapt)
+          warm = adm.limit
+          _ <- ZIO.foreachDiscard(1 to 20)(_ => ZIO.succeed((1 to 100).foreach(_ => adm.record(Tier.Critical, 200_000_000L))) *> adm.adapt)
+        yield assertTrue(initial == 5, warm == 5, adm.limit < 5, adm.limit >= 2)
+      },
+      test("a stalled executor shrinks it even with no call completing") {
+        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
+          _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(3_000_000_000L)) *> adm.adapt)
+        yield assertTrue(adm.limit < 5, adm.limit >= 2)
+      },
+      test("what the limit has shrunk to is what requests are held to") {
+        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
+          _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(10_000_000_000L)) *> adm.adapt)
+          limit = adm.limit
+          entered <- Ref.make(0)
+          gate <- Promise.make[Nothing, Unit]
+          app = routes(entered, gate) @@ adm.middleware(tierOf)
+          held <- occupy(app, "/critical", limit, entered)
+          over <- app.runZIO(get("/critical"))
+          _ <- gate.succeed(())
+          _ <- ZIO.foreachDiscard(held)(_.join)
+        yield assertTrue(limit >= 2, limit <= 5, over.status == Status.ServiceUnavailable)
+      },
+      test("with adaptation off the limit is maxInFlight, and turning it on starts from it, inside the bounds") {
+        val on = settings(max = 5).copy(adaptive = AdaptiveSettings.default.copy(enabled = true, minLimit = 2, maxLimit = 12))
+        val tight = settings(max = 50).copy(adaptive = AdaptiveSettings.default.copy(enabled = true, minLimit = 2, maxLimit = 12))
+        for
+          adm <- InboundAdmission.make(settings(max = 5))
+          off = adm.limit
+          _ <- adm.update(on)
+          started = adm.limit
+          other <- InboundAdmission.make(settings(max = 5))
+          _ <- other.update(tight)
+        yield assertTrue(off == 5, started == 5, other.limit == 12)
+      },
+      test("the limit that was learned stays through a settings update that keeps it inside the bounds") {
+        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
+          _ <- ZIO.foreachDiscard(1 to 10)(_ => ZIO.succeed(adm.recordLag(1_000_000_000L)) *> adm.adapt)
+          learned = adm.limit
+          _ <- adm.update(settings(max = 5).copy(adaptive = adaptive))
+        yield assertTrue(adm.limit == learned, learned < 5)
+      },
+    ),
     test("settings can be replaced while the service runs") {
       for
         adm <- InboundAdmission.make(settings(max = 1))
