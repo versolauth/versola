@@ -228,3 +228,17 @@ test('a long key ID is cut with an ellipsis, never broken inside, and reads in f
   const title = page.locator('versola-keys-metadata content-header').getByRole('heading', { name: 'Keys & metadata' });
   expect((await title.boundingBox())!.height).toBeLessThan(60);
 });
+
+test('with the panel open the page makes room: the row menu stays visible and opens', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loadAdminApp(page, { path: `${path}&id=es256-a1`, state: state() });
+
+  const panelBox = await sidePanel(page, 'es256-a1').getByRole('dialog').boundingBox();
+  const menu = page.getByRole('button', { name: 'Actions for ps256-c0' });
+  const box = await menu.boundingBox();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x);
+  await menu.click();
+  await expect(page.getByRole('menuitem', { name: 'Open' })).toBeVisible();
+  const item = await page.getByRole('menuitem', { name: 'Open' }).boundingBox();
+  expect(item!.x + item!.width).toBeLessThanOrEqual(panelBox!.x);
+});

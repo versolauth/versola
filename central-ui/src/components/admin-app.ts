@@ -227,8 +227,15 @@ export class VersolaAdmin extends LitElement {
         flex: 1 1 auto;
         padding: 2rem;
         padding-right: calc(2rem + var(--panel-inset, 0rem));
+        transition: padding-right 0.15s ease;
         max-width: 1400px;
         min-width: 0; /* let children shrink instead of overflowing */
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .main-content {
+          transition: none;
+        }
       }
 
       /* Focus is moved here programmatically when the drawer closes (see

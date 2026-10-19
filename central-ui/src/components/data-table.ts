@@ -70,6 +70,9 @@ export class VersolaDataTable<T = unknown> extends LitElement {
       .table-card {
         padding: 0;
         overflow: visible;
+        /* The card mode below answers to the room the table has, not the window: a side panel
+           takes part of it. */
+        container: table / inline-size;
       }
 
       :host([flush]) .table-card {
@@ -268,7 +271,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
          render), so changing display here does not strip them (Safari/VoiceOver drop implicit
          roles on a display: block table), and the header row stays in the accessibility tree off
          screen. Each cell shows its column label through data-label. */
-      @media (max-width: 720px) {
+      @container table (max-width: 640px) {
         thead {
           position: absolute;
           left: -9999px;
