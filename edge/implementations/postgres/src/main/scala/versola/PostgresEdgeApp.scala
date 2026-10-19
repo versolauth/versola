@@ -85,6 +85,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       NativeAuthClient &
       NativeService
 
+  override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
+
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       EdgeController.routes,

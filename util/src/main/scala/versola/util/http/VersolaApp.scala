@@ -56,6 +56,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   /** Optional second application surface, typically reachable only by internal proxies. */
   def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
 
+  /** The tier of each route of the application server for [[InboundAdmission]], by method and route pattern; `None` (the
+    * default) puts no admission control in front of the service. Settings come from `HTTP_ADMISSION_*`, see
+    * [[InboundAdmissionSettings]].
+    */
+  protected def admissionTiers: Option[(Method, String) => Tier] = None
+
   /** Optional third application surface, terminating TLS itself and demanding a client
     * certificate on the handshake -- RFC 8705 §5's `mtls_endpoint_aliases`.
     *
@@ -284,10 +290,18 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         for
           _ <- ZIO.logInfo("Starting application server")
 
+          admission <- ZIO.foreach(admissionTiers): tiers =>
+            for
+              admission <- InboundAdmission.make(InboundAdmissionSettings.fromEnv)
+              _ <- ZIO.logInfo(s"inbound admission: ${admission.current}")
+              _ <- admission.sample.forkIn(scope)
+            yield (admission, tiers)
           port <- Server.install {
-            Observability.handleErrors(routes) @@
+            val served = Observability.handleErrors(routes) @@
               Observability.middleware @@
               SecurityHeaders.middleware
+            // outermost: a refused request costs no span and no log line
+            admission.fold(served)((adm, tiers) => served @@ adm.middleware(tiers))
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
           // Warmup.run's fiber can still be running past its own budget -- that is the point,
