@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { expectSheetWidth, findRequest, loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 import type { MockConfigState } from './mocks';
 
@@ -233,12 +233,15 @@ test('with the panel open the page makes room: the row menu stays visible and op
   await page.setViewportSize({ width: 1440, height: 900 });
   await loadAdminApp(page, { path: `${path}&id=es256-a1`, state: state() });
 
-  const panelBox = await sidePanel(page, 'es256-a1').getByRole('dialog').boundingBox();
+  // The reservation is a padding transition on <main>, so positions settle a moment after load:
+  // each edge is polled against the panel's own (also settling) left edge.
+  const panel = sidePanel(page, 'es256-a1').getByRole('dialog');
+  const rightEdge = async (locator: Locator) => { const box = await locator.boundingBox(); return box ? box.x + box.width : Infinity; };
+  const panelLeft = async () => (await panel.boundingBox())?.x ?? 0;
   const menu = page.getByRole('button', { name: 'Actions for ps256-c0' });
-  const box = await menu.boundingBox();
-  expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x);
+  await expect.poll(async () => (await rightEdge(menu)) <= (await panelLeft())).toBe(true);
   await menu.click();
-  await expect(page.getByRole('menuitem', { name: 'Open' })).toBeVisible();
-  const item = await page.getByRole('menuitem', { name: 'Open' }).boundingBox();
-  expect(item!.x + item!.width).toBeLessThanOrEqual(panelBox!.x);
+  const item = page.getByRole('menuitem', { name: 'Open' });
+  await expect(item).toBeVisible();
+  await expect.poll(async () => (await rightEdge(item)) <= (await panelLeft())).toBe(true);
 });
