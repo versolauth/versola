@@ -338,7 +338,7 @@ export class VersolaRolesList extends LitElement {
 
   private statusChips(role: Role) {
     return html`
-      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip warn">Inactive</span>`}
+      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip">Inactive</span>`}
       ${this.defaultRoleIds.has(role.id) ? html`<span class="chip">Default for sign-up</span>` : ''}
     `;
   }

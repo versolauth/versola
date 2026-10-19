@@ -84,7 +84,9 @@ test('opens a tenant: profile and signing key come from the listing, no per-tena
   // A tenant with no key of its own says so instead of showing nothing.
   await page.getByRole('button', { name: /^Open tenant (.* )?tenant-alpha$/ }).click();
   const alpha = panel(page, 'Alpha Workspace');
-  await expect(alpha.getByRole('region', { name: 'Security settings' })).toContainText("Auth's own key");
+  await expect(alpha.getByRole('region', { name: 'Security settings' })).toContainText('Default key');
+  await expect(alpha.getByRole('region', { name: 'Security settings' })).toContainText('no JWKS key is selected for this tenant');
+  await expect(alpha.getByText('Default key')).toHaveAttribute('title', /Auth signs with its own configured private key/);
   await expect(alpha.locator('.chip', { hasText: 'FAPI 2.0' })).toBeVisible();
 });
 
@@ -107,7 +109,7 @@ test('creates a tenant in the panel, selects it, opens it and refreshes the sele
   await expect(created.getByRole('dialog')).toBeVisible();
   await expect(created.locator('.chip', { hasText: 'Selected' })).toBeVisible();
   await expect(created.locator('.chip', { hasText: 'FAPI 2.0' })).toBeVisible();
-  await expect(created.getByRole('region', { name: 'Security settings' })).toContainText("Auth's own key");
+  await expect(created.getByRole('region', { name: 'Security settings' })).toContainText('Default key');
   await expect(page).toHaveURL(/tenant=tenant-gamma/);
   await expect(tenantSelectorButton(page)).toContainText('tenant-gamma');
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('selectedTenantId'))).toBe('tenant-gamma');

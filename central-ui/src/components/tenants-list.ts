@@ -25,6 +25,9 @@ import './side-panel';
 type TenantFilter = 'all' | 'edge' | 'unassigned';
 type TenantGroup = 'general' | 'edge';
 
+/** What a null `signingKeyId` means. */
+const DEFAULT_KEY_HINT = 'Auth signs with its own configured private key; no JWKS key is selected for this tenant.';
+
 const PROFILES: Array<{ id: SecurityProfile; title: string; text: string }> = [
   { id: 'fapi2', title: 'FAPI 2.0 (recommended)', text: 'Confidential clients only, sender-constrained tokens, pushed authorization requests.' },
   { id: 'standard', title: 'Standard', text: 'Also admits client secrets, RS256 keys and public native clients.' },
@@ -376,7 +379,7 @@ export class VersolaTenantsList extends LitElement {
   private signingKeyValue(tenant: Tenant) {
     return tenant.signingKeyId
       ? html`<span class="mono">${tenant.signingKeyId}</span>`
-      : html`<span class="muted">Auth's own key</span>`;
+      : html`<span class="muted" title=${DEFAULT_KEY_HINT}>Default key</span><div class="hint">${DEFAULT_KEY_HINT}</div>`;
   }
 
   private openSecuritySettings(tenant: Tenant) {
