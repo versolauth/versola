@@ -72,7 +72,7 @@ export class ContentHeader extends LitElement {
         }
 
         /* 2rem alongside a 2.75rem button leaves too little room for longer
-           titles ("Challenges & Security") on a ~390px screen. */
+           titles ("Authorization details") on a ~390px screen. */
         .header-title {
           font-size: var(--text-3xl);
         }

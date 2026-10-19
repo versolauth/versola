@@ -5,7 +5,8 @@ import './versola-logo';
 import './tenant-selector';
 import './theme-switcher';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'themes' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
+export type NavItem = 'security' | 'clients' | 'resources' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
+  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'forms' | 'themes';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -325,7 +326,7 @@ export class VersolaNavigation extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -335,7 +336,9 @@ export class VersolaNavigation extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:read');
       case 'users':
@@ -343,8 +346,6 @@ export class VersolaNavigation extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:read');
-      case 'locales':
-        return p.has('locales:read');
       default:
         return false;
     }
@@ -389,25 +390,26 @@ export class VersolaNavigation extends LitElement {
 
           <nav class="nav" aria-label="Sections">
             <div class="nav-section">
-              <div class="nav-section-title">Tenant Scoped</div>
-              ${this.navItem('challenges', 'Challenges & Security')}
+              <div class="nav-section-title">Tenant</div>
+              ${this.navItem('security', 'Security')}
               ${this.navItem('clients', 'Clients')}
-              ${this.navItem('permissions', 'Permissions')}
               ${this.navItem('resources', 'Resources')}
-              ${this.navItem('roles', 'Roles')}
               ${this.navItem('scopes', 'Scopes')}
+              ${this.navItem('permissions', 'Permissions')}
+              ${this.navItem('roles', 'Roles')}
+              ${this.navItem('otp-templates', 'OTP templates')}
+              ${this.navItem('authorization-details', 'Authorization details')}
             </div>
 
             <div class="nav-section">
               <div class="nav-section-title">Global</div>
+              ${this.navItem('tenants', 'Tenants')}
               ${this.navItem('edges', 'Edges')}
+              ${this.navItem('users', 'Users')}
+              ${this.navItem('keys', 'Keys & metadata')}
+              ${this.navItem('system-settings', 'System settings')}
               ${this.navItem('forms', 'Forms')}
               ${this.navItem('themes', 'Themes')}
-              ${this.navItem('locales', 'Locales')}
-              ${this.navItem('system-settings', 'System Settings')}
-              ${this.navItem('tenants', 'Tenants')}
-              ${this.navItem('users', 'Users')}
-              ${this.navItem('well-known', 'Well Known')}
             </div>
           </nav>
         </div>

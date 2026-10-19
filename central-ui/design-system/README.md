@@ -73,6 +73,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--danger-subtle`, `-text`, `-border` | `#fbeae6`, `#9c2915`, `#ec9a88` | `#3c201c`, `#ffab98`, `#80362c` | Danger fills and the outline danger button text |
 | `--info`, `-subtle`, `-text`, `-border` | same as accent | same as accent | Informational banners and badges (POST badge). Because it is the accent hue, a link inside a banner is **underlined** (`.banner a`); colour alone would not tell it from the text |
 | `--toggle-track-off`, `--toggle-knob-off` | `#7c766b`, `#ffffff` | `#616d70`, `#f0f1f0` | A switch in the off position (on: `--accent` / `--on-accent`) |
+| `--logo-swatch-light`, `--logo-swatch-dark` | `#fffdf9`, `#1c1b19` | same | The login forms' sheet of each scheme, behind a tenant logo preview (Security › Branding); the same in both console themes because the preview shows the logo where it is seen |
 | `--select-chevron` | image | image | The `<select>` and tenant-selector chevron, drawn in `--text-secondary` (an image cannot read a `var()`) |
 | `--shadow-sm` / `-md` / `-lg` | `rgba(28,27,25,…)` | `rgba(0,0,0,…)` | Elevation: `-lg` for popovers and the drawer, `-md` for suggestion lists |
 | `--ch-*`, `--cel-*` | GitHub Light-derived | GitHub Dark-derived | Syntax highlighting (`src/styles/code-highlight.ts`, `cel-highlight.ts`); every one passes 4.5:1 on `--code-bg` and `--bg-page` |
@@ -206,7 +207,7 @@ the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline er
 field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
 with Cancel and the one primary submit. No second Close at the top.
 
-**Settings pages** (System Settings, Challenges & Security, Well Known). Read-only cards in the
+**Settings pages** (System settings, Security, Keys & metadata). Read-only cards in the
 record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
 inputs, never two primary buttons in one region.
 

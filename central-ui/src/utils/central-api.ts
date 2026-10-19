@@ -11,15 +11,10 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
-  EmailRegistration,
   ClientTemplate,
   JwksKeySummary,
-  MtlsCertificateEncoding,
   MutualTlsAuth,
   SystemSettingsRecord,
-  PasskeySettings,
-  PhoneRegion,
-  SubmissionLimits,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -350,6 +345,10 @@ function invalidateAllRefData() {
   rolesStore.clear();
 }
 
+/** What central answered with, when it was JSON: a screen that can show more than the message
+ * (the keys a locale is missing, the lines a JSON Schema fails on) reads it from `error.details`. */
+export type ApiError = Error & { status: number; details?: unknown };
+
 function buildErrorMessage(status: number, bodyText: string): string {
   const trimmed = bodyText.trim();
 
@@ -358,14 +357,25 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[] };
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[]; InvalidSchema?: { errors?: string[] } };
     if (parsed.missing?.length) {
       const prefix = parsed.message || parsed.error || `Locale ${parsed.locale || ''} is incomplete`;
       return `${prefix}. Missing: ${parsed.missing.join(', ')}`;
     }
+    if (parsed.InvalidSchema?.errors?.length) {
+      return `Invalid JSON Schema: ${parsed.InvalidSchema.errors.join('; ')}`;
+    }
     return parsed.message || parsed.error || `Request failed (${status})`;
   } catch {
     return `${trimmed} (${status})`;
+  }
+}
+
+function parseErrorDetails(bodyText: string): unknown {
+  try {
+    return JSON.parse(bodyText) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -453,8 +463,10 @@ async function request<T>(
     }
 
     if (!response.ok) {
-      const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
+      const bodyText = await response.text();
+      const error = new Error(buildErrorMessage(response.status, bodyText)) as ApiError;
       error.status = response.status;
+      error.details = parseErrorDetails(bodyText);
       throw error;
     }
 
@@ -1339,8 +1351,9 @@ export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
 
-export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
-  return request<Record<string, unknown>>('/configuration/server-metadata');
+/** The stored overrides, or null when none are configured. */
+export async function fetchServerMetadata(): Promise<Record<string, unknown> | null> {
+  return (await request<Record<string, unknown> | null>('/configuration/server-metadata')) ?? null;
 }
 
 export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
@@ -1575,58 +1588,35 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
-const DEFAULT_ROLES = ['user'];
-
-export async function upsertChallengeSettings(
-  tenantId: string,
-  phoneRegions: PhoneRegion[],
-  submissionLimits: SubmissionLimits,
-  otpLength: number,
-  otpResendAfter: number,
-  passkeySettings: PasskeySettings,
-  authConversationTtlSeconds: number,
-  sessionTtlSeconds: number,
-  sessionIdleTtlSeconds: number | null,
-  userAgentTtlSeconds: number,
-  ipHeader: string,
-  acrVocabulary?: Record<string, string[]> | null,
-  postLogoutRedirectUris?: string[],
-  requireDpopNonce?: boolean,
-  mtlsCertificateHeader?: string | null,
-  mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
-  signingKeyId?: string | null,
-  clientAssertionMaxLifetimeSeconds?: number | null,
-  emailRegistration: EmailRegistration = DEFAULT_EMAIL_REGISTRATION,
-  defaultRoles: string[] = DEFAULT_ROLES,
-  logoLight?: string | null,
-  logoDark?: string | null,
-): Promise<void> {
+/** Replaces the tenant's whole record: central has no patch for it, so a group editor sends the
+ * other groups' current values back unchanged. Optional members go as explicit nulls, which
+ * central reads as "clear", never as "keep". */
+export async function upsertChallengeSettings(settings: ChallengeSettingsRecord): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
     body: {
-      tenantId,
-      phoneRegions,
-      submissionLimits,
-      otpLength,
-      otpResendAfter,
-      passkeySettings,
-      authConversationTtlSeconds,
-      sessionTtlSeconds,
-      sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
-      userAgentTtlSeconds,
-      ipHeader,
-      acrVocabulary: acrVocabulary ?? null,
-      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
-      requireDpopNonce: requireDpopNonce ?? null,
-      mtlsCertificateHeader: mtlsCertificateHeader ?? null,
-      mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
-      signingKeyId: signingKeyId ?? null,
-      clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
-      emailRegistration,
-      defaultRoles,
-      logoLight: logoLight ?? null,
-      logoDark: logoDark ?? null,
+      tenantId: settings.tenantId,
+      phoneRegions: settings.phoneRegions,
+      submissionLimits: settings.submissionLimits,
+      otpLength: settings.otpLength,
+      otpResendAfter: settings.otpResendAfter,
+      passkeySettings: settings.passkeySettings ?? null,
+      authConversationTtlSeconds: settings.authConversationTtlSeconds,
+      sessionTtlSeconds: settings.sessionTtlSeconds,
+      sessionIdleTtlSeconds: settings.sessionIdleTtlSeconds ?? null,
+      userAgentTtlSeconds: settings.userAgentTtlSeconds,
+      ipHeader: settings.ipHeader,
+      acrVocabulary: settings.acrVocabulary ?? null,
+      postLogoutRedirectUris: settings.postLogoutRedirectUris,
+      requireDpopNonce: settings.requireDpopNonce,
+      mtlsCertificateHeader: settings.mtlsCertificateHeader ?? null,
+      mtlsCertificateEncoding: settings.mtlsCertificateEncoding ?? null,
+      signingKeyId: settings.signingKeyId ?? null,
+      clientAssertionMaxLifetimeSeconds: settings.clientAssertionMaxLifetimeSeconds ?? null,
+      emailRegistration: settings.emailRegistration ?? { mode: 'closed', domains: [], blockSubaddress: false },
+      defaultRoles: settings.defaultRoles?.length ? settings.defaultRoles : ['user'],
+      logoLight: settings.logoLight ?? null,
+      logoDark: settings.logoDark ?? null,
     },
   });
 }

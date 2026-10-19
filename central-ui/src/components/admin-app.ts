@@ -22,10 +22,11 @@ import './tenants-list';
 import './edges-list';
 import './users-list';
 import './forms-list';
-import './locales-list';
 import './themes-list';
-import './challenges-list';
-import './well-known';
+import './security-settings';
+import './otp-templates-list';
+import './authorization-details-list';
+import './keys-metadata';
 import './system-settings';
 
 // The account settings page is auth's self-service surface (served by edge at
@@ -314,7 +315,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -324,7 +325,9 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:read');
       case 'users':
@@ -332,8 +335,6 @@ export class VersolaAdmin extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:read');
-      case 'locales':
-        return p.has('locales:read');
       default:
         return false;
     }
@@ -347,7 +348,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:manage');
       case 'edges':
         return p.has('edges:manage');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:manage');
       case 'clients':
       case 'scopes':
@@ -357,7 +358,9 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:manage');
       case 'resources':
         return p.has('resources:manage');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:manage');
       case 'users':
@@ -365,8 +368,6 @@ export class VersolaAdmin extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:manage');
-      case 'locales':
-        return p.has('locales:manage');
       default:
         return false;
     }
@@ -449,9 +450,11 @@ export class VersolaAdmin extends LitElement {
     });
   }
 
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'forms', 'themes']);
+
   /** The views whose records belong to the selected tenant: switching it closes the open record.
     * A global view keeps its record (the selector also fires on load, picking the first tenant). */
-  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'roles', 'challenges']);
+  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'roles', 'security', 'otp-templates', 'authorization-details']);
 
   private handleTenantChange(e: CustomEvent) {
     if (e.detail.tenantId !== this.currentTenantId && VersolaAdmin.TENANT_SCOPED_VIEWS.has(this.currentView)) {
@@ -485,15 +488,16 @@ export class VersolaAdmin extends LitElement {
     // The old deep link to an edge; `id` is what every section reads now.
     const recordId = params.get('id') ?? params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'themes' || urlView === 'locales' || urlView === 'challenges' || urlView === 'well-known' || urlView === 'system-settings') {
-      this.currentView = urlView;
+    if (urlView && VersolaAdmin.VIEWS.has(urlView as NavItem)) {
+      this.currentView = urlView as NavItem;
     }
 
     this.currentTenantId = urlTenantId || localStorage.getItem('selectedTenantId');
     this.clientToExpandOnLoad = expandClient;
+    // A settings record (Security, Keys & metadata) has no `id`, so `edit` stands on its own there.
     this.recordRoute = {
       id: recordId,
-      edit: recordId ? params.get('edit') : null,
+      edit: params.get('edit'),
       create: params.get('new') === '1',
       layout: params.get('layout') === 'page' ? 'page' : null,
     };
@@ -513,7 +517,7 @@ export class VersolaAdmin extends LitElement {
     url.searchParams.delete('expandEdge');
 
     const route = this.recordRoute;
-    for (const [key, value] of [['id', route.id], ['edit', route.id ? route.edit : null], ['new', route.create ? '1' : null], ['layout', route.layout]] as const) {
+    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout]] as const) {
       if (value) url.searchParams.set(key, value);
       else url.searchParams.delete(key);
     }
@@ -527,9 +531,10 @@ export class VersolaAdmin extends LitElement {
     this.currentView = 'edges';
   };
 
-  /** A section sends the operator to another view (a role's banner to the sign-in settings). */
-  private handleNavigateView = (e: CustomEvent<{ view: NavItem }>) => {
-    this.recordRoute = EMPTY_RECORD_ROUTE;
+  /** A section sends the operator to another view (a role's banner to the sign-in settings), to
+    * one record of it when `id` is given (a default role, a signing key, a tenant). */
+  private handleNavigateView = (e: CustomEvent<{ view: NavItem; id?: string }>) => {
+    this.recordRoute = { ...EMPTY_RECORD_ROUTE, id: e.detail.id ?? null };
     this.currentView = e.detail.view;
   };
 
@@ -580,14 +585,17 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
       case 'themes':
         return html`<versola-themes-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('themes')}></versola-themes-list>`;
-      case 'locales':
-        return html`<versola-locales-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('locales')}></versola-locales-list>`;
-      case 'challenges':
-        return html`<versola-challenges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('challenges')}></versola-challenges-list>`;
-      case 'well-known':
-        return html`<versola-well-known .canManage=${this.canManage('well-known')}></versola-well-known>`;
+      case 'security':
+        return html`<versola-security-settings .tenantId=${this.currentTenantId} .canManage=${this.canManage('security')} .route=${this.recordRoute}></versola-security-settings>`;
+      case 'otp-templates':
+        return html`<versola-otp-templates-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('otp-templates')} .route=${this.recordRoute}></versola-otp-templates-list>`;
+      case 'authorization-details':
+        return html`<versola-authorization-details-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('authorization-details')} .route=${this.recordRoute}></versola-authorization-details-list>`;
+      case 'keys':
+        return html`<versola-keys-metadata .canManage=${this.canManage('keys')} .route=${this.recordRoute}></versola-keys-metadata>`;
       case 'system-settings':
-        return html`<versola-system-settings .canManage=${this.canManage('system-settings')}></versola-system-settings>`;
+        return html`<versola-system-settings .canManage=${this.canManage('system-settings')} .route=${this.recordRoute}
+          .canReadLocales=${this.adminPermissions.has('locales:read')} .canManageLocales=${this.adminPermissions.has('locales:manage')}></versola-system-settings>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

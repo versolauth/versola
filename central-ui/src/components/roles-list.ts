@@ -438,10 +438,10 @@ export class VersolaRolesList extends LitElement {
       <div class="banner info" role="status">
         <div class="banner-text">
           <div class="banner-title">${statusIcon('info')}Granted to every self-registered account</div>
-          <div>Change the default roles under Challenges &amp; Security › Registration before deleting it.</div>
+          <div>Change the default roles under Security › Registration before deleting it.</div>
         </div>
         <button type="button" class="btn btn-secondary btn-sm"
-          @click=${() => this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'challenges' }, bubbles: true, composed: true }))}>Open sign-in settings</button>
+          @click=${() => this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'security' }, bubbles: true, composed: true }))}>Open sign-in settings</button>
       </div>
     `;
   }

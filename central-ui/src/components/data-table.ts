@@ -20,6 +20,8 @@ export type RowMenuItem = {
   danger?: boolean;
   /** When the visible label is not specific enough on its own (`Delete client alpha-web`). */
   ariaLabel?: string;
+  /** Shown but inert, with the reason as its title (`Pick another default first`). */
+  disabledReason?: string;
 };
 
 /**
@@ -51,6 +53,8 @@ export class VersolaDataTable<T = unknown> extends LitElement {
   /** A click anywhere on a row (outside its menu) fires `row-select` with the row; the row's
    *  `.row-link` button stays the keyboard way in. */
   @property({ type: Boolean }) selectable = false;
+  /** Inside a record card: no outline of its own, the card's edge is the table's. */
+  @property({ type: Boolean, reflect: true }) flush = false;
   @state() private openMenuKey: string | null = null;
 
   static styles = [
@@ -66,6 +70,12 @@ export class VersolaDataTable<T = unknown> extends LitElement {
       .table-card {
         padding: 0;
         overflow: visible;
+      }
+
+      :host([flush]) .table-card {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
       }
 
       table {
@@ -236,6 +246,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       .menu button.danger {
         color: var(--danger);
+      }
+
+      .menu button[aria-disabled='true'] {
+        color: var(--text-muted);
+        cursor: default;
+      }
+
+      .menu button[aria-disabled='true']:hover {
+        background: none;
       }
 
       /* ── card mode ──
@@ -413,9 +432,9 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           <div class="menu" role="menu" aria-label=${label}>
             ${items.map((item, index) => html`
               <button type="button" role="menuitem" tabindex="-1" class=${item.danger ? 'danger' : ''}
-                aria-label=${item.ariaLabel ?? nothing}
+                aria-label=${item.ariaLabel ?? nothing} aria-disabled=${item.disabledReason ? 'true' : nothing} title=${item.disabledReason || nothing}
                 @keydown=${(e: KeyboardEvent) => this.handleMenuKey(e, index)}
-                @click=${() => { this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
+                @click=${() => { if (item.disabledReason) return; this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
             `)}
           </div>` : ''}
       </td>

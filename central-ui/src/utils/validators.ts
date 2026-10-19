@@ -418,7 +418,7 @@ export function validateMtlsTermination(
   if (mtlsAuth && !mtlsCertificateHeader) {
     return {
       valid: false,
-      error: 'This tenant has no mTLS certificate header configured under Challenges & Security - '
+      error: 'This tenant has no mTLS certificate header configured under Security › Tokens & keys - '
         + 'Central refuses a client that registers an mTLS credential without one, '
         + 'since no certificate would ever reach auth for it.',
     };
