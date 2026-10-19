@@ -319,7 +319,7 @@ export class VersolaSystemSettings extends LitElement {
       title: 'Remove locale',
       messagePrefix: 'Remove locale ',
       messageSubject: locale.code,
-      messageSuffix: `? Login pages stop offering ${locale.name}; its content stays, and users who chose it fall back to the default locale.`,
+      messageSuffix: `? Its texts are deleted from every form and OTP template, login pages stop offering ${locale.name}, and users who chose it fall back to the default locale. This can't be undone.`,
       confirmLabel: 'Remove',
     });
     if (!confirmed) return;

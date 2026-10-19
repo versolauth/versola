@@ -140,7 +140,10 @@ test('removes a locale after confirmation', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Actions for kk' }).click();
   await page.getByRole('menuitem', { name: 'Remove locale kk' }).click();
-  await page.getByRole('dialog', { name: 'Remove locale' }).getByRole('button', { name: 'Remove', exact: true }).click();
+  // central deletes the locale's texts from every form and OTP template: the dialog must say so.
+  const dialog = page.getByRole('dialog', { name: 'Remove locale' });
+  await expect(dialog).toContainText('Its texts are deleted from every form and OTP template');
+  await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
 
   expect((await findRequest(api.requests, 'PUT', '/configuration/locales')).body).toMatchObject({ add: [], delete: ['kk'] });
   await expect(page.getByRole('row').filter({ hasText: 'Kazakh' })).toHaveCount(0);

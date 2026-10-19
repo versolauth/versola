@@ -375,7 +375,7 @@ export class VersolaTenantsList extends LitElement {
     return PROFILES.find(candidate => candidate.id === tenant.securityProfile)?.title ?? tenant.securityProfile;
   }
 
-  /** The `kid` from the listing; `null` is auth's own configured key. Changed under Challenges & Security. */
+  /** The `kid` from the listing; `null` is auth's own configured key. Changed under Security. */
   private signingKeyValue(tenant: Tenant) {
     return tenant.signingKeyId
       ? html`<span class="mono">${tenant.signingKeyId}</span>`
