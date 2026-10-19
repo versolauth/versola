@@ -181,6 +181,16 @@ type PasskeyInfoDto = {
 };
 
 type SessionClientEntryDto = { clientId: string; enteredAt: string; expiresAt: string };
+type UserAgentDto = {
+  id: string;
+  userAgent?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+  createdAt: string;
+  expiresAt: string;
+};
 type UserSessionDto = {
   publicId?: string;
   clients: SessionClientEntryDto[];
@@ -189,7 +199,13 @@ type UserSessionDto = {
   os?: string;
   browser?: string;
   version?: string;
+  expiresAt?: string;
+  idleExpiresAt?: string;
+  userAgent?: UserAgentDto;
 };
+/** A remembered user agent as the mock stores it; the device listing pairs it with the live session
+ *  that names it and adds the ended sessions of the agent, the way auth does. */
+type UserAgentRecordDto = UserAgentDto & { endedSessionIds?: string[] };
 
 type UserRefreshTokenDto = {
   sessionId: string;
@@ -209,6 +225,8 @@ type UserDto = {
   rolesByTenant?: Record<string, string[]>;
   passkeys?: PasskeyInfoDto[];
   sessions?: UserSessionDto[];
+  /** Every user agent the user has, signed in or not. */
+  userAgents?: UserAgentRecordDto[];
   refreshTokens?: UserRefreshTokenDto[];
 };
 
@@ -467,6 +485,12 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
 function readBody(request: Request): unknown {
   const body = request.postData();
   return body ? JSON.parse(body) : undefined;
+}
+
+/** Remembers an ended session on its user agent, as auth keeps ended sessions until it sweeps them. */
+function endedSession(user: UserDto, session: UserSessionDto) {
+  const agent = user.userAgents?.find(candidate => candidate.id === session.userAgent?.id);
+  if (agent && session.publicId) agent.endedSessionIds = [...(agent.endedSessionIds ?? []), session.publicId];
 }
 
 function pageSlice<T>(items: T[], url: URL): T[] {
@@ -1738,16 +1762,60 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             return;
           }
           user.sessions = (user.sessions ?? []).filter(candidate => candidate.publicId !== sessionId);
+          endedSession(user, session);
           await route.fulfill({ status: 204, body: '' });
           return;
         }
         const userId = url.searchParams.get('userId') ?? '';
         const user = state.users.find(candidate => candidate.id === userId);
         if (user) {
+          (user.sessions ?? []).forEach(session => endedSession(user, session));
           user.sessions = [];
           user.refreshTokens = [];
         }
         await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/user-agents') {
+      if (method === 'GET') {
+        // Mirrors central: every remembered user agent with the live session under it, `session: null` once signed out.
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        const agents = user.userAgents ?? [];
+        const devices = agents.map(({ endedSessionIds, ...userAgent }) => {
+          const session = (user.sessions ?? []).find(candidate => candidate.userAgent?.id === userAgent.id) ?? null;
+          return { userAgent, session, endedSessionIds: session ? [] : (endedSessionIds ?? []) };
+        });
+        // A live session whose user agent row is gone is listed without one.
+        const orphans = (user.sessions ?? [])
+          .filter(session => !agents.some(agent => agent.id === session.userAgent?.id))
+          .map(session => ({ session, endedSessionIds: [] as string[] }));
+        await route.fulfill(json([...devices, ...orphans]));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        // `userAgentId` that is not the user's: 404. Otherwise the agent, its session and the refresh
+        // tokens bound to its sessions (live or ended) go.
+        const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+        const userAgentId = url.searchParams.get('userAgentId');
+        const agent = user?.userAgents?.find(candidate => candidate.id === userAgentId);
+        if (!user || !agent) {
+          await route.fulfill(json({ message: 'User agent not found' }, 404));
+          return;
+        }
+        const live = (user.sessions ?? []).filter(session => session.userAgent?.id === agent.id);
+        const sessionIds = new Set([...live.map(session => session.publicId), ...(agent.endedSessionIds ?? [])]);
+        user.sessions = (user.sessions ?? []).filter(session => session.userAgent?.id !== agent.id);
+        user.refreshTokens = (user.refreshTokens ?? []).filter(token => !sessionIds.has(token.sessionId));
+        user.userAgents = (user.userAgents ?? []).filter(candidate => candidate.id !== agent.id);
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }
