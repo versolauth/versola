@@ -4,7 +4,17 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentId}
+import versola.oauth.session.model.{
+  ClientEntry,
+  PublicSessionId,
+  SessionId,
+  SessionInfo,
+  SessionRecord,
+  SessionUnderUserAgent,
+  UserAgentId,
+  UserAgentRecord,
+  UserDevice,
+}
 import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
@@ -96,6 +106,29 @@ object LogoutServiceSpec extends UnitSpecBase:
       TestEnvConfig.coreConfig,
       outbox,
     )
+
+  private val agent = UserAgentRecord(
+    id = testUserAgentId,
+    userAgent = Some("raw"),
+    platform = None,
+    os = None,
+    browser = None,
+    version = None,
+    createdAt = Instant.EPOCH,
+    expiresAt = Instant.EPOCH,
+  )
+  private val liveSession = SessionUnderUserAgent(
+    publicId = publicSessionId1,
+    clients = record1.clients,
+    createdAt = Instant.EPOCH,
+    platform = None,
+    os = None,
+    browser = None,
+    version = None,
+    expiresAt = Instant.EPOCH,
+    idleExpiresAt = None,
+    userAgent = Some(agent),
+  )
 
   def spec = suite("LogoutService")(
     suite("logout")(
@@ -243,7 +276,18 @@ object LogoutServiceSpec extends UnitSpecBase:
       test("ends the user's own session the way a logout does, relying parties told") {
         val env = Env()
         val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
-        val listed = SessionUnderUserAgent(publicSessionId1, record1.clients, Instant.EPOCH, None, None, None, None, Instant.EPOCH)
+        val listed = SessionUnderUserAgent(
+          publicId = publicSessionId1,
+          clients = record1.clients,
+          createdAt = Instant.EPOCH,
+          platform = None,
+          os = None,
+          browser = None,
+          version = None,
+          expiresAt = Instant.EPOCH,
+          idleExpiresAt = None,
+          userAgent = None,
+        )
         for
           _ <- env.sessionService.listByUser.succeedsWith(List(listed))
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
@@ -255,6 +299,49 @@ object LogoutServiceSpec extends UnitSpecBase:
           env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
         )
+      },
+    ),
+    suite("forgetUserAgent")(
+      test("ends the live session like a logout, relying parties told, then forgets the user agent") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        for
+          _ <- env.sessionService.listDevicesByUser.succeedsWith(List(UserDevice(Some(agent), Some(liveSession), Nil)))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          _ <- env.sessionService.forgetUserAgent.succeedsWith(true)
+          forgotten <- env.service.forgetUserAgent(userId, testUserAgentId)
+        yield assertTrue(
+          forgotten,
+          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
+          env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
+          env.sessionService.forgetUserAgent.calls == List((userId, testUserAgentId)),
+        )
+      },
+      test("forgets a signed-out user agent without ending any session") {
+        val env = Env()
+        for
+          _ <- env.sessionService.listDevicesByUser.succeedsWith(List(UserDevice(Some(agent), None, List(PublicSessionId("old")))))
+          _ <- env.sessionService.forgetUserAgent.succeedsWith(true)
+          forgotten <- env.service.forgetUserAgent(userId, testUserAgentId)
+        yield assertTrue(
+          forgotten,
+          env.sessionService.invalidate.calls.isEmpty,
+          env.sessionService.forgetUserAgent.calls == List((userId, testUserAgentId)),
+        )
+      },
+      test("refuses a user agent that is not the user's, ending and forgetting nothing") {
+        val env = Env()
+        val someoneElses = UserDevice(Some(agent.copy(id = UserAgentId(UUID.randomUUID()))), Some(liveSession), Nil)
+        for
+          _ <- env.sessionService.listDevicesByUser.succeedsWith(List(someoneElses))
+          forgotten <- env.service.forgetUserAgent(userId, testUserAgentId)
+        yield assertTrue(
+          !forgotten,
+          env.sessionService.invalidate.calls.isEmpty,
+          env.sessionService.forgetUserAgent.calls.isEmpty,
+        ).label("a user agent id is not proof of ownership: only the user's own devices are listed to be forgotten")
       },
     ),
     suite("invalidateAllSessions")(

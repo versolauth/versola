@@ -1,7 +1,8 @@
 package versola.oauth.session
 
 import versola.oauth.model.UserAgentData
-import versola.oauth.session.model.{UserAgentDetails, UserAgentId}
+import versola.oauth.session.model.{UserAgentDetails, UserAgentId, UserAgentRecord}
+import versola.user.model.UserId
 import zio.{Duration, Task}
 
 trait UserAgentRepository:
@@ -30,3 +31,15 @@ trait UserAgentRepository:
    *  unknown (e.g. expired and cleaned up).
    */
   def touch(id: UserAgentId, data: UserAgentData, ttl: Duration): Task[Boolean]
+
+  /** The user's remembered user agents (rows that have not expired), most recently signed-in
+   *  first, with everything the row stores.
+   */
+  def findByUserId(userId: UserId): Task[List[UserAgentRecord]]
+
+  /** Forgets a user agent: deletes the row and, in the same transaction, expires the sessions
+   *  that ran under it and the refresh tokens bound to those sessions. Refresh tokens name only
+   *  their session, so a token whose session row has already been swept cannot be reached from
+   *  here. Returns `false` when the id is not this user's.
+   */
+  def forget(id: UserAgentId, userId: UserId): Task[Boolean]
