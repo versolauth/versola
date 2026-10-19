@@ -73,10 +73,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         border-collapse: collapse;
       }
 
+      /* The header is a kicker: uppercase, bold, spaced; no fill. */
       th {
         text-align: left;
         font-size: var(--text-xs);
-        font-weight: 500;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
         color: var(--text-secondary);
         padding: 0.75rem var(--spacing-md);
         border-bottom: 1px solid var(--border-default);
@@ -190,10 +193,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       .menu-button {
         color: var(--text-primary);
-        border: 1px solid var(--border-input);
+        border: 1.5px solid var(--border-input);
         min-width: 2rem;
         min-height: 2rem;
         border-radius: var(--radius-md);
+      }
+
+      .menu-button:hover {
+        border-color: var(--text-primary);
+        color: var(--text-primary);
       }
 
       .menu {
@@ -204,11 +212,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         min-width: 11rem;
         display: flex;
         flex-direction: column;
-        padding: 0.25rem;
+        padding: 0.375rem;
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
+        border-radius: var(--radius-inner);
         background: var(--surface-raised);
-        box-shadow: var(--shadow-lg);
+        box-shadow: var(--shadow-card);
         text-align: left;
       }
 

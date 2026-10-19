@@ -11,7 +11,7 @@ export class VersolaLoadingCards extends LitElement {
     css`
       :host { display: block; }
       .stack { display: grid; gap: var(--spacing-md); }
-      .card { padding: var(--spacing-lg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--surface); }
+      .card { padding: var(--spacing-lg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-card); }
       .line { height: 0.875rem; border-radius: 999px; background: linear-gradient(90deg, var(--surface-inset), var(--accent-subtle), var(--surface-inset)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
       .line + .line { margin-top: 0.75rem; }
       .line.short { width: 32%; }
