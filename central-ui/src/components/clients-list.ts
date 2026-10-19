@@ -642,7 +642,7 @@ export class VersolaClientsList extends LitElement {
       /* ── client page ── */
       .banner {
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-inner);
         padding: var(--spacing-md) var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
         background: var(--surface);

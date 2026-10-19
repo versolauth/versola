@@ -71,9 +71,11 @@ export class VersolaSidePanel extends LitElement {
         flex-direction: column;
         width: min(100vw, 35rem);
         background: var(--surface);
-        border-left: 1px solid var(--border-default);
-        box-shadow: var(--shadow-lg);
+        /* The login sheet: rounded on its free edge, the sheet shadow, no line. */
+        border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+        box-shadow: var(--shadow-sheet);
         color: var(--text-primary);
+        overflow: hidden;
       }
 
       :host([wide]) .panel {
@@ -129,7 +131,8 @@ export class VersolaSidePanel extends LitElement {
       .panel-title {
         margin: 0;
         font-size: var(--text-2xl);
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: -0.02em;
         overflow-wrap: anywhere;
       }
 
@@ -204,7 +207,7 @@ export class VersolaSidePanel extends LitElement {
 
       @media (max-width: 720px) {
         .panel {
-          border-left: 0;
+          border-radius: 0;
         }
 
         .panel-head {
