@@ -4,10 +4,10 @@ export interface Tenant {
   name: string;
   description?: string;
   edgeId?: string | null;
-  /** From the tenant's challenge settings; fixed when the tenant is created. */
-  securityProfile?: SecurityProfile;
+  /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
+  securityProfile: SecurityProfile;
   /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
-  signingKeyId?: string | null;
+  signingKeyId: string | null;
 }
 
 // Authorization Preset

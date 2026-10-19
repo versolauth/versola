@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
+import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles, toggleStyles } from '../styles/components';
 import { getPermissionCategory, type Locale, type Permission, type Resource, type Role } from '../types';
 import { createRole, deleteRole, fetchChallengeSettings, fetchLocales, getPermissions, getResources, getRoles, updateRole } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -30,10 +30,13 @@ type RoleFilter = 'all' | 'active' | 'inactive' | 'default';
 type RoleGroup = 'general' | 'permissions';
 
 const DEFAULT_ROLE_REASON = 'Default role for new registrations: change it in the sign-in settings first.';
+/** What `active` does: central lists and assigns an inactive role as usual, but edge skips it on
+ *  sync (`RolesSyncClient`), so the users holding it get none of its permissions. */
+const ACTIVE_HINT = 'An inactive role stays assigned to its users, but the edge grants none of its permissions until it is switched on again.';
 
 /**
  * Roles: the table of the tenant's roles and, for the one selected, the side panel with its
- * description, its permissions grouped by category, the Fixed group and the danger card.
+ * description, its permissions grouped by category and the danger card.
  * Editing a group and creating a role happen in the same panel; the permissions editor and the
  * create form open the wide panel for the picker.
  */
@@ -77,6 +80,7 @@ export class VersolaRolesList extends LitElement {
     editorStyles,
     iconButtonStyles,
     recordStyles,
+    toggleStyles,
     css`
       :host {
         display: block;
@@ -334,7 +338,7 @@ export class VersolaRolesList extends LitElement {
 
   private statusChips(role: Role) {
     return html`
-      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip danger">Inactive</span>`}
+      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip warn">Inactive</span>`}
       ${this.defaultRoleIds.has(role.id) ? html`<span class="chip">Default for sign-up</span>` : ''}
     `;
   }
@@ -421,10 +425,6 @@ export class VersolaRolesList extends LitElement {
           : html`<div class="record-row"><div class="record-value muted">No permissions. Users with this role can call nothing.</div></div>`}
         @edit=${() => this.openEditor('permissions')}></versola-record-card>
 
-      <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
-        ${this.row('Role ID', html`<span class="mono">${role.id}</span>`, 'Set at creation')}
-      `}></versola-record-card>
-
       ${this.canManage ? html`
         <versola-danger-card heading="Delete role" text="Users assigned this role lose the permissions it grants. This can't be undone."
           actionLabel="Delete role" .actionAriaLabel=${`Delete role ${role.id}`} .disabledReason=${isDefault ? DEFAULT_ROLE_REASON : ''}
@@ -486,12 +486,14 @@ export class VersolaRolesList extends LitElement {
     const locked = this.editorMode === 'edit' && !!this.openRole && this.defaultRoleIds.has(this.openRole.id);
     return html`
       <div class="form-group">
-        <label class="toggle-row">
-          <input type="checkbox" id="role-active" .checked=${this.draftActive} ?disabled=${locked} aria-describedby="role-active-hint"
-            @change=${(e: Event) => this.draftActive = (e.target as HTMLInputElement).checked} />
+        <label class="toggle-row" for="role-active">
+          <span class="toggle">
+            <input type="checkbox" role="switch" id="role-active" .checked=${this.draftActive} ?disabled=${locked} aria-describedby="role-active-hint"
+              @change=${(e: Event) => this.draftActive = (e.target as HTMLInputElement).checked} />
+          </span>
           <span>Active</span>
         </label>
-        <div class="hint" id="role-active-hint">${locked ? DEFAULT_ROLE_REASON : 'An inactive role stays assigned but grants nothing until it is switched on.'}</div>
+        <div class="hint" id="role-active-hint">${locked ? DEFAULT_ROLE_REASON : ACTIVE_HINT}</div>
       </div>
     `;
   }

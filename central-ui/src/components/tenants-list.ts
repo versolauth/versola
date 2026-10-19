@@ -3,7 +3,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type { Edge, SecurityProfile, Tenant } from '../types';
-import { createTenant, deleteTenant, fetchChallengeSettings, fetchEdges, fetchTenants, updateTenant } from '../utils/central-api';
+import { createTenant, deleteTenant, fetchEdges, fetchTenants, updateTenant } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
@@ -31,11 +31,11 @@ const PROFILES: Array<{ id: SecurityProfile; title: string; text: string }> = [
 ];
 
 /**
- * Tenants: the table of every tenant and, for the one selected, the side panel with its
- * description, its edge, a link to its security settings, the Fixed group (the ID and the
- * security profile, which `GET /configuration/tenants` does not carry and is read from the
- * tenant's challenge settings when the panel opens) and the danger card. Editing a group and
- * creating a tenant happen in the same panel; creating one selects it.
+ * Tenants: the table of every tenant (with its security profile) and, for the one selected, the
+ * side panel with its description, its edge, its signing key with a link to the security settings,
+ * the Fixed group (the ID and the security profile) and the danger card. Everything shown comes
+ * from `GET /configuration/tenants`. Editing a group and creating a tenant happen in the same
+ * panel; creating one selects it.
  */
 @customElement('versola-tenants-list')
 export class VersolaTenantsList extends LitElement {
@@ -49,8 +49,6 @@ export class VersolaTenantsList extends LitElement {
   @state() private filter: TenantFilter = 'all';
   @state() private isLoading = false;
   @state() private errorMessage = '';
-  /** Security profiles read per opened tenant; `error` when the settings could not be read. */
-  @state() private profiles: Map<string, SecurityProfile | 'error'> = new Map();
   @state() private draftId = '';
   @state() private draftDescription = '';
   @state() private draftEdgeId = '';
@@ -120,8 +118,6 @@ export class VersolaTenantsList extends LitElement {
         this.draftKey = draftKey;
         if (mode !== 'view') this.resetDraft();
       }
-      const open = this.openTenant;
-      if (open && !this.profiles.has(open.id)) void this.loadProfile(open.id);
     }
   }
 
@@ -138,15 +134,6 @@ export class VersolaTenantsList extends LitElement {
       this.edges = [];
     } finally {
       this.isLoading = false;
-    }
-  }
-
-  private async loadProfile(tenantId: string) {
-    try {
-      const settings = await fetchChallengeSettings(tenantId);
-      this.profiles = new Map(this.profiles).set(tenantId, settings?.securityProfile ?? 'fapi2');
-    } catch {
-      this.profiles = new Map(this.profiles).set(tenantId, 'error');
     }
   }
 
@@ -245,7 +232,9 @@ export class VersolaTenantsList extends LitElement {
     const description = mode === 'create' || group === 'general' ? this.draftDescription.trim() : existing!.description ?? '';
     const edgeId = mode === 'create' || group === 'edge' ? this.draftEdgeId || null : existing!.edgeId ?? null;
     const id = mode === 'create' ? this.draftId.trim() : existing!.id;
-    const next: Tenant = { id, name: description || id, description, edgeId };
+    const next: Tenant = mode === 'create'
+      ? { id, name: description || id, description, edgeId, securityProfile: this.draftProfile, signingKeyId: null }
+      : { ...existing!, name: description || id, description, edgeId };
 
     this.isSaving = true;
     this.formError = '';
@@ -253,7 +242,6 @@ export class VersolaTenantsList extends LitElement {
       if (mode === 'create') {
         await createTenant(id, description, edgeId, this.draftProfile);
         this.tenants = [...this.tenants, next].sort((a, b) => a.id.localeCompare(b.id));
-        this.profiles = new Map(this.profiles).set(id, this.draftProfile);
         this.selectTenant(id);
         this.notifyTenantsUpdated();
         dispatchRecordRoute(this, { id, edit: null, create: false });
@@ -347,6 +335,7 @@ export class VersolaTenantsList extends LitElement {
         </button>
         ${tenant.id === this.selectedTenantId ? html`<div class="row-flags"><span class="chip ok">${statusIcon('check', 'icon', 14)}Selected</span></div>` : nothing}` },
       { id: 'edge', label: 'Edge', cell: tenant => html`<div class="chips">${this.edgeValue(tenant)}</div>` },
+      { id: 'profile', label: 'Security profile', cell: tenant => html`<div class="chips">${this.profileChip(tenant)}</div>` },
     ];
     const menuItems = (tenant: Tenant): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(tenant) },
@@ -374,19 +363,20 @@ export class VersolaTenantsList extends LitElement {
   }
 
   private profileChip(tenant: Tenant) {
-    const profile = this.profiles.get(tenant.id);
-    if (profile === 'error') return html`<span class="chip warn">Profile unknown</span>`;
-    if (profile === undefined) return html`<span class="chip muted">Profile…</span>`;
-    return profile === 'fapi2'
+    return tenant.securityProfile === 'fapi2'
       ? html`<span class="chip ok" title="Clients are held to the FAPI 2.0 security profile">${statusIcon('shield', 'icon', 14)}FAPI 2.0</span>`
       : html`<span class="chip">Standard</span>`;
   }
 
   private profileValue(tenant: Tenant) {
-    const profile = this.profiles.get(tenant.id);
-    if (profile === 'error') return html`<span class="muted">Could not read the security settings.</span> <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.loadProfile(tenant.id)}>Retry</button>`;
-    if (profile === undefined) return html`<span class="muted">Loading…</span>`;
-    return PROFILES.find(candidate => candidate.id === profile)?.title ?? profile;
+    return PROFILES.find(candidate => candidate.id === tenant.securityProfile)?.title ?? tenant.securityProfile;
+  }
+
+  /** The `kid` from the listing; `null` is auth's own configured key. Changed under Challenges & Security. */
+  private signingKeyValue(tenant: Tenant) {
+    return tenant.signingKeyId
+      ? html`<span class="mono">${tenant.signingKeyId}</span>`
+      : html`<span class="muted">Auth's own key</span>`;
   }
 
   private openSecuritySettings(tenant: Tenant) {
@@ -404,7 +394,8 @@ export class VersolaTenantsList extends LitElement {
         ${this.row('Edge', tenant.edgeId ? html`<div class="chips">${this.edgeValue(tenant)}</div>` : html`<span class="muted">None (Central only)</span>`)}
       `} @edit=${() => this.openEditor('edge')}></versola-record-card>
 
-      <versola-record-card heading="Security settings" subheading="Sign-in methods, sessions, tokens and limits live under Challenges & Security." .body=${html`
+      <versola-record-card heading="Security settings" subheading="Sign-in methods, sessions, tokens, the signing key and limits live under Challenges & Security." .body=${html`
+        ${this.row('Signing key', this.signingKeyValue(tenant))}
         <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSecuritySettings(tenant)}>Open security settings</button>`}></versola-record-row>
       `}></versola-record-card>
 
