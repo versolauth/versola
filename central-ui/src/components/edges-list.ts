@@ -646,7 +646,7 @@ export class VersolaEdgesList extends LitElement {
               <li>A DPoP nonce (RFC 9449 section 9) is a short-lived value this edge issues and the client must sign into its next proof. It bounds how long a captured proof stays usable on a proxied call.</li>
               <li>On, a call without one is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client retries over: one extra round trip per client per nonce lifetime. Every client calling through this edge with DPoP must implement that retry.</li>
               <li>Off, the claim is not read and no nonce is issued; it takes effect on this edge's next configuration sync.</li>
-              <li>Governs this edge only. Auth's own <code>/token</code> and <code>/userinfo</code> follow the tenant's setting under Challenges &amp; Security.</li>
+              <li>Governs this edge only. Auth's own <code>/token</code> and <code>/userinfo</code> follow the tenant's setting under Security › Tokens &amp; keys.</li>
             </ul>
           </div>
         `}

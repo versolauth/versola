@@ -21,11 +21,12 @@ export class ContentHeader extends LitElement {
         justify-content: space-between;
         align-items: flex-start;
         margin-bottom: var(--spacing-xl);
-        gap: var(--spacing-lg);
+        gap: var(--spacing-md) var(--spacing-lg);
+        flex-wrap: wrap; /* the actions drop under the title before the title breaks */
       }
 
       .header-info {
-        flex: 1;
+        flex: 1 1 20rem;
         min-width: 0; /* let a long title wrap instead of stretching the row */
       }
 
@@ -59,11 +60,17 @@ export class ContentHeader extends LitElement {
         gap: 0.5rem;
         flex-wrap: wrap;
         justify-content: flex-end;
+        margin-left: auto;
       }
 
       @media (max-width: 768px) {
         .header-container {
           flex-direction: column;
+        }
+
+        /* In a column the basis would be a height. */
+        .header-info {
+          flex: 0 0 auto;
         }
 
         /* Cancels the h1's bottom margin so the button reads as vertically
@@ -73,7 +80,7 @@ export class ContentHeader extends LitElement {
         }
 
         /* 2rem alongside a 2.75rem button leaves too little room for longer
-           titles ("Challenges & Security") on a ~390px screen. */
+           titles ("Authorization details") on a ~390px screen. */
         .header-title {
           font-size: var(--text-3xl);
         }

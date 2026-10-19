@@ -81,6 +81,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--danger-subtle`, `-text`, `-border` | `#fbeae6`, `#9c2915`, `#ec9a88` | `#3c201c`, `#ffab98`, `#80362c` | Danger fills and the outline danger button text |
 | `--info`, `-subtle`, `-text`, `-border` | same as accent | same as accent | Informational banners and badges (POST badge). Because it is the accent hue, a link inside a banner is **underlined** (`.banner a`); colour alone would not tell it from the text |
 | `--toggle-track-off`, `--toggle-knob-off` | `#7c766b`, `#ffffff` | `#7a8689`, `#f3f2f0` | A switch in the off position (on: `--accent` / `--on-accent`) |
+| `--logo-swatch-light`, `--logo-swatch-dark` | `#fffdf9`, `#1c1b19` | same | The login forms' sheet of each scheme, behind a tenant logo preview (Security › Branding); the same in both console themes because the preview shows the logo where it is seen |
 | `--select-chevron` | image | image | The `<select>` and tenant-selector chevron, drawn in `--text-secondary` (an image cannot read a `var()`) |
 | `--shadow-card` | three layers, `rgba(16,24,40,.02/.04/.09)` | `rgba(0,0,0,.2/.3/.45)` | The site's soft layered card shadow: every `.card`, menus and popovers (`--surface-raised`) |
 | `--shadow-sheet` | `0 30px 60px -24px rgba(0,0,0,.45)` | `… rgba(0,0,0,.8)` | The login sheet's shadow: the side panel |
@@ -238,7 +239,7 @@ the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline er
 field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
 with Cancel and the one primary submit. No second Close at the top.
 
-**Settings pages** (System Settings, Challenges & Security, Well Known). Read-only cards in the
+**Settings pages** (System settings, Security, Keys & metadata). Read-only cards in the
 record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
 inputs, never two primary buttons in one region.
 

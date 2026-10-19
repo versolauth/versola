@@ -371,6 +371,12 @@ const jwksState: MockState = {
   ],
 };
 
+// The keys screen also shows who signs with a key, from the tenants' own settings.
+const keysState: MockState = {
+  ...jwksState,
+  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
+};
+
 const serverMetadata = {
   issuer: 'https://auth.example.com',
   authorization_endpoint: 'https://auth.example.com/authorize',
@@ -390,11 +396,11 @@ const serverMetadata = {
   tls_client_certificate_bound_access_tokens: true,
 };
 
-// The mock serves a one-line metadata document; the docs show a realistic one.
+// The mock serves a one-line metadata document; the docs show a realistic one, as the overrides.
 const realServerMetadata: Act = async page => {
   await page.route('**/configuration/server-metadata', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify(serverMetadata) }));
   await page.reload();
-  await expect(page.locator('.metadata-json')).toContainText('pushed_authorization_request_endpoint');
+  await expect(page.getByRole('region', { name: 'Server metadata overrides' })).toContainText('pushed_authorization_request_endpoint');
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -697,92 +703,142 @@ const consoleShots: DocsShot[] = [
     },
   },
 
-  // Locales
+  // Locales (a card of System settings)
   {
-    name: 'console/locales', kind: 'frame', path: `/?view=locales&tenant=${tenant}`, state: { locales },
-    before: async page => { await expect(page.locator('.locale-row')).toHaveCount(2); },
+    name: 'console/locales', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales: [...locales, { code: 'kk', name: 'Kazakh', isDefault: false, active: false }] },
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Kazakh' })).toContainText('Inactive'); },
   },
   {
-    name: 'console/locales-edit', kind: 'frame', path: `/?view=locales&tenant=${tenant}`, state: { locales },
+    name: 'console/locales-edit', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales },
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Set default' })).toBeVisible();
+      await page.getByRole('button', { name: 'Actions for ru' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Set as default' })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/locales-add', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales },
+    before: async page => {
+      await page.getByRole('button', { name: '+ Add locale' }).click();
+      await page.getByLabel('Language *').selectOption('de');
+      await expect(page.getByRole('button', { name: 'Add locale', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/locales-activation-failure', kind: 'frame', path: '/?view=system-settings',
+    state: { ...systemSettingsState, locales: [...locales, { code: 'kk', name: 'Kazakh', isDefault: false, active: false }], localeActivationMissing: { kk: ['forms.sign-in.title', 'scopes.email.description', 'otp-templates.default.sms'] } },
+    before: async page => {
+      await page.getByRole('button', { name: 'Actions for kk' }).click();
+      await page.getByRole('menuitem', { name: 'Activate kk' }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'Cannot activate kk' })).toBeVisible();
     },
   },
 
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
-    before: async page => { await expect(page.locator('versola-system-settings .prop-label').filter({ hasText: 'History size' })).toBeVisible(); },
+    before: async page => { await expect(page.getByRole('region', { name: 'Password policy' })).toContainText('previous passwords'); },
   },
   {
     name: 'console/system-settings-edit', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.locator('versola-system-settings input[type="text"]')).toBeVisible();
+      await page.getByRole('button', { name: 'Edit password policy' }).click();
+      await expect(page.getByLabel('Password regex *')).toBeVisible();
     },
   },
 
-  // Well Known
+  // Keys & metadata
   {
-    name: 'console/well-known', kind: 'frame', fullPage: true, path: '/?view=well-known', state: jwksState,
+    name: 'console/well-known', kind: 'frame', fullPage: true, path: '/?view=keys', state: keysState,
     before: async page => {
       await realServerMetadata(page);
-      await expect(page.locator('.key-card').filter({ hasText: 'central-es256' }).locator('.key-badge')).toHaveText(/Can sign/);
+      await expect(page.getByRole('row').filter({ hasText: 'central-es256' })).toContainText('Can sign');
     },
   },
   {
-    name: 'console/well-known-add-key', kind: 'frame', path: '/?view=well-known', state: jwksState,
+    name: 'console/well-known-add-key', kind: 'frame', path: '/?view=keys', state: keysState,
     before: async page => {
-      await realServerMetadata(page);
-      await page.getByRole('button', { name: '+ Add Key' }).click();
-      await expect(page.getByRole('heading', { name: 'Add JWK', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Add key (paste JWK)' }).click();
+      await expect(sidePanelDialog(page, 'Add key')).toBeVisible();
+    },
+  },
+  {
+    name: 'console/keys-panel', kind: 'frame', path: '/?view=keys&id=central-es256', state: keysState,
+    before: async page => { await expect(sidePanel(page, 'central-es256').getByRole('region', { name: 'Used by tenants' })).toContainText(tenant); },
+  },
+  {
+    name: 'console/keys-generate', kind: 'frame', path: '/?view=keys', state: keysState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Generate key', exact: true }).click();
+      await expect(sidePanelDialog(page, 'Generate key')).toBeVisible();
     },
   },
 
-  // Challenges & Security
+  // Security (was Challenges & Security)
   {
-    name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible(); },
+    name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('region', { name: 'Submission limits', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/challenges-logo', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('.card').filter({ has: page.getByText('Logo', { exact: true }) }).last(),
+    name: 'console/challenges-logo', kind: 'crop', path: `/?view=security&tenant=${tenant}`, state: alpha,
+    section: page => page.getByRole('region', { name: 'Branding', exact: true }),
     before: async page => {
       await expect(page.getByTestId('logo-preview-light').locator('img')).toBeVisible();
       await expect(page.getByTestId('logo-preview-dark').locator('img')).toBeVisible();
     },
   },
   {
-    name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=tokens`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Edit Challenge Settings', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Edit tokens & keys', level: 1 })).toBeVisible();
       await expect(page.getByLabel("This tenant's reverse proxy terminates mutual TLS")).toBeChecked();
     },
   },
+  ...(['methods', 'codes', 'passkeys', 'registration', 'stepup', 'sessions', 'logout', 'limits'] as const).map((group): DocsShot => ({
+    name: `console/security-edit-${group}`, kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=${group}`, state: alpha,
+    before: async page => { await expect(page.getByRole('button', { name: /^Save / })).toBeVisible(); },
+  })),
+
+  // OTP templates
   {
-    // The form opens inline in the middle of the whole Challenges page; the figure is the form.
-    name: 'console/challenges-authorization-detail-type-add', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('versola-authorization-detail-type-form'),
-    before: async page => {
-      await page.getByRole('button', { name: 'Create Type', exact: true }).first().click();
-      await expect(page.getByRole('heading', { name: 'Create Authorization Detail Type', exact: true })).toBeVisible();
-      await page.getByLabel('Type *').fill('payment_initiation');
-      await page.getByLabel('Description *').fill('Payment initiation');
-      await expect(page.locator('#detail-type-schema textarea')).toHaveValue(/draft\/2020-12/);
-    },
+    name: 'console/otp-templates', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Email' })).toContainText('2 of 2'); },
   },
   {
-    name: 'console/challenges-template-add', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    name: 'console/otp-templates-panel', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}&id=default:otp:email`, state: alpha,
+    before: async page => { await expect(sidePanel(page, 'default').locator('iframe.email-preview').first()).toBeVisible(); },
+  },
+  {
+    name: 'console/challenges-template-add', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Add Template', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Add OTP Template', exact: true })).toBeVisible();
-      await page.getByPlaceholder('e.g. login-otp').fill('signup-otp');
-      await page.locator('.edit-loc-card').filter({ hasText: 'en (English)' }).locator('textarea').fill('Your Example sign-up code is {{code}}');
-      await page.locator('.edit-loc-card').filter({ hasText: 'ru (Russian)' }).locator('textarea').fill('Ваш код регистрации Example: {{code}}');
-      await expect(page.locator('.edit-loc-card')).toHaveCount(2);
+      await page.getByRole('button', { name: '+ Create Template', exact: true }).click();
+      const dialog = sidePanel(page, 'Create template');
+      await expect(dialog.getByRole('dialog')).toBeVisible();
+      await dialog.getByLabel('Template ID *').fill('signup-otp');
+      await dialog.locator('#message-en').fill('Your Example sign-up code is {{code}}');
+      await dialog.locator('#message-ru').fill('Ваш код регистрации Example: {{code}}');
+      await expect(dialog.locator('#message-ru')).toHaveValue(/регистрации/);
+    },
+  },
+
+  // Authorization details
+  {
+    name: 'console/authorization-details', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'payment_initiation' })).toContainText('required: type'); },
+  },
+  {
+    name: 'console/authorization-details-panel', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}&id=payment_initiation`, state: alpha,
+    before: async page => { await expect(sidePanel(page, 'Payment initiation').getByRole('region', { name: 'JSON Schema' })).toBeVisible(); },
+  },
+  {
+    // The type form is the panel's create form; the figure is the panel with the default schema.
+    name: 'console/challenges-authorization-detail-type-add', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}`, state: alpha,
+    before: async page => {
+      await page.getByRole('button', { name: '+ Create Type', exact: true }).click();
+      const dialog = sidePanel(page, 'Create type');
+      await expect(dialog.getByRole('dialog')).toBeVisible();
+      await dialog.getByLabel('Type *').fill('payment_initiation_v2');
+      await dialog.locator('#detail-description').fill('Payment initiation');
+      await expect(dialog.locator('versola-code-editor#detail-schema textarea')).toHaveValue(/draft\/2020-12/);
     },
   },
 

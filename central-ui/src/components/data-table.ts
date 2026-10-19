@@ -20,6 +20,8 @@ export type RowMenuItem = {
   danger?: boolean;
   /** When the visible label is not specific enough on its own (`Delete client alpha-web`). */
   ariaLabel?: string;
+  /** Shown but inert, with the reason as its title (`Pick another default first`). */
+  disabledReason?: string;
 };
 
 /**
@@ -51,6 +53,8 @@ export class VersolaDataTable<T = unknown> extends LitElement {
   /** A click anywhere on a row (outside its menu) fires `row-select` with the row; the row's
    *  `.row-link` button stays the keyboard way in. */
   @property({ type: Boolean }) selectable = false;
+  /** Inside a record card: no outline of its own, the card's edge is the table's. */
+  @property({ type: Boolean, reflect: true }) flush = false;
   @state() private openMenuKey: string | null = null;
 
   static styles = [
@@ -66,6 +70,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
       .table-card {
         padding: 0;
         overflow: visible;
+        /* The card mode below answers to the room the table has, not the window: a side panel
+           takes part of it. */
+        container: table / inline-size;
+      }
+
+      :host([flush]) .table-card {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
       }
 
       table {
@@ -162,7 +175,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         font-family: var(--font-mono);
         font-size: var(--text-base);
         color: var(--accent);
-        word-break: break-all;
+        /* An ID is never broken inside: it is cut with an ellipsis, the full value in its title. */
+        display: block;
+        max-width: 9.5rem;
+        min-width: 8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .muted {
@@ -233,6 +252,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: pointer;
       }
 
+      .menu button:has(.why) {
+        padding-block: 0.375rem;
+        max-width: 16rem;
+      }
+
       .menu button:hover {
         background: var(--surface-inset);
       }
@@ -246,12 +270,34 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         color: var(--danger);
       }
 
+      .menu button[aria-disabled='true'] {
+        color: var(--text-muted);
+        cursor: default;
+      }
+
+      .menu .why {
+        display: block;
+        margin-top: 0.125rem;
+        font-size: var(--text-xs);
+        font-weight: 400;
+        color: var(--text-secondary);
+        white-space: normal;
+      }
+
+      .menu button[aria-disabled='true']:hover {
+        background: none;
+      }
+
       /* ── card mode ──
          The table keeps its semantics: every element carries its ARIA table role explicitly (see
          render), so changing display here does not strip them (Safari/VoiceOver drop implicit
          roles on a display: block table), and the header row stays in the accessibility tree off
          screen. Each cell shows its column label through data-label. */
-      @media (max-width: 720px) {
+      @container table (max-width: 640px) {
+        .row-id {
+          max-width: 100%;
+        }
+
         thead {
           position: absolute;
           left: -9999px;
@@ -361,6 +407,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
     if (returnFocus && key !== null) this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
   }
 
+  /** An ID cut by its ellipsis still reads in full from its title. */
+  protected updated() {
+    for (const id of this.shadowRoot?.querySelectorAll<HTMLElement>('.row-id') ?? []) {
+      if (!id.title) id.title = id.textContent?.trim() ?? '';
+    }
+  }
+
   /** Moves focus to a row's `.row-link`: where the side panel returns focus on Escape. */
   focusRow(key: string) {
     this.shadowRoot?.querySelector<HTMLElement>(`tr[data-key="${CSS.escape(key)}"] .row-link`)?.focus();
@@ -421,9 +474,9 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           <div class="menu" role="menu" aria-label=${label}>
             ${items.map((item, index) => html`
               <button type="button" role="menuitem" tabindex="-1" class=${item.danger ? 'danger' : ''}
-                aria-label=${item.ariaLabel ?? nothing}
+                aria-label=${item.ariaLabel ?? nothing} aria-disabled=${item.disabledReason ? 'true' : nothing} title=${item.disabledReason || nothing}
                 @keydown=${(e: KeyboardEvent) => this.handleMenuKey(e, index)}
-                @click=${() => { this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
+                @click=${() => { if (item.disabledReason) return; this.closeMenu(false); item.onSelect(); }}>${item.label}${item.disabledReason ? html`<span class="why">${item.disabledReason}</span>` : nothing}</button>
             `)}
           </div>` : ''}
       </td>

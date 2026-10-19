@@ -375,7 +375,7 @@ export class VersolaTenantsList extends LitElement {
     return PROFILES.find(candidate => candidate.id === tenant.securityProfile)?.title ?? tenant.securityProfile;
   }
 
-  /** The `kid` from the listing; `null` is auth's own configured key. Changed under Challenges & Security. */
+  /** The `kid` from the listing; `null` is auth's own configured key. Changed under Security. */
   private signingKeyValue(tenant: Tenant) {
     return tenant.signingKeyId
       ? html`<span class="mono">${tenant.signingKeyId}</span>`
@@ -384,7 +384,7 @@ export class VersolaTenantsList extends LitElement {
 
   private openSecuritySettings(tenant: Tenant) {
     if (tenant.id !== this.selectedTenantId) this.selectTenant(tenant.id);
-    this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'challenges' }, bubbles: true, composed: true }));
+    this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'security' }, bubbles: true, composed: true }));
   }
 
   private renderGroups(tenant: Tenant) {
@@ -397,7 +397,7 @@ export class VersolaTenantsList extends LitElement {
         ${this.row('Edge', tenant.edgeId ? html`<div class="chips">${this.edgeValue(tenant)}</div>` : html`<span class="muted">None (Central only)</span>`)}
       `} @edit=${() => this.openEditor('edge')}></versola-record-card>
 
-      <versola-record-card heading="Security settings" subheading="Sign-in methods, sessions, tokens, the signing key and limits live under Challenges & Security." .body=${html`
+      <versola-record-card heading="Security settings" subheading="Sign-in methods, sessions, tokens and limits live under Security." .body=${html`
         ${this.row('Signing key', this.signingKeyValue(tenant))}
         <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSecuritySettings(tenant)}>Open security settings</button>`}></versola-record-row>
       `}></versola-record-card>

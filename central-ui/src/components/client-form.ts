@@ -96,7 +96,7 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableRoles: Role[] = [];
   @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
-  /** The tenant's RFC 8705 section 6.5 certificate header, from Challenges & Security. `null`
+  /** The tenant's RFC 8705 section 6.5 certificate header, from Security › Tokens & keys. `null`
    *  means the tenant configured none, in which case an mTLS-authenticating client registered
    *  here could never actually authenticate - see
    *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
@@ -1916,7 +1916,7 @@ export class VersolaClientForm extends LitElement {
 
   private async loadServerDpopAlgs() {
     try {
-      const advertised = (await fetchServerMetadata()).dpop_signing_alg_values_supported;
+      const advertised = (await fetchServerMetadata())?.dpop_signing_alg_values_supported;
       if (Array.isArray(advertised) && advertised.every(alg => typeof alg === 'string')) {
         this.serverDpopAlgs = advertised as string[];
       }

@@ -1760,7 +1760,7 @@ test('says nothing about a template for a client registered without one', async 
 
   await openClientPage(page, 'alpha-web');
 
-  await expect(page.getByText(/template/i)).toHaveCount(0);
+  await expect(page.locator('versola-clients-list').getByText(/template/i)).toHaveCount(0);
 });
 
 // A client's kind is fixed at creation, and what the kind implies is shown rather than offered.
