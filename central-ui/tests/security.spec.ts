@@ -114,6 +114,28 @@ test('the section rail jumps to a card and the narrow select does the same', asy
   await expect(card(page, 'Sessions')).toBeInViewport();
 });
 
+test('the rail items look like the sidebar nav items: active fill and bar, neutral hover', async ({ page }) => {
+  await loadAdminApp(page, { path: base, state: state() });
+
+  const look = (locator: ReturnType<typeof page.locator>) => locator.evaluate(node => {
+    const style = getComputedStyle(node);
+    return { background: style.backgroundColor, color: style.color, shadow: style.boxShadow, radius: style.borderRadius, weight: style.fontWeight, size: style.fontSize };
+  });
+  const rail = page.getByRole('navigation', { name: 'On this page' });
+  const navActive = page.locator('versola-navigation .nav-item.active');
+  expect(await look(rail.locator('a[aria-current="true"]'))).toEqual(await look(navActive));
+
+  const navIdle = page.locator('versola-navigation .nav-item:not(.active)').first();
+  const railIdle = rail.locator('a:not([aria-current="true"])').first();
+  await navIdle.hover();
+  await expect.poll(async () => (await look(navIdle)).background).not.toBe('rgba(0, 0, 0, 0)');
+  await expect.poll(async () => (await look(navIdle)).color).toBe('rgb(28, 27, 25)');
+  const navHover = await look(navIdle);
+  await railIdle.hover();
+  await expect.poll(async () => (await look(railIdle)).background).toBe(navHover.background);
+  await expect.poll(async () => (await look(railIdle)).color).toBe(navHover.color);
+});
+
 test('below 1200px the rail is a select and nothing scrolls sideways', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await loadAdminApp(page, { path: base, state: state() });

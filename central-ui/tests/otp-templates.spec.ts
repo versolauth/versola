@@ -21,16 +21,16 @@ test('lists templates with type, channel and languages, filters by chip and sear
 
   const table = page.locator('versola-data-table');
   await expect(table.getByRole('columnheader')).toHaveText(['Template', 'Type', 'Channel', 'Languages', 'Actions']);
-  await expect(table.getByRole('row').filter({ hasText: 'temp-password' })).toContainText('2 of 2');
+  await expect(table.getByRole('row').filter({ hasText: 'temp-password' }).getByRole('cell').nth(3).locator('.chip')).toHaveText(['en', 'ru']);
   await expect(table.getByRole('row').filter({ hasText: 'Email' })).toContainText('Missing: ru');
 
-  await page.getByRole('button', { name: /^Password\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Password', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open template/ })).toHaveText([/temp-password/]);
-  await page.getByRole('button', { name: /^Email\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open template/ })).toHaveText([/login-otp/]);
-  await page.getByRole('button', { name: /^Missing translations\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Missing translations', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open template/ })).toHaveCount(1);
-  await page.getByRole('button', { name: /^All\s?3$/ }).click();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
 
   await page.getByLabel('Search templates').fill('temp');
   await expect(table.getByRole('button', { name: /^Open template/ })).toHaveCount(1);

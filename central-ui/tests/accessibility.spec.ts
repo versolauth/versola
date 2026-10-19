@@ -166,8 +166,8 @@ for (const theme of themes) {
  */
 const panelSections = [
   { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: /^Open scope (.* )?openid$/, title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
-  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha\.read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
-  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
+  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha:read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
+  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
   { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: /^Open tenant (.* )?tenant-bravo$/, title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
   { view: 'edges', path: '/?view=edges', open: 'Open edge edge-alpha', title: 'edge-alpha', edit: 'Edit dpop nonce', editor: 'Edit DPoP nonce', create: '+ Create Edge', creator: 'Register edge' },
 ] as const;

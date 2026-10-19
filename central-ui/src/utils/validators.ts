@@ -12,12 +12,12 @@ export function validateResourceAction(value: string): boolean {
 }
 
 /**
- * Validates permission format: lowercase segments separated by dots or colons
+ * Validates permission format: lowercase segments separated by colons only (no dots)
  * Each segment must start with a letter and may include numbers/underscores
- * Examples: users.read, users:read, users:read:managed
+ * Examples: users:read, orders:read:managed
  */
 export function validatePermission(permission: string): boolean {
-  return /^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$/.test(permission);
+  return /^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$/.test(permission);
 }
 
 /**
@@ -31,7 +31,7 @@ export function validateRoleId(roleId: string): boolean {
 }
 
 /**
- * Validates scope ID format: same as resource/action
+ * Validates scope ID format: a single segment, no dots and no colons
  * Lowercase letters, numbers, underscore, starting with letter
  * Examples: openid, profile, user_data
  */

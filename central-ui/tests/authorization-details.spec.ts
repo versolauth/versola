@@ -26,7 +26,7 @@ test('lists types with a schema summary and languages, and searches by type or d
   await expect(table.getByRole('columnheader')).toHaveText(['Type', 'Schema', 'Languages', 'Actions']);
   const row = table.getByRole('row').filter({ hasText: 'payment_initiation' });
   await expect(row).toContainText('2 properties · required: type, instructedAmount');
-  await expect(row).toContainText('2 of 2');
+  await expect(row.getByRole('cell').nth(2).locator('.chip')).toHaveText(['en', 'ru']);
   await expect(table.getByRole('row').filter({ hasText: 'account_information' })).toContainText('Missing: ru');
 
   await page.getByLabel('Search types').fill('Account');

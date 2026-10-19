@@ -33,7 +33,10 @@ Files next to this one:
 5. **Same words everywhere.** A setting looks the same where it is chosen (wizard), where it is
    read (record card) and where it is changed (group editor).
 6. **Quiet by default.** Neutral surfaces, colour only for the accent, states and danger. Hover
-   changes a border or a text colour, not the layout.
+   changes a border or a text colour, not the layout. No meaningless counters: a number that names
+   nothing (`3 permissions`, `(2 selected)`, `GROUP · 4`) gives way to the values themselves (up to
+   two chips and `+N`); meta chips in a panel header carry status only (`Inactive`, `Missing: ru`).
+   Filter pills carry no counts either (`All`, `Active`).
 7. **Accessible by construction.** Text 4.5:1, controls and focus 3:1, targets 24px, visible focus,
    native elements, labels on everything, motion off under `prefers-reduced-motion`.
 
@@ -216,6 +219,8 @@ Edit, the read-only reverse references (Requested by, Granted by, Linked tenants
 reasons, the danger card last. Edit turns the same panel into the group editor (breadcrumb
 `Record › Edit <group>`, modal with a backdrop, footer Cancel / `Save <group>`); the page's one
 primary action opens it in create mode (`Create <entity>`), which lands on the new row selected.
+While an editor is open the list passes no `selectedKey`: the row behind the backdrop is not drawn
+selected (a second active element); the selection returns when the editor closes.
 Escape and Close return focus to the row (`versola-data-table.focusRow`). The URL carries the
 state so a reload restores it: `?view=scopes&id=profile`, `&edit=claims`, `&new=1`; `Open page`
 adds `&layout=page` and renders the same groups under a `versola-record-header` for sharing and
@@ -239,7 +244,9 @@ the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline er
 field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
 with Cancel and the one primary submit. No second Close at the top.
 
-**Settings pages** (System settings, Security, Keys & metadata). Read-only cards in the
+**Settings pages** (System settings, Security, Keys & metadata). Security's section rail uses the
+sidebar's item treatment: `--sidebar-hover-bg` on hover, `--accent-subtle` / `--accent-text` with a 3px
+`--accent` bar for the section in view. Read-only cards in the
 record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
 inputs, never two primary buttons in one region.
 
@@ -254,10 +261,12 @@ inputs, never two primary buttons in one region.
 | Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
 | Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
 | Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel ?selectable .selectedKey @row-select>` + `focusRow(key)` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`). `selectable` makes a click anywhere on a row (outside its menu) fire `row-select`; `selectedKey` draws that row selected (`aria-current`, accent fill, 3px bar); `focusRow` is where a closing panel returns focus | Editing in place; nested detail |
-| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; the host shows the count in its title (`Permissions (3 selected)`) | A single choice (use a `select`) |
+| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; no counts in the group headers or the host's title | A single choice (use a `select`) |
 | Endpoint picker | `<versola-endpoint-picker .resources .value @change>` | A permission's endpoints (D8): add a resource, then its endpoints one by one, each a row with method badge, path and Remove; endpoint ids no resource carries any more are listed as detached | Anything that is not resource → endpoint |
-| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value and a `N languages` chip, or a `Missing: ru` warning chip; `languagesCell` is the list's `3 of 3` | Editing (use `versola-localized-text-editor`) |
-| Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters with counts above a table, as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
+| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value, plus a `Missing: ru` warning chip when an active locale has none (a count of languages says nothing); `languagesCell` is the list's Languages column, the language codes as chips or the Missing chip | Editing (use `versola-localized-text-editor`) |
+| Typeahead select | `<versola-typeahead-select label placeholder emptyText .options .value @change>` | A filter with too many values for a row of pills (Permissions › Resource): the ARIA 1.2 combobox with list autocomplete (`role=combobox` field, `role=listbox` of the matches). Opens on focus, click or the down arrow; typing filters; arrows move, Home/End jump, Enter picks, the first Escape closes the list (the side panel does not close), Tab leaves; a clear button while a value is chosen. The screen keeps the `All` / `Unlinked` pills next to it | Fewer than about six values (use the filter bar) |
+| Value chips | `valueChips(values, { max, empty, mono, extra })` from `value-chips.ts` | A list column that holds values (Roles › Permissions, Scopes › Claims, Permissions › Endpoints and Resources): up to two chips (`.chip.value`, mono for IDs and paths, cut with an ellipsis) and `+N` (`.chip.more`) whose `title` names the rest. A count alone never stands for values | A single value (print it) |
+| Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters above a table (no counts), as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
 | Loading cards | `<versola-loading-cards .count>` | While a list loads, same height as the rows that will replace it | Buttons (disable them instead) |

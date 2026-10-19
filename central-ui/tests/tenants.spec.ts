@@ -48,9 +48,9 @@ test('lists tenants with the selected one first, filters by edge and searches', 
   await expect(table.getByRole('row').filter({ hasText: 'Alpha Workspace' })).toContainText('edge-alpha');
   await expect(table.getByRole('row').filter({ hasText: 'Alpha Workspace' })).toContainText('Standard');
 
-  await page.getByRole('button', { name: /^On an edge\s?1$/ }).click();
+  await page.getByRole('button', { name: 'On an edge', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveText([/tenant-alpha/]);
-  await page.getByRole('button', { name: /^All\s?2$/ }).click();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
   await page.getByLabel('Search tenant list').fill('Bravo');
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveCount(1);
 });

@@ -28,11 +28,11 @@ test('lists edges with their tenants, key state and DPoP nonce, filters and sear
   await expect(bravo).toContainText('Key rotation');
   await expect(bravo).toContainText('Not required');
 
-  await page.getByRole('button', { name: /^Key rotation\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Key rotation', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
-  await page.getByRole('button', { name: /^No tenants\s?1$/ }).click();
+  await page.getByRole('button', { name: 'No tenants', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
-  await page.getByRole('button', { name: /^All\s?2$/ }).click();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
   await page.getByLabel('Search edges').fill('alpha');
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveCount(1);
 });

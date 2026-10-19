@@ -376,24 +376,24 @@ const defaultState: MockConfigState = {
   ],
   myPermissions: defaultMyPermissions,
   clients: {
-    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
-    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
+    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha:read'], secretRotation: false }],
+    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo:read'], secretRotation: false }],
   },
   scopes: {
     'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [{ claim: 'sub', description: { en: 'Subject' } }] }],
     'tenant-bravo': [{ scope: 'email', description: { en: 'Email scope' }, claims: [{ claim: 'email', description: { en: 'Email address' } }] }],
   },
   permissions: {
-    'tenant-alpha': [{ permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] }],
-    'tenant-bravo': [{ permission: 'bravo.read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
+    'tenant-alpha': [{ permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] }],
+    'tenant-bravo': [{ permission: 'bravo:read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
   },
   resources: {
     'tenant-alpha': [{ resourceId: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
     'tenant-bravo': [{ resourceId: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
   },
   roles: {
-    'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true }],
-    'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo.read'], active: true }],
+    'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha:read'], active: true }],
+    'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo:read'], active: true }],
   },
   edges: [],
   authorizationPresets: {},

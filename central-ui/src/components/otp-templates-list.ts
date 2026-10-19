@@ -341,10 +341,6 @@ export class VersolaOtpTemplatesList extends LitElement {
     return this.templates.filter(template => this.matchesFilter(template) && (!query || template.id.toLowerCase().includes(query)));
   }
 
-  private count(filter: TemplateFilter): number {
-    return this.templates.filter(template => this.matchesFilter(template, filter)).length;
-  }
-
   private renderToolbar() {
     const options: Array<{ id: TemplateFilter; label: string }> = [
       { id: 'all', label: 'All' },
@@ -359,7 +355,7 @@ export class VersolaOtpTemplatesList extends LitElement {
         <input class="search-input" type="search" aria-label="Search templates" placeholder="Template ID"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter templates"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as TemplateFilter}></versola-filter-bar>
       </div>
@@ -386,7 +382,7 @@ export class VersolaOtpTemplatesList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredTemplates}
         .rowKey=${templateKey}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(template: OtpTemplateRecord) => `Actions for ${templateKey(template)}`}
         @row-select=${(e: CustomEvent<{ row: OtpTemplateRecord }>) => this.openView(e.detail.row)}

@@ -224,24 +224,35 @@ export class VersolaSecuritySettings extends LitElement {
         margin-top: 0;
       }
 
+      /* The rail's items are the sidebar's nav items: a neutral fill on hover, the accent fill with
+         a 3px bar on the left edge for the section in view; the weight never changes. */
       .rail a {
-        display: block;
-        padding: 0.25rem 0.75rem;
-        border-left: 2px solid var(--border-default);
+        display: flex;
+        align-items: center;
+        padding: 0.375rem 0.75rem;
+        margin-bottom: 0.125rem;
+        border-radius: var(--radius-md);
         color: var(--text-secondary);
-        font-size: var(--text-sm);
+        font-size: var(--text-base);
+        font-weight: 500;
+        line-height: 1.5;
         text-decoration: none;
         min-height: 1.5rem;
+        transition: background var(--transition-fast), color var(--transition-fast);
       }
 
       .rail a:hover {
+        background: var(--sidebar-hover-bg);
         color: var(--text-primary);
       }
 
-      .rail a[aria-current='true'] {
-        border-left-color: var(--accent);
-        color: var(--accent-text);
+      .rail a[aria-current='true'],
+      .rail a[aria-current='true']:hover {
         background: var(--accent-subtle);
+        color: var(--accent-text);
+        box-shadow: inset 3px 0 0 var(--accent);
+        /* Square the left corners so the bar is a bar, not a curved sliver. */
+        border-radius: 0 var(--radius-md) var(--radius-md) 0;
       }
 
       .rail a:focus-visible {
@@ -1227,7 +1238,7 @@ export class VersolaSecuritySettings extends LitElement {
         <label class="check-row"><input type="checkbox" .checked=${registration.blockSubaddress} @change=${(e: Event) => patchRegistration({ blockSubaddress: (e.target as HTMLInputElement).checked })} /> Block addresses with + = # (sub-addresses)</label>
       </div>
       <div class="editor-box">
-        <h3>Default roles${this.draft!.defaultRoles?.length ? ` (${this.draft!.defaultRoles.length} selected)` : ''}</h3>
+        <h3>Default roles</h3>
         <p class="editor-sub">Granted to every self-registered account. At least one.</p>
         <versola-role-picker label="Default roles" .roles=${this.roles} .value=${this.draft!.defaultRoles ?? []}
           @change=${(e: CustomEvent<{ value: string[] }>) => this.patch({ defaultRoles: e.detail.value })}></versola-role-picker>
