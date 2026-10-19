@@ -379,6 +379,99 @@ export const editorStyles = css`
   }
 `;
 
+/** A switch row in a group editor: `.toggle-row` is the label (switch, text), `.toggle` the
+ *  switch drawn around a visually hidden checkbox (`role="switch"`). The track is
+ *  `--toggle-track-off` / `--accent`, the knob `--toggle-knob-off` / `--on-accent`; the focus ring
+ *  sits on the track because the input itself is invisible. Disabled is a colour state, no
+ *  opacity. */
+export const toggleStyles = css`
+  .toggle-row {
+    display: flex;
+    gap: 0.625rem;
+    align-items: center;
+    width: fit-content;
+    font-size: var(--text-base);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    margin: 0;
+  }
+
+  .toggle-row:has(input:disabled) {
+    cursor: default;
+    color: var(--text-muted);
+  }
+
+  .toggle {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 18px;
+    flex: none;
+    border-radius: 9999px;
+  }
+
+  /* The input covers the track (invisible, not sized away): it is what gets clicked and focused. */
+  .toggle input {
+    opacity: 0;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: inherit;
+    z-index: 1;
+  }
+
+  .toggle::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--toggle-track-off);
+    border: 1px solid var(--border-default);
+    border-radius: 9999px;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .toggle:has(input:checked)::before {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .toggle:has(input:disabled)::before {
+    background: var(--surface-inset);
+    border-color: var(--border-strong);
+  }
+
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    background: var(--toggle-knob-off);
+    border-radius: 50%;
+    transition: transform var(--transition-fast), background var(--transition-fast);
+  }
+
+  .toggle:has(input:checked)::after {
+    transform: translateX(16px);
+    background: var(--on-accent);
+  }
+
+  .toggle:has(input:disabled)::after {
+    background: var(--text-muted);
+  }
+
+  .toggle:has(input:focus-visible) {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+`;
+
 /** Text styles for an icon-only control (the row menu, copy) that must stay a 24px target. */
 export const iconButtonStyles = css`
   .icon-button {

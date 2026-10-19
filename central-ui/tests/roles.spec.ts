@@ -28,10 +28,13 @@ test('lists roles with their status, filters by chip and searches by ID or descr
   await expect(table.getByRole('columnheader')).toHaveText(['Role', 'Permissions', 'Status', 'Actions']);
   await expect(table.getByRole('row').filter({ hasText: 'Alpha admin' })).toContainText('Active');
   await expect(table.getByRole('row').filter({ hasText: 'Support team' })).toContainText('Inactive');
+  await expect(table.getByRole('row').filter({ hasText: 'Support team' }).locator('.chip:not(.warn):not(.danger):not(.ok)', { hasText: 'Inactive' })).toBeVisible();
   await expect(table.getByRole('row').filter({ hasText: 'Self-registered user' })).toContainText('Default for sign-up');
 
   await page.getByRole('button', { name: /^Inactive\s?1$/ }).click();
   await expect(table.getByRole('button', { name: /^Open role/ })).toHaveText([/support-team/]);
+  await page.getByRole('button', { name: /^Active\s?2$/ }).click();
+  await expect(table.getByRole('button', { name: /^Open role/ })).toHaveText([/alpha-admin/, /user/]);
   await page.getByRole('button', { name: /^Default for sign-up\s?1$/ }).click();
   await expect(table.getByRole('button', { name: /^Open role/ })).toHaveText([/user/]);
   await page.getByRole('button', { name: /^All\s?3$/ }).click();
@@ -42,7 +45,7 @@ test('lists roles with their status, filters by chip and searches by ID or descr
   await expect(page.getByRole('heading', { name: 'No roles match' })).toBeVisible();
 });
 
-test('opens a role and shows its permissions grouped by category, Fixed and the danger card', async ({ page }) => {
+test('opens a role and shows its permissions grouped by category and the danger card', async ({ page }) => {
   await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] }, permissions } });
 
   await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
@@ -53,9 +56,7 @@ test('opens a role and shows its permissions grouped by category, Fixed and the 
   await expect(perms).toContainText('orders');
   await expect(perms).toContainText('reports');
   await expect(perms.getByRole('button', { name: 'Show endpoints for orders:read' })).toBeVisible();
-  const fixed = dialog.getByRole('region', { name: 'Fixed' });
-  await expect(fixed).toContainText('Set at creation');
-  await expect(fixed).not.toContainText('Active');
+  await expect(dialog.getByRole('region', { name: 'Fixed' })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'General' })).toContainText('Active');
   await expect(dialog.getByRole('button', { name: 'Delete role alpha-admin' })).toBeEnabled();
 
@@ -121,8 +122,13 @@ test('edits the general group', async ({ page }) => {
 
   await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
   await panel(page, 'Alpha admin').getByRole('button', { name: 'Edit general' }).click();
-  await panel(page, 'Edit general').locator('#role-description').fill('Platform admins');
-  await panel(page, 'Edit general').getByRole('button', { name: 'Save general' }).click();
+  const editor = panel(page, 'Edit general');
+  // Active is a switch in the same group; untouched here, so the patch does not carry it.
+  const active = editor.getByRole('switch', { name: 'Active' });
+  await expect(active).toBeChecked();
+  await expect(active).toHaveAccessibleDescription(/edge grants none of its permissions/);
+  await editor.locator('#role-description').fill('Platform admins');
+  await editor.getByRole('button', { name: 'Save general' }).click();
 
   expect((await findRequest(api.requests, 'PUT', '/configuration/roles')).body).toEqual({
     tenantId: 'tenant-alpha', id: 'alpha-admin', description: { add: { en: 'Platform admins' }, delete: [] }, permissions: { add: [], remove: [] },
@@ -185,15 +191,34 @@ test('creates an inactive role, then switches it on from the General group (patc
   const dialog = panel(page, 'Create role');
   await dialog.getByLabel('Role ID *').fill('night-shift');
   await dialog.locator('#role-description').fill('Night shift');
-  await dialog.getByLabel('Active', { exact: true }).uncheck();
+  await expect(dialog.getByRole('switch', { name: 'Active' })).toBeChecked();
+  await dialog.getByRole('switch', { name: 'Active' }).uncheck();
   await dialog.getByRole('button', { name: 'Create role', exact: true }).click();
   expect((await findRequest(api.requests, 'POST', '/configuration/roles')).body).toMatchObject({ id: 'night-shift', active: false });
   await expect(panel(page, 'Night shift').getByRole('region', { name: 'General' })).toContainText('No');
 
   await panel(page, 'Night shift').getByRole('button', { name: 'Edit general', exact: true }).click();
-  await panel(page, 'Edit general').getByLabel('Active', { exact: true }).check();
+  await panel(page, 'Edit general').getByRole('switch', { name: 'Active' }).check();
   await panel(page, 'Edit general').getByRole('button', { name: 'Save general', exact: true }).click();
   const put = await findRequest(api.requests, 'PUT', '/configuration/roles');
   expect(put.body).toMatchObject({ tenantId: 'tenant-alpha', id: 'night-shift', active: true });
   await expect(panel(page, 'Night shift').getByRole('region', { name: 'General' })).toContainText('Yes');
+});
+
+test('keeps the typed values in the General editor when the save fails', async ({ page }) => {
+  await loadAdminApp(page, { path: rolesPath, state: { roles: { 'tenant-alpha': [alphaAdmin] }, permissions } });
+  await page.route('**/configuration/roles', route => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'Boom' }) })
+    : route.fallback());
+
+  await page.getByRole('button', { name: /^Open role (.* )?alpha-admin$/ }).click();
+  await panel(page, 'Alpha admin').getByRole('button', { name: 'Edit general' }).click();
+  const editor = panel(page, 'Edit general');
+  await editor.locator('#role-description').fill('Typed and kept');
+  await editor.getByRole('switch', { name: 'Active' }).uncheck();
+  await editor.getByRole('button', { name: 'Save general' }).click();
+
+  await expect(editor.getByRole('alert')).toBeVisible();
+  await expect(editor.locator('#role-description')).toHaveValue('Typed and kept');
+  await expect(editor.getByRole('switch', { name: 'Active' })).not.toBeChecked();
 });
