@@ -671,7 +671,7 @@ test.describe('passkey-enroll', () => {
   test('refuses a name the server would reject', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'passkey-enroll', { step });
 
-    await page.getByLabel(t.name_placeholder, { exact: true }).fill(' leading space');
+    await page.getByLabel(t.name_label, { exact: true }).fill(' leading space');
     await page.getByRole('button', { name: t.enroll_button }).click();
 
     await expect(page.getByText(t.name_invalid)).toBeVisible();
