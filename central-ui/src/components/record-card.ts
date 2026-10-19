@@ -20,6 +20,8 @@ export class VersolaRecordCard extends LitElement {
   /** Shows the Edit button. The button's name is `Edit <heading>`. */
   @property({ type: Boolean }) editable = false;
   @property({ type: Boolean }) editDisabled = false;
+  /** The Edit button's visible text, when `Edit` alone is not enough (`Edit endpoints`); it is also its name. */
+  @property({ type: String }) editLabel = '';
   /** The lock marker of a group with no editor (`Fixed`); empty for no marker. */
   @property({ type: String }) fixedLabel = '';
   @property({ attribute: false }) body: unknown = null;
@@ -37,9 +39,9 @@ export class VersolaRecordCard extends LitElement {
             ${this.subheading ? html`<div class="record-card-sub">${this.subheading}</div>` : ''}
           </div>
           ${this.editable ? html`
-            <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Edit ${this.heading.toLowerCase()}`}
+            <button type="button" class="btn btn-secondary btn-sm" aria-label=${this.editLabel || `Edit ${this.heading.toLowerCase()}`}
               ?disabled=${this.editDisabled}
-              @click=${() => this.dispatchEvent(new CustomEvent('edit', { bubbles: true, composed: true }))}>Edit</button>
+              @click=${() => this.dispatchEvent(new CustomEvent('edit', { bubbles: true, composed: true }))}>${this.editLabel || 'Edit'}</button>
           ` : this.fixedLabel ? html`<span class="record-fixed">${statusIcon('lock', 'icon')}${this.fixedLabel}</span>` : ''}
         </div>
         ${this.body}

@@ -33,8 +33,11 @@ type PermissionDto = { permission: string; description: Record<string, string>; 
 type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
-type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
-type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
+type ResourceEndpointDto = {
+  id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[];
+  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null;
+};
+type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
@@ -116,14 +119,16 @@ type CreateResourceRequest = {
   tenantId: string;
   resourceId: string;
   resource: string;
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  audience?: string[];
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
   internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
   resource?: string;
+  audience?: { add: string[]; remove: string[] };
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -1003,6 +1008,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const createdResource: ResourceDto = {
           resourceId: payload.resourceId,
           resource: payload.resource,
+          audience: [...(payload.audience ?? [])],
           endpoints: payload.endpoints.map(endpoint => ({
             id: endpoint.id ?? endpointId++,
             method: endpoint.method,
@@ -1010,6 +1016,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             fetchUserInfo: endpoint.fetchUserInfo,
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
+            ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+            ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
+            ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
           })),
           internal: payload.internal ?? false,
           secretRotation: false,
@@ -1033,6 +1042,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         if (payload.resource !== undefined) resource.resource = payload.resource;
+        if (payload.audience) {
+          resource.audience = [...(resource.audience ?? []).filter(id => !payload.audience!.remove.includes(id)), ...payload.audience.add];
+        }
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -1046,6 +1058,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             fetchUserInfo: endpoint.fetchUserInfo,
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
+            ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+            ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
+            ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
           })));
 
         await route.fulfill({ status: 204, body: '' });

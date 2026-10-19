@@ -506,9 +506,37 @@ const userLoaded: Act = async page => {
   await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('MacBook');
 };
 
-const expandResource: Act = async page => {
-  await page.locator('.resource-shell').filter({ hasText: 'orders-api.orders.svc.cluster.local' }).first().locator('.resource-header').click();
-  await expect(page.locator('.endpoint-card')).toHaveCount(2);
+// The orders resource as the record shows it: the two endpoints of the data above plus a refund
+// that asks for a stronger sign-in, three clients, the ACR values of the tenant's step-up.
+const ordersRecord = {
+  ...ordersApi,
+  audience: ['storefront-web', 'admin-console'],
+  endpoints: [
+    ...ordersApi.endpoints,
+    {
+      id: 303, method: 'POST', path: '/orders/{orderId}/refund', fetchUserInfo: true,
+      allow: 'request.body.amount <= user.refund_limit', stepUpCondition: 'request.body.amount > 10000', stepUpAcr: 'mfa', maxAge: 300,
+      inject: [{ target: 'header' as const, name: 'X-User-Id', expression: 'token.sub' }],
+    },
+  ],
+};
+const resourcesState = (): MockState => ({
+  ...alpha,
+  resources: { [tenant]: [ordersRecord] },
+  permissions: { [tenant]: [...permissions, { permission: 'orders:refund', description: { en: 'Refund orders' }, endpointIds: [303] }] },
+  clients: { [tenant]: ['storefront-web', 'admin-console', 'shop-mobile'].map(id => ({
+    id,
+    clientName: { en: id === 'storefront-web' ? 'Storefront Web' : id === 'admin-console' ? 'Admin console' : 'Shop mobile' },
+    redirectUris: [`https://${id}.example.com/callback`],
+    scope: ['openid'],
+    permissions: [],
+    secretRotation: false,
+  })) as MockConfigState['clients'][string] },
+});
+const resourcePath = `/?view=resources&tenant=${tenant}&id=orders-api`;
+const resourceRecordLoaded: Act = async page => {
+  await expect(page.getByRole('heading', { level: 1, name: 'orders-api' })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Endpoints of orders-api' }).getByRole('row')).toHaveCount(4);
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -995,100 +1023,77 @@ const consoleShots: DocsShot[] = [
 
   // Resources
   {
-    name: 'entities/resources-list', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.locator('.resource-shell')).toHaveCount(1); },
+    name: 'entities/resources-list', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: resourcesState,
+    before: async page => { await expect(page.getByRole('button', { name: 'Open resource orders-api' })).toBeVisible(); },
   },
-  { name: 'entities/resources-list-expanded', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha, before: expandResource },
+  { name: 'entities/resource-record', kind: 'frame', fullPage: true, path: resourcePath, state: resourcesState, before: resourceRecordLoaded },
   {
-    name: 'console/resources-list-endpoint-expanded', kind: 'crop', path: `/?view=resources&tenant=${tenant}`,
-    state: {
-      ...alpha,
-      resources: { [tenant]: [{
-        ...ordersApi,
-        endpoints: [
-          ordersApi.endpoints[0],
-          { id: 302, method: 'POST', path: '/orders', fetchUserInfo: true, allow: 'request.body.total <= user.orderLimit', inject: [{ target: 'body' as const, name: 'userId', expression: 'token.sub' }], stepUpCondition: 'request.body.total > 100000', stepUpAcr: 'otp', maxAge: 600 },
-        ],
-      }] },
-    },
-    section: page => page.locator('.endpoint-card').filter({ hasText: 'user.orderLimit' }),
+    name: 'console/resource-endpoints', kind: 'crop', path: resourcePath, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Endpoints', exact: true }),
     before: async page => {
-      await expandResource(page);
-      await page.locator('.endpoint-card').filter({ hasText: 'POST' }).first().locator('.endpoint-card-header').click();
-      const card = page.locator('.endpoint-card').filter({ hasText: 'user.orderLimit' });
-      await expect(card.locator('.permission-tag')).toHaveText(['orders:write']);
-      await expect(card.getByText('600 seconds')).toBeVisible();
+      await resourceRecordLoaded(page);
+      const refund = page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
+      await expect(refund).toContainText('orders:refund');
+      await expect(refund.getByTitle('300 seconds')).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-form-empty', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-create', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: resourcesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create Resource', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Create resource', exact: true })).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-form-identity', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-create-filled', kind: 'frame', fullPage: true, path: `/?view=resources&tenant=${tenant}&new=1`, state: resourcesState,
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
+      await page.getByLabel('Resource ID').fill('invoices-api');
       await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'internal', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Audience client' }).fill('storefront-web');
-      await page.getByRole('option', { name: 'storefront-web', exact: true }).click();
-      await page.getByRole('button', { name: 'Add audience', exact: true }).click();
-      await expect(page.getByRole('button', { name: 'Remove audience storefront-web', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: /^Internal/ }).click();
+      await page.getByRole('checkbox', { name: /storefront-web/ }).check();
+      await expect(page.getByRole('checkbox', { name: /storefront-web/ })).toBeChecked();
     },
   },
   {
-    name: 'entities/resource-form-endpoint', kind: 'frame', fullPage: true, path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-endpoints-edit', kind: 'frame', fullPage: true, path: `${resourcePath}&edit=endpoints`, state: resourcesState,
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByLabel('Method').selectOption('GET');
+      await page.getByLabel('Relative path').fill('/orders/{orderId}/invoice');
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await expect(page.getByRole('status')).toContainText('(new)');
+    },
+  },
+  {
+    name: 'entities/resource-created-secret', kind: 'frame', path: `/?view=resources&tenant=${tenant}&new=1`, state: resourcesState,
+    before: async page => {
+      await page.getByLabel('Resource ID').fill('invoices-api');
       await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-      const endpoint = page.locator('.endpoint-editor').last();
-      await endpoint.locator('select').first().selectOption('GET');
-      await endpoint.getByPlaceholder('/users').fill('/invoices');
-      await endpoint.getByRole('textbox', { name: 'Allow expression' }).click();
-      await page.keyboard.type("'orders:read' in token.scope");
-      await expect(endpoint.getByText("'orders:read' in token.scope")).toBeVisible();
+      await page.getByRole('button', { name: /^Internal/ }).click();
+      await page.getByRole('button', { name: 'Create resource', exact: true }).click();
+      await expect(page.getByText('Resource created: invoices-api')).toBeVisible();
+      await expect(page.locator('.secret-value')).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-created-secret', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'console/resource-endpoint-stepup-inject', kind: 'crop', path: `${resourcePath}&edit=endpoints`, state: resourcesState,
+    section: page => page.getByRole('group', { name: /^Endpoint POST \/payments\/transfer/ }),
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
-      await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'internal', exact: true }).click();
-      await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Resource created: invoices-api', exact: true })).toBeVisible();
-      await expect(page.locator('.secret-banner .secret-value')).toBeVisible();
-    },
-  },
-
-  {
-    name: 'console/resource-form-cel-inject-stepup', kind: 'crop', path: `/?view=resources&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('.endpoint-editor').last(),
-    before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('payments-api');
-      await page.getByLabel('Absolute resource URI').fill('http://payments-api.payments.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-      const endpoint = page.locator('.endpoint-editor').last();
-      await endpoint.locator('select').first().selectOption('POST');
-      await endpoint.getByPlaceholder('/users').fill('/payments/transfer');
-      await endpoint.getByRole('checkbox', { name: 'Fetch userinfo' }).check();
-      await endpoint.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
-      await endpoint.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
-      await endpoint.getByRole('checkbox', { name: 'otp', exact: true }).check();
-      await endpoint.getByPlaceholder('e.g. 3600').fill('600');
-      await endpoint.getByRole('button', { name: 'Add rule', exact: true }).click();
-      await endpoint.locator('.header-editor-item select').selectOption('body');
-      await endpoint.locator('.header-editor-item input[type=text]').fill('userId');
-      await endpoint.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
-      await expect(endpoint.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByLabel('Method').selectOption('POST');
+      await page.getByLabel('Relative path').fill('/payments/transfer');
+      await page.getByRole('switch', { name: 'Fetch userinfo' }).check();
+      await page.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
+      await page.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
+      await page.getByRole('checkbox', { name: 'otp', exact: true }).check();
+      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await page.getByRole('button', { name: 'Add rule', exact: true }).click();
+      await page.getByLabel('Target').selectOption('body');
+      await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');
+      await page.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
+      await expect(page.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
     },
   },
 

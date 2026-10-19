@@ -1004,6 +1004,12 @@ export const methodBadgeStyles = css`
     font-family: var(--font-mono);
   }
 
+  /* The badge inside a row or a table cell: no minimum width, tighter. */
+  .method-badge.compact {
+    min-width: 0;
+    padding: 0.125rem 0.5rem;
+  }
+
   .method-get {
     color: var(--success-text);
     background: var(--success-subtle);

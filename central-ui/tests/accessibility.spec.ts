@@ -2,6 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { ordersApi, shopState } from './resources-fixtures';
 import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, userScopes } from './users-fixtures';
 
 /**
@@ -101,6 +102,62 @@ for (const theme of themes) {
     expect(await scan()).toEqual([]);
     await page.getByRole('button', { name: '+ Create User' }).click();
     await expect(page.getByRole('heading', { name: 'Create New User' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test(`a resource's list, record, editors and dialogs have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    const base = '/?view=resources&tenant=tenant-alpha';
+
+    await loadAdminApp(page, { path: base, state: shopState });
+    await expect(page.getByRole('button', { name: 'Open resource orders-api' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&id=orders-api`);
+    await expect(page.getByRole('table', { name: 'Endpoints of orders-api' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    // The record with a one-time secret on it, and one with nothing to show.
+    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Activate new secret' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Activate', exact: true }).click();
+    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Rotate secret' }).click();
+    await expect(page.locator('.secret-value')).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.goto(`${base}&id=loyalty-api`);
+    await expect(page.getByRole('region', { name: 'Endpoints' })).toContainText('No endpoints yet.');
+    expect(await scan()).toEqual([]);
+
+    for (const edit of ['general', 'audience']) {
+      await page.goto(`${base}&id=orders-api&edit=${edit}`);
+      await expect(page.getByRole('heading', { level: 1, name: `Edit ${edit}` })).toBeVisible();
+      expect(await scan()).toEqual([]);
+    }
+
+    await page.goto(`${base}&id=orders-api&edit=endpoints`);
+    await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund(?= |$)/ }).click();
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByLabel('Relative path').fill('bad path');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    await expect(page.getByRole('alert').first()).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund(?= |$)/ }).click();
+    await page.getByRole('button', { name: 'Allow expression info' }).click();
+    await expect(page.getByRole('tooltip')).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&new=1`);
+    await expect(page.getByRole('heading', { level: 1, name: 'Create resource' })).toBeVisible();
+    await page.getByRole('button', { name: 'Create resource', exact: true }).click();
+    await expect(page.getByText('A resource ID is required.')).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&id=${ordersApi.resourceId}`);
+    await page.getByRole('button', { name: 'Delete resource orders-api' }).click();
+    await expect(page.getByRole('dialog')).toContainText('Delete resource orders-api?');
     expect(await scan()).toEqual([]);
   });
 }

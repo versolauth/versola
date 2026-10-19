@@ -22,6 +22,9 @@ export class VersolaRecordHeader extends LitElement {
   @property({ type: String }) recordId = '';
   /** What the ID is called in the copy button's name: `Copy client ID`. */
   @property({ type: String }) idLabel = 'ID';
+  /** The ID is the title (a record that has no other name): the meta row then carries only the
+   *  copy button, so the ID is not printed twice, and the title is set in mono. */
+  @property({ type: Boolean }) idAsTitle = false;
   @property({ attribute: false }) meta: unknown = null;
 
   static styles = [
@@ -80,6 +83,12 @@ export class VersolaRecordHeader extends LitElement {
         align-items: center;
       }
 
+      .view-title.mono {
+        font-family: var(--font-mono);
+        letter-spacing: -0.01em;
+        overflow-wrap: anywhere;
+      }
+
       .record-id {
         font-family: var(--font-mono);
         font-size: var(--text-base);
@@ -111,10 +120,10 @@ export class VersolaRecordHeader extends LitElement {
           `)}
         </nav>` : ''}
       <div class="view-head">
-        <h1 class="view-title">${this.heading}</h1>
+        <h1 class="view-title ${this.idAsTitle ? 'mono' : ''}">${this.heading}</h1>
         <div class="view-meta">
           ${this.recordId ? html`
-            <span class="record-id">${this.recordId}</span>
+            ${this.idAsTitle ? '' : html`<span class="record-id">${this.recordId}</span>`}
             <button type="button" class="icon-button" aria-label=${`Copy ${this.idLabel}`} title=${`Copy ${this.idLabel}`}
               @click=${() => copyToClipboard(this.recordId)}>${statusIcon('copy', 'icon')}</button>
           ` : ''}
