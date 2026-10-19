@@ -1250,7 +1250,7 @@ export class VersolaClientForm extends LitElement {
       }
       .review-banner {
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-inner);
         padding: var(--spacing-md) var(--spacing-lg);
         background: var(--surface);
         color: var(--text-primary);
@@ -1325,7 +1325,7 @@ export class VersolaClientForm extends LitElement {
       }
       .wizard-section {
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-inner);
         background: var(--surface);
         margin-top: var(--spacing-lg);
         overflow: hidden;

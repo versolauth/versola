@@ -67,7 +67,8 @@ export class VersolaRecordHeader extends LitElement {
       .view-title {
         margin: 0 0 var(--spacing-sm);
         font-size: var(--text-4xl);
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: -0.02em;
         color: var(--text-primary);
         overflow-wrap: anywhere;
       }

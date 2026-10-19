@@ -9,9 +9,9 @@ export const buttonStyles = css`
     padding: 0.625rem 1.25rem;
     font-family: var(--font-family);
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1.5;
-    border: 1px solid transparent;
+    border: 1.5px solid transparent;
     border-radius: var(--radius-md);
     cursor: pointer;
     /* Only the hover lift animates: a colour transition would show a
@@ -26,32 +26,36 @@ export const buttonStyles = css`
     outline-offset: 2px;
   }
 
+  /* The primary button is ink (inverse in dark), as on the site and in the
+     login forms; the brand colour is the accent, not the button. */
   .btn-primary {
-    background: var(--accent);
-    color: var(--on-accent);
-    border: none;
+    background: var(--btn);
+    color: var(--on-btn);
+    border-color: var(--btn);
   }
 
   .btn-primary:not(:disabled):hover {
-    background: var(--accent-hover);
+    background: var(--btn-hover);
+    border-color: var(--btn-hover);
     transform: translateY(-1px);
   }
 
+  /* The secondary button is an outline on the input line; hover turns the
+     line to ink. */
   .btn-secondary {
-    background: var(--surface);
+    background: transparent;
     color: var(--text-primary);
     border-color: var(--border-input);
   }
 
   .btn-secondary:not(:disabled):hover {
-    border-color: var(--accent);
-    color: var(--accent);
+    border-color: var(--text-primary);
   }
 
   .btn-danger {
     background: var(--danger);
     color: var(--on-danger);
-    border: none;
+    border-color: var(--danger);
   }
 
   .btn-danger:not(:disabled):hover {
@@ -80,13 +84,13 @@ export const buttonStyles = css`
   .btn-danger-secondary:disabled {
     background: var(--surface-inset);
     color: var(--text-muted);
-    border: 1px solid var(--border-default);
+    border: 1.5px solid var(--border-default);
     cursor: not-allowed;
     transform: none;
   }
 
   .btn-sm {
-    padding: 0.375rem 0.75rem;
+    padding: 0.3125rem 0.75rem;
     font-size: var(--text-sm);
   }
 
@@ -100,7 +104,7 @@ export const badgeStyles = css`
   .badge {
     display: inline-block;
     padding: 0.25rem 0.625rem;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-pill);
     font-size: var(--text-xs);
     font-weight: 600;
   }
@@ -131,9 +135,10 @@ export const chipStyles = css`
     align-items: center;
     gap: 0.375rem;
     padding: 0.25rem 0.625rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border-default);
     font-size: var(--text-xs);
+    font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
   }
@@ -173,9 +178,9 @@ export const tagStyles = css`
   .tag {
     display: inline-flex;
     align-items: center;
-    padding: 0.125rem 0.5rem;
+    padding: 0.125rem 0.625rem;
     border: 1px solid var(--accent-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-pill);
     background: var(--accent-subtle);
     color: var(--accent-text);
     font-family: var(--font-mono);
@@ -217,7 +222,7 @@ export const bannerStyles = css`
     align-items: center;
     justify-content: space-between;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-inner);
     padding: var(--spacing-md) var(--spacing-lg);
     margin-bottom: var(--spacing-lg);
     background: var(--surface);
@@ -284,7 +289,7 @@ export const bannerStyles = css`
 export const editorStyles = css`
   .editor-box {
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-inner);
     background: var(--surface);
     padding: var(--spacing-md) var(--spacing-lg);
     margin-bottom: var(--spacing-md);
@@ -311,7 +316,7 @@ export const editorStyles = css`
     margin: 0 0 var(--spacing-md);
     padding: 0.75rem var(--spacing-md);
     border: 1px solid var(--danger);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-inner);
     background: var(--danger-subtle);
     color: var(--danger-text);
     font-size: var(--text-sm);
@@ -328,16 +333,16 @@ export const editorStyles = css`
     width: 100%;
     text-align: left;
     padding: 0.75rem var(--spacing-md);
-    border: 1px solid var(--border-input);
+    border: 1.5px solid var(--border-input);
     border-radius: var(--radius-md);
-    background: var(--bg-page);
+    background: var(--field);
     color: var(--text-primary);
     font: inherit;
     cursor: pointer;
   }
 
   .option-card:hover {
-    border-color: var(--accent);
+    border-color: var(--text-primary);
   }
 
   .option-card:focus-visible {
@@ -371,6 +376,99 @@ export const editorStyles = css`
     margin-top: 0.5rem;
     font-size: var(--text-xs);
     color: var(--text-secondary);
+  }
+`;
+
+/** A switch row in a group editor: `.toggle-row` is the label (switch, text), `.toggle` the
+ *  switch drawn around a visually hidden checkbox (`role="switch"`). The track is
+ *  `--toggle-track-off` / `--accent`, the knob `--toggle-knob-off` / `--on-accent`; the focus ring
+ *  sits on the track because the input itself is invisible. Disabled is a colour state, no
+ *  opacity. */
+export const toggleStyles = css`
+  .toggle-row {
+    display: flex;
+    gap: 0.625rem;
+    align-items: center;
+    width: fit-content;
+    font-size: var(--text-base);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    margin: 0;
+  }
+
+  .toggle-row:has(input:disabled) {
+    cursor: default;
+    color: var(--text-muted);
+  }
+
+  .toggle {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 18px;
+    flex: none;
+    border-radius: 9999px;
+  }
+
+  /* The input covers the track (invisible, not sized away): it is what gets clicked and focused. */
+  .toggle input {
+    opacity: 0;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: inherit;
+    z-index: 1;
+  }
+
+  .toggle::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--toggle-track-off);
+    border: 1px solid var(--border-default);
+    border-radius: 9999px;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .toggle:has(input:checked)::before {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .toggle:has(input:disabled)::before {
+    background: var(--surface-inset);
+    border-color: var(--border-strong);
+  }
+
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    background: var(--toggle-knob-off);
+    border-radius: 50%;
+    transition: transform var(--transition-fast), background var(--transition-fast);
+  }
+
+  .toggle:has(input:checked)::after {
+    transform: translateX(16px);
+    background: var(--on-accent);
+  }
+
+  .toggle:has(input:disabled)::after {
+    background: var(--text-muted);
+  }
+
+  .toggle:has(input:focus-visible) {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 `;
 
@@ -501,6 +599,12 @@ export const recordStyles = css`
 
   /* Inside the side panel the cards sit at 560px: a narrower label column, the Fixed reason
      under the value, and tighter padding. The panel's host wraps its cards in .record-compact. */
+  /* The panel is itself a sheet: its cards sit flat, with the inner radius. */
+  .record-compact .card {
+    box-shadow: none;
+    border-radius: var(--radius-inner);
+  }
+
   .record-compact .record-card-head {
     padding: 0.75rem var(--spacing-md);
   }
@@ -537,11 +641,13 @@ export const recordStyles = css`
 `;
 
 export const cardStyles = css`
+  /* A white sheet on a line with the site's soft layered shadow. */
   .card {
     background: var(--surface);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
     padding: var(--spacing-xl);
+    box-shadow: var(--shadow-card);
     transition: border-color var(--transition-base);
   }
 
@@ -579,19 +685,19 @@ export const tableStyles = css`
     font-size: var(--text-base);
   }
 
+  /* The header is a kicker, not a filled band: uppercase, bold, spaced. */
   thead {
-    background: var(--surface-inset);
     border-bottom: 1px solid var(--border-default);
   }
 
   th {
     padding: 0.875rem 1rem;
     text-align: left;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text-secondary);
     text-transform: uppercase;
     font-size: var(--text-xs);
-    letter-spacing: 0.05em;
+    letter-spacing: 0.08em;
   }
 
   td {
@@ -727,14 +833,16 @@ export const formStyles = css`
     margin-bottom: var(--spacing-lg);
   }
 
+  /* A label is a kicker: small, bold, uppercase and spaced, like a table
+     header and a nav group label. */
   label {
     display: block;
     margin-bottom: var(--spacing-sm);
-    font-size: var(--text-base);
-    font-weight: 500;
+    font-size: var(--text-xs);
+    font-weight: 700;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.08em;
   }
 
   input[type="text"],
@@ -745,19 +853,37 @@ export const formStyles = css`
   textarea,
   select {
     width: 100%;
-    padding: 0.75rem 1rem;
-    background: var(--bg-page);
-    border: 1px solid var(--border-input);
+    padding: 0.6875rem 1rem;
+    background: var(--field);
+    border: 1.5px solid var(--border-input);
     border-radius: var(--radius-md);
     color: var(--text-primary);
     font-family: var(--font-family);
     font-size: var(--text-base);
-    transition: border-color var(--transition-fast);
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
   }
 
+  input[type="text"]:hover,
+  input[type="email"]:hover,
+  input[type="search"]:hover,
+  input[type="url"]:hover,
+  input[type="number"]:hover,
+  textarea:hover,
+  select:hover {
+    background-color: var(--field-hover);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-muted);
+    opacity: 1;
+  }
+
+  /* A search field is a pill, as on the site. */
   input[type="search"] {
     -webkit-appearance: none;
     appearance: none;
+    border-radius: var(--radius-pill);
   }
 
   select {
@@ -773,13 +899,15 @@ export const formStyles = css`
   }
 
   /* The focus indicator is always the 2px --focus-ring outline (3:1 on every
-     surface, design-system/contrast.mjs); the border colour only follows. */
+     surface, design-system/contrast.mjs); the field also lifts to the surface
+     with an ink border, as the login forms' fields do. */
   input:focus,
   textarea:focus,
   select:focus {
     outline: 2px solid var(--focus-ring);
-    outline-offset: 1px;
-    border-color: var(--accent);
+    outline-offset: 2px;
+    background-color: var(--surface);
+    border-color: var(--text-primary);
   }
 
   textarea {
@@ -849,7 +977,7 @@ export const methodBadgeStyles = css`
     justify-content: center;
     min-width: 4.25rem;
     padding: 0.3rem 0.65rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid transparent;
     font-size: var(--text-xs);
     font-weight: 700;

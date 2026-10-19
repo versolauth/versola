@@ -125,3 +125,26 @@ test('the rename note is shown once: picking another view clears it', async ({ p
   await page.locator('versola-navigation').getByText('Scopes', { exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'is now' })).toHaveCount(0);
 });
+
+test.describe('brand tokens', () => {
+  for (const [theme, btn, onBtn, accent] of [
+    ['light', 'rgb(28, 27, 25)', 'rgb(255, 255, 255)', '#155e75'],
+    ['dark', 'rgb(243, 242, 240)', 'rgb(28, 27, 25)', '#8dacb8'],
+  ] as const) {
+    test(`${theme}: ink primary button, brand accent, system font, brand radii`, async ({ page }) => {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+      await loadAdminApp(page);
+      const create = page.getByRole('button', { name: /Create Client/ });
+      await expect(create).toHaveCSS('background-color', btn);
+      await expect(create).toHaveCSS('color', onBtn);
+      await expect(create).toHaveCSS('border-top-left-radius', '12px');
+      await expect(create).toHaveCSS('font-weight', '700');
+      const h1 = page.getByRole('heading', { level: 1 }).first();
+      await expect(h1).toHaveCSS('font-weight', '800');
+      await expect(h1).toHaveCSS('font-size', '32px');
+      expect(await h1.evaluate(el => getComputedStyle(el).fontFamily)).toMatch(/^system-ui/);
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe(accent);
+      await expect(page.getByRole('img', { name: 'Versola' })).toBeVisible();
+    });
+  }
+});

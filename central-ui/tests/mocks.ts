@@ -277,6 +277,21 @@ const profileOf = (state: MockConfigState, tenantId: string): SecurityProfileDto
     ?? state.tenants.find(tenant => tenant.id === tenantId)?.securityProfile
     ?? 'fapi2';
 
+/** The signing key, like the profile, lives in the challenge settings; a seed on the tenant stands in for a settings row. */
+const signingKeyOf = (state: MockConfigState, tenantId: string): string | null =>
+  state.challengeSettings[tenantId]?.signingKeyId
+    ?? state.tenants.find(tenant => tenant.id === tenantId)?.signingKeyId
+    ?? null;
+
+/** `TenantResponse`: the stored tenant plus what central reads from its challenge settings. */
+const tenantResponse = (state: MockConfigState, tenant: TenantDto) => ({
+  id: tenant.id,
+  description: tenant.description,
+  edgeId: tenant.edgeId ?? null,
+  securityProfile: profileOf(state, tenant.id),
+  signingKeyId: signingKeyOf(state, tenant.id),
+});
+
 // One key central generated (both halves, so it can sign) and one seeded from
 // `bootstrap.jwks` (public half only, so it can only verify) -- the two states the key list
 // and the signing-key picker have to tell apart.
@@ -573,11 +588,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
-        // `signingKeyId` is read from the tenant's challenge settings, as central does (#713).
-        await route.fulfill(json({ tenants: state.tenants.map(tenant => ({
-          ...tenant,
-          signingKeyId: tenant.signingKeyId ?? state.challengeSettings[tenant.id]?.signingKeyId ?? null,
-        })) }));
+        await route.fulfill(json({ tenants: state.tenants.map(tenant => tenantResponse(state, tenant)) }));
         return;
       }
 
@@ -607,6 +618,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         tenant.description = payload.description;
+        tenant.edgeId = payload.edgeId ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }

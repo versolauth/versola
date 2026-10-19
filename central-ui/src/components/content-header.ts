@@ -41,7 +41,8 @@ export class ContentHeader extends LitElement {
 
       .header-title {
         font-size: var(--text-4xl);
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: -0.02em;
         color: var(--text-primary);
         margin: 0 0 0.5rem 0;
         min-width: 0;

@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { INVALID_FIELD_BORDER, findRequest, loadAdminApp, openTenantDropdown, tenantSelectorButton, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
-import { defaultChallengeSettings } from './mocks';
 
 /**
  * Tenants on the table + side panel pattern, plus the tenant selector it feeds: the list with
- * the selected tenant first, the panel with the edge and the security profile read from the
- * challenge settings, create (selects the new tenant), the group editors, delete, the
- * read-only console and the sheet below 720px.
+ * the selected tenant first and each tenant's security profile, the panel with the edge, the
+ * profile and the signing key (all from `GET /configuration/tenants`, nothing fetched per
+ * tenant), create (selects the new tenant), the group editors, delete, the read-only console
+ * and the sheet below 720px.
  */
 const tenantsPath = '/?view=tenants&tenant=tenant-alpha';
 const edges = [{ id: 'edge-alpha', hasOldKey: false, requireDpopNonce: true }];
@@ -36,15 +36,17 @@ test('filters tenants, switches the active tenant, and persists it across reload
 test('lists tenants with the selected one first, filters by edge and searches', async ({ page }) => {
   await loadAdminApp(page, {
     path: '/?view=tenants&tenant=tenant-bravo',
-    state: { tenants: [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: 'edge-alpha' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }], edges },
+    state: { tenants: [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: 'edge-alpha', securityProfile: 'standard' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }], edges },
   });
 
   const table = page.locator('versola-data-table');
-  await expect(table.getByRole('columnheader')).toHaveText(['Tenant', 'Edge', 'Actions']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Tenant', 'Edge', 'Security profile', 'Actions']);
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveText([/tenant-bravo/, /tenant-alpha/]);
   await expect(table.getByRole('row').filter({ hasText: 'Bravo Workspace' })).toContainText('Selected');
   await expect(table.getByRole('row').filter({ hasText: 'Bravo Workspace' })).toContainText('Not assigned');
+  await expect(table.getByRole('row').filter({ hasText: 'Bravo Workspace' })).toContainText('FAPI 2.0');
   await expect(table.getByRole('row').filter({ hasText: 'Alpha Workspace' })).toContainText('edge-alpha');
+  await expect(table.getByRole('row').filter({ hasText: 'Alpha Workspace' })).toContainText('Standard');
 
   await page.getByRole('button', { name: /^On an edge\s?1$/ }).click();
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveText([/tenant-alpha/]);
@@ -53,10 +55,13 @@ test('lists tenants with the selected one first, filters by edge and searches', 
   await expect(table.getByRole('button', { name: /^Open tenant/ })).toHaveCount(1);
 });
 
-test('opens a tenant, reads its security profile from the challenge settings and warns without an edge', async ({ page }) => {
-  await loadAdminApp(page, {
+test('opens a tenant: profile and signing key come from the listing, no per-tenant fetch; warns without an edge', async ({ page }) => {
+  const api = await loadAdminApp(page, {
     path: tenantsPath,
-    state: { challengeSettings: { 'tenant-bravo': { ...defaultChallengeSettings('tenant-bravo'), securityProfile: 'standard' } } },
+    state: { tenants: [
+      { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
+      { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null, securityProfile: 'standard', signingKeyId: 'ps-kid' },
+    ] },
   });
 
   await page.getByRole('button', { name: /^Open tenant (.* )?tenant-bravo$/ }).click();
@@ -69,10 +74,20 @@ test('opens a tenant, reads its security profile from the challenge settings and
   await expect(fixed).toContainText('Standard');
   await expect(fixed).toContainText('Chosen at creation; cannot be changed');
   await expect(dialog.locator('.chip', { hasText: 'Standard' })).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'Security settings' })).toContainText('ps-kid');
+  expect(api.requests.some(request => request.pathname === '/configuration/challenges/challenge-settings')).toBe(false);
 
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Open tenant (.* )?tenant-bravo$/ })).toBeFocused();
+
+  // A tenant with no key of its own says so instead of showing nothing.
+  await page.getByRole('button', { name: /^Open tenant (.* )?tenant-alpha$/ }).click();
+  const alpha = panel(page, 'Alpha Workspace');
+  await expect(alpha.getByRole('region', { name: 'Security settings' })).toContainText('Default key');
+  await expect(alpha.getByRole('region', { name: 'Security settings' })).toContainText('no JWKS key is selected for this tenant');
+  await expect(alpha.getByText('Default key')).toHaveAttribute('title', /Auth signs with its own configured private key/);
+  await expect(alpha.locator('.chip', { hasText: 'FAPI 2.0' })).toBeVisible();
 });
 
 test('creates a tenant in the panel, selects it, opens it and refreshes the selector', async ({ page }) => {
@@ -94,6 +109,7 @@ test('creates a tenant in the panel, selects it, opens it and refreshes the sele
   await expect(created.getByRole('dialog')).toBeVisible();
   await expect(created.locator('.chip', { hasText: 'Selected' })).toBeVisible();
   await expect(created.locator('.chip', { hasText: 'FAPI 2.0' })).toBeVisible();
+  await expect(created.getByRole('region', { name: 'Security settings' })).toContainText('Default key');
   await expect(page).toHaveURL(/tenant=tenant-gamma/);
   await expect(tenantSelectorButton(page)).toContainText('tenant-gamma');
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('selectedTenantId'))).toBe('tenant-gamma');

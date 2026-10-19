@@ -31,16 +31,17 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-page);
-        border: 1px solid var(--border-input);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         overflow: hidden;
         transition: border-color var(--transition-fast);
       }
       .wrapper:focus-within {
-        border-color: var(--accent);
+        background: var(--surface);
+        border-color: var(--text-primary);
         outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
+        outline-offset: 2px;
       }
       .wrapper.invalid {
         border-color: var(--danger);
