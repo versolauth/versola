@@ -3,7 +3,7 @@ package versola.oauth.challenge.password
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.PasswordRecord
-import versola.oauth.challenge.password.model.PasswordReuseError
+import versola.oauth.challenge.password.model.{PasswordHistoryChanged, PasswordReuseError}
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import versola.util.{Salt, Secret}
@@ -40,7 +40,8 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       salt: Salt,
       historySize: Int,
       numDifferent: Int,
-  ): IO[Throwable | PasswordReuseError, Unit] =
+      expectedHead: Option[Long],
+  ): IO[Throwable | PasswordReuseError | PasswordHistoryChanged.type, Unit] =
     for
       now <- Clock.instant
       result <- xa.transactMeasured("create-password") {
@@ -74,19 +75,24 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           ORDER BY id DESC
         """.query[PasswordRecord].run()
 
-        // Remove any temporary passwords so they are never part of history
-        sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
+        // The service checked reuse before this transaction, so a change that committed since then
+        // makes that check stale: refuse, and the service checks again against the new history.
+        if permanents.headOption.map(_.id) != expectedHead then Left(PasswordHistoryChanged)
+        else {
+          // Remove any temporary passwords so they are never part of history
+          sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
            """.update.run()
 
-        sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
+          sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $password, $salt, $now, NULL)
            """.update.run()
 
-        val toDelete = permanents.drop(historySize - 1)
-        if toDelete.nonEmpty then
-          val ids = toDelete.map(_.id)
-          sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-        Right(())
+          val toDelete = permanents.drop(historySize - 1)
+          if toDelete.nonEmpty then
+            val ids = toDelete.map(_.id)
+            sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
+          Right(())
+        }
       }.absolve
     yield result
 
