@@ -69,7 +69,7 @@ then `auth` and `edge`, and waits for the whole proxy last.
 |---|---|
 | `~/.versola/active/state.json` | the live deployment: version, bundle, `--auth-url`, proxy mode, `--postgres-host`, `--postgres-db` |
 | `~/.versola/active/proxy-vps/` | the proxy's generated configuration, one `gen-NNNNNN` directory per change plus `current`; each is checked with `nginx -t` before the reload |
-| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `overrides.yml`, `replicas.yml`, `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt`, `secrets.schema.json` |
+| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `overrides.yml` (the ports moved behind the proxy; written by `up`), `replicas.yml` (while a service has more than one replica), `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt`, `secrets.schema.json` |
 | `~/.versola/active/postgres-ca.crt` | the copy of `--postgres-ca` that later runs reuse |
 | `~/.versola/openbao/vps-postgres-role.sql` | the SQL that creates or updates the database role (mode `600`); you run it with `sudo -u postgres psql` |
 | `~/.versola/openbao/vps.json` | AppRole credentials `versola-cli` uses to read/write secrets |
