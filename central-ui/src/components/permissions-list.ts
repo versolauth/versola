@@ -266,7 +266,12 @@ export class VersolaPermissionsList extends LitElement {
   }
 
   private get editorMode(): 'view' | 'edit' | 'create' {
-    return this.route.create ? 'create' : this.route.edit && this.openPermission ? 'edit' : 'view';
+    return this.route.create ? 'create' : this.route.edit && this.openPermission && !this.isLegacy(this.openPermission) ? 'edit' : 'view';
+  }
+
+  /** An ID the colon-only rule would refuse today (a dot): it stays listed and read-only (Delete works) until it is recreated. */
+  private isLegacy(permission: Permission): boolean {
+    return !validatePermission(permission.id);
   }
 
   private get editGroup(): PermissionGroup | null {
@@ -438,7 +443,7 @@ export class VersolaPermissionsList extends LitElement {
       { id: 'permission', label: 'Permission', cell: permission => html`
         <button type="button" class="row-link" aria-label=${`Open permission ${getLocalizedDescription(permission.description) || permission.id} ${permission.id}`}>
           <span class="row-title">${getLocalizedDescription(permission.description) || permission.id}</span>
-          <span class="row-id">${permission.id}</span>
+          <span class="row-id">${permission.id}${this.isLegacy(permission) ? html` <span class="chip warn">Legacy ID</span>` : nothing}</span>
         </button>` },
       { id: 'resources', label: 'Resources', cell: permission => {
         const { groups } = this.resolve(permission);
@@ -490,14 +495,15 @@ export class VersolaPermissionsList extends LitElement {
     const { groups, detached } = this.resolve(permission);
     const roles = this.roles?.filter(role => role.permissions.some(candidate => candidate.id === permission.id)) ?? null;
     const clients = this.clients?.filter(client => client.permissions.includes(permission.id)) ?? null;
+    const editable = this.canManage && !this.isLegacy(permission);
     const loading = html`<span class="muted">Loading…</span>`;
     const retry = html`<span class="muted">Could not load.</span> <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.loadGrantedBy()}>Retry</button>`;
     return html`
-      <versola-record-card heading="General" ?editable=${this.canManage} .body=${html`
+      <versola-record-card heading="General" ?editable=${editable} .body=${html`
         ${this.row('Description', localizedValue(permission.description, this.locales))}
       `} @edit=${() => this.openEditor('general')}></versola-record-card>
 
-      <versola-record-card heading="Endpoints" subheading="What a token carrying this permission may call through edge." ?editable=${this.canManage}
+      <versola-record-card heading="Endpoints" subheading="What a token carrying this permission may call through edge." ?editable=${editable}
         .body=${groups.length || detached.length ? html`
           ${groups.map(group => this.renderEndpointGroup(group))}
           ${detached.length ? this.row('Detached endpoints', html`<span class="chip warn">${detached.map(id => `#${id}`).join(', ')}</span>`) : ''}`
@@ -524,8 +530,14 @@ export class VersolaPermissionsList extends LitElement {
 
   private renderBanner(permission: Permission) {
     const { detached } = this.resolve(permission);
-    if (detached.length === 0) return '';
-    return html`
+    const legacy = this.isLegacy(permission) ? html`
+      <div class="banner warn" role="status">
+        <div class="banner-text">
+          <div>${statusIcon('alert')} This ID uses dots, which are no longer allowed. Recreate the permission with a colon ID (orders:read) and move its roles and clients.</div>
+        </div>
+      </div>` : '';
+    if (detached.length === 0) return legacy;
+    return html`${legacy}
       <div class="banner warn" role="status">
         <div class="banner-text">
           <div class="banner-title">${statusIcon('alert')}${detached.length} linked ${detached.length === 1 ? 'endpoint' : 'endpoints'} no longer ${detached.length === 1 ? 'exists' : 'exist'} in Resources</div>
@@ -537,7 +549,7 @@ export class VersolaPermissionsList extends LitElement {
 
   private renderMeta(permission: Permission) {
     const { detached } = this.resolve(permission);
-    return detached.length ? html`<span class="chip warn">Detached endpoints</span>` : '';
+    return html`${this.isLegacy(permission) ? html`<span class="chip warn">Legacy ID</span>` : ''}${detached.length ? html`<span class="chip warn">Detached endpoints</span>` : ''}`;
   }
 
   private renderRecordPage(permission: Permission) {
