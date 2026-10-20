@@ -209,6 +209,19 @@ object ConversationRouterSpec extends UnitSpecBase:
       userRepository,
     )
 
+  private val passkeyOnlyAcr = Acr("passkey-level")
+  private val poFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+  private val poStep = ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true)
+  private val poRecord = initialRecord.copy(
+    step = poStep,
+    authFlow = poFlow,
+    targetAcr = Some(passkeyOnlyAcr),
+    userId = Some(testUserId),
+    userPhone = Some(phone),
+  )
+  private val poVocabulary = Map(passkeyOnlyAcr -> NonEmptyList(PassedAuthFactor.passkey))
+  private val poDenied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+
   val spec = suite("ConversationRouter")(
     suite("getConversation")(
       test("return conversation record when it exists") {
@@ -728,6 +741,57 @@ object ConversationRouterSpec extends UnitSpecBase:
           registerTimes == 1,
           finishTimes == 1,
         )
+      },
+    ),
+    suite("passkey-only step cannot be passed another way")(
+      test("a one-time code is not accepted: there is no OTP step to answer") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+          checks = env.otpConversationService.checkOtp.calls
+        yield assertTrue(result == ConversationResult.BadRequest, checks.isEmpty)
+      },
+      test("a phone number cannot be submitted to switch to the OTP route") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(poDenied)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          prepared = env.otpConversationService.prepareInitialOtp.calls
+        yield assertTrue(result == poDenied, prepared.isEmpty)
+      },
+      test("skipping is not offered: there is no enrollment step to skip") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          (result, _) <- env.router.submit(authId, PasskeySkipSubmission("test-csrf"), None, None)
+          finished = env.otpConversationService.finish.calls
+        yield assertTrue(result == ConversationResult.BadRequest, finished.isEmpty)
+      },
+      test("a correct password does not finish the conversation, the passkey is asked for again") {
+        val env = Env()
+        val passed = poRecord.copy(amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.now(), Set(AuthMethodRef.pwd))))
+        val prompt = ConversationResult.RenderStep(poStep)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(ConversationResult.StepPassed(passed))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(poVocabulary)
+          _ <- env.otpConversationService.promptPasskey.succeedsWith(prompt)
+          (result, _) <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
+          finished = env.otpConversationService.finish.calls
+        yield assertTrue(result == prompt, finished.isEmpty)
+      },
+      test("'passkey unavailable' denies, and is refused outside a passkey-only step") {
+        val env = Env()
+        val ordinary = poRecord.copy(step = poStep.copy(passkeyOnly = false))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(poDenied)
+          (onlyResult, _) <- env.router.submit(authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
+          _ <- env.otpConversationService.find.succeedsWith(Some(ordinary))
+          (ordinaryResult, _) <- env.router.submit(authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
+        yield assertTrue(onlyResult == poDenied, ordinaryResult == ConversationResult.BadRequest)
       },
     ),
     suite("advance")(

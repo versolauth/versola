@@ -261,6 +261,42 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           recordedSubjects == Set("ip:1.2.3.4", "cred-123"),
         )
       },
+      test("deny, rather than offer another try, when a passkey-only assertion fails verification") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true, passkeyRequest = Some("req-state"))
+        val record = baseRecord.copy(userId = Some(userId), step = step)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, record, assertionResponse, None)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("deny a passkey-only assertion that resolves to another user, and record no passkey as passed") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true, passkeyRequest = Some("req-state"))
+        val victim = UserId(UUID.randomUUID())
+        val record = baseRecord.copy(userId = Some(victim), step = step)
+        val outcome = AssertionOutcome(userId, CredentialId.fromString("id"), 1L)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.reset.succeedsWith(())
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, record, assertionResponse, None)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          written.forall(!_.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
       test("re-render credential step on clone detection") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
