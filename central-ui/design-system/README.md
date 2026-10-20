@@ -239,10 +239,13 @@ with auto-detect, input, `Search`; an empty state before the first search) and t
 its user by ID, so `?view=users&id=<id>` opens from a reload and `&edit=identifiers|roles|claims` opens a
 group editor. The record carries the record-view groups plus two live parts that load and fail on
 their own (a part's error is inline with Retry, never a page error): *Signed-in devices*, one row per user
-agent as auth stores it (user agent → at most one SSO session → the clients entered during it; a
-refresh token whose session is gone shows as a signed-out device), and *Apps with access*, one row per
+agent as auth stores it (user agent → at most one SSO session → the clients entered during it; the
+device line says when the session expires, the idle timeout when there is one, and until when the device
+is remembered; a signed-out device stays listed by its user agent's name until it is forgotten, with
+**Forget device** beside it, and a refresh token whose session no device names shows as an unnamed
+signed-out device), and *Apps with access*, one row per
 refresh token. All nested device tables share one column grid so dates line up down the page. The
-wording is fixed: **Sign out** for sessions, **Revoke** for offline access (the refresh token, shown as an
+wording is fixed: **Sign out** for sessions, **Forget device** for a remembered user agent, **Revoke** for offline access (the refresh token, shown as an
 `Offline access` chip with a muted `↓` to the Apps card), never "long-lived" or "invalidate". No counters
 anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
 Reference: `users-list.ts`, `user-record.ts`.

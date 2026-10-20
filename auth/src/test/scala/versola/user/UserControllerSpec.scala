@@ -9,7 +9,7 @@ import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.PublicSessionId
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord, UserDevice}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -81,6 +81,35 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment(noopPasswordSvc) ++ tracing,
         ),
     )
+
+  private val agentId = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
+
+  private val agentRecord = UserAgentRecord(
+    id = agentId,
+    userAgent = Some("Mozilla/5.0 (Macintosh) Chrome/130.0"),
+    platform = Some("desktop"),
+    os = Some("macOS 14.6"),
+    browser = Some("Chrome"),
+    version = Some("130"),
+    createdAt = Instant.parse("2026-01-01T10:00:00Z"),
+    expiresAt = Instant.parse("2026-07-01T10:00:00Z"),
+  )
+
+  private val liveSession = SessionUnderUserAgent(
+    publicId = PublicSessionId("c2lk"),
+    clients = List(ClientEntry(ClientId("app"), Instant.parse("2026-01-02T10:00:00Z"))),
+    createdAt = Instant.parse("2026-01-02T10:00:00Z"),
+    platform = agentRecord.platform,
+    os = agentRecord.os,
+    browser = agentRecord.browser,
+    version = agentRecord.version,
+    expiresAt = Instant.parse("2026-01-09T10:00:00Z"),
+    idleExpiresAt = Some(Instant.parse("2026-01-02T11:00:00Z")),
+    userAgent = Some(agentRecord),
+  )
+
+  private def sessionJson(body: String): Json.Obj =
+    body.fromJson[Json.Obj].toOption.get
 
   def spec = suite("UserController")(
     test("PUT /users without Authorization returns 401") {
@@ -339,6 +368,138 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         resp.status == Status.Ok,
         body == """{"sessions":[]}""",
       )
+    },
+    test("GET /users/sessions carries the session's expiry, idle expiry and user agent record") {
+      val sessions = stub[SessionService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- sessions.listByUser.succeedsWith(List(
+          liveSession,
+          liveSession.copy(publicId = PublicSessionId("b3Ro"), idleExpiresAt = None, userAgent = None),
+        ))
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions))
+        resp <- client.batched(
+          Request.get((URL.empty / "users" / "sessions").addQueryParam("id", "f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        body <- resp.body.asString
+        listed = sessionJson(body).get("sessions").flatMap(_.asArray).toList.flatMap(_.toList).flatMap(_.asObject)
+      yield assertTrue(
+        resp.status == Status.Ok,
+        listed.size == 2,
+        listed.head.get("publicId").contains(Json.Str("c2lk")),
+        listed.head.get("expiresAt").contains(Json.Str("2026-01-09T10:00:00Z")),
+        listed.head.get("idleExpiresAt").contains(Json.Str("2026-01-02T11:00:00Z")),
+        listed.head.get("userAgent").flatMap(_.asObject).flatMap(_.get("id")).contains(Json.Str(agentId.toString)),
+        listed.head.get("userAgent").flatMap(_.asObject).flatMap(_.get("userAgent")).contains(Json.Str("Mozilla/5.0 (Macintosh) Chrome/130.0")),
+        listed.head.get("userAgent").flatMap(_.asObject).flatMap(_.get("expiresAt")).contains(Json.Str("2026-07-01T10:00:00Z")),
+        listed.head.get("platform").contains(Json.Str("desktop")),
+        // A session with no idle window has no idleExpiresAt at all, and the old fields are untouched.
+        listed(1).get("idleExpiresAt").isEmpty,
+        listed(1).get("userAgent").isEmpty,
+      )
+    },
+    test("GET /users/user-agents without Authorization returns 401") {
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request.get(URL.empty / "users" / "user-agents"))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("GET /users/user-agents lists a signed-in device with its session and a signed-out one with session null") {
+      val sessions = stub[SessionService]
+      val signedOutId = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a2"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- sessions.listDevicesByUser.succeedsWith(
+          List(
+            UserDevice(Some(agentRecord), Some(liveSession), Nil),
+            UserDevice(Some(agentRecord.copy(id = signedOutId, userAgent = None)), None, List(PublicSessionId("old-1"))),
+          ),
+        )
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions))
+        userId = "f077fb08-9935-4a6d-8643-bf97c073bf0f"
+        resp <- client.batched(
+          Request.get((URL.empty / "users" / "user-agents").addQueryParam("id", userId)).addHeader(Header.Authorization.Bearer(token)),
+        )
+        body <- resp.body.asString
+        devices = sessionJson(body).get("devices").flatMap(_.asArray).toList.flatMap(_.toList).flatMap(_.asObject)
+      yield assertTrue(
+        resp.status == Status.Ok,
+        sessions.listDevicesByUser.calls == List(UserId(UUID.fromString(userId))),
+        devices.size == 2,
+        devices.head.get("session").flatMap(_.asObject).flatMap(_.get("publicId")).contains(Json.Str("c2lk")),
+        devices.head.get("userAgent").flatMap(_.asObject).flatMap(_.get("browser")).contains(Json.Str("Chrome")),
+        devices.head.get("endedSessionIds").contains(Json.Arr()),
+        // `session` is present and null, not omitted: a signed-out device is a fact the caller reads.
+        devices(1).get("session").contains(Json.Null),
+        devices(1).get("endedSessionIds").contains(Json.Arr(Json.Str("old-1"))),
+        devices(1).get("userAgent").flatMap(_.asObject).flatMap(_.get("userAgent")).isEmpty,
+      )
+    },
+    test("DELETE /users/user-agents without Authorization returns 401") {
+      val logout = stub[LogoutService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "user-agents"))
+      yield assertTrue(resp.status == Status.Unauthorized, logout.forgetUserAgent.calls.isEmpty)
+    },
+    test("DELETE /users/user-agents forgets the user agent of the user and answers 204") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.forgetUserAgent.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "user-agents").addQueryParam("userId", testUserId.toString).addQueryParam("userAgentId", agentId.toString),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.NoContent, logout.forgetUserAgent.calls == List((testUserId, agentId)))
+    },
+    test("DELETE /users/user-agents with a user agent that is not the user's answers 404") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.forgetUserAgent.succeedsWith(false)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "user-agents").addQueryParam("userId", testUserId.toString).addQueryParam("userAgentId", agentId.toString),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("DELETE /users/user-agents without a userAgentId is a bad request and forgets nothing") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "user-agents").addQueryParam("userId", testUserId.toString),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.BadRequest, logout.forgetUserAgent.calls.isEmpty)
     },
     test("DELETE /users/sessions without Authorization returns 401") {
       for

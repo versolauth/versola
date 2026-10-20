@@ -26,12 +26,17 @@ test.describe('list', () => {
     await expect(orders).toContainText('orders.internal.example.com');
     await expect(orders).toContainText('Internal');
     await expect(orders).toContainText('Secret rotation');
+    // At most two endpoints, one per line, and a muted overflow line under them.
     await expect(orders.locator('.method-badge')).toHaveText(['GET', 'GET']);
-    // The rest is an overflow marker that names it, not a count in words.
-    await expect(orders.locator('.chip.more').first()).toHaveText('+4');
-    await expect(orders.locator('.chip.more').first()).toHaveAttribute('title', /POST \/orders\/\{orderId\}\/refund/);
+    await expect(orders.locator('.cell-line')).toHaveCount(2);
+    const lines = await orders.locator('.cell-line').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+    expect(lines[1]).toBeGreaterThan(lines[0]);
+    await expect(orders.locator('.more-endpoints')).toHaveText('+4 more endpoints');
+    await expect(orders.locator('.more-endpoints')).toHaveAttribute('title', /POST \/orders\/\{orderId\}\/refund/);
+    await expect(resourceRow(page, 'catalog-api').locator('.more-endpoints')).toHaveText('+1 more endpoint');
+    await expect(resourceRow(page, 'support-desk').locator('.more-endpoints')).toHaveCount(0);
     await expect(orders.locator('.tag')).toHaveText(['storefront-web', 'shop-mobile']);
-    await expect(orders.locator('.chip.more').last()).toHaveText('+2');
+    await expect(orders.locator('.chip.more')).toHaveText('+2');
 
     await expect(resourceRow(page, 'catalog-api')).toContainText('Public');
     await expect(resourceRow(page, 'loyalty-api')).toContainText('None yet');
@@ -175,6 +180,11 @@ test.describe('record', () => {
     const table = page.getByRole('table', { name: 'Endpoints of orders-api' });
     await expect(table.getByRole('columnheader')).toHaveText(['Endpoint', 'Who may call', 'Step-up', 'Added to the request']);
     await expect(table.getByRole('row')).toHaveCount(7);
+    // Each injection is stacked: badge and name on one line, the value under it.
+    const injection = table.locator('tr[data-endpoint="GET /orders"] .inj').first();
+    const head = await injection.locator('.inj-head').boundingBox();
+    const value = await injection.locator('.inj-value').boundingBox();
+    expect(value!.y).toBeGreaterThan(head!.y + head!.height - 1);
     const refund = table.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
     await expect(refund).toContainText('userinfo');
     await expect(refund).toContainText('orders:refund');
@@ -239,6 +249,25 @@ test.describe('record', () => {
     // An edit URL does not open an editor for someone who cannot save.
     await page.goto(recordPath('orders-api', 'general'));
     await expect(page.getByRole('heading', { level: 1, name: 'orders-api' })).toBeVisible();
+  });
+
+  test('at 375 each endpoint is a card of vertical blocks; General and Audience stack at 1024 and 375', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 900 });
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: shopState });
+    const row = page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
+    const cells = await row.locator('td').evaluateAll(nodes => nodes.map(node => { const box = node.getBoundingClientRect(); return [box.top, box.left]; }));
+    for (let i = 1; i < cells.length; i++) {
+      expect(cells[i][0]).toBeGreaterThan(cells[i - 1][0]);
+      expect(cells[i][1]).toBe(cells[0][1]);
+    }
+    await expect(row.locator('td[data-label]')).toHaveCount(3);
+
+    for (const width of [1024, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      const general = await card(page, 'General').boundingBox();
+      const audience = await card(page, 'Audience').boundingBox();
+      expect(audience!.y).toBeGreaterThan(general!.y + general!.height - 1);
+    }
   });
 
   test('the page never scrolls sideways at 1024 and 375', async ({ page }) => {
@@ -368,10 +397,8 @@ test.describe('endpoints editor', () => {
 
     const list = page.getByRole('list', { name: 'Endpoints' });
     await expect(list.getByRole('button')).toHaveCount(6);
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Allow');
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Step-up');
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Inject');
-    await expect(endpointRow(page, 'PUT /orders/{orderId}/address')).not.toContainText('Inject');
+    // The registry names the endpoint only: no rule summary.
+    await expect(list).not.toContainText(/allow|inject|step-up/i);
 
     await endpointRow(page, 'POST /orders/{orderId}/refund').click();
     await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toHaveAttribute('aria-current', 'true');
