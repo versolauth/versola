@@ -568,6 +568,15 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, maximum=1, desc="Share of started sign-ins that completed. A drop with no traffic change means users are getting stuck -- check the step failures next.")
     b.ts("Failed attempts by step", [(f'sum by (step) (rate(auth_conversation_step_total{{{s}, result="failed"}}[$__rate_interval])) / clamp_min(sum by (step) (rate(auth_conversation_step_total{{{s}}}[$__rate_interval])), 0.001)', "{{step}}")],
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
+    b.ts("Edge assertions (DPoP): accepted and rejected", [
+        (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "accepted (bound token honoured on edge's word)"),
+        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"),
+    ], unit="ops", minimum=0,
+         desc="Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.")
+    b.ts("Edge assertions rejected, share", [
+        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval])), 0.001)", "rejected / (rejected + accepted)"),
+    ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
+         desc="Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.")
     argon2(b)
     outbound(b)
     snapshot(b)

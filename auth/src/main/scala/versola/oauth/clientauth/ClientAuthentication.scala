@@ -152,9 +152,6 @@ enum AuthenticatedEndpoint(val path: String):
   case Introspection extends AuthenticatedEndpoint("/introspect")
   case Revocation extends AuthenticatedEndpoint("/revoke")
 
-  /** Authenticates by certificate only: `/userinfo` has no assertion or secret to read. */
-  case UserInfo extends AuthenticatedEndpoint("/userinfo")
-
   def acceptedAudiences(issuer: String): Set[String] =
     val base = issuer.stripSuffix("/")
     Set(issuer, base, base + path)

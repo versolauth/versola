@@ -3,7 +3,18 @@ package versola.edge
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
 import versola.edge.model.*
-import versola.util.{Base64, ClientAssertion, JWT, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, RequestObject, Secret, TestCertificates}
+import versola.util.{
+  Base64,
+  ClientAssertion,
+  EdgeAssertion,
+  JWT,
+  PrivateClientCertificate,
+  PrivateJsonWebKey,
+  RedirectUri,
+  RequestObject,
+  Secret,
+  TestCertificates,
+}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -300,32 +311,16 @@ object SSOClientSpec extends ZIOSpecDefault:
               certificates <- presented.get
             yield assertTrue(certificates.size == 3)
           },
-          test("a key-bound token's /userinfo presents the certificate too, on the listener's url") {
+          test("a key-bound token's /userinfo carries no certificate and keeps to the plain url") {
             for
               seen <- Ref.make(Option.empty[Request])
               presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
               _ <- captureRequest(seen, Response.json("""{"sub":"user-1"}"""))
               client <- ZIO.service[Client]
               sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
-              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key(clientId, mutualTls))
+              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key)
               certificates <- presented.get
-              request <- seen.get.someOrFail(new RuntimeException("no request captured"))
-            yield assertTrue(
-              certificates.size == 1,
-              request.rawHeader("Versola-Edge-Assertion").isEmpty,
-            )
-          },
-          test("refuses a key-bound token whose client has no certificate to present, instead of a Bearer downgrade") {
-            for
-              presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
-              client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
-              error <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key(clientId, secretClient.credential)).flip
-              certificates <- presented.get
-            yield assertTrue(
-              error == SSOClient.KeyBoundTokenNeedsCertificate(clientId),
-              certificates.isEmpty,
-            )
+            yield assertTrue(certificates.isEmpty)
           },
           test("refuses a listener with no pins instead of trusting whatever answers") {
             val unpinned = viaListener.copy(native = Some(native.copy(trustedCertificates = Set.empty)))
@@ -394,7 +389,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           List(certificate.certificate.getSubjectX500Principal.getName),
         // The assertion exempts a DPoP-bound token from a proof it cannot produce. This token
         // is bound to something it can produce, so there is nothing to be exempted from.
-        request.rawHeader("Versola-Edge-Assertion").isEmpty,
+        request.rawHeader(EdgeAssertion.HeaderName).isEmpty,
       )
     },
     test("refuses /userinfo over a plaintext endpoint for a certificate-bound token") {
@@ -762,7 +757,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config, certificateFiles)
-        claims <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        claims <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
       yield assertTrue(claims.get("sub").flatMap(_.asString) == Some("user-1"))
     },
     test("sends the access token as a bearer credential") {
@@ -773,7 +768,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         )
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config, certificateFiles)
-        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(
         request.url.path.toString.endsWith("userinfo"),
@@ -783,7 +778,39 @@ object SSOClientSpec extends ZIOSpecDefault:
         },
       )
     },
-    test("sends no edge assertion: auth no longer reads one") {
+    test("sends an edge assertion bound to the access token it presents") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, certificateFiles)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        assertion <- ZIO.fromOption(request.rawHeader(EdgeAssertion.HeaderName))
+          .orElseFail(new RuntimeException("no edge assertion sent"))
+        edgeId <- EdgeAssertion.edgeIdOf(assertion)
+        // Verified against this edge's own public key, the way auth will once central has
+        // synced it -- and against the token actually presented, not merely any token.
+        keys = JWT.PublicKeys.fromJson(
+          Json.Obj("keys" -> Json.Arr(
+            RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(config.keyId).build()
+              .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj()),
+          )),
+        )
+        accepted <- EdgeAssertion.verify(assertion, keys, "at-1").either
+        rejected <- EdgeAssertion.verify(assertion, keys, "a-different-token").flip
+      yield assertTrue(
+        edgeId == config.id,
+        accepted.isRight,
+        rejected == EdgeAssertion.Error.TokenMismatch,
+      )
+    },
+    // Unbound tokens are the common case, and auth already accepts this call over `Bearer`
+    // without an assertion -- so signing one here would be a wasted RSA operation on every
+    // fetchUserInfo call for a token that never needed the exemption.
+    test("signs no edge assertion for a token that is not DPoP-bound") {
       for
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
@@ -793,14 +820,14 @@ object SSOClientSpec extends ZIOSpecDefault:
         sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
-      yield assertTrue(request.rawHeader("Versola-Edge-Assertion").isEmpty)
+      yield assertTrue(request.rawHeader(EdgeAssertion.HeaderName).isEmpty)
     },
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(error.isInstanceOf[RuntimeException])
     },
     test("maps 401 to UserInfoUnauthorized") {
@@ -808,7 +835,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.Unauthorized))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(error == SSOClient.UserInfoUnauthorized)
     },
     test("fails for any other error status") {
@@ -816,7 +843,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.InternalServerError))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
         error.asInstanceOf[RuntimeException].getMessage.nn.contains("500"),
