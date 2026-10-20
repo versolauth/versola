@@ -271,26 +271,6 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         color: var(--text-primary);
       }
 
-      .ep-rules {
-        grid-column: 2 / -1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.25rem;
-      }
-
-      .mini {
-        display: inline-flex;
-        padding: 0.0625rem 0.5rem;
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-pill);
-        font-size: var(--text-xs);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--text-secondary);
-        background: var(--surface);
-      }
-
       .marker {
         align-self: start;
         padding: 0.0625rem 0.5rem;
@@ -846,7 +826,6 @@ export class VersolaResourceEndpointsEditor extends LitElement {
 
   private renderRow(draft: Draft) {
     const status = this.statusOf(draft);
-    const stepUp = !!(draft.stepUpAcr.trim() || draft.stepUpCondition.trim() || draft.maxAge.trim());
     const fix = this.hasProblem(draft);
     return html`
       <li>
@@ -855,12 +834,6 @@ export class VersolaResourceEndpointsEditor extends LitElement {
           ${methodBadge(draft.method)}
           <span class="ep-path">${breakPath(draft.path || '/')}</span>
           ${fix ? html`<span class="marker fix">Fix</span>` : status === 'new' ? html`<span class="marker new">New</span>` : status === 'edited' ? html`<span class="marker">Edited</span>` : html`<span></span>`}
-          ${draft.allow.trim() || stepUp || draft.inject.length ? html`
-            <span class="ep-rules">
-              ${draft.allow.trim() ? html`<span class="mini">Allow</span>` : nothing}
-              ${stepUp ? html`<span class="mini">Step-up</span>` : nothing}
-              ${draft.inject.length ? html`<span class="mini">Inject</span>` : nothing}
-            </span>` : nothing}
         </button>
       </li>`;
   }

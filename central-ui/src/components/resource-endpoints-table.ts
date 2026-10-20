@@ -32,9 +32,8 @@ export function methodBadge(method: string): TemplateResult {
 export function renderInjectLines(inject: InjectRule[]): TemplateResult {
   return html`${inject.map(rule => html`
     <div class="inj">
-      <span class="src">${rule.target}</span>
-      <b class="inj-name">${rule.name}</b>
-      <code class="cel-inline">= ${renderHighlightedCel(rule.expression)}</code>
+      <div class="inj-head"><span class="src">${rule.target}</span><b class="inj-name">${rule.name}</b></div>
+      <code class="cel-inline inj-value">= ${renderHighlightedCel(rule.expression)}</code>
     </div>`)}`;
 }
 
@@ -67,7 +66,13 @@ export class VersolaResourceEndpointsTable extends LitElement {
       table {
         width: 100%;
         border-collapse: collapse;
+        table-layout: fixed;
       }
+
+      /* Endpoint and Who may call are narrower; the injections get the room. */
+      .c-endpoint { width: 22%; }
+      .c-who { width: 27%; }
+      .c-step { width: 17%; }
 
       th {
         text-align: left;
@@ -121,21 +126,19 @@ export class VersolaResourceEndpointsTable extends LitElement {
         margin-top: 0.375rem;
       }
 
+      /* A labelled block: the kicker above its value, in every width. */
       .line {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 0.25rem 0.5rem;
+        display: grid;
+        gap: 0.25rem;
+        justify-items: start;
       }
 
       .line + .line {
-        margin-top: 0.5rem;
+        margin-top: 0.75rem;
       }
 
       /* The kicker of a line inside a cell: Permission, Allow, ACR, When, Max age. */
       .kl {
-        flex: none;
-        min-width: 4.5rem;
         font-size: var(--text-xs);
         font-weight: 700;
         text-transform: uppercase;
@@ -152,15 +155,34 @@ export class VersolaResourceEndpointsTable extends LitElement {
         color: var(--text-secondary);
       }
 
+      /* One injection: the target badge and the name, then the value under them. */
       .inj {
+        display: grid;
+        gap: 0.25rem;
+        justify-items: start;
+      }
+
+      .inj + .inj {
+        margin-top: 0.75rem;
+      }
+
+      .inj-head {
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
         gap: 0.25rem 0.5rem;
       }
 
-      .inj + .inj {
-        margin-top: 0.5rem;
+      .inj-value {
+        overflow-wrap: anywhere;
+      }
+
+      .vals {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.25rem 0.5rem;
+        min-width: 0;
       }
 
       .src {
@@ -200,6 +222,11 @@ export class VersolaResourceEndpointsTable extends LitElement {
           display: block;
         }
 
+        colgroup {
+          display: none;
+        }
+
+        /* Each labelled block is a vertical list: the kicker above its value. */
         tr {
           padding: var(--spacing-md);
           border-bottom: 1px solid var(--border-subtle);
@@ -218,6 +245,18 @@ export class VersolaResourceEndpointsTable extends LitElement {
 
         td:first-child {
           padding-top: 0;
+        }
+
+        td:not(:first-child) {
+          padding-top: 0.75rem;
+        }
+
+        /* The sub-kickers inside a block read as plain labels, so the block names stand out. */
+        .kl {
+          text-transform: none;
+          letter-spacing: 0;
+          font-size: var(--text-sm);
+          font-weight: 600;
         }
 
         td[data-label]:not(:first-child)::before {
@@ -240,13 +279,13 @@ export class VersolaResourceEndpointsTable extends LitElement {
     return html`
       <div class="line">
         <span class="kl">Permission</span>
-        ${permissions.length === 0
+        <span class="vals">${permissions.length === 0
           ? html`<span class="dim">None grants it yet</span>`
-          : permissions.map((id, index) => html`${index > 0 ? html`<span class="or">or</span>` : nothing}<span class="tag">${id}</span>`)}
+          : permissions.map((id, index) => html`${index > 0 ? html`<span class="or">or</span>` : nothing}<span class="tag">${id}</span>`)}</span>
       </div>
       <div class="line">
         <span class="kl">Allow</span>
-        ${allow ? html`<code class="cel-inline">${renderHighlightedCel(allow)}</code>` : html`<span class="dim">No extra check</span>`}
+        <span class="vals">${allow ? html`<code class="cel-inline">${renderHighlightedCel(allow)}</code>` : html`<span class="dim">No extra check</span>`}</span>
       </div>`;
   }
 
@@ -258,19 +297,20 @@ export class VersolaResourceEndpointsTable extends LitElement {
       ${acr.length || condition ? html`
         <div class="line">
           <span class="kl">ACR</span>
-          ${acr.length ? acr.map(value => html`<span class="tag">${value}</span>`) : html`<span class="dim">None chosen</span>`}
+          <span class="vals">${acr.length ? acr.map(value => html`<span class="tag">${value}</span>`) : html`<span class="dim">None chosen</span>`}</span>
         </div>
         <div class="line">
           <span class="kl">When</span>
-          ${condition ? html`<code class="cel-inline">${renderHighlightedCel(condition)}</code>` : html`<span class="dim">No condition, so never asked</span>`}
+          <span class="vals">${condition ? html`<code class="cel-inline">${renderHighlightedCel(condition)}</code>` : html`<span class="dim">No condition, so never asked</span>`}</span>
         </div>` : nothing}
       ${endpoint.maxAge != null ? html`
-        <div class="line"><span class="kl">Max age</span>${maxAgeLabel(endpoint.maxAge)}</div>` : nothing}`;
+        <div class="line"><span class="kl">Max age</span><span class="vals">${maxAgeLabel(endpoint.maxAge)}</span></div>` : nothing}`;
   }
 
   render() {
     return html`
       <table role="table" aria-label=${`Endpoints of ${this.resourceId}`}>
+        <colgroup><col class="c-endpoint"><col class="c-who"><col class="c-step"><col></colgroup>
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader">Endpoint</th>
