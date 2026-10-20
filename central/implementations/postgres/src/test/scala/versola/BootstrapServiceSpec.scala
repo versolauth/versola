@@ -89,6 +89,13 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
+      val settings = BootstrapService.defaultChallengeSettings(
+        versola.central.configuration.tenants.TenantId("default"),
+        versola.central.CentralConfig.PasskeyConfig("localhost", List("http://localhost")),
+      )
+      assertTrue(settings.acrVocabulary == Some(Map("otp" -> List("otp"), "passkey" -> List("passkey"))))
+    },
     test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
       val themes = stub[ThemeRepository]
       for
