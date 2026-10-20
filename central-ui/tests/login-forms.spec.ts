@@ -426,6 +426,38 @@ test.describe('credential', () => {
     await expect(dialog).toHaveCount(0);
   });
 
+  test('a passkey-only step shows no field and no button while the passkey prompt is open', async ({ page }) => {
+    // The options request never answers, so the page stays as the user sees it while the browser prompts.
+    await page.addInitScript(() => { window.fetch = () => new Promise(() => {}); });
+    const { t, submitted } = await renderForm(page, 'credential', {
+      step: { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true },
+    });
+
+    await expect(page.getByRole('heading', { name: t.passkey_only_title })).toBeVisible();
+    await expect(page.getByText(t.passkey_only_hint)).toBeVisible();
+    await expect(page.locator('form')).toHaveCount(0);
+    await expect(page.locator('.btn')).toHaveCount(0);
+    await expect(page.getByRole('textbox')).toHaveCount(0);
+    expect(submitted).toHaveLength(0);
+  });
+
+  test('a passkey-only step ends on the access page when the passkey cannot be produced', async ({ page }) => {
+    // The harness answers the options request with a page, not a ceremony: no usable passkey. The answer is held
+    // back for a moment so the form can be seen before it moves on.
+    await page.addInitScript(() => {
+      const real = window.fetch.bind(window);
+      window.fetch = (...args) => new Promise(resolve => setTimeout(() => resolve(real(...args)), 800));
+    });
+    const { submitted } = await renderForm(page, 'credential', {
+      step: { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true },
+    });
+
+    await expect.poll(() => submitted.some(r => r.path === '/challenge/passkey/unavailable')).toBe(true);
+    const denied = submitted.find(r => r.path === '/challenge/passkey/unavailable')!;
+    expect(denied.method).toBe('POST');
+    expect(denied.fields.get('csrf')).toBe(CSRF);
+  });
+
   test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
     const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';
     await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: { light: logo, dark: logo } });

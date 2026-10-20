@@ -157,12 +157,67 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.head._2.step == credentialStep.copy(passkeyRequest = Some("req-state")),
         )
       },
+      test("restrict a passkey-only step to the passkeys of the identified user") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true)
+        val record = baseRecord.copy(userId = Some(userId), step = step)
+        for
+          _ <- env.webAuthnService.startUserAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.startPasskeyAssertion(authId, record, step, passkeySettings)
+        yield assertTrue(
+          result == "{}",
+          env.webAuthnService.startUserAssertion.calls.head == (passkeySettings, userId),
+          env.webAuthnService.startAssertion.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.head._2.step == step.copy(passkeyRequest = Some("req-state")),
+        )
+      },
+      test("never start a discoverable assertion for a passkey-only step without a user") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true)
+        for
+          exit <- env.service.startPasskeyAssertion(authId, baseRecord.copy(step = step), step, passkeySettings).exit
+        yield assertTrue(
+          exit.isFailure,
+          env.webAuthnService.startAssertion.calls.isEmpty,
+          env.webAuthnService.startUserAssertion.calls.isEmpty,
+        )
+      },
       test("propagate a failure from the WebAuthn service") {
         val env = Env()
         for
           _ <- env.webAuthnService.startAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.PasskeysNotEnabled)
           exit <- env.service.startPasskeyAssertion(authId, baseRecord, credentialStep, passkeySettings).exit
         yield assertTrue(exit.isFailure, env.conversationRepository.overwrite.calls.isEmpty)
+      },
+    ),
+    suite("promptPasskey")(
+      test("render the passkey-only credential step for an identified user whose flow offers passkeys") {
+        val env = Env()
+        val record = baseRecord.copy(userId = Some(userId))
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, record)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            ConversationStep.Credential(record.authFlow.primary.credentials, false, true, passkeyOnly = true),
+          ),
+        )
+      },
+      test("deny when the conversation has no user") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, baseRecord)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("deny when the flow offers no passkey") {
+        val env = Env()
+        val record = baseRecord.copy(userId = Some(userId), authFlow = baseRecord.authFlow.copy(passkey = None))
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, record)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),
     suite("finishPasskeyAssertion")(
@@ -204,6 +259,42 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true)),
           recordedSubjects == Set("ip:1.2.3.4", "cred-123"),
+        )
+      },
+      test("deny, rather than offer another try, when a passkey-only assertion fails verification") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true, passkeyRequest = Some("req-state"))
+        val record = baseRecord.copy(userId = Some(userId), step = step)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, record, assertionResponse, None)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("deny a passkey-only assertion that resolves to another user, and record no passkey as passed") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true, passkeyRequest = Some("req-state"))
+        val victim = UserId(UUID.randomUUID())
+        val record = baseRecord.copy(userId = Some(victim), step = step)
+        val outcome = AssertionOutcome(userId, CredentialId.fromString("id"), 1L)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.reset.succeedsWith(())
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, record, assertionResponse, None)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          written.forall(!_.amr.contains(PassedAuthFactor.passkey)),
         )
       },
       test("re-render credential step on clone detection") {
@@ -524,6 +615,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -553,6 +645,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -598,6 +691,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -654,6 +748,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -693,6 +788,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])

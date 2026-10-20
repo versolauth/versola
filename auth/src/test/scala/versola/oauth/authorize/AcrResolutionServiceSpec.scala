@@ -5,7 +5,7 @@ import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PasskeyAuthFlow}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.UnitSpecBase
@@ -42,6 +42,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
   val clientId = ClientId("test-client")
   val userId = UserId(UUID.randomUUID())
   val flow = AuthFlow.default
+  val passkeyFlow = flow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
   val mfaAcr = Acr("mfa")
   val passwordAcr = Acr("password")
 
@@ -98,8 +99,18 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(dummyPasskey))
-          result <- env.service.resolveAchievableAcr(userId, NonEmptyList(passkeyAcr), clientId, flow, Set.empty)
+          result <- env.service.resolveAchievableAcr(userId, NonEmptyList(passkeyAcr), clientId, passkeyFlow, Set.empty)
         yield assertTrue(result == Some(passkeyAcr))
+      },
+      test("return None for a passkey ACR when the flow offers no passkey, however many the user has") {
+        val env = makeEnv
+        val passkeyAcr = Acr("passkey_acr")
+        val vocabulary = Map(passkeyAcr -> NonEmptyList(PassedAuthFactor.passkey))
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
+          result <- env.service.resolveAchievableAcr(userId, NonEmptyList(passkeyAcr), clientId, flow, Set.empty)
+          listCalls = env.passkeyRepository.listByUser.times
+        yield assertTrue(result.isEmpty, listCalls == 0)
       },
       test("short-circuit: return first matching ACR and don't evaluate the second") {
         val env = makeEnv

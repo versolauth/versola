@@ -206,6 +206,77 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         assertTrue(ceremony.publicKeyOptions.contains("publicKey")) &&
         assertTrue(ceremony.publicKeyOptions.contains("challenge"))
     },
+    test("startUserAssertion lists the user's passkeys and the assertion finishes for them") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val credId = CredentialId("test-credential-user".getBytes("UTF-8"))
+      val record = passkeyRecord(credId, userId).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector(record))
+        ceremony <- service.startUserAssertion(settings, userId)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions),
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(record))
+        _ <- repository.findByCredentialIdAndUser.succeedsWith(Some(record))
+        _ <- repository.updateUsage.succeedsWith(true)
+        outcome <- service.finishAssertion(settings, ceremony.request, response)
+      yield assertTrue(
+        ceremony.publicKeyOptions.contains("allowCredentials"),
+        ceremony.publicKeyOptions.contains(java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(credId)),
+        ceremony.publicKeyOptions.contains("\"userVerification\":\"required\""),
+        outcome.userId == userId,
+      )
+    },
+    test("an assertion ceremony started for one user does not accept another user's passkey") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val otherUser = UserId(java.util.UUID.randomUUID())
+      val credId = CredentialId("test-credential-other".getBytes("UTF-8"))
+      val otherRecord = passkeyRecord(credId, otherUser).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector.empty)
+        ceremony <- service.startUserAssertion(settings, userId)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions),
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(otherUser),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(otherRecord))
+        _ <- repository.findByCredentialIdAndUser.succeedsWith(Some(otherRecord))
+        _ <- repository.updateUsage.succeedsWith(true)
+        result <- service.finishAssertion(settings, ceremony.request, response).exit
+        usageUpdates = repository.updateUsage.times
+      yield assertTrue(result.isFailure, usageUpdates == 0)
+    },
     test("credentialIdFromResponse extracts id from valid JSON") {
       val repository = stub[PasskeyRepository]
       val configService = stub[OAuthConfigurationService]

@@ -722,6 +722,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/passkey/unavailable — what the passkey-only form sends when the browser
+    * could not produce a passkey.
+    */
+  def submitPasskeyUnavailable(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/unavailable", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
