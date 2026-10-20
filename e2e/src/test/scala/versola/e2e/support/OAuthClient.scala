@@ -1240,7 +1240,35 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse).tap:
+      case _: RegisterClientResult.Success => redirectUris.headOption.fold(ZIO.unit)(awaitKnownToAuth(clientId, _))
+      case _: RegisterClientResult.Failure => ZIO.unit
+
+  /** Waits until auth serves the client that central has just registered.
+    *
+    * Registration writes central's database only. Auth learns of the client when it reloads from
+    * central's configuration cache, and central refreshes that cache from a Postgres notification,
+    * so a reload that runs before the notification is processed misses the client and `/token`
+    * answers `invalid_client` for it. `/token` cannot tell the two cases apart (its answer is the
+    * same for an unknown client and for wrong credentials), but `/authorize` can: an unknown client
+    * is a `400` with no redirect, a known one always redirects (to the challenge, or to the
+    * registered redirect URI with an error). What is awaited is that redirect, so no credentials
+    * are needed and no token is issued. Each attempt asks auth to reload again, because a reload
+    * that ran too early is not repeated on its own. Bounded at ten seconds; on a timeout the
+    * registration still succeeds and the spec's own assertion reports the missing client. */
+  private def awaitKnownToAuth(clientId: String, redirectUri: String): Task[Unit] =
+    val probe =
+      for
+        _ <- syncConfiguration()
+        result <- authorizeRaw(clientId, redirectUri)
+        _ <- ZIO.fail(RuntimeException(s"auth does not serve client $clientId yet"))
+          .unless(result.response.status.isRedirection)
+      yield ()
+    probe.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+      .timeout(10.seconds)
+      .withClock(Clock.ClockLive)
+      .unit
+      .orElse(ZIO.unit)
 
   /** PUT /configuration/clients — patches a registered client through the Central API.
     *
