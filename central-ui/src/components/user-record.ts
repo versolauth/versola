@@ -3,12 +3,12 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, recordStyles, tagStyles } from '../styles/components';
-import type { OAuthClient, PasskeyInfo, Role, User, UserRefreshToken, UserSession } from '../types';
+import type { OAuthClient, PasskeyInfo, Role, User, UserDevice, UserRefreshToken, UserSession } from '../types';
 import { fetchAllClients, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
-import { buildDevices, deviceName, platformLabel, userDisplayName, userLabel, type Device } from '../utils/user-display';
+import { buildDevices, deviceLabel, platformLabel, userDisplayName, userLabel, type Device } from '../utils/user-display';
 import {
   DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
   deletePasskey,
@@ -16,7 +16,8 @@ import {
   endUserSession,
   fetchUserRefreshTokens,
   fetchUserRoles,
-  fetchUserSessions,
+  fetchUserDevices,
+  forgetUserAgent,
   invalidateUserSession,
   listPasskeys,
   patchUserClaims,
@@ -93,7 +94,7 @@ export class VersolaUserRecord extends LitElement {
   @state() private userState: 'loading' | 'ready' | 'error' | 'missing' = 'loading';
   @state() private userError = '';
   @state() private roles: Part<string[]> = loading([]);
-  @state() private sessions: Part<UserSession[]> = loading([]);
+  @state() private devices: Part<UserDevice[]> = loading([]);
   @state() private tokens: Part<UserRefreshToken[]> = loading([]);
   @state() private passkeys: Part<PasskeyInfo[]> = loading([]);
   @state() private clientNames = new Map<string, string>();
@@ -278,6 +279,24 @@ export class VersolaUserRecord extends LitElement {
         margin-top: 0.125rem;
         font-size: var(--text-sm);
         color: var(--text-secondary);
+      }
+
+      .device-life {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 var(--spacing-sm);
+      }
+
+      .device-life > span + span::before {
+        content: '·';
+        margin-right: var(--spacing-sm);
+      }
+
+      .device-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+        justify-content: flex-end;
       }
 
       .device-clients {
@@ -519,9 +538,17 @@ export class VersolaUserRecord extends LitElement {
           grid-template-columns: 2.25rem minmax(0, 1fr);
         }
 
-        .device-head > .btn {
+        .device-head > .device-actions {
           grid-column: 1 / -1;
-          justify-self: start;
+          justify-content: flex-start;
+        }
+
+        .device-life {
+          flex-direction: column;
+        }
+
+        .device-life > span + span::before {
+          content: none;
         }
 
         .device-clients {
@@ -593,13 +620,13 @@ export class VersolaUserRecord extends LitElement {
   private async loadAll() {
     const seq = ++this.loadSeq;
     this.roles = loading([]);
-    this.sessions = loading([]);
+    this.devices = loading([]);
     this.tokens = loading([]);
     this.passkeys = loading([]);
     await this.loadUser(seq);
     if (seq !== this.loadSeq || !this.user) return;
     void this.loadRoles();
-    void this.loadSessions();
+    void this.loadDevices();
     void this.loadTokens();
     void this.loadPasskeys();
     void this.loadClientNames();
@@ -639,14 +666,14 @@ export class VersolaUserRecord extends LitElement {
     }
   }
 
-  private async loadSessions() {
+  private async loadDevices() {
     const seq = this.loadSeq;
-    this.sessions = loading(this.sessions.data);
+    this.devices = loading(this.devices.data);
     try {
-      const sessions = await fetchUserSessions(this.userId);
-      if (seq === this.loadSeq) this.sessions = ready(sessions);
+      const devices = await fetchUserDevices(this.userId);
+      if (seq === this.loadSeq) this.devices = ready(devices);
     } catch (error) {
-      if (seq === this.loadSeq) this.sessions = failed([], error, 'Failed to load sessions');
+      if (seq === this.loadSeq) this.devices = failed([], error, 'Failed to load devices');
     }
   }
 
@@ -835,7 +862,26 @@ export class VersolaUserRecord extends LitElement {
     if (!sessionId) return;
     await this.run(`device:${sessionId}`, 'Failed to sign the device out', async () => {
       await endUserSession(this.userId, sessionId);
-      await Promise.all([this.loadSessions(), this.loadTokens()]);
+      await Promise.all([this.loadDevices(), this.loadTokens()]);
+    });
+  }
+
+  private async forgetDevice(device: Device) {
+    const user = this.user;
+    const agentId = device.userAgent?.id;
+    if (!user || !agentId) return;
+    const name = deviceLabel(device);
+    const confirmed = await confirmDestructiveAction({
+      title: 'Forget device',
+      messagePrefix: 'Forget ',
+      messageSubject: name,
+      messageSuffix: ` for ${userLabel(user)}? Auth no longer remembers it, its session ends and the offline access issued on it is revoked. The next sign-in on it starts from scratch.`,
+      confirmLabel: 'Forget',
+    });
+    if (!confirmed) return;
+    await this.run(`forget:${agentId}`, 'Failed to forget the device', async () => {
+      await forgetUserAgent(this.userId, agentId);
+      await Promise.all([this.loadDevices(), this.loadTokens()]);
     });
   }
 
@@ -852,12 +898,12 @@ export class VersolaUserRecord extends LitElement {
     if (!confirmed) return;
     await this.run('everywhere', 'Failed to sign the user out', async () => {
       await invalidateUserSession(this.userId);
-      await Promise.all([this.loadSessions(), this.loadTokens()]);
+      await Promise.all([this.loadDevices(), this.loadTokens()]);
     });
   }
 
   private async refreshDevices() {
-    await Promise.all([this.loadSessions(), this.loadTokens()]);
+    await Promise.all([this.loadDevices(), this.loadTokens()]);
   }
 
   private async revokeAccess(token: UserRefreshToken) {
@@ -1021,28 +1067,45 @@ export class VersolaUserRecord extends LitElement {
 
   private renderDevice(device: Device) {
     const session = device.session;
-    const name = session ? deviceName(session) : 'Signed-out device';
+    const agent = device.userAgent;
+    const name = deviceLabel(device);
+    const platform = agent?.platform ?? session?.platform;
     const held = new Set(device.tokens.map(token => token.clientId));
     const marker = (clientId: string) => held.has(clientId) ? html`
       <span class="dc-marker"><span class="chip">Offline access</span>
         <button type="button" class="down" aria-label="Go to Apps with access" title="Apps with access"
           @click=${this.scrollToOfflineAccess}>↓</button></span>` : html`<span></span>`;
+    const offlineNote = held.size > 0 ? ' Offline access issued on it is still valid.' : '';
+    const sub = session
+      ? `${platformLabel(platform)} · signed in ${when(session.createdAt)}`
+      : agent
+        ? `${platformLabel(platform)} · its session has ended.${offlineNote}`
+        : `Its session has ended.${offlineNote}`;
 
     return html`
       <div class="device" data-device=${device.key}>
         <div class="device-head">
-          ${this.deviceIcon(session?.platform)}
+          ${this.deviceIcon(platform)}
           <div>
             <div class="device-name">${name}
               ${session ? html`<span class="chip ok">Signed in</span>` : html`<span class="chip">Signed out</span>`}</div>
-            <div class="device-sub">${session
-              ? `${platformLabel(session.platform)} · signed in ${when(session.createdAt)}`
-              : 'Its session has ended. Offline access issued on it is still valid.'}</div>
+            <div class="device-sub">${sub}</div>
+            ${session || agent ? html`<div class="device-sub device-life">
+              ${session ? html`<span data-life="session">Session expires ${when(session.expiresAt)}</span>` : nothing}
+              ${session?.idleExpiresAt ? html`<span data-life="idle">Idle timeout ${when(session.idleExpiresAt)}</span>` : nothing}
+              ${agent ? html`<span data-life="remembered">Device remembered until ${when(agent.expiresAt)}</span>` : nothing}
+            </div>` : nothing}
           </div>
-          ${session?.publicId && this.canManage ? html`
-            <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Sign out device ${name}`}
-              ?disabled=${this.busy.has(`device:${session.publicId}`)}
-              @click=${() => this.signOutDevice(device)}>Sign out device</button>` : nothing}
+          ${this.canManage && (session?.publicId || agent) ? html`<div class="device-actions">
+            ${session?.publicId ? html`
+              <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Sign out device ${name}`}
+                ?disabled=${this.busy.has(`device:${session.publicId}`)}
+                @click=${() => this.signOutDevice(device)}>Sign out device</button>` : nothing}
+            ${agent ? html`
+              <button type="button" class="btn btn-secondary btn-danger-outline btn-sm" aria-label=${`Forget device ${name}`}
+                ?disabled=${this.busy.has(`forget:${agent.id}`)}
+                @click=${() => this.forgetDevice(device)}>Forget device</button>` : nothing}
+          </div>` : nothing}
         </div>
         ${session ? html`
           <div class="device-clients" role="table" aria-label=${`Clients entered on ${name}`}>
@@ -1057,7 +1120,7 @@ export class VersolaUserRecord extends LitElement {
                 <span role="cell" data-label="Access token until">${when(client.expiresAt)}</span>
                 <span role="cell">${marker(client.clientId)}</span>
               </div>`)}
-          </div>` : html`
+          </div>` : held.size > 0 ? html`
           <div class="device-clients" role="table" aria-label="Apps with offline access issued on this device">
             <div class="dc h" role="row">
               <span role="columnheader">Client</span><span role="columnheader">Issued</span>
@@ -1072,36 +1135,36 @@ export class VersolaUserRecord extends LitElement {
                 <span role="cell">${marker(clientId)}</span>
               </div>`;
             })}
-          </div>`}
+          </div>` : nothing}
       </div>
     `;
   }
 
   private renderDevicesCard() {
-    const sessionsOk = this.sessions.status === 'ready';
-    const devices = sessionsOk ? buildDevices(this.sessions.data, this.tokens.status === 'ready' ? this.tokens.data : []) : [];
-    const refreshing = this.sessions.status === 'loading' || this.tokens.status === 'loading';
+    const devicesOk = this.devices.status === 'ready';
+    const devices = devicesOk ? buildDevices(this.devices.data, this.tokens.status === 'ready' ? this.tokens.data : []) : [];
+    const refreshing = this.devices.status === 'loading' || this.tokens.status === 'loading';
     const actions = html`
       <button type="button" class="btn btn-secondary btn-sm" ?disabled=${refreshing} @click=${this.refreshDevices}>Refresh</button>
       ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-danger-outline btn-sm"
-        ?disabled=${this.busy.has('everywhere') || !sessionsOk || this.sessions.data.length === 0}
+        ?disabled=${this.busy.has('everywhere') || !devicesOk || !this.devices.data.some(device => device.session)}
         @click=${this.signOutEverywhere}>Sign out everywhere…</button>` : nothing}`;
-    const body = this.sessions.status === 'ready'
+    const body = this.devices.status === 'ready'
       ? (devices.length === 0
         ? html`<div class="part-note">Not signed in on any device.</div>`
         : devices.map(device => this.renderDevice(device)))
-      : this.partNote(this.sessions, 'devices', () => void this.loadSessions());
+      : this.partNote(this.devices, 'devices', () => void this.loadDevices());
     return this.card('devices', 'Signed-in devices',
-      'One row per browser or app install. Each holds at most one session; the clients entered during it are listed under it.',
+      'One row per browser or app install auth remembers. Each holds at most one session, with when it expires; the clients entered during it are listed under it. A device stays listed, signed out, until it is forgotten or its remembered time runs out.',
       actions, body);
   }
 
   private renderAppsCard() {
     const tokens = this.tokens.data;
-    const sessions = this.sessions.data;
+    const devices = buildDevices(this.devices.data, tokens);
     const deviceOf = (token: UserRefreshToken) => {
-      const session = sessions.find(entry => entry.publicId === token.sessionId);
-      return session ? { name: deviceName(session), signedIn: true } : { name: 'Signed-out device', signedIn: false };
+      const device = devices.find(entry => entry.tokens.includes(token));
+      return device ? { name: deviceLabel(device), signedIn: device.session !== null } : { name: 'Signed-out device', signedIn: false };
     };
     let body: unknown;
     if (this.tokens.status !== 'ready') {
@@ -1346,7 +1409,7 @@ export class VersolaUserRecord extends LitElement {
 
   private renderBody(user: User): TemplateResult {
     const name = userDisplayName(user);
-    const signedIn = this.sessions.status === 'ready' && this.sessions.data.length > 0;
+    const signedIn = this.devices.status === 'ready' && this.devices.data.some(device => device.session);
     return html`
       ${this.actionError ? html`<div class="banner warn" role="alert">
         <div class="banner-text"><div class="banner-title">${statusIcon('alert')}Something went wrong</div><div>${this.actionError}</div></div>

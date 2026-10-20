@@ -3,7 +3,7 @@ package versola.oauth.logout
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.CoreConfig
 import zio.*
@@ -28,6 +28,11 @@ trait LogoutService:
     * parties included. `false` when the session is not the user's or no longer live: knowing
     * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
   def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+
+  /** Forgets one of the user's user agents (admin-panel "Forget device"): its live session ends the
+    * way [[invalidateSession]] ends it, relying parties included, then the user agent, any earlier
+    * session of it and their refresh tokens go. `false` when the user agent is not the user's. */
+  def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean]
 
 object LogoutService:
   case class LogoutResult(
@@ -83,6 +88,13 @@ object LogoutService:
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
         case true => logout(Left(publicId), None, None).as(true)
+
+    override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
+      sessionService.listDevicesByUser(userId).map(_.find(_.userAgent.exists(_.id == userAgentId))).flatMap:
+        case None => ZIO.succeed(false)
+        case Some(device) =>
+          ZIO.foreachDiscard(device.session)(session => logout(Left(session.publicId), None, None)) *>
+            sessionService.forgetUserAgent(userId, userAgentId)
 
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
