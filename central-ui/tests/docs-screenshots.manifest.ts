@@ -179,14 +179,33 @@ const dana = {
     lastUsedAt: '2026-09-14T15:24:30',
     createdAt: '2026-09-12T19:00:35',
   }],
-  sessions: [{
-    platform: 'desktop' as const,
-    os: 'macOS 15',
-    browser: 'Chrome',
-    version: '145',
-    createdAt: '2026-09-20T20:36:00',
-    clients: [{ clientId: 'storefront-web', enteredAt: '2026-09-20T20:36:00', expiresAt: '2026-09-20T21:36:00' }],
-  }],
+  sessions: [
+    {
+      publicId: 'sess-chrome-macos',
+      platform: 'desktop' as const,
+      os: 'macOS 15',
+      browser: 'Chrome',
+      version: '145',
+      createdAt: '2026-09-20T20:36:00',
+      clients: [
+        { clientId: 'storefront-web', enteredAt: '2026-09-20T20:36:00', expiresAt: '2026-09-20T21:36:00' },
+        { clientId: 'admin-console', enteredAt: '2026-09-20T20:52:00', expiresAt: '2026-09-20T21:52:00' },
+      ],
+    },
+    {
+      publicId: 'sess-shop-ios',
+      platform: 'ios' as const,
+      os: 'iOS 18.1',
+      browser: 'Example Shop app',
+      createdAt: '2026-09-08T18:03:00',
+      clients: [{ clientId: 'shop-mobile', enteredAt: '2026-09-08T18:03:00', expiresAt: '2026-09-08T19:03:00' }],
+    },
+  ],
+  refreshTokens: [
+    { sessionId: 'sess-chrome-macos', clientId: 'storefront-web', scope: ['openid', 'profile', 'offline_access'], issuedAt: '2026-09-20T20:36:00', expiresAt: '2026-12-31T20:36:00', dpopBound: false },
+    { sessionId: 'sess-shop-ios', clientId: 'shop-mobile', scope: ['openid', 'orders', 'offline_access'], issuedAt: '2026-09-08T18:03:00', expiresAt: '2027-03-07T18:03:00', dpopBound: true },
+    { sessionId: 'sess-firefox-gone', clientId: 'storefront-web', scope: ['openid', 'offline_access'], issuedAt: '2026-08-25T11:30:00', expiresAt: '2026-12-31T11:30:00', dpopBound: false },
+  ],
 };
 
 // The tenant's logo pair, as artwork with its text already outlined (the wordmark is Inter Bold converted to paths) (an <img> has no fonts): dark ink for the light
@@ -462,12 +481,30 @@ const serviceReview: Act = async page => {
 };
 
 const searchUser = (login: string, name: string): Act => async page => {
-  await page.getByPlaceholder('Search users…').fill(login);
+  await page.getByRole('searchbox', { name: 'Search users' }).fill(login);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await expect(page.locator('.user-card').filter({ hasText: name }).first()).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: name }).first()).toBeVisible();
 };
 
-const userCard = (page: Page) => page.locator('.user-card').filter({ hasText: 'Dana Reyes' }).first();
+const userPath = `/?view=users&tenant=${tenant}&id=${dana.id}`;
+const userClientsState = (): MockState => ({
+  ...alpha,
+  clients: { [tenant]: ['storefront-web', 'admin-console', 'shop-mobile'].map(id => ({
+    id,
+    clientName: { en: id === 'storefront-web' ? 'Storefront Web' : id === 'admin-console' ? 'Admin console' : 'Shop mobile' },
+    redirectUris: [`https://${id}.example.com/callback`],
+    scope: ['openid'],
+    permissions: [],
+    secretRotation: false,
+    accessTokenTtl: 3600,
+  })) as MockConfigState['clients'][string] },
+});
+const userLoaded: Act = async page => {
+  await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('MacBook');
+};
 
 const expandResource: Act = async page => {
   await page.locator('.resource-shell').filter({ hasText: 'orders-api.orders.svc.cluster.local' }).first().locator('.resource-header').click();
@@ -902,31 +939,26 @@ const consoleShots: DocsShot[] = [
   },
 
   // Users
-  {
-    name: 'console/user-detail', kind: 'frame', fullPage: true, path: `/?view=users&tenant=${tenant}`, state: alpha,
-    before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      const card = userCard(page);
-      await card.getByRole('button', { name: 'Get Claims', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Roles', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Sessions', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Passkeys', exact: true }).click();
-      await expect(card.locator('.role-tag', { hasText: 'alpha_admin' })).toBeVisible();
-      await expect(card.locator('.session-card')).toBeVisible();
-      await expect(card.locator('.passkey-card')).toBeVisible();
-    },
-  },
+  { name: 'console/user-detail', kind: 'frame', fullPage: true, path: userPath, state: userClientsState, before: userLoaded },
   {
     name: 'entities/users-search-empty', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha,
     before: async page => { await expect(page.getByRole('heading', { name: 'Search for a user', exact: true })).toBeVisible(); },
   },
   { name: 'entities/users-list', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha, before: searchUser('dana', 'Dana Reyes') },
   {
-    name: 'entities/users-list-roles-expanded', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha,
+    name: 'entities/user-devices', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    section: page => page.getByRole('region', { name: 'Signed-in devices' }),
+  },
+  {
+    name: 'entities/user-offline-access', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    section: page => page.getByRole('region', { name: 'Apps with access' }),
+  },
+  {
+    name: 'entities/user-delete-confirm', kind: 'frame', path: userPath, state: userClientsState,
     before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      await userCard(page).getByRole('button', { name: 'Get Roles', exact: true }).click();
-      await expect(userCard(page).locator('.role-tag', { hasText: 'alpha_admin' })).toBeVisible();
+      await userLoaded(page);
+      await page.getByRole('button', { name: 'Delete user Dana Reyes' }).click();
+      await expect(page.getByRole('dialog')).toContainText('back-channel logout');
     },
   },
   {
@@ -947,12 +979,16 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'entities/user-claims-edit', kind: 'frame', fullPage: true, path: `/?view=users&tenant=${tenant}`, state: alpha,
+    name: 'entities/user-roles-edit', kind: 'frame', path: `${userPath}&edit=roles`, state: userClientsState,
     before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      await userCard(page).getByRole('button', { name: 'Get Claims', exact: true }).click();
-      await userCard(page).locator('.icon-action[title="Edit Claims"]').click();
-      await expect(page.getByRole('heading', { name: 'Edit Claims', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Edit roles' })).toBeVisible();
+      await expect(page.getByRole('checkbox', { name: /alpha_admin/ })).toBeChecked();
+    },
+  },
+  {
+    name: 'entities/user-claims-edit', kind: 'frame', fullPage: true, path: `${userPath}&edit=claims`, state: alpha,
+    before: async page => {
+      await expect(page.getByRole('heading', { name: 'Edit claims', exact: true })).toBeVisible();
       await expect(page.locator('versola-claim-edit .section-label')).toHaveText(['email', 'payments_read', 'phone', 'profile']);
     },
   },

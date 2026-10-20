@@ -234,6 +234,19 @@ fixed at creation sit in a card with the `Fixed` lock, each row with its reason 
 `versola-danger-card` last, named for what it deletes. Reference: `clients-list.ts`
 (`renderClientView`).
 
+**Search-first record (Users).** There is no list-all endpoint, so the list is a search (field select
+with auto-detect, input, `Search`; an empty state before the first search) and the record page loads
+its user by ID, so `?view=users&id=<id>` opens from a reload and `&edit=identifiers|roles|claims` opens a
+group editor. The record carries the record-view groups plus two live parts that load and fail on
+their own (a part's error is inline with Retry, never a page error): *Signed-in devices*, one row per user
+agent as auth stores it (user agent → at most one SSO session → the clients entered during it; a
+refresh token whose session is gone shows as a signed-out device), and *Apps with access*, one row per
+refresh token. All nested device tables share one column grid so dates line up down the page. The
+wording is fixed: **Sign out** for sessions, **Revoke** for offline access (the refresh token, shown as an
+`Offline access` chip with a muted `↓` to the Apps card), never "long-lived" or "invalidate". No counters
+anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
+Reference: `users-list.ts`, `user-record.ts`.
+
 **Wizard (create).** Stepped, with a step list on top, each step a stack of bordered panels
 (title, one-line subtitle, body), a rule the type sets shown as a locked row (lock icon, text,
 reason), and a review step in the page's own groups with `Change` back to the step that sets it.

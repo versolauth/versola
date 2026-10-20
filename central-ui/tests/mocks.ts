@@ -182,12 +182,22 @@ type PasskeyInfoDto = {
 
 type SessionClientEntryDto = { clientId: string; enteredAt: string; expiresAt: string };
 type UserSessionDto = {
+  publicId?: string;
   clients: SessionClientEntryDto[];
   createdAt?: string;
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
+};
+
+type UserRefreshTokenDto = {
+  sessionId: string;
+  clientId: string;
+  scope: string[];
+  issuedAt: string;
+  expiresAt: string;
+  dpopBound: boolean;
 };
 
 type UserDto = {
@@ -199,6 +209,7 @@ type UserDto = {
   rolesByTenant?: Record<string, string[]>;
   passkeys?: PasskeyInfoDto[];
   sessions?: UserSessionDto[];
+  refreshTokens?: UserRefreshTokenDto[];
 };
 
 type RateLimitDto = { maxAttempts: number; windowSeconds: number };
@@ -1657,11 +1668,31 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
 
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        const index = state.users.findIndex(candidate => candidate.id === id);
+        if (index < 0) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        state.users.splice(index, 1);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
       if (method === 'PATCH') {
         const payload = body as { id: string; email?: string | null; phone?: string | null; login?: string | null };
         const user = state.users.find(candidate => candidate.id === payload.id);
         if (!user) {
           await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+          return;
+        }
+        const taken = state.users.some(other => other.id !== user.id && (
+          (payload.email && other.email === payload.email) ||
+          (payload.phone && other.phone === payload.phone) ||
+          (payload.login && other.login === payload.login)));
+        if (taken) {
+          await route.fulfill(json({ message: 'Identifier already taken' }, 409));
           return;
         }
         if (payload.email !== undefined) user.email = payload.email ?? undefined;
@@ -1729,12 +1760,50 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'DELETE') {
+        // Mirrors central: `userId` alone signs the user out everywhere (and revokes every
+        // refresh token); `id` with `sessionId` ends that one session, 404 for a foreign one.
+        const sessionId = url.searchParams.get('sessionId');
+        if (sessionId) {
+          const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+          const session = user?.sessions?.find(candidate => candidate.publicId === sessionId);
+          if (!user || !session) {
+            await route.fulfill(json({ message: 'Session not found' }, 404));
+            return;
+          }
+          user.sessions = (user.sessions ?? []).filter(candidate => candidate.publicId !== sessionId);
+          await route.fulfill({ status: 204, body: '' });
+          return;
+        }
         const userId = url.searchParams.get('userId') ?? '';
         const user = state.users.find(candidate => candidate.id === userId);
         if (user) {
           user.sessions = [];
+          user.refreshTokens = [];
         }
         await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/refresh-tokens') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        await route.fulfill(json(user.refreshTokens ?? []));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+        const clientId = url.searchParams.get('clientId');
+        if (user) {
+          user.refreshTokens = (user.refreshTokens ?? []).filter(token => token.clientId !== clientId);
+        }
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }

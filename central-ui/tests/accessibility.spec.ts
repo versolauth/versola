@@ -2,6 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, userScopes } from './users-fixtures';
 
 /**
  * Automated accessibility scan (axe-core) of the admin console's list screens, in both themes.
@@ -39,6 +40,69 @@ for (const scheme of schemes) {
       ).toEqual([]);
     });
   }
+}
+
+const userState = {
+  users: [dana, quiet],
+  clients: { 'tenant-alpha': userClients },
+  roles: { 'tenant-alpha': [shopManager, shopUser, shopSupport] },
+  scopes: { 'tenant-alpha': userScopes },
+};
+
+for (const theme of themes) {
+  test(`a user's record, its editors and its dialogs have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    const base = `/?view=users&tenant=tenant-alpha&id=${danaId}`;
+
+    await loadAdminApp(page, { path: base, state: userState });
+    await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
+    await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(3);
+    expect(await scan()).toEqual([]);
+
+    // The record with nothing to show: no devices, no offline access, no passkeys.
+    await page.goto(`/?view=users&tenant=tenant-alpha&id=${quiet.id}`);
+    await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('No passkeys registered.');
+    expect(await scan()).toEqual([]);
+
+    // A record that cannot load its user.
+    await page.goto(`/?view=users&tenant=tenant-alpha&id=00000000-0000-0000-0000-00000000dead`);
+    await expect(page.getByRole('heading', { name: 'User not found' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    for (const edit of ['identifiers', 'roles', 'claims']) {
+      await page.goto(`${base}&edit=${edit}`);
+      await expect(page.getByRole('heading', { level: 1, name: `Edit ${edit}` })).toBeVisible();
+      expect(await scan()).toEqual([]);
+    }
+
+    await page.goto(base);
+    await page.getByRole('button', { name: 'Reset password…' }).click();
+    await expect(page.getByRole('dialog', { name: 'Reset password' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: 'Delete user Dana Reyes' }).click();
+    await expect(page.getByRole('dialog')).toContainText('back-channel logout');
+    expect(await scan()).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test(`a user's search results and create form have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    await loadAdminApp(page, { path: '/?view=users&tenant=tenant-alpha', state: userState });
+    await page.getByRole('searchbox', { name: 'Search users' }).fill('dana');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByRole('row').filter({ hasText: 'Dana Reyes' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('button', { name: '+ Create User' }).click();
+    await expect(page.getByRole('heading', { name: 'Create New User' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+  });
 }
 
 for (const theme of themes) {

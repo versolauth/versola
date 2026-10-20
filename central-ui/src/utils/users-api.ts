@@ -20,6 +20,8 @@ type UserSearchResponseDto = { users: UserSearchRecordDto[] };
 type CreateUserResponseDto = { id: string };
 type UserRolesResponseDto = { roles: string[] };
 
+export const IDENTIFIER_TAKEN_MESSAGE = 'One of the identifiers is already taken by another user.';
+
 export const DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS = 12;
 
 function toUser(record: UserSearchRecordDto): User {
@@ -74,7 +76,7 @@ export async function createUser(user: Omit<User, 'id'>): Promise<User> {
   });
 
   if (response.status === 409) {
-    throw new Error('User with this email, phone or login already exists');
+    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
   }
 
   if (!response.ok) {
@@ -104,6 +106,10 @@ export async function updateUser(previous: User, next: User): Promise<void> {
     credentials: 'include',
     body: JSON.stringify(body),
   });
+
+  if (response.status === 409) {
+    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
+  }
 
   if (!response.ok) {
     const text = await response.text();
