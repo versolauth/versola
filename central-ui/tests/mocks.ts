@@ -1478,6 +1478,39 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+
+      if (method === 'PATCH') {
+        // Central's merge patch (RFC 7396) of the record's members: absent keeps the stored value, a value replaces it,
+        // null clears an optional member. The mock refuses what central refuses, so a console that sends the whole
+        // record back, a null for a required member or a misspelt key fails here as it would there.
+        const payload = body as Record<string, unknown> & { tenantId?: string };
+        const optional = new Set(['sessionIdleTtlSeconds', 'acrVocabulary', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId', 'logoLight', 'logoDark']);
+        const members = new Set([
+          'tenantId', 'phoneRegions', 'emailRegistration', 'defaultRoles', 'submissionLimits', 'otpLength', 'otpResendAfter', 'passkeySettings',
+          'authConversationTtlSeconds', 'sessionTtlSeconds', 'sessionIdleTtlSeconds', 'userAgentTtlSeconds', 'ipHeader', 'acrVocabulary',
+          'postLogoutRedirectUris', 'requireDpopNonce', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId',
+          'clientAssertionMaxLifetimeSeconds', 'securityProfile', 'logoLight', 'logoDark',
+        ]);
+        const stored = payload.tenantId ? state.challengeSettings[payload.tenantId] : undefined;
+        if (!stored) {
+          await route.fulfill({ status: 404, body: '' });
+          return;
+        }
+        const unknown = Object.keys(payload).find(key => !members.has(key));
+        const cleared = Object.keys(payload).find(key => key !== 'tenantId' && payload[key] === null && !optional.has(key));
+        if (unknown || cleared) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: unknown ? `Unknown key ${unknown}` : `${cleared} cannot be cleared: it is not optional` });
+          return;
+        }
+        const merged = { ...stored, ...clone(payload) } as ChallengeSettingsDto;
+        if (!merged.logoLight !== !merged.logoDark) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'logoLight and logoDark must be set or cleared together' });
+          return;
+        }
+        state.challengeSettings[merged.tenantId] = merged;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
     }
 
     if (pathname === '/configuration/jwks') {
