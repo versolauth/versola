@@ -143,6 +143,18 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
   // A minimal assertion response carrying a credential id, used as the throttle subject.
   val assertionResponse = """{"id":"cred-123"}"""
 
+  // `startRegistration.calls` are (settings, userId, accountName, displayName)
+  def enrolling(record: ConversationRecord, user: Option[UserRecord] = None) =
+    val env = Env()
+    for
+      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+      _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+      _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
+      _ <- env.conversationRepository.overwrite.succeedsWith(true)
+      _ <- env.service.offerPasskeyEnroll(authId, record.copy(userId = Some(userId)))
+      call = env.webAuthnService.startRegistration.calls.head
+    yield (call._3, call._4)
+
   def spec = suite("PasskeyConversationServiceSpec")(
     suite("startPasskeyAssertion")(
       test("return publicKeyOptions and update step with request") {
@@ -588,6 +600,34 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}")),
         )
+      },
+      test("name the account by the phone number the user signed in with") {
+        for names <- enrolling(baseRecord.copy(credential = Some(Right(versola.util.Phone("+77001234567")))))
+        yield assertTrue(names == ("+77001234567", "+77001234567"))
+      },
+      test("name the account by the email the user signed in with") {
+        for names <- enrolling(baseRecord.copy(credential = Some(Left(versola.util.Email("dana@example.com")))))
+        yield assertTrue(names == ("dana@example.com", "dana@example.com"))
+      },
+      test("name the account by the login of a login and password sign-in") {
+        for names <- enrolling(baseRecord.copy(userLogin = Some(versola.user.model.Login("dana"))))
+        yield assertTrue(names == ("dana", "dana"))
+      },
+      test("keep the user's own name as the secondary label, and the sign-in credential as the account") {
+        val claims = zio.json.ast.Json.Obj("name" -> zio.json.ast.Json.Str("Dana Smith"))
+        for names <- enrolling(baseRecord.copy(credential = Some(Right(versola.util.Phone("+77001234567"))), userClaims = Some(claims)))
+        yield assertTrue(names == ("+77001234567", "Dana Smith"))
+      },
+      test("fall back to the user's email, then phone, when there is no sign-in credential") {
+        val both = baseRecord.copy(userEmail = Some(versola.util.Email("dana@example.com")), userPhone = Some(versola.util.Phone("+77001234567")))
+        for
+          withEmail <- enrolling(both)
+          phoneOnly <- enrolling(both.copy(userEmail = None))
+        yield assertTrue(withEmail._1 == "dana@example.com", phoneOnly._1 == "+77001234567")
+      },
+      test("never show the user id: with nothing else the service's own name is the account") {
+        for names <- enrolling(baseRecord)
+        yield assertTrue(names == (passkeySettings.rpName, passkeySettings.rpName), !names._1.contains(userId.toString))
       },
       test("deny access when reached without a resolved user") {
         val env = Env()

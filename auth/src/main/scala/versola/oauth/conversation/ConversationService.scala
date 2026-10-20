@@ -966,9 +966,17 @@ object ConversationService:
               passkeyRepository.listByUser(userId).flatMap: existing =>
                 if existing.nonEmpty then finish(authId, conversation)
                 else
-                  val displayName: String =
-                    conversation.user.map(_.passkeyDisplayName).getOrElse(userId.toString)
-                  webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
+                  // What the person signed in with names the account in their authenticator: the phone number if
+                  // they entered one, the email if they entered that, the login for a login and password. The user id
+                  // is never shown; with nothing else to go on the service's own name is.
+                  val accountName: String =
+                    conversation.credential.map(_.fold(email => email: String, phone => phone: String))
+                      .orElse(conversation.userLogin.map(login => login: String))
+                      .orElse(conversation.user.flatMap(_.passkeyAccountName))
+                      .getOrElse(settings.rpName)
+                  // The secondary label: the user's own name when they have one, else the same as the account.
+                  val displayName: String = conversation.user.flatMap(_.nameClaim).getOrElse(accountName)
+                  webAuthnService.startRegistration(settings, userId, accountName, displayName).foldZIO(
                     _ => finish(authId, conversation),
                     ceremony =>
                       val enrollStep = ConversationStep.PasskeyEnroll(
