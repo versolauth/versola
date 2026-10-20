@@ -747,7 +747,13 @@ object BootstrapService:
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
-  private def defaultChallengeSettings(
+  /** The authentication context classes a new tenant starts with, each named for the factor it requires: `otp` asks for
+    * a one-time code and `passkey` for a passkey. A session that already passed the factor satisfies the class; a
+    * client that wants it asked for again on every request says `prompt=login`. */
+  private[versola] val DefaultAcrVocabulary: Map[String, List[String]] =
+    Map("otp" -> List("otp"), "passkey" -> List("passkey"))
+
+  private[versola] def defaultChallengeSettings(
       tenantId: TenantId,
       passkeyConfig: CentralConfig.PasskeyConfig,
   ): ChallengeSettingsRecord =
@@ -770,7 +776,7 @@ object BootstrapService:
       sessionIdleTtlSeconds = None,
       userAgentTtlSeconds = 15552000,
       ipHeader = "X-Real-IP",
-      acrVocabulary = None,
+      acrVocabulary = Some(DefaultAcrVocabulary),
       postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
