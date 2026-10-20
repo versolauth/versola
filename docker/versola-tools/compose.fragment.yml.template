@@ -251,6 +251,13 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+      # The outbound pool defaults to `fixed` (128 connections per target, all opened by the first
+      # request to that target). For the mutual-TLS call to auth that is 128 handshakes, which made the
+      # first admin login after every start take 2.7-3.5 s on a laptop (one connection, 1.6 s,
+      # measured with `dynamic`; the rest is a cold JVM). `dynamic` opens one per concurrent request up
+      # to the same 128 and releases them when idle. Local only: `fixed` stays the default of the
+      # service, a deployment that wants this sets the variable itself (util's Observability.poolConfig).
+      HTTP_CLIENT_POOL_KIND: dynamic
       # See central's own RUN_MIGRATIONS comment above.
       RUN_MIGRATIONS: "false"
     env_file:
