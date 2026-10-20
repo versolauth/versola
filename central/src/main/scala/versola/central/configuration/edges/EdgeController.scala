@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{Controller, Unauthorized}
+import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
 import zio.ZIO
 import zio.http.*
 import zio.json.ast.Json
@@ -23,6 +23,8 @@ object EdgeController extends Controller:
     deleteEdgeEndpoint,
     setEdgeDpopEndpoint,
     edgeDpopSyncEndpoint,
+    setEdgeOverloadEndpoint,
+    edgeOverloadSyncEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -37,6 +39,7 @@ object EdgeController extends Controller:
               id = edge.id,
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
+              overloadPolicy = edge.overloadPolicy,
             ),
           ).toList,
         )
@@ -122,6 +125,41 @@ object EdgeController extends Controller:
       yield Response.json(response.toJson)
     }
 
+  /** Sets what the named edge does when asked for more than it can do (see [[OverloadPolicy]]); an empty policy returns it
+    * to its deployment's own values. Refused with `400` and the first thing wrong when the policy does not validate: the
+    * edge would not apply it either, and a console that reported success for it would leave an operator believing a limit
+    * was in force.
+    */
+  val setEdgeOverloadEndpoint =
+    Method.PUT / "configuration" / "edges" / "overload" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[EdgeService]
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        policy <- request.bodyAs[OverloadPolicy]
+        edge <- service.find(edgeId)
+        response <-
+          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.setOverloadPolicy(edgeId, policy).as(Response.status(Status.NoContent)).catchSome:
+              case InvalidOverloadPolicy(message) =>
+                ZIO.succeed(Response.json(OverloadPolicyError(message).toJson).status(Status.BadRequest))
+      yield response
+    }
+
+  /** The overload policy of the calling edge, for the edge itself; served like [[edgeDpopSyncEndpoint]], its own row only.
+    * `overloadPolicy` is `null` when none is set. */
+  val edgeOverloadSyncEndpoint =
+    Method.GET / "configuration" / "edges" / "overload" / "sync" -> handler { (request: Request) =>
+      for
+        callerEdgeId <- authorizeInternal(request)
+        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
+        service <- ZIO.service[EdgeService]
+        edge <- service.find(edgeId).someOrFail(Unauthorized)
+        response = EdgeOverloadSyncResponse(overloadPolicy = edge.overloadPolicy)
+      yield Response.json(response.toJson)
+    }
+
 case class RegisterEdgeRequest(
     id: EdgeId,
 ) derives Schema, JsonCodec
@@ -130,6 +168,7 @@ case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
+    overloadPolicy: Option[OverloadPolicy] = None,
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(
@@ -138,6 +177,14 @@ case class SetEdgeDpopRequest(
 
 case class EdgeDpopSyncResponse(
     requireDpopNonce: Boolean,
+) derives Schema, JsonCodec
+
+case class EdgeOverloadSyncResponse(
+    overloadPolicy: Option[OverloadPolicy],
+) derives Schema, JsonCodec
+
+case class OverloadPolicyError(
+    error: String,
 ) derives Schema, JsonCodec
 
 case class GetAllEdgesResponse(

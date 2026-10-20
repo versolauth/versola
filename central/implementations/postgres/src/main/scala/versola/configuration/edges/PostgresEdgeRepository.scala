@@ -3,6 +3,7 @@ package versola.configuration.edges
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
+import versola.util.http.OverloadPolicy
 import versola.util.postgres.BasicCodecs
 import zio.json.ast.Json
 import zio.{Task, ZLayer}
@@ -11,19 +12,20 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
 
   given DbCodec[EdgeId] = DbCodec.StringCodec.biMap(EdgeId(_), identity[String])
   given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
+  given DbCodec[OverloadPolicy] = jsonCodec[OverloadPolicy]
   given DbCodec[EdgeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce, overload_policy
         FROM edges
       """.query[EdgeRecord].run()
 
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce, overload_policy
         FROM edges
         WHERE id = $id
       """.query[EdgeRecord].run().headOption
@@ -51,6 +53,15 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
       sql"""
         UPDATE edges
         SET require_dpop_nonce = $requireDpopNonce
+        WHERE id = $id
+      """.update.run()
+    .unit
+
+  override def setOverloadPolicy(id: EdgeId, policy: Option[OverloadPolicy]): Task[Unit] =
+    xa.connectMeasured("set-edge-overload-policy"):
+      sql"""
+        UPDATE edges
+        SET overload_policy = $policy
         WHERE id = $id
       """.update.run()
     .unit
