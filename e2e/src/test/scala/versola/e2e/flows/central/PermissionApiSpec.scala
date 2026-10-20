@@ -116,16 +116,25 @@ object PermissionApiSpec extends CentralApiSpec:
         _ <- central.delete(resources, "resourceId" -> resourceId)
       yield assertTrue(record.map(_.strings("endpointIds")).contains(Set(first, second)))
     },
-    test("a segmented permission name is accepted") {
+    test("a colon-segmented permission name is accepted") {
       for
         central <- api
         base <- CentralApi.permission("probe")
-        permission = s"$base:orders.read_all"
+        permission = s"$base:orders:read_all"
         created <- central.post(path, Fixtures.permission(permission))
         record <- read(central, permission)
         _ <- cleanup(central, permission)
       yield assertTrue(created.status == Status.Created) && assertTrue(record.nonEmpty)
-        .label("`resource:action` and dotted namespaces are the documented naming convention")
+        .label("`resource:action` is the documented naming convention")
+    },
+    test("a new permission name with a dot is refused") {
+      for
+        central <- api
+        base <- CentralApi.permission("probe")
+        rejected <- central.post(path, Fixtures.permission(s"$base:orders.read_all"))
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(rejected.body.contains("separated by ':'"))
+          .label("new IDs are colon-separated only; a dot would be stored and never creatable again")
     },
     test("a permission name outside the documented alphabet is refused") {
       for

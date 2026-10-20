@@ -4,11 +4,13 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import versola.central.configuration.challenges.{
+  ChallengeSettingsPatchResult,
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   EmailRegistration,
   MtlsCertificateEncoding,
   PasskeySettings,
+  PatchChallengeSettingsRequest,
   PhoneRegion,
   SecurityProfile,
   SubmissionLimits,
@@ -73,6 +75,51 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
           logo_dark = EXCLUDED.logo_dark
         WHERE challenge_settings.security_profile = EXCLUDED.security_profile
       """.update.run() > 0
+
+  // READ COMMITTED: a concurrent patch of the same tenant waits on FOR UPDATE and then reads the row as the first one
+  // committed it, so both changes are applied to the latest version. `FOR UPDATE` on the row, not an advisory lock:
+  // the row exists (a missing one is a 404), so it is the natural thing to lock.
+  override def patch(
+      tenantId: TenantId,
+      patch: PatchChallengeSettingsRequest,
+  ): Task[ChallengeSettingsPatchResult] =
+    xa.transactMeasured("patch-challenge-settings"):
+      val locked =
+        sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark FROM challenge_settings WHERE tenant_id = $tenantId FOR UPDATE"""
+          .query[ChallengeSettingsRecord].run()
+          .headOption
+      locked match
+        case None => ChallengeSettingsPatchResult.NotFound
+        case Some(current) =>
+          patch.applyTo(current) match
+            case Left(reason) => ChallengeSettingsPatchResult.Invalid(reason)
+            case Right(record) =>
+              sql"""
+                UPDATE challenge_settings SET
+                  phone_regions = ${record.phoneRegions},
+                  email_registration = ${record.emailRegistration},
+                  default_roles = ${record.defaultRoles},
+                  submission_limits = ${record.submissionLimits},
+                  otp_length = ${record.otpLength},
+                  otp_resend_after = ${record.otpResendAfter},
+                  passkey_settings = ${record.passkeySettings},
+                  auth_conversation_ttl_seconds = ${record.authConversationTtlSeconds},
+                  session_ttl_seconds = ${record.sessionTtlSeconds},
+                  session_idle_ttl_seconds = ${record.sessionIdleTtlSeconds},
+                  user_agent_ttl_seconds = ${record.userAgentTtlSeconds},
+                  ip_header = ${record.ipHeader},
+                  acr_vocabulary = ${record.acrVocabulary},
+                  post_logout_redirect_uris = ${record.postLogoutRedirectUris},
+                  require_dpop_nonce = ${record.requireDpopNonce},
+                  mtls_certificate_header = ${record.mtlsCertificateHeader},
+                  mtls_certificate_encoding = ${record.mtlsCertificateEncoding},
+                  signing_key_id = ${record.signingKeyId},
+                  client_assertion_max_lifetime_seconds = ${record.clientAssertionMaxLifetimeSeconds},
+                  logo_light = ${record.logoLight},
+                  logo_dark = ${record.logoDark}
+                WHERE tenant_id = ${record.tenantId}
+              """.update.run()
+              ChallengeSettingsPatchResult.Patched(record)
 
 object PostgresChallengeSettingsRepository:
   def live: ZLayer[TransactorZIO, Nothing, ChallengeSettingsRepository] =

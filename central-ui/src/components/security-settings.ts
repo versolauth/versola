@@ -3,9 +3,9 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type {
-  ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, SubmissionLimits,
+  ChallengeSettingsChanges, ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, SubmissionLimits,
 } from '../types';
-import { fetchChallengeSettings, fetchJwksKeys, getRoles, upsertChallengeSettings } from '../utils/central-api';
+import { fetchChallengeSettings, fetchJwksKeys, getRoles, patchChallengeSettings, upsertChallengeSettings } from '../utils/central-api';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { DURATION_UNITS, durationSeconds, formatDurationShort, splitDuration, type Duration } from '../utils/duration';
 import { PHONE_REGION_PRESETS, appendPresets } from '../utils/phone-region-presets';
@@ -109,8 +109,9 @@ type RegionRow = PhoneRegion & { key: number };
 
 /**
  * The tenant's sign-in and security settings: one record, read as anchored cards (one per group,
- * each with its own Edit) under a section rail, edited one group at a time on its own page. The
- * record is a whole-record PUT, so a group's Save sends the other groups' current values back.
+ * each with its own Edit) under a section rail, edited one group at a time on its own page. A group's
+ * Save is a PATCH of that group's members alone, so it cannot overwrite what another admin changed in a
+ * different group; only the first save of a tenant with no settings PUTs the whole record.
  */
 @customElement('versola-security-settings')
 export class VersolaSecuritySettings extends LitElement {
@@ -684,11 +685,13 @@ export class VersolaSecuritySettings extends LitElement {
 
   // ── validation and save ──
 
-  /** The record a Save sends: the current record with the open group's draft merged in. */
-  private buildNext(group: SecurityGroup): { next: ChallengeSettingsRecord | null; errors: Record<string, string> } {
+  /** What a Save sends: `changes` are the members the open group owns, the only ones a PATCH carries, so another admin's
+   * edit of a different group is never overwritten. `next` is the whole record with them merged in, which the first
+   * save of a tenant without settings PUTs and which the page shows afterwards. */
+  private buildNext(group: SecurityGroup): { changes: ChallengeSettingsChanges | null; next: ChallengeSettingsRecord | null; errors: Record<string, string> } {
     const draft = this.draft!;
     const base = this.settings ?? defaultSettings(this.tenantId ?? '');
-    const next: ChallengeSettingsRecord = { ...base, tenantId: this.tenantId ?? base.tenantId };
+    const changes: ChallengeSettingsChanges = {};
     const errors: Record<string, string> = {};
 
     switch (group) {
@@ -701,16 +704,16 @@ export class VersolaSecuritySettings extends LitElement {
         if (regionErrors.some(error => error !== undefined)) errors.regions = 'Fix the highlighted phone regions.';
         const ipHeader = draft.ipHeader.trim();
         if (!ipHeader) errors.ipHeader = 'The client IP header is required.';
-        next.phoneRegions = regions;
-        next.ipHeader = ipHeader;
+        changes.phoneRegions = regions;
+        changes.ipHeader = ipHeader;
         break;
       }
       case 'codes': {
         if (!Number.isInteger(draft.otpLength) || draft.otpLength < 4 || draft.otpLength > 10) errors.otpLength = 'Between 4 and 10 digits.';
         const resend = this.seconds('otpResendAfter');
         if (resend < 1) errors.otpResendAfter = 'At least one second.';
-        next.otpLength = draft.otpLength;
-        next.otpResendAfter = resend;
+        changes.otpLength = draft.otpLength;
+        changes.otpResendAfter = resend;
         break;
       }
       case 'passkeys': {
@@ -721,7 +724,7 @@ export class VersolaSecuritySettings extends LitElement {
         if (!rpName) errors.rpName = 'The relying party name is required.';
         if (origins.length === 0) errors.origins = 'At least one origin is required.';
         else if (origins.some(origin => !isHttpUrl(origin))) errors.origins = 'Every origin is an absolute http(s) URL.';
-        next.passkeySettings = { rpId, rpName, origins, userVerification: draft.passkeySettings?.userVerification ?? 'preferred' };
+        changes.passkeySettings = { rpId, rpName, origins, userVerification: draft.passkeySettings?.userVerification ?? 'preferred' };
         break;
       }
       case 'registration': {
@@ -733,12 +736,12 @@ export class VersolaSecuritySettings extends LitElement {
         if (mode !== 'closed' && domainsError) errors.domains = domainsError;
         const defaultRoles = [...new Set(draft.defaultRoles ?? [])];
         if (defaultRoles.length === 0) errors.defaultRoles = 'Select at least one default role.';
-        next.emailRegistration = {
+        changes.emailRegistration = {
           mode,
           domains: mode === 'closed' && domainsError ? [...(base.emailRegistration?.domains ?? [])] : domains,
           blockSubaddress: draft.emailRegistration?.blockSubaddress ?? false,
         };
-        next.defaultRoles = defaultRoles;
+        changes.defaultRoles = defaultRoles;
         break;
       }
       case 'stepup': {
@@ -750,7 +753,7 @@ export class VersolaSecuritySettings extends LitElement {
           else if (row.factors.length === 0) errors[`acr-${row.key}`] = 'Pick at least one factor.';
           else vocabulary[acr] = [...row.factors];
         }
-        next.acrVocabulary = vocabulary;
+        changes.acrVocabulary = vocabulary;
         break;
       }
       case 'sessions': {
@@ -763,10 +766,10 @@ export class VersolaSecuritySettings extends LitElement {
         if (idle !== null && idle < 1) errors.sessionIdleTtlSeconds = 'At least one second.';
         else if (idle !== null && idle >= sso) errors.sessionIdleTtlSeconds = 'Must be shorter than the SSO session.';
         if (userAgent < 1) errors.userAgentTtlSeconds = 'At least one second.';
-        next.authConversationTtlSeconds = conversation;
-        next.sessionTtlSeconds = sso;
-        next.sessionIdleTtlSeconds = idle;
-        next.userAgentTtlSeconds = userAgent;
+        changes.authConversationTtlSeconds = conversation;
+        changes.sessionTtlSeconds = sso;
+        changes.sessionIdleTtlSeconds = idle;
+        changes.userAgentTtlSeconds = userAgent;
         break;
       }
       case 'tokens': {
@@ -774,11 +777,11 @@ export class VersolaSecuritySettings extends LitElement {
         if (lifetime < 30 || lifetime > 900) errors.clientAssertionMaxLifetimeSeconds = 'Between 30 seconds and 15 minutes.';
         const header = this.mtlsEnabled ? (draft.mtlsCertificateHeader ?? '').trim() : null;
         if (this.mtlsEnabled && !header) errors.mtlsCertificateHeader = 'The certificate header is required when mutual TLS is terminated.';
-        next.signingKeyId = draft.signingKeyId ?? null;
-        next.requireDpopNonce = draft.requireDpopNonce;
-        next.mtlsCertificateHeader = header;
-        next.mtlsCertificateEncoding = this.mtlsEnabled ? draft.mtlsCertificateEncoding ?? 'urlEncodedPem' : null;
-        next.clientAssertionMaxLifetimeSeconds = lifetime;
+        changes.signingKeyId = draft.signingKeyId ?? null;
+        changes.requireDpopNonce = draft.requireDpopNonce;
+        changes.mtlsCertificateHeader = header;
+        changes.mtlsCertificateEncoding = this.mtlsEnabled ? draft.mtlsCertificateEncoding ?? 'urlEncodedPem' : null;
+        changes.clientAssertionMaxLifetimeSeconds = lifetime;
         break;
       }
       case 'logout': {
@@ -789,7 +792,7 @@ export class VersolaSecuritySettings extends LitElement {
           const validation = validateRedirectUri(uri);
           if (!validation.valid) errors[`uri-${entry.key}`] = validation.error ?? 'Invalid URI.';
         }
-        next.postLogoutRedirectUris = uris;
+        changes.postLogoutRedirectUris = uris;
         break;
       }
       case 'limits': {
@@ -797,7 +800,7 @@ export class VersolaSecuritySettings extends LitElement {
         for (const action of LIMIT_ACTIONS) {
           if (limits[action.id].some(limit => limit.maxAttempts < 1 || limit.windowSeconds < 1)) errors[action.id] = 'Attempts and the window are at least 1.';
         }
-        next.submissionLimits = { ...limits, banDurationSeconds: this.seconds('banDurationSeconds') };
+        changes.submissionLimits = { ...limits, banDurationSeconds: this.seconds('banDurationSeconds') };
         break;
       }
       case 'branding': {
@@ -805,12 +808,13 @@ export class VersolaSecuritySettings extends LitElement {
         const dark = (draft.logoDark ?? '').trim();
         if (!light !== !dark) errors.logo = 'The logo needs both a light and a dark file, or neither.';
         else if ((light && !isHttpUrl(light)) || (dark && !isHttpUrl(dark))) errors.logo = 'Each file is an absolute http(s) URL.';
-        next.logoLight = light || null;
-        next.logoDark = dark || null;
+        changes.logoLight = light || null;
+        changes.logoDark = dark || null;
         break;
       }
     }
-    return { next: Object.keys(errors).length ? null : next, errors };
+    if (Object.keys(errors).length) return { changes: null, next: null, errors };
+    return { changes, next: { ...base, tenantId: this.tenantId ?? base.tenantId, ...changes }, errors };
   }
 
   private get passkeysMissing(): boolean {
@@ -821,16 +825,18 @@ export class VersolaSecuritySettings extends LitElement {
     event.preventDefault();
     const group = this.editGroup;
     if (!group || !this.draft || !this.tenantId || this.isSaving || this.passkeysMissing) return;
-    const { next, errors } = this.buildNext(group);
+    const { changes, next, errors } = this.buildNext(group);
     this.fieldErrors = errors;
-    if (!next) {
+    if (!changes || !next) {
       this.formError = 'Fix the highlighted fields.';
       return;
     }
     this.isSaving = true;
     this.formError = '';
     try {
-      await upsertChallengeSettings(next);
+      // PUT only creates: a tenant with no settings has nothing to patch. From then on a Save sends its own group alone.
+      if (this.settings) await patchChallengeSettings(this.tenantId, changes);
+      else await upsertChallengeSettings(next);
       this.settings = next;
       this.draftBaseline = this.draftSnapshot;
       dispatchRecordRoute(this, { edit: null });

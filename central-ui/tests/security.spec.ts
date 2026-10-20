@@ -4,8 +4,8 @@ import type { MockConfigState } from './mocks';
 
 /**
  * Sign-in and security: one page of anchored cards under a section rail, each card with its own
- * Edit opening that group on a page of its own. The record is a whole-record PUT, so every Save
- * sends the other groups' current values back unchanged.
+ * Edit opening that group on a page of its own. Saving a group PATCHes only that group's members, so it cannot
+ * overwrite another admin's change to a different group; the first save of a tenant with no settings PUTs.
  */
 const tenant = 'tenant-alpha';
 const base = `/?view=security&tenant=${tenant}`;
@@ -59,10 +59,18 @@ const state = (extra: Partial<MockConfigState> = {}): Partial<MockConfigState> =
   ...extra,
 });
 const readOnly = { resources: { central: { permissions: ['security:read'] } }, isProd: false };
-const put = '/configuration/challenges/challenge-settings';
+const path = '/configuration/challenges/challenge-settings';
 
-async function lastSaved(requests: Parameters<typeof findRequest>[0]) {
-  return (await findRequest(requests, 'PUT', put)).body as Record<string, unknown>;
+type Requests = Parameters<typeof findRequest>[0];
+
+/** The body of the last PATCH: the members of the group that was saved, and the tenant. */
+async function lastSaved(requests: Requests) {
+  return (await findRequest(requests, 'PATCH', path)).body as Record<string, unknown>;
+}
+
+/** Any write of the record, PUT or PATCH: what a refused or invalid Save must not send. */
+function writes(requests: Requests) {
+  return requests.filter(request => request.method !== 'GET' && request.pathname === path);
 }
 
 function card(page: Page, name: string) {
@@ -160,6 +168,22 @@ test('with no settings it shows the empty state and Set up opens the first edito
   await expect(page.getByRole('heading', { name: 'Edit passkeys' })).toBeVisible();
 });
 
+test('the first save of a tenant with no settings PUTs the whole record, not a PATCH', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=passkeys`, state: state({ challengeSettings: {} }) });
+  await page.route('**/configuration/challenges/challenge-settings?*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ settings: null }) }));
+  await page.reload();
+
+  await page.getByLabel('Relying party ID').fill('shop.example.com');
+  await page.getByLabel('Relying party name').fill('Example Shop');
+  await page.getByRole('button', { name: '+ Add origin' }).click();
+  await page.getByLabel('Origin', { exact: true }).last().fill('https://shop.example.com');
+  await page.getByRole('button', { name: 'Save passkeys' }).click();
+
+  const created = (await findRequest(api.requests, 'PUT', path)).body as Record<string, unknown>;
+  expect(created).toMatchObject({ tenantId: tenant, passkeySettings: { rpId: 'shop.example.com' }, otpLength: 6, defaultRoles: ['user'] });
+  expect(api.requests.some(request => request.method === 'PATCH' && request.pathname === path)).toBe(false);
+});
+
 test('every group opens its own editor from its Edit and the URL follows', async ({ page }) => {
   await loadAdminApp(page, { path: base, state: state() });
 
@@ -177,31 +201,55 @@ test('restores a group editor from the URL', async ({ page }) => {
   await expect(page.getByLabel('Code length')).toHaveValue('6');
 });
 
-test('Save in one group sends the whole record with the other groups unchanged', async ({ page }) => {
+test('Save in one group PATCHes only that group and never sends the others back', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${base}&edit=sessions`, state: state() });
 
   await page.getByLabel('SSO session', { exact: true }).fill('2');
   await page.getByLabel('SSO session unit').selectOption('days');
   await page.getByRole('button', { name: 'Save sessions' }).click();
 
-  const body = await lastSaved(api.requests);
-  expect(body).toMatchObject({
+  expect(await lastSaved(api.requests)).toEqual({
     tenantId: tenant,
-    sessionTtlSeconds: 172800,
     authConversationTtlSeconds: 900,
-    otpLength: 6,
-    phoneRegions: settings.phoneRegions,
-    emailRegistration: settings.emailRegistration,
-    defaultRoles: ['user'],
-    passkeySettings: settings.passkeySettings,
-    requireDpopNonce: true,
-    signingKeyId: 'es256-a1',
-    acrVocabulary: settings.acrVocabulary,
-    postLogoutRedirectUris: settings.postLogoutRedirectUris,
-    submissionLimits: settings.submissionLimits,
+    sessionTtlSeconds: 172800,
+    sessionIdleTtlSeconds: null,
+    userAgentTtlSeconds: 15552000,
   });
+  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === path)).toBe(false);
   await expect(page).not.toHaveURL(/edit=/);
   await expect(card(page, 'Sessions')).toContainText('2d');
+});
+
+test('two saves of different groups send disjoint bodies, and the second leaves the first in place', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=sessions`, state: state() });
+
+  await page.getByLabel('SSO session', { exact: true }).fill('2');
+  await page.getByLabel('SSO session unit').selectOption('days');
+  await page.getByRole('button', { name: 'Save sessions' }).click();
+  await expect(page).not.toHaveURL(/edit=/);
+  await card(page, 'One-time codes').getByRole('button', { name: /^Edit/ }).click();
+  await page.getByLabel('Code length').fill('8');
+  await page.getByRole('button', { name: 'Save one-time codes' }).click();
+  await expect(page).not.toHaveURL(/edit=/);
+
+  const patches = api.requests.filter(request => request.method === 'PATCH' && request.pathname === path).map(request => Object.keys(request.body as object).sort());
+  expect(patches).toEqual([
+    ['authConversationTtlSeconds', 'sessionIdleTtlSeconds', 'sessionTtlSeconds', 'tenantId', 'userAgentTtlSeconds'],
+    ['otpLength', 'otpResendAfter', 'tenantId'],
+  ]);
+  expect(api.state.challengeSettings[tenant]).toMatchObject({ sessionTtlSeconds: 172800, otpLength: 8 });
+});
+
+test("a Save does not overwrite another admin's change to a different group", async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=codes`, state: state() });
+
+  // Another admin saves the logout group after this page loaded.
+  api.state.challengeSettings[tenant] = { ...api.state.challengeSettings[tenant], postLogoutRedirectUris: ['https://shop.example.com/other-admin'] };
+  await page.getByLabel('Code length').fill('8');
+  await page.getByRole('button', { name: 'Save one-time codes' }).click();
+  await expect(page).not.toHaveURL(/edit=/);
+
+  expect(api.state.challengeSettings[tenant]).toMatchObject({ otpLength: 8, postLogoutRedirectUris: ['https://shop.example.com/other-admin'] });
 });
 
 test('an idle timeout longer than nothing can be switched on and is sent in seconds', async ({ page }) => {
@@ -224,7 +272,7 @@ test('refuses a zero TTL and sends nothing', async ({ page }) => {
   await expect(sso).toHaveAttribute('aria-invalid', 'true');
   await expect(sso).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await expect(page.getByText('At least one second.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 });
 
 test('edits the one-time codes and refuses a resend of zero', async ({ page }) => {
@@ -249,7 +297,7 @@ test('edits phone regions: add, reorder, validate and send them in order', async
   await page.getByRole('button', { name: '+ Add region' }).click();
   await page.getByRole('button', { name: 'Save sign-in methods' }).click();
   await expect(page.getByText('Fix the highlighted fields.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 
   const added = rows.nth(2);
   await added.getByLabel('Region').fill('uz');
@@ -344,7 +392,7 @@ test('registration: the domain list is labelled by mode, validated, and the role
   await page.getByLabel('Blocked domains').fill('Not A Domain');
   await page.getByRole('button', { name: 'Save registration' }).click();
   await expect(page.locator('#domains-error')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 
   await page.getByLabel('Blocked domains').fill('spam.example\n*.junk.example');
   await page.getByLabel('Block addresses with + = # (sub-addresses)').check();
@@ -359,7 +407,7 @@ test('registration: at least one default role, chosen from the role picker', asy
   await picker.getByRole('checkbox', { name: /user/ }).first().uncheck();
   await page.getByRole('button', { name: 'Save registration' }).click();
   await expect(page.getByText('Select at least one default role.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 
   await picker.getByRole('checkbox', { name: /shop-manager/ }).first().check();
   await page.getByRole('button', { name: 'Save registration' }).click();
@@ -431,7 +479,7 @@ test('tokens: a custom mTLS header is required once mutual TLS is on', async ({ 
   await page.getByLabel('Certificate header').selectOption('custom');
   await page.getByRole('button', { name: 'Save tokens & keys' }).click();
   await expect(page.getByText('The certificate header is required when mutual TLS is terminated.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 });
 
 test('the signing key in the card opens that key', async ({ page }) => {
@@ -449,7 +497,7 @@ test('logout: adds and removes redirect URIs and refuses a malformed one', async
   await page.getByLabel('Post-logout redirect URI', { exact: true }).last().fill('not a url');
   await page.getByRole('button', { name: 'Save logout' }).click();
   await expect(page.getByRole('alert').filter({ hasText: /URL|URI|http/i }).first()).toBeVisible();
-  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === put)).toBe(false);
+  expect(writes(api.requests)).toEqual([]);
 
   await page.getByLabel('Post-logout redirect URI', { exact: true }).last().fill('https://shop.example.com/signed-out');
   await page.getByRole('button', { name: 'Remove post-logout redirect uri https://shop.example.com/bye' }).click();
@@ -514,7 +562,7 @@ test('asks before Cancel drops an edited draft, and leaves at once when nothing 
 
 test('a server error stays in the editor with the draft intact', async ({ page }) => {
   await loadAdminApp(page, { path: `${base}&edit=codes`, state: state() });
-  await page.route(`**${put}`, route => route.request().method() === 'PUT' ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'otpLength must be between 4 and 10' }) }) : route.fallback());
+  await page.route(`**${path}`, route => route.request().method() === 'PATCH' ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'otpLength must be between 4 and 10' }) }) : route.fallback());
 
   await page.getByLabel('Code length').fill('9');
   await page.getByRole('button', { name: 'Save one-time codes' }).click();

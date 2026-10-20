@@ -10,6 +10,7 @@ import type {
   FormPreview,
   FormRecord,
   OtpTemplateRecord,
+  ChallengeSettingsChanges,
   ChallengeSettingsRecord,
   ClientTemplate,
   JwksKeySummary,
@@ -1598,9 +1599,9 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-/** Replaces the tenant's whole record: central has no patch for it, so a group editor sends the
- * other groups' current values back unchanged. Optional members go as explicit nulls, which
- * central reads as "clear", never as "keep". */
+/** Creates the tenant's settings, or replaces the whole record: only the first save of a tenant that has none goes
+ * through here, because a PATCH needs a record to merge into. Optional members go as explicit nulls, which central
+ * reads as "clear", never as "keep". */
 export async function upsertChallengeSettings(settings: ChallengeSettingsRecord): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1628,6 +1629,16 @@ export async function upsertChallengeSettings(settings: ChallengeSettingsRecord)
       logoLight: settings.logoLight ?? null,
       logoDark: settings.logoDark ?? null,
     },
+  });
+}
+
+/** Merge patch (RFC 7396) of the members named in `changes`: the ones left out keep what is stored, so saving one group
+ * cannot overwrite a change another admin made to a different one. `null` clears an optional member; the body carries
+ * no other nulls. 404 when the tenant has no settings yet: create them with `upsertChallengeSettings`. */
+export async function patchChallengeSettings(tenantId: string, changes: ChallengeSettingsChanges): Promise<void> {
+  await requestVoid('/configuration/challenges/challenge-settings', {
+    method: 'PATCH',
+    body: { tenantId, ...changes },
   });
 }
 
