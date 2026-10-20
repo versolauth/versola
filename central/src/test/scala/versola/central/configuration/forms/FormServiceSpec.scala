@@ -12,7 +12,7 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initialForms)))
     val repository = stub[FormRepository]
     val localeService = stub[LocaleService]
-    val service = FormService.Impl(cache, repository, localeService)
+    val service = FormService.Impl(cache, repository, localeService, Unsafe.unsafe(unsafe ?=> Semaphore.unsafe.make(1)(using unsafe)))
 
   def spec = suite("FormService")(
     test("updateForm delegates to repository upsertForm and refreshes cache") {
@@ -29,6 +29,50 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.upsertForm.calls == List((formId, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty, false)),
         cached == Vector(record),
       )
+    },
+    test("two updates at once both end up in the cache, whichever reads the repository first") {
+      val formA = FormId("a")
+      val formB = FormId("b")
+      def record(id: FormId) =
+        FormRecord(
+          id = id,
+          version = 1,
+          active = false,
+          style = "style",
+          jsSource = None,
+          jsCompiled = None,
+          localizations = Map.empty,
+          properties = Vector.empty,
+        )
+
+      for
+        stored <- Ref.make(Vector.empty[FormRecord])
+        reads <- Ref.make(0)
+        // The first read is slow, so its snapshot is the older one and arrives last unless writes are serialised.
+        repository = new FormRepository:
+          def getAll = reads.getAndUpdate(_ + 1).flatMap(n => stored.get <* ZIO.sleep(if n == 0 then 2.seconds else Duration.Zero))
+          def find(id: FormId, version: Int) = ZIO.none
+          def upsertForm(
+              id: FormId,
+              style: String,
+              jsSource: Option[String],
+              jsCompiled: Option[String],
+              localizations: Map[String, Map[String, String]],
+              properties: Vector[BackendProperty],
+              activate: Boolean,
+          ) = stored.update(_ :+ record(id))
+          def setActiveVersion(id: FormId, version: Int) = ZIO.unit
+        cache <- Ref.make(Vector.empty[FormRecord]).map(ReloadingCache(_))
+        writes <- Semaphore.make(1)
+        service = FormService.Impl(cache = cache, repository = repository, localeService = stub[LocaleService], writes = writes)
+        first <- service.updateForm(formA, "style", None, None, Map.empty, Vector.empty, activate = false).fork
+        _ <- ZIO.yieldNow.repeatN(10)
+        second <- service.updateForm(formB, "style", None, None, Map.empty, Vector.empty, activate = false).fork
+        _ <- ZIO.yieldNow.repeatN(10)
+        _ <- TestClock.adjust(3.seconds)
+        _ <- first.join *> second.join
+        cached <- cache.get
+      yield assertTrue(cached.map(_.id).toSet == Set(formA, formB))
     },
     test("updateForm refuses texts whose languages disagree and stores nothing") {
       val env = new Env()
