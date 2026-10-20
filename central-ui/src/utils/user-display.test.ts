@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { UserAgent, UserDevice, UserRefreshToken, UserSession } from '../types';
-import { buildDevices, deviceLabel, deviceName, userDisplayName, userLabel } from './user-display';
+import { buildDevices, deviceLabel, deviceName, relativeTime, userDisplayName, userLabel } from './user-display';
 
 describe('userDisplayName', () => {
   it('prefers the name claim', () => {
@@ -88,5 +88,20 @@ describe('buildDevices', () => {
     const devices = buildDevices([{ session: session('s9'), endedSessionIds: [] }], [token('s9', 'web')]);
     expect(devices[0]).toMatchObject({ key: 's9', userAgent: null });
     expect(devices[0].tokens).toHaveLength(1);
+  });
+});
+
+describe('relativeTime', () => {
+  const now = Date.parse('2026-10-20T12:00:00Z');
+  it('says minutes, hours and days, ahead and behind', () => {
+    expect(relativeTime('2026-10-20T12:40:00Z', now)).toBe('in 40 min');
+    expect(relativeTime('2026-10-20T15:00:00Z', now)).toBe('in 3 hr');
+    expect(relativeTime('2026-10-26T12:00:00Z', now)).toBe('in 6 days');
+    expect(relativeTime('2026-10-20T11:00:00Z', now)).toBe('1 hr ago');
+    expect(relativeTime('2026-10-20T12:00:20Z', now)).toBe('in under a min');
+  });
+  it('is empty for nothing or nonsense', () => {
+    expect(relativeTime(undefined, now)).toBe('');
+    expect(relativeTime('soon', now)).toBe('');
   });
 });

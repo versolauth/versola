@@ -82,3 +82,17 @@ export function buildDevices(devices: UserDevice[], tokens: UserRefreshToken[]):
   for (const [sessionId, held] of orphans) built.push({ key: sessionId, userAgent: null, session: null, tokens: held });
   return built;
 }
+
+/** A moment relative to now, short: `in 40 min`, `in 6 days`, `3 hr ago`. A date that cannot be read gives `''`. */
+export function relativeTime(value: string | undefined | null, now = Date.now()): string {
+  if (!value) return '';
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return '';
+  const minutes = Math.round(Math.abs(time - now) / 60_000);
+  const span = minutes < 1 ? 'under a min'
+    : minutes < 60 ? `${minutes} min`
+    : minutes < 48 * 60 ? `${Math.round(minutes / 60)} hr`
+    : `${Math.round(minutes / 1440)} days`;
+  if (minutes < 1) return time >= now ? 'in under a min' : 'just now';
+  return time >= now ? `in ${span}` : `${span} ago`;
+}
