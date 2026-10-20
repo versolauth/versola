@@ -17,6 +17,7 @@
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { ftForms } from './forms-themes-fixtures';
 import type { MockConfigState } from './mocks';
 
 export type DocsTheme = 'dark' | 'light';
@@ -399,6 +400,7 @@ async function activeForms() {
 
 const brandingState = async (): Promise<MockState> => ({
   ...alpha,
+  clients: { [tenant]: [{ ...webClient, theme: 'storefront' }] as MockConfigState['clients'][string] },
   forms: await activeForms(),
   formLocales: [{ code: 'en', name: 'English' }, { code: 'ru', name: 'Russian' }],
   formPreviews: golden.previews,
@@ -406,8 +408,25 @@ const brandingState = async (): Promise<MockState> => ({
   themes,
 });
 
+// The Forms screens: credential has a v2 stored but not active and no Russian text for two keys, plus a custom form.
+const formsDocsState = async (): Promise<MockState> => {
+  const state = await brandingState();
+  const forms = state.forms!;
+  const credential = forms.find(form => form.id === 'credential')!;
+  const withGaps = { ...credential.localizations, ru: Object.fromEntries(Object.entries(credential.localizations.ru).filter(([key]) => !['passkey_button', 'phone_hint'].includes(key))) };
+  const custom = ftForms().find(form => form.id === 'support-contact')!;
+  return {
+    ...state,
+    forms: [
+      ...forms.map(form => (form.id === 'credential' ? { ...form, localizations: withGaps } : form)),
+      { ...credential, version: 2, active: false, localizations: withGaps },
+      { ...custom, localizations: { en: custom.localizations.en, ru: custom.localizations.ru } },
+    ],
+  };
+};
+
 // The preview's stylesheet is what central would build for the tokens (the mock returns a stub).
-const realThemeCss: Act = async page => {
+export const realThemeCss: Act = async page => {
   await page.route('**/configuration/themes/css', async route => {
     const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens> }; css?: string };
     const generated = generate(resolve(tokens));
@@ -965,59 +984,51 @@ const consoleShots: DocsShot[] = [
 
   // Forms and Themes
   {
-    name: 'console/forms-list', kind: 'frame', path: `/?view=forms&tenant=${tenant}`, state: brandingState,
-    before: async page => { await expect(page.locator('.form-id').filter({ hasText: 'consent' })).toBeVisible(); },
+    name: 'console/forms-list', kind: 'frame', path: `/?view=forms&tenant=${tenant}`, state: formsDocsState,
+    before: async page => { await expect(page.getByRole('button', { name: 'Open form consent', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/forms-list-expanded', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
+    name: 'console/form-texts', kind: 'frame', path: `/?view=forms&tenant=${tenant}&id=credential`, state: formsDocsState,
     before: async page => {
       await realThemeCss(page);
       // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.locator('.form-header').filter({ hasText: 'consent' }).click();
-      await page.locator('.version-card').filter({ hasText: 'v1' }).click();
-      await page.getByRole('button', { name: 'Preview', exact: true }).click();
-      await page.getByRole('button', { name: 'Everything requested' }).click();
-      await page.getByRole('button', { name: 'Mobile', exact: true }).click();
-      await expect(page.getByRole('group', { name: 'Preview state' })).toBeVisible();
+      await page.getByRole('button', { name: 'Russian' }).click();
+      await page.getByLabel('Missing only').check();
+      await page.getByRole('textbox', { name: 'passkey_button', exact: true }).focus();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
+      await expect(page.frameLocator('iframe.preview-iframe').locator('[data-vm]').first()).toBeVisible();
     },
   },
   {
-    name: 'console/form-edit', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
+    name: 'console/form-versions', kind: 'frame', path: `/?view=forms&tenant=${tenant}&id=credential&edit=versions`, state: formsDocsState,
     before: async page => {
       await realThemeCss(page);
-      // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.locator('.form-header').filter({ hasText: 'consent' }).click();
-      await page.getByRole('button', { name: 'New Version', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'New Version', exact: true })).toBeVisible();
-      await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Set active v2' })).toBeVisible();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
     },
   },
   {
     name: 'console/themes', kind: 'frame', path: `/?view=themes&tenant=${tenant}`, state: brandingState,
-    before: async page => { await expect(page.getByRole('button', { name: 'Edit theme storefront', exact: true })).toBeVisible(); },
+    before: async page => { await expect(page.getByRole('button', { name: 'Open theme storefront', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/theme-new', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}`, state: brandingState,
+    name: 'console/theme-new', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}&new=1`, state: brandingState,
     before: async page => {
       await realThemeCss(page);
-      await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
       await page.getByPlaceholder('e.g. default').fill('acme-web');
       await page.getByRole('button', { name: 'Fintech' }).click();
-      await page.getByRole('button', { name: 'Mobile', exact: true }).click();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:#5b5bd6');
     },
   },
   {
-    name: 'console/theme-edit', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}`, state: brandingState,
+    name: 'console/theme-edit', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}&id=storefront`, state: brandingState,
     before: async page => {
       await realThemeCss(page);
-      await page.getByRole('button', { name: 'Edit theme storefront', exact: true }).click();
+      await page.reload();
       await page.locator('#preview-form').selectOption('consent');
-      await expect(page.getByText('2 overrides on Studio')).toBeVisible();
+      await expect(page.getByText('Overrides on Studio: brand colour, shape.')).toBeVisible();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:#b4348a');
     },
   },

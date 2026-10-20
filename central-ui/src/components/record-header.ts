@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { chipStyles, iconButtonStyles } from '../styles/components';
+import { chipStyles, iconButtonStyles, tagStyles } from '../styles/components';
 import { copyToClipboard } from '../utils/helpers';
 import { statusIcon } from './status-icon';
 
@@ -30,6 +30,7 @@ export class VersolaRecordHeader extends LitElement {
   static styles = [
     theme,
     chipStyles,
+    tagStyles,
     iconButtonStyles,
     css`
       :host {
@@ -65,6 +66,22 @@ export class VersolaRecordHeader extends LitElement {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
         border-radius: var(--radius-sm);
+      }
+
+      /* The page's one primary action, when the record is its own editor (a form, a theme). */
+      .view-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: var(--spacing-md);
+      }
+
+      .view-head {
+        min-width: 0;
+      }
+
+      .view-actions {
+        flex: none;
       }
 
       .view-title {
@@ -119,6 +136,7 @@ export class VersolaRecordHeader extends LitElement {
               : html`<span aria-current="page">${crumb.label}</span>`}
           `)}
         </nav>` : ''}
+      <div class="view-top">
       <div class="view-head">
         <h1 class="view-title ${this.idAsTitle ? 'mono' : ''}">${this.heading}</h1>
         <div class="view-meta">
@@ -129,6 +147,8 @@ export class VersolaRecordHeader extends LitElement {
           ` : ''}
           ${this.meta}
         </div>
+      </div>
+      <div class="view-actions"><slot name="actions"></slot></div>
       </div>
     `;
   }

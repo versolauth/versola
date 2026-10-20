@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
+import { ftPath, ftState } from './forms-themes-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 import { ordersApi, shopState } from './resources-fixtures';
 import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, userScopes } from './users-fixtures';
@@ -246,36 +247,64 @@ const themePresets = [
 for (const theme of themes) {
   test(`the themes page and the theme editor have no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
-    await loadAdminApp(page, {
-      path: '/?view=themes&tenant=tenant-alpha',
-      state: {
-        themePresets,
-        themes: [
-          { id: 'default', css: '', tenantId: null },
-          { id: 'brand', css: '', tenantId: null, tokens: { base: 'studio', overrides: { brand: '#112233' } } },
-        ],
-        forms: [{ id: 'access-denied', version: 1, active: true, style: '', jsSource: null, jsCompiled: 'document.getElementById("versola-form-root").innerHTML = "<h1>Access denied</h1>";', localizations: { en: {} }, properties: [] }],
-        formPreviews: [{ formId: 'access-denied', scenarios: [{ id: 'access-denied', title: { en: 'Access denied' }, step: { type: 'access-denied' } }] }],
-        locales: [{ code: 'en', name: 'English', active: true, isDefault: true }],
-      },
-    });
+    await loadAdminApp(page, { path: ftPath('themes'), state: ftState() });
     const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
 
-    await expect(page.getByRole('button', { name: 'Edit theme brand', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open theme shop-brand', exact: true })).toBeVisible();
     await clean();
 
-    await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
-    await expect(page.getByText('1 override on Studio')).toBeVisible();
+    await page.getByRole('button', { name: 'Open theme shop-brand', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'shop-brand' })).toBeVisible();
+    await expect(page.locator('versola-preview-pane iframe')).toHaveCount(1);
     await clean();
 
-    // With a background chosen: the card that is pressed and the badge with its Reset.
-    await page.getByRole('group', { name: 'Background style' }).getByRole('button', { name: 'Horizon' }).click();
-    await expect(page.getByText('2 overrides on Studio')).toBeVisible();
+    // With a background chosen: the card that is pressed, the badge with its Reset and the unsaved bar.
+    await page.getByRole('group', { name: 'Background style' }).getByRole('button', { name: 'Flat' }).click();
+    await expect(page.locator('.bar-text')).toContainText('Unsaved');
     await clean();
 
+    // The danger card, disabled with its reason.
+    await expect(page.getByRole('button', { name: 'Delete theme shop-brand' })).toBeDisabled();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await page.getByRole('button', { name: 'Open theme legacy-2024', exact: true }).click();
+    await clean();
+
+    await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Themes' }).click();
+    await page.getByRole('button', { name: '+ Create theme' }).click();
+    await clean();
+  });
+
+  test(`the forms page and the form editor, tab by tab, have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: ftPath('forms'), state: ftState() });
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await expect(page.getByRole('button', { name: 'Open form credential', exact: true })).toBeVisible();
+    await clean();
+    await page.getByRole('group', { name: 'Filter forms' }).getByRole('button', { name: 'Missing translations' }).click();
+    await clean();
+
+    await page.getByRole('button', { name: 'Open form credential', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'credential' })).toBeVisible();
+    await expect(page.locator('versola-preview-pane iframe')).toHaveCount(1);
+    await clean();
+
+    // The missing-only state, in the language that has gaps, with a key focused (the ringed entry).
+    await page.getByRole('button', { name: 'Русский' }).click();
+    await page.getByLabel('Missing only').check();
+    await page.getByRole('textbox', { name: 'passkey_button', exact: true }).focus();
+    await clean();
+
+    for (const name of ['Style', 'Script', 'Versions']) {
+      await page.getByRole('tab', { name }).click();
+      await clean();
+    }
+
+    await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Forms' }).click();
+    await page.getByRole('button', { name: '+ Create form' }).click();
     await clean();
   });
 }

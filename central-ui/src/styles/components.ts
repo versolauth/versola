@@ -1047,3 +1047,64 @@ export const methodBadgeStyles = css`
   }
 `;
 
+
+/** A labelled group of pills where one (or several) are on, in a preview's toolbar and in a theme's
+ *  controls: `.ctrl-group` > `.ctrl-label` + `.seg-control` > `button.seg-btn[.seg-active]`. The
+ *  active pill is ink-filled like the filter bar's. A `<select>` in the group keeps the field look. */
+export const segmentedStyles = css`
+  .ctrl-group {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+  }
+
+  .ctrl-label {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+  }
+
+  .seg-control {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+
+  .seg-btn {
+    min-height: 1.75rem;
+    padding: 0 0.75rem;
+    border: 1.5px solid var(--border-input);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .seg-btn:hover:not(:disabled):not(.seg-active) {
+    border-color: var(--text-primary);
+  }
+
+  .seg-btn:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .seg-btn.seg-active {
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--bg-page);
+  }
+
+  .seg-btn:disabled {
+    color: var(--text-muted);
+    border-color: var(--border-default);
+    cursor: default;
+  }
+`;
