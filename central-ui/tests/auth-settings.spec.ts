@@ -25,7 +25,7 @@ const formConfig = {
     password_title: 'Password', current_password_label: 'Current password', new_password_label: 'New password',
     confirm_password_label: 'Repeat the new password', show_password: 'Show password', hide_password: 'Hide password',
     change_password_button: 'Change password', password_changed: 'Password changed', password_mismatch: 'Passwords do not match',
-    password_not_allowed: 'Password is too weak', password_reused: 'This password was used recently',
+    password_not_allowed: 'Password is too weak',
     current_password_incorrect: 'The current password is incorrect', too_many_attempts: 'Too many failed attempts',
     too_many_attempts_retry: 'Too many failed attempts, retry in {seconds} s', password_change_failed: 'Could not change the password',
   },
@@ -165,7 +165,6 @@ test('checks the new password locally before asking the server', async ({ page }
 // Each refusal arrives as a status plus a stable code; the page, not the server, supplies the words.
 for (const refusal of [
   { name: 'a wrong current password', status: 400, body: { error: 'current_password_incorrect' }, text: 'The current password is incorrect', field: '#currentPassword' },
-  { name: 'a reused password', status: 400, body: { error: 'password_reused' }, text: 'This password was used recently', field: '#newPassword' },
   { name: 'a server-side policy refusal', status: 400, body: { error: 'password_not_allowed' }, text: 'Password is too weak', field: '#newPassword' },
   { name: 'a ban', status: 429, body: { error: 'too_many_attempts' }, text: 'Too many failed attempts', field: undefined },
   { name: 'a wait', status: 429, body: { error: 'too_many_attempts', retryAfterSeconds: 30 }, text: 'Too many failed attempts, retry in 30 s', field: undefined },

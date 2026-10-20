@@ -274,8 +274,6 @@ export interface JwksKeySummary {
 // Global (non-tenant-scoped) password policy
 export interface SystemSettingsRecord {
   passwordRegex: string;
-  passwordHistorySize: number;
-  passwordNumDifferent: number;
 }
 
 // A registered passkey credential for a user

@@ -531,7 +531,6 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         List(
           (ChangePasswordError.IncorrectCurrentPassword, Status.BadRequest, "current_password_incorrect"),
           (ChangePasswordError.NewPasswordNotAllowed, Status.BadRequest, "password_not_allowed"),
-          (ChangePasswordError.PasswordReused, Status.BadRequest, "password_reused"),
         ).map((error, status, code) =>
           controllerTestCase(
             description = s"$code answers $status",

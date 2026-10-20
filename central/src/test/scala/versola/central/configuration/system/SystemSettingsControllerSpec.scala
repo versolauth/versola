@@ -23,8 +23,6 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val defaultSettings = SystemSettingsRecord.default
   private val customSettings = SystemSettingsRecord(
     passwordRegex = "^(?=.*[A-Z]).{8,}$",
-    passwordHistorySize = 10,
-    passwordNumDifferent = 5,
   )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>

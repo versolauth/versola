@@ -3,7 +3,6 @@ package versola.oauth.challenge.password
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.PasswordRecord
-import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import versola.util.{Salt, Secret}
@@ -38,57 +37,23 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       userId: UserId,
       password: Secret,
       salt: Salt,
-      historySize: Int,
-      numDifferent: Int,
-  ): IO[Throwable | PasswordReuseError, Unit] =
+  ): Task[Unit] =
     for
       now <- Clock.instant
-      result <- xa.transactMeasured("create-password") {
-        // Serialise concurrent password changes for the same user. The transaction runs at
-        // READ COMMITTED, so FOR UPDATE alone cannot stop a second, concurrent change from
-        // missing the not-yet-visible insert of the first (phantom read); it also would not
-        // lock anything when the user has no history yet. Taking a per-user advisory lock as a
-        // separate statement before the history SELECT forces the second transaction to wait,
-        // then read a snapshot that already includes the first transaction's committed insert.
-        // The lock is released automatically on commit/rollback.
-        //
-        // Why an advisory lock and not the unique-index + ON CONFLICT + FOR UPDATE pattern used
-        // in challenge throttling: that pattern needs a single natural-key row to anchor on.
-        // Password history has no such anchor (two different passwords are both valid rows) and
-        // the empty-history case has nothing to lock, so we serialise on the user id instead.
-        //
-        // The SELECT result (a single dummy row) is intentionally ignored; we call it only to
-        // acquire the lock.
-        sql"SELECT 1 FROM pg_advisory_xact_lock(${PostgresPasswordRepository.PasswordHistoryLockNamespace}, hashtext(${userId.toString}))"
+      _ <- xa.transactMeasured("create-password") {
+        // Serialise concurrent password changes for the same user: without the lock two changes could both
+        // delete and then both insert, leaving the user with two passwords. The lock is per user (the
+        // advisory key), taken as its own statement, and released on commit or rollback.
+        sql"SELECT 1 FROM pg_advisory_xact_lock(${PostgresPasswordRepository.PasswordLockNamespace}, hashtext(${userId.toString}))"
           .query[Int].run()
 
-        // Only permanent passwords count toward history and reuse checks.
-        // Order by id (SERIAL), not created_at: id is assigned at INSERT inside the serialized
-        // section, so it reflects the true commit order. `now` is captured before the advisory
-        // lock, so created_at values of two contending changes can be inverted relative to commit
-        // order — ordering by id keeps reuse/prune correct under contention.
-        val permanents = sql"""
-          SELECT id, user_id, password, salt, created_at, expires_at
-          FROM user_passwords
-          WHERE user_id = $userId AND expires_at IS NULL
-          ORDER BY id DESC
-        """.query[PasswordRecord].run()
-
-        // Remove any temporary passwords so they are never part of history
-        sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
-           """.update.run()
+        sql"""DELETE FROM user_passwords WHERE user_id = $userId""".update.run()
 
         sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $password, $salt, $now, NULL)
            """.update.run()
-
-        val toDelete = permanents.drop(historySize - 1)
-        if toDelete.nonEmpty then
-          val ids = toDelete.map(_.id)
-          sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-        Right(())
-      }.absolve
-    yield result
+      }
+    yield ()
 
   override def createTemporary(
       userId: UserId,
@@ -125,7 +90,7 @@ object PostgresPasswordRepository:
     * password changes. This is an accepted trade-off: collisions are rare and only cost a short
     * wait, never a correctness issue.
     */
-  private[password] val PasswordHistoryLockNamespace: Int = 92
+  private[password] val PasswordLockNamespace: Int = 92
 
   def live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
     ZLayer.fromFunction(PostgresPasswordRepository(_))

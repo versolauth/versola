@@ -525,13 +525,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getPasskeySettings(clientId1)
       yield assertTrue(result == Some(passkey))
     },
-    test("getPasswordHistorySettings returns from system settings") {
-      val settings = SystemSettingsRecord.default.copy(passwordHistorySize = 10, passwordNumDifferent = 3)
-      for
-        env <- makeEnv(systemSettings = settings)
-        result <- env.service.getPasswordHistorySettings
-      yield assertTrue(result.historySize == 10, result.numDifferent == 3)
-    },
     test("getMetadata returns cached metadata") {
       val metadata = Json.Obj("issuer" -> Json.Str("https://issuer.com"))
       for

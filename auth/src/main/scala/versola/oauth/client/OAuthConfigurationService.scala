@@ -20,7 +20,6 @@ import versola.oauth.client.model.{
   OtpType,
   PassedAuthFactor,
   PasskeySettings,
-  PasswordHistorySettings,
   PhoneRegion,
   PrimaryCredential,
   RegistrationCredential,
@@ -123,8 +122,6 @@ trait OAuthConfigurationService:
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
-
-  def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
   /** The logo the tenant's login pages show above the card. `None` for a tenant without one, or with only one of the
     * two files, or one auth does not know: the forms then show the Versola wordmark. */
@@ -575,9 +572,6 @@ object OAuthConfigurationService:
             _.find(_.tenantId == client.tenantId)
               .map(_.passkeySettings),
           )
-
-    override def getPasswordHistorySettings: UIO[PasswordHistorySettings] =
-      systemSettingsCache.get.map(s => PasswordHistorySettings(s.passwordHistorySize, s.passwordNumDifferent))
 
     override def getAuthConversationTtl(id: ClientId): UIO[Duration] =
       find(id).flatMap:

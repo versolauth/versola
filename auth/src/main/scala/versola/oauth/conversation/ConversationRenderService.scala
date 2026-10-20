@@ -630,7 +630,6 @@ object ConversationRenderService:
       case s: ConversationStep.Credential if s.loginFailed => Some("login_failed")
       case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
       case s: ConversationStep.SetPassword if s.rateLimitExceeded => Some("rate_limit_exceeded")
-      case s: ConversationStep.SetPassword if s.passwordReused => Some("password_reused")
       case s: ConversationStep.Consent if s.invalidGrant => Some("invalid_consent")
       case _ => None
 

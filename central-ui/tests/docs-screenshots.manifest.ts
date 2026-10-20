@@ -443,7 +443,7 @@ const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, t
 const edgesState: MockState = { tenants: edgeTenants, edges };
 
 const systemSettingsState: MockState = {
-  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1 },
+  systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$' },
 };
 
 const jwksState: MockState = {
@@ -873,7 +873,7 @@ const consoleShots: DocsShot[] = [
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
-    before: async page => { await expect(page.getByRole('region', { name: 'Password policy' })).toContainText('previous passwords'); },
+    before: async page => { await expect(page.getByRole('region', { name: 'Password policy' })).toContainText('Regex'); },
   },
   {
     name: 'console/system-settings-edit', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,

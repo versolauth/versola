@@ -226,7 +226,6 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       case 'current_password_incorrect':
         return { current: known };
       case 'password_not_allowed':
-      case 'password_reused':
         return { next: known };
       case 'too_many_attempts':
         return { general: known };

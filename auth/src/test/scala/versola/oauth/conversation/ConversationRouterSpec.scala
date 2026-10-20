@@ -948,7 +948,6 @@ object ConversationRouterSpec extends UnitSpecBase:
             factorIndex = flow.primary.factors.length,
             timesSubmitted = 0,
             rateLimitExceeded = false,
-            passwordReused = false,
           ),
         )
         for
@@ -1311,7 +1310,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("advances to the next auth factor after a password reset") {
         val env = Env()
-        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false, passwordReused = false)
+        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false)
         val flow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(factors = List(AuthFactor(`type` = AuthFactorType.password, required = true))))
         val record = initialRecord.copy(step = setPasswordStep, authFlow = flow)
         val completeResult = ConversationResult.Complete(
@@ -1333,7 +1332,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("advances the registration step after a password reset during registration") {
         val env = Env()
-        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false, passwordReused = false)
+        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false)
         val flow = RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), Set(roleId))
         val record = initialRecord.copy(
           step = setPasswordStep,
@@ -1358,11 +1357,11 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes = env.otpConversationService.finish.times
         yield assertTrue(result == completeResult, finishTimes == 1)
       },
-      test("re-renders with passwordReused when the new password fails validation") {
+      test("re-renders the step the service answers with when the new password is refused") {
         val env = Env()
-        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false, passwordReused = false)
+        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false)
         val record = initialRecord.copy(step = setPasswordStep)
-        val renderResult = ConversationResult.RenderStep(setPasswordStep.copy(passwordReused = true))
+        val renderResult = ConversationResult.RenderStep(setPasswordStep.copy(rateLimitExceeded = true))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
           _ <- env.otpConversationService.setNewPassword.succeedsWith(renderResult)
@@ -1569,7 +1568,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("labels a mismatch on the SetPassword step") {
         val env = Env()
-        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false, passwordReused = false)
+        val setPasswordStep = ConversationStep.SetPassword(factorIndex = 0, timesSubmitted = 0, rateLimitExceeded = false)
         val record = initialRecord.copy(step = setPasswordStep)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))

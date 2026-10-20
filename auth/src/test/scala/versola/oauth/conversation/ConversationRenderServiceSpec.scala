@@ -1025,7 +1025,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       },
       test("renders a SetPassword step and surfaces the rate_limit_exceeded error") {
         val env = Env()
-        val step = ConversationStep.SetPassword(0, 0, true, false)
+        val step = ConversationStep.SetPassword(0, 0, true)
         val record = conversationRecord.copy(step = step)
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
@@ -1038,21 +1038,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("versola-step\" content=\"set-password\"")) &&
           assertTrue(body.contains("\"error\":\"rate_limit_exceeded\""))
-      },
-      test("renders a SetPassword step and surfaces the password_reused error") {
-        val env = Env()
-        val step = ConversationStep.SetPassword(0, 0, false, true)
-        val record = conversationRecord.copy(step = step)
-        for
-          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
-          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "set-password")))
-          _ <- env.configuration.getLocales.succeedsWith(locales)
-          _ <- env.configuration.getTenantLogo.succeedsWith(None)
-          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          response <- env.service.renderStep(record, None)
-          body <- response.body.asString
-        yield assertTrue(body.contains("\"error\":\"password_reused\""))
       },
       test("renders a PasskeyEnroll step and surfaces the enroll_failed error") {
         val env = Env()

@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.*
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{OtpTemplateChannel, PasswordHistorySettings, TenantId}
+import versola.oauth.client.model.{OtpTemplateChannel, TenantId}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
@@ -141,12 +141,10 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("setPassword")(
-      test("hashes password and saves with history settings") {
+      test("hashes the password with a fresh salt and stores it as the user's only one") {
         for
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
-          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
-          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.succeedsWith(())
           _ <- env.service.setPassword(userId, password)
@@ -155,42 +153,16 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           createCalls.length == 1,
           createCalls.head._1 == userId,
           MAC(createCalls.head._2) === testHash,
-          createCalls.head._4 == 5,
-          createCalls.head._5 == 3,
         )
       },
-      test("fails with PasswordReuseError when repository rejects reuse") {
+      test("does not refuse the password it replaces") {
         for
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
-          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
-          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
-          _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.create.failsWith(PasswordReuseError(3))
-          result <- env.service.setPassword(userId, password).exit
-        yield assert(result)(fails(equalTo(PasswordReuseError(3))))
-      },
-      test("rejects password reuse when new password matches a recent permanent record") {
-        for
-          secureRandom <- ZIO.service[SecureRandom]
-          env = Env(secureRandom)
-          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
-          _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(testHash)))
-          _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          result <- env.service.setPassword(userId, password).exit
-        yield assert(result)(fails(equalTo(PasswordReuseError(3))))
-      },
-      test("allows password change when new password does not match any recent permanent record") {
-        for
-          secureRandom <- ZIO.service[SecureRandom]
-          env = Env(secureRandom)
-          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
-          _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(differentHash)))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.succeedsWith(())
-          _ <- env.service.setPassword(userId, password)
-          createCalls = env.passwordRepo.create.calls
-        yield assertTrue(createCalls.length == 1)
+          result <- env.service.setPassword(userId, password).exit
+        yield assert(result)(succeeds(anything))
       },
     ),
     suite("resetPassword")(
