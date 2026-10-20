@@ -83,6 +83,8 @@ export class VersolaSystemSettings extends LitElement {
   @state() private isAdding = false;
 
   @state() private draftRegex = '';
+  @state() private draftHistory = 5;
+  @state() private draftDifferent = 3;
   @state() private fieldErrors: Record<string, string> = {};
   @state() private formError = '';
   @state() private isSaving = false;
@@ -232,11 +234,13 @@ export class VersolaSystemSettings extends LitElement {
   }
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftRegex]);
+    return JSON.stringify([this.draftRegex, this.draftHistory, this.draftDifferent]);
   }
 
   private resetDraft() {
     this.draftRegex = this.settings?.passwordRegex ?? '';
+    this.draftHistory = this.settings?.passwordHistorySize ?? 5;
+    this.draftDifferent = this.settings?.passwordNumDifferent ?? 3;
     this.fieldErrors = {};
     this.formError = '';
     this.isSaving = false;
@@ -257,9 +261,11 @@ export class VersolaSystemSettings extends LitElement {
     else {
       try { new RegExp(regex); } catch { errors.regex = 'Not a valid regular expression.'; }
     }
+    if (!Number.isInteger(this.draftHistory) || this.draftHistory < 0) errors.history = 'A whole number, 0 or more.';
+    if (!Number.isInteger(this.draftDifferent) || this.draftDifferent < 0) errors.different = 'A whole number, 0 or more.';
     this.fieldErrors = errors;
     if (Object.keys(errors).length) return;
-    const next: SystemSettingsRecord = { passwordRegex: regex };
+    const next: SystemSettingsRecord = { passwordRegex: regex, passwordHistorySize: this.draftHistory, passwordNumDifferent: this.draftDifferent };
     this.isSaving = true;
     this.formError = '';
     try {
@@ -453,6 +459,8 @@ export class VersolaSystemSettings extends LitElement {
     return html`
       <versola-record-card id="password-policy" heading="Password policy" subheading="Applies to every user; passwords are stored per user, not per tenant." ?editable=${this.canManage} .body=${html`
         ${this.row('Regex', html`<span class="mono">${settings.passwordRegex || '—'}</span>`)}
+        ${this.row('History size', `${settings.passwordHistorySize} previous ${settings.passwordHistorySize === 1 ? 'password' : 'passwords'}`)}
+        ${this.row('Different passwords required', String(settings.passwordNumDifferent))}
       `} @edit=${() => dispatchRecordRoute(this, { id: null, edit: 'password', create: false, layout: null })}></versola-record-card>
     `;
   }
@@ -468,6 +476,15 @@ export class VersolaSystemSettings extends LitElement {
     `;
   }
 
+  private numberInput(id: string, value: number, onInput: (value: number) => void) {
+    const invalid = !!this.fieldErrors[id];
+    return html`
+      <input type="number" id=${id} class="compact-input ${invalid ? 'input-error' : ''}" min="0" step="1" style="max-width: 8rem" .value=${String(value)}
+        aria-invalid=${invalid ? 'true' : nothing} aria-describedby=${invalid ? `${id}-error` : `${id}-hint`}
+        @input=${(e: Event) => onInput(Number((e.target as HTMLInputElement).value))} />
+    `;
+  }
+
   private renderPasswordEditor() {
     const regexInvalid = !!this.fieldErrors.regex;
     return html`
@@ -480,11 +497,13 @@ export class VersolaSystemSettings extends LitElement {
         ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
         <div class="editor-box">
           <h3>Password policy</h3>
-          <p class="editor-sub">What a new password must look like.</p>
+          <p class="editor-sub">What a new password must look like and how far back it is compared.</p>
           ${this.field('regex', 'Password regex *', html`
             <input type="text" id="regex" class="compact-input mono ${regexInvalid ? 'input-error' : ''}" .value=${this.draftRegex} placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$"
               aria-invalid=${regexInvalid ? 'true' : nothing} aria-describedby=${regexInvalid ? 'regex-error' : 'regex-hint'}
               @input=${(e: Event) => this.draftRegex = (e.target as HTMLInputElement).value} />`, 'A new password must match this pattern.')}
+          ${this.field('history', 'Password history size', this.numberInput('history', this.draftHistory, value => this.draftHistory = value), 'Previous passwords a new one is compared against, including the current one.')}
+          ${this.field('different', 'Different passwords required', this.numberInput('different', this.draftDifferent, value => this.draftDifferent = value), 'How many distinct passwords before an old one can be reused.')}
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" ?disabled=${this.isSaving} @click=${() => void this.cancelEditor()}>Cancel</button>

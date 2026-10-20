@@ -11,7 +11,7 @@ const locales = [
   { code: 'ru', name: 'Russian', isDefault: false, active: true },
   { code: 'kk', name: 'Kazakh', isDefault: false, active: false },
 ];
-const systemSettings = { passwordRegex: '.{8,}' };
+const systemSettings = { passwordRegex: '.{8,}', passwordHistorySize: 5, passwordNumDifferent: 3 };
 const readOnly = { resources: { central: { permissions: ['security:read', 'locales:read'] } }, isProd: false };
 
 test('shows the password policy and the locales as cards with their states', async ({ page }) => {
@@ -20,6 +20,7 @@ test('shows the password policy and the locales as cards with their states', asy
   await expect(page.getByRole('region', { name: 'Locales' })).toContainText('Changes to locales apply immediately.');
   const policy = page.getByRole('region', { name: 'Password policy' });
   await expect(policy).toContainText('.{8,}');
+  await expect(policy).toContainText('5 previous passwords');
   await expect(page.getByRole('region', { name: 'Locales' }).getByRole('row')).toHaveCount(4);
   const kk = page.getByRole('row').filter({ hasText: 'Kazakh' });
   await expect(kk).toContainText('Inactive');
@@ -37,12 +38,14 @@ test('updates the password policy from its editor and returns to the record', as
 
   expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toEqual({
     passwordRegex: '.{12,}',
+    passwordHistorySize: 5,
+    passwordNumDifferent: 3,
   });
   await expect(page).not.toHaveURL(/edit=password/);
   await expect(page.getByRole('region', { name: 'Password policy' })).toContainText('.{12,}');
 });
 
-test('refuses an empty or malformed regex before saving', async ({ page }) => {
+test('refuses an empty or malformed regex and a negative count before saving', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${path}&edit=password`, state: { systemSettings } });
 
   const regex = page.getByLabel('Password regex *');
@@ -52,8 +55,10 @@ test('refuses an empty or malformed regex before saving', async ({ page }) => {
   await expect(regex).toHaveAttribute('aria-invalid', 'true');
   await expect(regex).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await regex.fill('(');
+  await page.getByLabel('Password history size').fill('-1');
   await page.getByRole('button', { name: 'Save password policy' }).click();
   await expect(page.getByText('Not a valid regular expression.')).toBeVisible();
+  await expect(page.getByText('A whole number, 0 or more.')).toBeVisible();
   expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
 });
 

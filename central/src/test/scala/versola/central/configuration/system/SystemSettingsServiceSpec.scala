@@ -16,7 +16,7 @@ object SystemSettingsServiceSpec extends UnitSpecBase:
   def spec = suite("SystemSettingsService")(
     test("upsertSettings stores the record as it is") {
       val env = Env()
-      val settings = baseSettings.copy(passwordRegex = "^.{12,}$")
+      val settings = baseSettings.copy(passwordHistorySize = 5)
       for
         _ <- env.repository.upsert.succeedsWith(())
         _ <- env.service.upsertSettings(settings)

@@ -607,11 +607,11 @@ object PostgresSessionRepository:
   /** Namespace (first key) for the transaction-level advisory lock that serialises rotation
     * against revocation within one refresh token family. Advisory-lock keys are global to the
     * entire database, so this must be unique DB-wide: the only other one is
-    * `PostgresPasswordRepository.PasswordLockNamespace` (92). It is `237` (the issue
+    * `PostgresPasswordRepository.PasswordHistoryLockNamespace` (92). It is `237` (the issue
     * number) by the same convention.
     *
     * The second key is derived from `family_id` via `hashtext`, which is 32-bit, so two families
-    * can collide and briefly serialize each other. Like the password lock, that costs a
+    * can collide and briefly serialize each other. Like the password-history lock, that costs a
     * short wait and never correctness. Cross-version instability of `hashtext` does not matter
     * here either: the lock never outlives a transaction, and every contending transaction asks
     * the same server for the same value at the same time.

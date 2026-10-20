@@ -78,7 +78,7 @@ type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mod
 type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
-type SystemSettingsDto = { passwordRegex: string };
+type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -440,6 +440,8 @@ const defaultState: MockConfigState = {
   themeRenderError: null,
   systemSettings: {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
+    passwordHistorySize: 5,
+    passwordNumDifferent: 3,
   },
   otpTemplates: {},
   challengeSettings: {},

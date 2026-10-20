@@ -261,6 +261,18 @@
             "type" : "set-password",
             "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
           }
+        },
+        {
+          "id" : "reused",
+          "title" : {
+            "en" : "Password used recently",
+            "ru" : "Пароль уже использовался"
+          },
+          "step" : {
+            "type" : "set-password",
+            "passwordRegex" : "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
+          },
+          "error" : "password_reused"
         }
       ]
     },

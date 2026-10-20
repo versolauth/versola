@@ -13,6 +13,8 @@ trait SystemSettingsRepositorySpec extends DatabaseSpecBase[SystemSettingsReposi
 
   private val record = SystemSettingsRecord(
     passwordRegex = "^.{8,}$",
+    passwordHistorySize = 3,
+    passwordNumDifferent = 1,
   )
 
   override def testCases(env: SystemSettingsRepositorySpec.Env) =
@@ -28,7 +30,7 @@ trait SystemSettingsRepositorySpec extends DatabaseSpecBase[SystemSettingsReposi
         yield assertTrue(result == record)
       },
       test("upsert overwrites the previously stored settings") {
-        val updated = record.copy(passwordRegex = "^.{12,}$")
+        val updated = record.copy(passwordHistorySize = 5)
         for
           _ <- env.repository.upsert(record)
           _ <- env.repository.upsert(updated)

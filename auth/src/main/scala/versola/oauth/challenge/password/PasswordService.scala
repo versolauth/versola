@@ -5,6 +5,7 @@ import versola.oauth.challenge.password.model.{
   CheckPassword,
   DeliveryChannel,
   PasswordDeliveryUnavailable,
+  PasswordReuseError,
   PasswordRevealForbidden,
   TemporaryPasswordGenerationFailed,
 }
@@ -26,7 +27,7 @@ trait PasswordService:
   /** Returns true if the user has at least one non-expired password on record. */
   def hasPassword(userId: UserId): Task[Boolean]
 
-  def setPassword(userId: UserId, password: Password): Task[Unit]
+  def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit]
 
   def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit]
 
@@ -91,11 +92,21 @@ object PasswordService:
       securityService.hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
         .map(mac => mac === MAC(record.password))
 
-    override def setPassword(userId: UserId, password: Password): Task[Unit] =
+    override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
       for
+        settings <- configuration.getPasswordHistorySettings
+        permanents <- passwordRepository.list(userId).map(_.filter(_.expiresAt.isEmpty))
+        _ <- ZIO.foreachDiscard(permanents.take(settings.numDifferent)) { record =>
+          securityService
+            .hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
+            .flatMap { rehashed =>
+              ZIO.fail(PasswordReuseError(settings.numDifferent))
+                .when(MAC(rehashed) === MAC(record.password))
+            }
+        }.mapError(identity[Throwable | PasswordReuseError])
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository.create(userId, Secret(hash), salt)
+        _ <- passwordRepository.create(userId, Secret(hash), salt, settings.historySize, settings.numDifferent)
       yield ()
 
     override def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit] =

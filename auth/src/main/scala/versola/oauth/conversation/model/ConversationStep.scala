@@ -51,6 +51,7 @@ object ConversationStep:
       factorIndex: Int,
       timesSubmitted: Int,
       rateLimitExceeded: Boolean,
+      passwordReused: Boolean,
   ) extends ConversationStep(StepId.SetPassword)
 
   case class PasskeyEnroll(

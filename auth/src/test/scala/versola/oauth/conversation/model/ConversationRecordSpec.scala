@@ -153,7 +153,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
         )
       },
       test("applies each supplied field and keeps the rest") {
-        val step = ConversationStep.SetPassword(0, 0, false)
+        val step = ConversationStep.SetPassword(0, 0, false, false)
         val patched = record.patch(
           ConversationRecord.Patch(
             userId = Some(Some(userId)),
@@ -202,7 +202,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
         )
       },
       test("SetPassword matches the set-password step") {
-        val step = ConversationStep.SetPassword(0, 0, false)
+        val step = ConversationStep.SetPassword(0, 0, false, false)
         assertTrue(
           ConversationRecord.SetPassword.unapply(record.copy(step = step)) == Some(step),
           ConversationRecord.SetPassword.unapply(record).isEmpty,

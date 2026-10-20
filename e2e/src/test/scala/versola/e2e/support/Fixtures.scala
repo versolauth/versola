@@ -678,9 +678,13 @@ object Fixtures:
 
   def systemSettings(
       passwordRegex: String = ".{8,}",
+      passwordHistorySize: Int = 3,
+      passwordNumDifferent: Int = 1,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "passwordRegex" -> Json.Str(passwordRegex),
+        "passwordHistorySize" -> Json.Num(passwordHistorySize),
+        "passwordNumDifferent" -> Json.Num(passwordNumDifferent),
       ),
     )

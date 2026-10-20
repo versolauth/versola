@@ -5434,7 +5434,13 @@ components:
         passwordRegex:
           type: string
           description: A password must match this regular expression.
-      required: [passwordRegex]
+        passwordHistorySize:
+          type: integer
+          description: How many previous passwords a new one is compared against.
+        passwordNumDifferent:
+          type: integer
+          description: How many characters a new password must differ by.
+      required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────────── Edges ───────────────────────────────
     RegisterEdgeRequest:

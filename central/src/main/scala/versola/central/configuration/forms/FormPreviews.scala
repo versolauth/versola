@@ -195,6 +195,13 @@ object FormPreviews:
       "set-password",
       Vector(
         scenario("set-password", "Choose a password", "Выбор пароля", obj("type" -> str("set-password"), "passwordRegex" -> str(passwordRegex))),
+        scenario(
+          "reused",
+          "Password used recently",
+          "Пароль уже использовался",
+          obj("type" -> str("set-password"), "passwordRegex" -> str(passwordRegex)),
+          Some("password_reused"),
+        ),
       ),
     ),
     FormPreview(

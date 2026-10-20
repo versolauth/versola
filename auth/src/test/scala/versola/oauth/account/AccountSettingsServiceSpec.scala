@@ -3,7 +3,7 @@ package versola.oauth.account
 import org.scalamock.stubs.Stub
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
@@ -110,6 +110,13 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         setup = (passwordService, _) =>
           passwordService.verifyPassword.succeedsWith(CheckPassword.Success) *>
             passwordService.setPassword.succeedsWith(()),
+      ),
+      serviceTestCase(
+        description = "reports a reused password as such",
+        setup = (passwordService, _) =>
+          passwordService.verifyPassword.succeedsWith(CheckPassword.Success) *>
+            passwordService.setPassword.failsWith(PasswordReuseError(5)),
+        expectedError = Some(ChangePasswordError.PasswordReused),
       ),
       test("passes an infrastructure failure through as it is") {
         val failure = IllegalStateException("db down")

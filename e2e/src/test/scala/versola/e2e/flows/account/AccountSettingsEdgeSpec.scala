@@ -98,6 +98,14 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         refusal <- result.json
       yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_not_allowed"))
     },
+    test("rejects a reused password on change") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, s.password)
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_reused"))
+    },
     test("enrolls, renames and deletes a passkey through the full ceremony") {
       val name = "E2E Edge Key"
       for

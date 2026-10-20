@@ -6,7 +6,7 @@ import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
@@ -89,6 +89,7 @@ trait ConversationService:
 
   /** Sets a new permanent password after the user authenticated with a temporary one.
     * Deletes the temporary password, records the password AMR factor, and returns StepPassed.
+    * On reuse error re-renders the SetPassword step with `passwordReused = true`.
     */
   def setNewPassword(
       conversation: ConversationRecord,
@@ -609,6 +610,7 @@ object ConversationService:
         factorIndex = conversation.authFlow.primary.factors.length,
         timesSubmitted = 0,
         rateLimitExceeded = false,
+        passwordReused = false,
       )
       renderStep(authId, conversation, setPasswordStep)
 
@@ -1070,15 +1072,42 @@ object ConversationService:
             case LimitStatus.RateLimited(_) =>
               renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
             case LimitStatus.Allowed =>
-              passwordService.setPassword(userId, newPassword) *>
-                Clock.instant.flatMap: now =>
-                  val updated = conversation.copy(
-                    amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
-                    needsPasswordChange = false,
-                  )
-                  conversationRepository.overwrite(authId, updated).flatMap:
-                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+              passwordService.setPassword(userId, newPassword).foldZIO(
+                {
+                  case _: versola.oauth.challenge.password.model.PasswordReuseError =>
+                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+                      case LimitStatus.Banned => accessDenied(authId, conversation)
+                      case LimitStatus.RateLimited(_) =>
+                        renderStep(
+                          authId,
+                          conversation,
+                          setPasswordStep.copy(
+                            timesSubmitted = setPasswordStep.timesSubmitted + 1,
+                            passwordReused = true,
+                            rateLimitExceeded = true,
+                          ),
+                        )
+                      case LimitStatus.Allowed =>
+                        renderStep(
+                          authId,
+                          conversation,
+                          setPasswordStep.copy(
+                            timesSubmitted = setPasswordStep.timesSubmitted + 1,
+                            passwordReused = true,
+                          ),
+                        )
+                  case ex: Throwable => ZIO.fail(ex)
+                },
+                _ =>
+                  Clock.instant.flatMap: now =>
+                    val updated = conversation.copy(
+                      amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                      needsPasswordChange = false,
+                    )
+                    conversationRepository.overwrite(authId, updated).flatMap:
+                      case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                      case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+              )
 
     private def generateIdTokenData(
         userId: UserId,

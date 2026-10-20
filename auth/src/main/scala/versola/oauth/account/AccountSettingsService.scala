@@ -2,7 +2,7 @@ package versola.oauth.account
 
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
@@ -16,6 +16,7 @@ import scala.util.Try
 enum ChangePasswordError(val code: String):
   case IncorrectCurrentPassword extends ChangePasswordError("current_password_incorrect")
   case NewPasswordNotAllowed extends ChangePasswordError("password_not_allowed")
+  case PasswordReused extends ChangePasswordError("password_reused")
 
   /** `retryAfterSeconds` is absent for a persistent ban, which does not resolve on its own. */
   case TooManyAttempts(retryAfterSeconds: Option[Long]) extends ChangePasswordError("too_many_attempts")
@@ -59,5 +60,7 @@ object AccountSettingsService:
         // An unparseable regex lets the password through, as in the login flow's own validation.
         _ <- ZIO.fail(ChangePasswordError.NewPasswordNotAllowed)
           .unless(Try(newPassword.matches(regex)).getOrElse(true))
-        _ <- passwordService.setPassword(userId, Password(newPassword))
+        _ <- passwordService.setPassword(userId, Password(newPassword)).mapError:
+          case _: PasswordReuseError => ChangePasswordError.PasswordReused
+          case error: Throwable => error
       yield ()

@@ -5,7 +5,7 @@ import versola.auth.model.Password
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
@@ -42,6 +42,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     factorIndex = 1,
     timesSubmitted = 0,
     rateLimitExceeded = false,
+    passwordReused = false,
   )
 
   val passwordStep = ConversationStep.Password(
@@ -589,6 +590,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
               factorIndex = passwordRecord.authFlow.primary.factors.length,
               timesSubmitted = 0,
               rateLimitExceeded = false,
+              passwordReused = false,
             ),
           ),
         )
@@ -654,6 +656,44 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
         yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("re-renders with the reuse flag when the new password repeats an old one") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.setPassword.failsWith(PasswordReuseError(3))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            setPasswordStep.copy(timesSubmitted = 1, passwordReused = true),
+          ),
+        )
+      },
+      test("flags both reuse and the rate limit when the retry budget runs out") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.setPassword.failsWith(PasswordReuseError(3))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.RateLimited(30))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            setPasswordStep.copy(timesSubmitted = 1, passwordReused = true, rateLimitExceeded = true),
+          ),
+        )
+      },
+      test("denies access when repeated reuse attempts earn a ban") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.setPassword.failsWith(PasswordReuseError(3))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("propagates an unexpected failure from the password service") {
         val env = Env()
