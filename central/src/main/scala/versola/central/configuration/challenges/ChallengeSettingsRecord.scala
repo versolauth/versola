@@ -217,6 +217,36 @@ object ChallengeSettingsRecord:
       val httpScheme = Option(uri.getScheme).exists(scheme => scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
       uri.isAbsolute && httpScheme && Option(uri.getHost).exists(_.nonEmpty) && uri.getPort <= 65535
 
+  /** Whether some credential of this tenant can create an account, which is when `defaultRoles` have to exist: a tenant
+    * that registers nobody (a new tenant has no `user` role yet) must still be able to save other settings. */
+  def registrationPossible(record: ChallengeSettingsRecord): Boolean =
+    record.emailRegistration.mode != EmailRegistrationMode.closed || record.phoneRegions.exists(_.registration)
+
+  /** The rules every write of the record meets, `PUT` and `PATCH` alike, on the record that would be stored: the record
+    * with its email domains normalized, or why it cannot be stored. What needs another table (the roles, the signing
+    * key) is checked by the caller. */
+  def validate(record: ChallengeSettingsRecord): Either[String, ChallengeSettingsRecord] =
+    for
+      // One setting stored in two columns: a header no encoding says how to read, and an
+      // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
+      // off while central reports it configured.
+      _ <- Either.cond(
+        record.mtlsCertificateHeader.isDefined == record.mtlsCertificateEncoding.isDefined,
+        (),
+        "mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together",
+      )
+      _ <- validateLogo(record.logoLight, record.logoDark).toLeft(())
+      _ <- Either.cond(
+        record.clientAssertionMaxLifetimeSeconds >= MinClientAssertionMaxLifetimeSeconds &&
+          record.clientAssertionMaxLifetimeSeconds <= MaxClientAssertionMaxLifetimeSeconds,
+        (),
+        s"clientAssertionMaxLifetimeSeconds must be between $MinClientAssertionMaxLifetimeSeconds and $MaxClientAssertionMaxLifetimeSeconds",
+      )
+      _ <- PhoneRegion.validate(record.phoneRegions).toLeft(())
+      emailRegistration <- EmailRegistration.normalize(record.emailRegistration)
+      _ <- Either.cond(record.defaultRoles.nonEmpty, (), "defaultRoles must name at least one role")
+    yield record.copy(emailRegistration = emailRegistration)
+
   /** Seeded by bootstrap with no permissions beyond access to the account itself. */
   val DefaultRoleId: RoleId = RoleId("user")
 

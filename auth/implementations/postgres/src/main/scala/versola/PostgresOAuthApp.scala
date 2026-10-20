@@ -111,6 +111,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SessionService &
       UserRegistrationSyncClient
 
+  // central is the one peer auth cannot work without and waits for at start-up
+  override protected def guardExemptPeers =
+    ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
+
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,

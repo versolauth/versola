@@ -112,6 +112,19 @@ object ScopeApiSpec extends CentralApiSpec:
         assertTrue(rejected.body.contains("Scope ID"))
           .label("the scope token travels in a space-delimited `scope` parameter, so it cannot contain a space")
     },
+    test("a scope id with a dot, a colon or a hyphen is refused") {
+      for
+        central <- api
+        base <- CentralApi.token("probe_scope")
+        dotted <- central.post(path, Fixtures.scope(s"$base.read"))
+        colon <- central.post(path, Fixtures.scope(s"$base:read"))
+        hyphen <- central.post(path, Fixtures.scope(s"$base-read"))
+      yield assertTrue(
+        dotted.status == Status.BadRequest,
+        colon.status == Status.BadRequest,
+        hyphen.status == Status.BadRequest,
+      ).label("scope IDs allow only lowercase letters, digits and underscores; '.' and ':' belong to permissions")
+    },
     test("a claim id outside the documented alphabet is refused") {
       for
         central <- api

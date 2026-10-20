@@ -175,6 +175,13 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ).addHeader(Header.ContentType(MediaType.application.json))
 
+  private def patchRequest(body: String): Request =
+    Request(
+      method = Method.PATCH,
+      url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
+
   def spec = suite("OtpChallengeController")(
     controllerTestCase(
       description = "PUT challenge-settings refuses a phone region whose regex does not compile",
@@ -993,5 +1000,53 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           ),
         )),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 204 and hands the named members to the service",
+      request = patchRequest("""{"tenantId":"tenant-a","otpLength":8,"signingKeyId":null}"""),
+      expectedStatus = Status.NoContent,
+      settingsSetup = _.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.patchSettings.calls.map(p => (p.tenantId, p.otpLength, p.signingKeyId, p.ipHeader)) ==
+            List((tenantId, Some(Patch.Modified(8)), Some(Patch.Deleted), None)),
+          service.upsertSettings.calls.isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 404 for a tenant with no settings",
+      request = patchRequest("""{"tenantId":"tenant-a","otpLength":8}"""),
+      expectedStatus = Status.NotFound,
+      settingsSetup = _.patchSettings.failsWith(ChallengeSettingsService.SettingsNotFound(tenantId)),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 400 with the reason when the service refuses the result",
+      request = patchRequest("""{"tenantId":"tenant-a","clientAssertionMaxLifetimeSeconds":5}"""),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = _.patchSettings.failsWith(
+        ChallengeSettingsService.ValidationError.Invalid("clientAssertionMaxLifetimeSeconds must be between 30 and 900"),
+      ),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("clientAssertionMaxLifetimeSeconds must be between"))),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 400 for an unknown key, without calling the service",
+      request = patchRequest("""{"tenantId":"tenant-a","otpLenght":8}"""),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = _.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) => ZIO.succeed(assertTrue(service.patchSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 400 for a body without tenantId, without calling the service",
+      request = patchRequest("""{"otpLength":8}"""),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = _.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) => ZIO.succeed(assertTrue(service.patchSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings answers 401 without credentials",
+      request = patchRequest("""{"tenantId":"tenant-a","otpLength":8}""").addHeader(Header.Authorization.Basic("nobody", "wrong")),
+      expectedStatus = Status.Unauthorized,
+      settingsSetup = _.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) => ZIO.succeed(assertTrue(service.patchSettings.calls.isEmpty)),
     ),
   )
