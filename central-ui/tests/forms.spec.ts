@@ -19,6 +19,11 @@ const texts = async (page: Page) => JSON.parse(await editor(page).inputValue()) 
 const setTexts = (page: Page, value: unknown) => editor(page).fill(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
 const problems = (page: Page) => page.getByRole('list', { name: 'Problems in the texts' }).getByRole('listitem');
 const summary = (page: Page) => page.getByRole('term').filter({ hasText: /^(Languages|Missing)$/ });
+/** A change to the English title, so that "Save as new version" has something to save. */
+const touch = async (page: Page) => {
+  const shown = await texts(page);
+  await setTexts(page, { ...shown, en: { ...shown.en, title: `${shown.en.title}!` } });
+};
 const putForms = (requests: Array<{ method: string; pathname: string; body?: unknown }>) =>
   requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/forms');
 
@@ -168,10 +173,28 @@ test.describe('record', () => {
   test('says what saving does: a new version, not activated', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
 
-    const note = page.getByRole('note');
-    await expect(note).toContainText('Editing a copy of v8');
-    await expect(note).toContainText('Saving stores v9 without activating it');
-    await expect(note).toContainText('Users keep v7');
+    await expect(page.getByRole('note')).toHaveText('You are editing v8, which is not active. Users see v7.');
+  });
+
+  test('says the active version when that is the one being edited, and explains versions on the Versions tab only', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+
+    await expect(page.getByRole('note')).toHaveText('You are editing the active v4.');
+    await expect(page.getByText('Saving stores a new version')).toHaveCount(0);
+    await tab(page, 'Versions').click();
+    await expect(page.getByText('Saving stores a new version and does not activate it')).toBeVisible();
+  });
+
+  test('Save as new version waits for a change to the texts, style or script', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    const save = page.getByRole('button', { name: 'Save as new version' });
+
+    await expect(save).toBeDisabled();
+    await touch(page);
+    await expect(save).toBeEnabled();
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, en: { ...shown.en, title: shown.en.title.slice(0, -1) } });
+    await expect(save).toBeDisabled();
   });
 
   test('has tabs Texts, Style, Script and Versions, and Properties only for a custom form', async ({ page }) => {
@@ -252,8 +275,9 @@ test.describe('texts', () => {
   test('opens a stored version with faults as it is, and lists them', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('set-password'), state: ftState() });
 
-    await expect(problems(page)).toHaveText(['"kk" is missing the key title, which the form has.']);
+    await expect(problems(page)).toHaveText(['Kazakh is missing "title"']);
     await expect(editor(page)).toHaveAttribute('aria-invalid', 'true');
+    await expect(tab(page, 'Texts').getByRole('img', { name: '1 problem' })).toBeVisible();
   });
 
   test('keeps the typed text and lists the reason when it is not JSON', async ({ page }) => {
@@ -280,13 +304,13 @@ test.describe('texts', () => {
     const { description, ...ruWithoutDescription } = shown.ru;
 
     await setTexts(page, { ...shown, ru: ruWithoutDescription });
-    await expect(problems(page)).toHaveText(['"ru" is missing the key description, which the form has.']);
+    await expect(problems(page)).toHaveText(['Russian is missing "description"']);
 
     await setTexts(page, { ...shown, ru: { ...shown.ru, invented: 'x' } });
-    await expect(problems(page)).toHaveText(['"ru" has the key invented, which the form does not use.']);
+    await expect(problems(page)).toHaveText(['Russian has "invented", which the form does not']);
 
     await setTexts(page, { ...shown, ru: { ...shown.ru, description: 'Мы отправили код на {адрес}' } });
-    await expect(problems(page)).toHaveText(['Key "description": "en" uses {destination} but "ru" uses none.']);
+    await expect(problems(page)).toHaveText(['The Russian text of "description" has no {destination}, the English one does']);
 
     await setTexts(page, shown);
     await expect(problems(page)).toHaveCount(0);
@@ -298,9 +322,9 @@ test.describe('texts', () => {
     const shown = await texts(page);
 
     await setTexts(page, { ...shown, en: { ...shown.en, extra: 'More' } });
-    await expect(problems(page)).toHaveText(['"ru" is missing the key extra, which "en" has.', '"kk" is missing the key extra, which "en" has.']);
+    await expect(problems(page)).toHaveText(['Russian is missing "extra"', 'Kazakh is missing "extra"']);
     await setTexts(page, { ru: shown.ru });
-    await expect(problems(page).first()).toContainText('reference language "en" is missing');
+    await expect(problems(page).first()).toContainText('The reference language English is missing');
   });
 
   test('a save with problems is not sent, and brings the person to the list of them', async ({ page }) => {
@@ -312,8 +336,53 @@ test.describe('texts', () => {
 
     await expect(tab(page, 'Texts')).toHaveAttribute('aria-selected', 'true');
     await expect(problems(page).first()).toContainText('Not valid JSON');
-    await expect(editor(page)).toBeFocused();
+    await expect(page.getByRole('list', { name: 'Problems in the texts' })).toBeFocused();
     expect(putForms(api.requests)).toHaveLength(0);
+  });
+
+  test('each problem is a button that puts the caret on the line of its key', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('otp'), state: ftState() });
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, ru: { ...shown.ru, invented: 'x' } });
+    const typed = await editor(page).inputValue();
+    const line = typed.split('\n').findIndex(text => text.includes('"invented"'));
+
+    await problems(page).getByRole('button', { name: 'Russian has "invented", which the form does not' }).click();
+    await expect(editor(page)).toBeFocused();
+    const caret = await editor(page).evaluate((area: HTMLTextAreaElement) => area.value.slice(0, area.selectionStart).split('\n').length - 1);
+    expect(caret).toBe(line);
+  });
+
+  test('the Texts tab carries the problems as a marker, and a save with problems scrolls to the list', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 500 });
+    await loadAdminApp(page, { path: recordPath('otp'), state: ftState() });
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, ru: { ...shown.ru, a_new: 'x', b_new: 'y' } });
+
+    await expect(tab(page, 'Texts').getByRole('img', { name: '2 problems' })).toBeVisible();
+    await touch(page);
+    await page.getByRole('button', { name: 'Save as new version' }).click();
+    await expect(page.getByRole('list', { name: 'Problems in the texts' })).toBeFocused();
+    await expect(page.getByRole('list', { name: 'Problems in the texts' })).toBeInViewport();
+  });
+
+  test('the preview fills {placeholders} with sample values', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    const shown = await texts(page);
+    await setTexts(page, { en: { ...shown.en, title: 'Hello {name}, wait {minutes} min, {x}' }, ...Object.fromEntries(Object.entries(shown).filter(([code]) => code !== 'en')) });
+
+    await expect.poll(() => srcdoc(page)).toContain('Hello Dana, wait 5 min, x');
+  });
+
+  test('the JSON editor scrolls sideways inside itself at 375 instead of wrapping', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 800 });
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, en: { ...shown.en, title: 'A long title '.repeat(12) } });
+
+    const area = editor(page);
+    expect(await area.evaluate((el: HTMLTextAreaElement) => el.scrollWidth > el.clientWidth && getComputedStyle(el).whiteSpace)).toBe('pre');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 
   test('editing the JSON updates the preview, in the language chosen in the switcher', async ({ page }) => {
@@ -444,11 +513,15 @@ test.describe('preview', () => {
     await page.setViewportSize({ width: 600, height: 900 });
     const narrow = { pane: await pane.boundingBox(), editor: await editor.boundingBox() };
     expect(narrow.pane!.y).toBeLessThan(narrow.editor!.y);
-    const toggle = pane.getByRole('button', { name: /Preview/ });
-    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    await toggle.click();
+    // Collapsed by default, and the choice is kept for the session.
+    const toggle = pane.getByRole('button', { name: 'Show preview' });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('iframe.preview-iframe')).toBeHidden();
+    await toggle.click();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('iframe.preview-iframe')).toBeVisible();
+    await page.reload();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   test('is 340px wide at 1024, so the four tabs fit beside it', async ({ page }) => {
@@ -479,6 +552,7 @@ test.describe('saving', () => {
 
   test('says what was stored and that it is not active, with a way to the versions', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    await touch(page);
     await page.getByRole('button', { name: 'Save as new version' }).click();
 
     const banner = page.getByRole('status').filter({ hasText: 'Stored v5' });
@@ -491,6 +565,7 @@ test.describe('saving', () => {
 
   test('one click sends one request, and a failure is shown with the form kept', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    await touch(page);
     let puts = 0;
     await page.route('**/configuration/forms', async route => {
       if (route.request().method() !== 'PUT') return route.fallback();
@@ -532,6 +607,7 @@ test.describe('saving', () => {
   test('saving a new version of a built-in form keeps its stored backend properties', async ({ page }) => {
     const forms = ftForms().map(form => (form.id === 'credential' ? { ...form, properties: [{ type: 'BooleanProperty' as const, name: 'showRemember' }] } : form));
     const api = await loadAdminApp(page, { path: recordPath('credential'), state: { ...ftState(), forms } });
+    await touch(page);
     await page.getByRole('button', { name: 'Save as new version' }).click();
 
     expect(((await findRequest(api.requests, 'PUT', '/configuration/forms')).body as Record<string, unknown>).properties).toEqual([{ type: 'BooleanProperty', name: 'showRemember' }]);
@@ -613,11 +689,13 @@ test.describe('versions', () => {
     await page.getByRole('button', { name: 'Edit a copy of v6' }).click();
 
     await expect(tab(page, 'Texts')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('note')).toContainText('Editing a copy of v6');
+    await expect(page.getByRole('note')).toHaveText('You are editing v6, which is not active. Users see v7.');
     const shown = await texts(page);
     expect(shown.ru.title).toBe('Вход (старый)');
     // v6 predates the rules: it is shown as it was stored, with its faults, and cannot be saved until they are fixed.
-    await expect(problems(page).first()).toContainText('"ru" is missing keys');
+    await expect(problems(page).first()).toContainText('Russian is missing "');
+    await expect(page.getByRole('button', { name: 'Save as new version' })).toBeDisabled();
+    await touch(page);
     await page.getByRole('button', { name: 'Save as new version' }).click();
     expect(putForms(api.requests)).toHaveLength(0);
     await setTexts(page, { ...shown, ru: { ...shown.en, title: 'Вход (старый)' }, kk: { ...shown.en } });
@@ -674,7 +752,7 @@ test.describe('create', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Create form' })).toBeVisible();
     await expect(page.getByRole('tab')).toHaveText(['Script', 'Style', 'Texts', 'Properties']);
     await expect(tab(page, 'Script')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('note')).toContainText('Saving stores v1 without activating it');
+    await expect(page.getByRole('note')).toHaveText('You are creating a new form.');
   });
 
   test('refuses an ID that is empty or not lowercase letters, digits and dashes', async ({ page }) => {

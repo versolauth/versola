@@ -238,14 +238,30 @@ test.describe('record', () => {
     await expect(save(page)).toBeDisabled();
   });
 
-  test('each overridden token has a badge against the base value and a Reset', async ({ page }) => {
+  test('each overridden token has an accent dot, the base value in its title and a Reset', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('shop-brand'), state });
 
-    await expect(page.getByText('Overridden · base: #155e75')).toBeVisible();
-    await expect(page.getByText('Overridden · base: bold')).toBeVisible();
-    await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: #155e75')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: bold')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: glow')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reset shape to the base' })).toHaveCount(0);
-    await expect(page.getByText(/Overridden/)).toHaveCount(3);
+    await expect(page.getByRole('img', { name: 'Overridden' })).toHaveCount(3);
+    // No wordy badge in the row any more.
+    await expect(page.getByText(/Overridden ·/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Reset (brand|surface|background)/ })).toHaveCount(3);
+  });
+
+  test('the background thumbnails are drawn in the scheme the preview shows', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.emulateMedia({ colorScheme: 'light' });
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const swatches = page.locator('.bg-swatch');
+
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
+    await page.getByRole('group', { name: 'Preview scheme' }).getByRole('button', { name: 'Dark' }).click();
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'dark');
+    await page.getByRole('group', { name: 'Preview scheme' }).getByRole('button', { name: 'Light' }).click();
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
   });
 
   test('is two columns at 1440 with a 560px preview, 380px at 1024 and a band above below 900px', async ({ page }) => {
@@ -264,9 +280,15 @@ test.describe('record', () => {
 
     await page.setViewportSize({ width: 600, height: 900 });
     expect((await pane.boundingBox())!.y).toBeLessThan((await controls.boundingBox())!.y);
-    const toggle = pane.getByRole('button', { name: /Preview/ });
-    await toggle.click();
+    // Collapsed behind a toggle until asked for; the choice stays for the session.
+    const toggle = pane.getByRole('button', { name: 'Show preview' });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('iframe.preview-iframe')).toBeHidden();
+    await toggle.click();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('iframe.preview-iframe')).toBeVisible();
+    await page.reload();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
     expect(await noSideScroll(page)).toBe(true);
   });
 
@@ -309,10 +331,10 @@ test.describe('editing', () => {
     await loadAdminApp(page, { path: recordPath('default'), state });
 
     await page.getByRole('button', { name: '#5b5bd6' }).click();
-    await expect(page.getByText('Overridden · base: #155e75')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: #155e75')).toBeVisible();
     await expect(card(page, 'Look')).toContainText('Overrides on Versola: brand colour.');
     await page.getByRole('button', { name: 'Reset brand to the base' }).click();
-    await expect(page.getByText(/Overridden/)).toHaveCount(0);
+    await expect(page.getByRole('img', { name: 'Overridden' })).toHaveCount(0);
 
     // Typing the base's own colour overrides nothing.
     await page.getByLabel('Brand colour, #rrggbb').fill('#155E75');
@@ -449,7 +471,7 @@ test.describe('background and shape', () => {
     await expect.poll(() => srcdoc(page)).toContain('--background:glow');
 
     await backgrounds(page).getByRole('button', { name: 'Horizon' }).click();
-    await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: glow')).toBeVisible();
     await expect.poll(() => srcdoc(page)).toContain('--background:horizon');
     await save(page).click();
     expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ tokens: { base: 'versola', overrides: { background: 'horizon' } } });

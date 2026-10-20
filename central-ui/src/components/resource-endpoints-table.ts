@@ -40,8 +40,8 @@ export function renderInjectLines(inject: InjectRule[]): TemplateResult {
 /**
  * The endpoints of a resource as a table whose four columns answer what an operator asks without
  * opening an editor: which request (method, path, whether the caller's userinfo is fetched), who
- * may call it (the permissions that grant it, joined by `or`, and the `allow` rule), what step-up it
- * asks for (ACR values, the condition, the age limit) and what edge adds to the request it forwards
+ * may call it (the permissions that grant it, joined by `or`, and the `allow` rule when there is one), what step-up it
+ * asks for (ACR values, the condition, the age limit; the column is drawn only when an endpoint has some) and what edge adds to the request it forwards
  * (header, query and body injections). Below 720px of room each row is a card and each cell names its
  * column. Read-only: the card around it carries `Edit endpoints`.
  */
@@ -70,7 +70,7 @@ export class VersolaResourceEndpointsTable extends LitElement {
       }
 
       /* Endpoint and Who may call are narrower; the injections get the room. */
-      .c-endpoint { width: 22%; }
+      .c-endpoint { width: 22%; min-width: 13rem; }
       .c-who { width: 27%; }
       .c-step { width: 17%; }
 
@@ -88,6 +88,7 @@ export class VersolaResourceEndpointsTable extends LitElement {
       th:first-child,
       td:first-child {
         padding-left: var(--spacing-lg);
+        min-width: 13rem;
       }
 
       th:last-child,
@@ -107,9 +108,10 @@ export class VersolaResourceEndpointsTable extends LitElement {
         border-bottom: 0;
       }
 
+      /* The badge keeps the first line's start; a path that does not fit wraps beside it, under itself. */
       .ep-main {
-        display: flex;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
         align-items: baseline;
         gap: 0.25rem 0.5rem;
       }
@@ -283,10 +285,11 @@ export class VersolaResourceEndpointsTable extends LitElement {
           ? html`<span class="dim">None grants it yet</span>`
           : permissions.map((id, index) => html`${index > 0 ? html`<span class="or">or</span>` : nothing}<span class="tag">${id}</span>`)}</span>
       </div>
-      <div class="line">
-        <span class="kl">Allow</span>
-        <span class="vals">${allow ? html`<code class="cel-inline">${renderHighlightedCel(allow)}</code>` : html`<span class="dim">No extra check</span>`}</span>
-      </div>`;
+      ${allow ? html`
+        <div class="line">
+          <span class="kl">Allow</span>
+          <span class="vals"><code class="cel-inline">${renderHighlightedCel(allow)}</code></span>
+        </div>` : nothing}`;
   }
 
   private stepUpCell(endpoint: ResourceEndpoint) {
@@ -308,14 +311,16 @@ export class VersolaResourceEndpointsTable extends LitElement {
   }
 
   render() {
+    // A column nothing fills is not drawn: the step-up column appears once an endpoint asks for step-up.
+    const stepUp = this.endpoints.some(hasStepUp);
     return html`
       <table role="table" aria-label=${`Endpoints of ${this.resourceId}`}>
-        <colgroup><col class="c-endpoint"><col class="c-who"><col class="c-step"><col></colgroup>
+        <colgroup><col class="c-endpoint"><col class="c-who">${stepUp ? html`<col class="c-step">` : nothing}<col></colgroup>
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader">Endpoint</th>
             <th scope="col" role="columnheader">Who may call</th>
-            <th scope="col" role="columnheader">Step-up</th>
+            ${stepUp ? html`<th scope="col" role="columnheader">Step-up</th>` : nothing}
             <th scope="col" role="columnheader">Added to the request</th>
           </tr>
         </thead>
@@ -324,10 +329,10 @@ export class VersolaResourceEndpointsTable extends LitElement {
             <tr role="row" data-endpoint=${`${endpoint.method} ${endpoint.path}`}>
               <td role="cell">
                 <div class="ep-main">${methodBadge(endpoint.method)}<span class="path">${breakPath(endpoint.path)}</span></div>
-                ${endpoint.fetchUserInfo ? html`<div class="ep-flags"><span class="tag quiet" title="Edge fetches the caller's userinfo and passes it to the rules as user">userinfo</span></div>` : nothing}
+                ${endpoint.fetchUserInfo ? html`<div class="ep-flags"><span class="tag quiet" title="Edge calls /userinfo for each request and gives the claims to this endpoint's rules as user">userinfo</span></div>` : nothing}
               </td>
               <td role="cell" data-label="Who may call">${this.permissionsCell(endpoint)}</td>
-              <td role="cell" data-label="Step-up">${this.stepUpCell(endpoint)}</td>
+              ${stepUp ? html`<td role="cell" data-label="Step-up">${this.stepUpCell(endpoint)}</td>` : nothing}
               <td role="cell" data-label="Added to the request">
                 ${endpoint.inject.length ? renderInjectLines(endpoint.inject) : html`<span class="dim">Nothing</span>`}
               </td>

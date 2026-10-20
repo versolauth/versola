@@ -5,7 +5,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, segment
 import type { BackendProperty, FormPreview, FormRecord, Locale, StringArrayProperty, ThemeRecord } from '../types';
 import { setActiveFormVersion, updateForm } from '../utils/central-api';
 import { confirmDiscardDraft } from '../utils/draft-guard';
-import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, namesWithOverflow, type Localizations } from '../utils/form-texts';
+import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, namesWithOverflow, sampleTexts, type LocalizationProblem, type Localizations } from '../utils/form-texts';
 import { exclusiveAnyOfValues, humanizeLabel, toggleAnyOf } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { buildPreviewSrcdoc, localeNamesOf, previewStylesheets } from '../utils/preview';
@@ -58,7 +58,7 @@ export class VersolaFormRecord extends LitElement {
   @state() private editLocalizations: Localizations = {};
   /** What is typed in the JSON editor, kept as typed whatever its faults. */
   @state() private localizationsText = '';
-  @state() private localizationErrors: string[] = [];
+  @state() private localizationErrors: LocalizationProblem[] = [];
   @state() private editProperties: BackendProperty[] = [];
   @state() private locale = 'en';
   @state() private previewVersion: number | null = null;
@@ -212,6 +212,10 @@ export class VersolaFormRecord extends LitElement {
         background: var(--warning);
       }
 
+      .gap-dot.problems {
+        background: var(--danger);
+      }
+
       .panel {
         min-width: 0;
       }
@@ -271,6 +275,39 @@ export class VersolaFormRecord extends LitElement {
         font-size: var(--text-sm);
         color: var(--danger-text);
         overflow-wrap: anywhere;
+      }
+
+      .texts-errors {
+        border-radius: var(--radius-sm);
+      }
+
+      .texts-errors:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+
+      .error-link {
+        display: block;
+        min-height: 1.5rem;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+        cursor: pointer;
+      }
+
+      .error-link:hover {
+        text-decoration-thickness: 2px;
+      }
+
+      .error-link:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
       }
 
       .texts-errors li + li {
@@ -335,6 +372,10 @@ export class VersolaFormRecord extends LitElement {
       }
 
       /* ── versions ── */
+      .versions-hint {
+        margin: var(--spacing-md) var(--spacing-lg) 0;
+      }
+
       .version-row {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr) auto;
@@ -478,7 +519,7 @@ export class VersolaFormRecord extends LitElement {
   private setLocalizationsText(text: string) {
     this.localizationsText = text;
     const check = checkLocalizations(text, { locales: this.usableLocales.map(locale => locale.code), reference: this.reference, builtInKeys: this.builtInKeys });
-    this.localizationErrors = check.errors;
+    this.localizationErrors = check.problems;
     if (check.parsed) this.editLocalizations = check.parsed;
   }
 
@@ -551,10 +592,12 @@ export class VersolaFormRecord extends LitElement {
     const source = this.previewSource;
     const themeId = this.previewThemeId;
     // Every key shows in the reference language until the chosen one has a text for it, as the form itself does.
-    const shown: Localizations = {
+    // A {placeholder} shows a sample value, as it would once the form fills it in.
+    const filled: Localizations = {
       ...source.localizations,
       [this.locale]: effectiveTexts(source.localizations, this.locale, this.reference),
     };
+    const shown: Localizations = Object.fromEntries(Object.entries(filled).map(([code, texts]) => [code, sampleTexts(texts)]));
     return buildPreviewSrcdoc({
       formId: this.formId,
       properties: source.properties,
@@ -610,7 +653,7 @@ export class VersolaFormRecord extends LitElement {
     if (this.localizationErrors.length > 0) {
       // The faults are listed under the editor; bring the person to them rather than to a banner that repeats them.
       this.selectTab('texts');
-      this.focusTextsEditor();
+      this.focusTextsErrors();
       return;
     }
     this.saving = true;
@@ -626,11 +669,19 @@ export class VersolaFormRecord extends LitElement {
     }
   }
 
-  /** The Texts tab is drawn after the route changes, which is not this component's update: look for the editor for a moment. */
-  private focusTextsEditor(attempts = 20) {
-    const textarea = this.renderRoot.querySelector<HTMLElement>('#form-texts')?.shadowRoot?.querySelector('textarea');
-    if (textarea) textarea.focus();
-    else if (attempts > 0) requestAnimationFrame(() => this.focusTextsEditor(attempts - 1));
+  /** The Texts tab is drawn after the route changes, which is not this component's update: look for the list for a moment. */
+  private focusTextsErrors(attempts = 20) {
+    const list = this.renderRoot.querySelector<HTMLElement>('#texts-errors');
+    if (list) {
+      list.focus();
+      list.scrollIntoView({ block: 'nearest' });
+    } else if (attempts > 0) requestAnimationFrame(() => this.focusTextsErrors(attempts - 1));
+  }
+
+  /** Moves the caret to the line a problem points at. */
+  private jumpTo(problem: LocalizationProblem) {
+    const editor = this.renderRoot.querySelector<HTMLElement & { focusAt(offset: number): void }>('#form-texts');
+    editor?.focusAt(problem.offset ?? 0);
   }
 
   /** What is stored as compiled: the base version's, which the console does not change. */
@@ -707,11 +758,12 @@ export class VersolaFormRecord extends LitElement {
           <dd>${Object.keys(gaps).length === 0 ? html`<span class="muted">Every language has every key.</span>`
             : Object.entries(gaps).map(([code, keys]) => html`<span class="gap"><code>${code}</code>: ${namesWithOverflow(keys)}</span>`)}</dd>
         </dl>
-        <versola-code-editor id="form-texts" language="json" rows="24" label="Form texts, JSON" ?disabled=${!this.canManage} ?invalid=${errors.length > 0}
+        <versola-code-editor id="form-texts" language="json" nowrap rows="24" label="Form texts, JSON" ?disabled=${!this.canManage} ?invalid=${errors.length > 0}
           .value=${this.localizationsText} @code-input=${(e: CustomEvent<{ value: string }>) => this.setLocalizationsText(e.detail.value)}></versola-code-editor>
         <div aria-live="polite" aria-atomic="true">
           ${errors.length > 0 ? html`
-            <ul class="texts-errors" aria-label="Problems in the texts">${errors.map(error => html`<li>${error}</li>`)}</ul>`
+            <ul class="texts-errors" id="texts-errors" tabindex="-1" aria-label="Problems in the texts">${errors.map(problem => html`
+              <li><button type="button" class="error-link" @click=${() => this.jumpTo(problem)}>${problem.message}</button></li>`)}</ul>`
             : html`<p class="texts-ok">${statusIcon('check')} The texts can be saved.</p>`}
         </div>
       </div>`;
@@ -777,6 +829,8 @@ export class VersolaFormRecord extends LitElement {
     const newest = this.latest;
     const pending = newest && (!active || newest.version > active.version);
     return html`
+      <p class="hint versions-hint">Saving stores a new version and does not activate it: users keep the active version until you set a newer one active here.
+        Edit a copy loads a stored version into the editors; Set active also rolls back to an older one.</p>
       ${this.isNew || this.versions.length === 0 ? html`<div class="empty-note">No version is stored yet. Saving stores v1.</div>` : html`
         ${pending ? html`
           <div class="banner warn" role="status" style="margin:var(--spacing-md)">
@@ -894,8 +948,15 @@ export class VersolaFormRecord extends LitElement {
     return { complete: codes.filter(code => !(code in gaps)), missing: codes.filter(code => code in gaps) };
   }
 
+  private editingSentence(): string {
+    if (this.isNew) return 'You are creating a new form.';
+    const active = this.active;
+    const base = this.baseVersion;
+    if (active && active.version === base) return `You are editing the active v${base}.`;
+    return `You are editing v${base}, which is not active. ${active ? `Users see v${active.version}.` : 'No version is active.'}`;
+  }
+
   private renderBanners(): TemplateResult {
-    const next = (this.latest?.version ?? 0) + 1;
     const active = this.active;
     const saved = this.saved && this.saved.id === this.formId ? this.saved : null;
     return html`
@@ -905,13 +966,12 @@ export class VersolaFormRecord extends LitElement {
       ${saved ? html`<div class="banner ok" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('check')}Stored v${saved.version}</div>
         <div>${active && active.version === saved.version ? 'It is active.' : `It is not active yet${active ? `: users keep v${active.version}` : ''}. Set it active under Versions.`}</div></div>
         ${active && active.version === saved.version ? nothing : html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.selectTab('versions')}>Open versions</button>`}</div>` : nothing}
-      ${this.canManage ? html`<div class="banner info" role="note"><div class="banner-text"><div class="banner-title">${this.isNew ? 'A new form' : `Editing a copy of v${this.baseVersion}`}</div>
-        <div>Saving stores v${next} without activating it.${active ? ` Users keep v${active.version} until you set a newer version active under Versions.` : ' Set it active under Versions to use it.'}</div></div></div>` : nothing}
+      ${this.canManage ? html`<div class="banner info" role="note"><div class="banner-text">${this.editingSentence()}</div></div>` : nothing}
     `;
   }
 
   private renderHeader(): TemplateResult {
-    const save = this.canManage ? html`<button slot="actions" type="button" class="btn btn-primary" ?disabled=${this.saving} @click=${() => void this.save()}>${this.saving ? 'Saving…' : 'Save as new version'}</button>` : nothing;
+    const save = this.canManage ? html`<button slot="actions" type="button" class="btn btn-primary" ?disabled=${this.saving || (!this.isNew && !this.dirty)} @click=${() => void this.save()}>${this.saving ? 'Saving…' : 'Save as new version'}</button>` : nothing;
     if (this.isNew) {
       const idError = this.idError;
       return html`
@@ -948,7 +1008,7 @@ export class VersolaFormRecord extends LitElement {
             ${tabs.map(id => html`
               <button type="button" role="tab" id=${`tab-${id}`} class="tab" aria-selected=${id === tab ? 'true' : 'false'} aria-controls="tab-panel"
                 tabindex=${id === tab ? 0 : -1} @click=${() => this.selectTab(id)}
-                @keydown=${(e: KeyboardEvent) => this.onTabKey(e, tabs, id)}>${TAB_LABELS[id]}${id === 'texts' && gapsInTexts ? html`<span class="gap-dot" title="Some languages are missing texts"></span>` : nothing}</button>`)}
+                @keydown=${(e: KeyboardEvent) => this.onTabKey(e, tabs, id)}>${TAB_LABELS[id]}${id === 'texts' ? this.textsMarker(gapsInTexts) : nothing}</button>`)}
           </div>
           <div class="panel" id="tab-panel" role="tabpanel" aria-labelledby=${`tab-${tab}`}>${this.renderPanel(tab)}</div>
         </section>
@@ -959,6 +1019,13 @@ export class VersolaFormRecord extends LitElement {
         </versola-preview-pane>
       </div>
     `;
+  }
+
+  /** The dot on the Texts tab: red with the number of problems for a screen reader, else amber for missing texts. */
+  private textsMarker(gaps: boolean): TemplateResult | typeof nothing {
+    const problems = this.localizationErrors.length;
+    if (problems > 0) return html`<span class="gap-dot problems" role="img" aria-label=${`${problems} ${problems === 1 ? 'problem' : 'problems'}`}></span>`;
+    return gaps ? html`<span class="gap-dot" title="Some languages are missing texts"></span>` : nothing;
   }
 
   private onTabKey(e: KeyboardEvent, tabs: FormTab[], current: FormTab) {

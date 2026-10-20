@@ -361,6 +361,12 @@ export class VersolaThemeRecord extends LitElement {
     this.scheduleRender();
   }
 
+  /** The scheme the preview shows now: the theme's own when it fixes one, else the Light / Dark switch's. */
+  private get shownScheme(): 'light' | 'dark' {
+    const mode = this.resolved?.mode ?? 'auto';
+    return mode === 'light' || mode === 'dark' ? mode : this.previewDark ? 'dark' : 'light';
+  }
+
   private scheduleRender() {
     clearTimeout(this.renderTimer);
     // Any request still in flight is for an older state of the editor; its answer must not be applied.
@@ -543,7 +549,7 @@ export class VersolaThemeRecord extends LitElement {
           ${names.length > 0 && this.canManage ? html`<div class="head-actions"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.clearOverrides()}>Clear overrides</button></div>` : nothing}
         </div>
         <div class="card-body">
-          <versola-theme-token-controls ruled .base=${base} .overrides=${this.overrides}
+          <versola-theme-token-controls ruled .base=${base} .overrides=${this.overrides} .scheme=${this.shownScheme}
             @overrides-change=${(e: CustomEvent<OverridesChange>) => this.onOverridesChange(e.detail)}></versola-theme-token-controls>
         </div>
         ${this.editCss.trim() !== '' ? html`

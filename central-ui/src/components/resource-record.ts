@@ -575,15 +575,15 @@ export class VersolaResourceRecord extends LitElement {
 
       <div class="grid-2">
         ${resource.hasSecret ? this.card('secret', 'Secret', 'Edge authenticates to this resource with it.',
-          this.canManage ? (resource.hasPreviousSecret
-            ? html`<button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.working} @click=${this.activateNewSecret}>Activate new secret</button>`
-            : html`<button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.working} @click=${this.rotateSecret}>${this.working ? 'Rotating…' : 'Rotate secret'}</button>`) : nothing,
+          // While a new secret waits, the banner above carries the one action (Activate new secret).
+          this.canManage && !resource.hasPreviousSecret
+            ? html`<button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.working} @click=${this.rotateSecret}>${this.working ? 'Rotating…' : 'Rotate secret'}</button>` : nothing,
           html`
-            ${this.row('Current secret', 'Set. It is shown once, when it is created or rotated.')}
+            ${this.row('Current secret', html`<span class="chip ok">In use</span> <span class="muted">Shown once, when it is created or rotated.</span>`)}
             ${resource.hasPreviousSecret ? this.row('New secret', html`<span class="chip warn">Waiting for activation</span>`) : nothing}`) : nothing}
-        <versola-record-card class=${resource.hasSecret ? '' : 'full'} heading="Fixed" fixedLabel="Fixed" .body=${html`
-          <versola-record-row label="Resource ID" fixed="Set at creation" .value=${html`<span class="mono">${resource.resourceId}</span>`}></versola-record-row>
-          <versola-record-row label="Type" fixed="Set at creation" .value=${typeText}></versola-record-row>
+        <versola-record-card class=${resource.hasSecret ? '' : 'full'} heading="Fixed" fixedLabel="Set at creation" .body=${html`
+          <versola-record-row label="Resource ID" .value=${html`<span class="mono">${resource.resourceId}</span>`}></versola-record-row>
+          <versola-record-row label="Type" .value=${typeText}></versola-record-row>
         `}></versola-record-card>
       </div>
 

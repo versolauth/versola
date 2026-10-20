@@ -25,6 +25,13 @@ const search = async (page: Page, query: string) => {
 const card = (page: Page, name: string) => page.getByRole('region', { name, exact: true });
 const confirmDialog = (page: Page) => page.getByRole('dialog');
 
+/** Opens the folded "Signed-out devices" section, where a device whose session ended is listed. */
+async function openSignedOut(page: Page) {
+  const section = card(page, 'Signed-in devices').locator('details.signed-out');
+  if (!(await section.evaluate(node => (node as HTMLDetailsElement).open))) await section.locator('summary').click();
+  return section;
+}
+
 async function openRecord(page: Page, options: Parameters<typeof loadAdminApp>[1] = {}, path = recordPath()) {
   const api = await loadAdminApp(page, { path, state, ...options });
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
@@ -350,36 +357,57 @@ test.describe('signed-in devices', () => {
     await expect(chrome.getByRole('button', { name: 'Go to Apps with access' })).toBeVisible();
   });
 
-  test('shows when the session expires, the idle timeout when there is one, and how long the device is remembered', async ({ page }) => {
+  test('shows when the session expires (relative, the date in a title), when it idles out and until when the device is remembered', async ({ page }) => {
     await openRecord(page);
     const devices = card(page, 'Signed-in devices');
     const chrome = devices.locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
     await expect(chrome.locator('[data-life="session"]')).toContainText('Session expires');
-    await expect(chrome.locator('[data-life="idle"]')).toContainText('Idle timeout');
-    await expect(chrome.locator('[data-life="remembered"]')).toContainText('Device remembered until');
+    await expect(chrome.locator('[data-life="session"] dd')).toContainText(/^in \d+ (min|hr|days)/);
+    await expect(chrome.locator('[data-life="session"] dd')).toHaveAttribute('title', /\d/);
+    await expect(chrome.locator('[data-life="session"] .abs')).toBeVisible();
+    await expect(chrome.locator('[data-life="idle"] dt')).toHaveText('Idle expires');
+    await expect(chrome.locator('[data-life="remembered"] dt')).toHaveText('Remembered until');
+    await expect(chrome.getByText('Platform', { exact: true })).toHaveCount(0);
     const phone = devices.locator('.device', { hasText: 'Example Shop app on iOS 18.1' });
     await expect(phone.locator('[data-life="session"]')).toContainText('Session expires');
     await expect(phone.locator('[data-life="idle"]')).toHaveCount(0);
-    await expect(phone.locator('[data-life="remembered"]')).toContainText('Device remembered until');
+    await expect(phone.locator('[data-life="remembered"] dt')).toHaveText('Remembered until');
+  });
+
+  test('signed-out devices are folded away under the signed-in ones, without a count', async ({ page }) => {
+    await openRecord(page);
+    const section = card(page, 'Signed-in devices').locator('details.signed-out');
+    await expect(section.locator('summary')).toHaveText('Signed-out devices');
+    expect(await section.evaluate(node => (node as HTMLDetailsElement).open)).toBe(false);
+    await expect(section.locator('.device')).toHaveCount(2);
+    await expect(card(page, 'Signed-in devices').locator('.device:not(details .device)')).toHaveCount(2);
+    const before = await card(page, 'Signed-in devices').locator('.device:not(details .device)').last().boundingBox();
+    const after = await section.boundingBox();
+    expect(after!.y).toBeGreaterThanOrEqual(before!.y + before!.height - 1);
+    await section.locator('summary').click();
+    await expect(section.getByRole('button', { name: /^Forget device Firefox/ })).toBeVisible();
   });
 
   test('a session that ended but left offline access shows as a signed-out device, named by its user agent', async ({ page }) => {
     await openRecord(page);
+    await openSignedOut(page);
     const gone = card(page, 'Signed-in devices').locator('.device', { hasText: 'Firefox 131 on Windows 10 / 11' });
     await expect(gone).toContainText('Signed out');
+    await expect(gone.getByRole('button')).toHaveText(['Apps with access', 'Forget device']);
     await expect(gone).toContainText('Offline access issued on it is still valid');
     await expect(gone).toContainText('storefront-web');
-    await expect(gone.locator('[data-life="remembered"]')).toContainText('Device remembered until');
+    await expect(gone.locator('[data-life="remembered"]')).toContainText('Remembered until');
     await expect(gone.locator('[data-life="session"]')).toHaveCount(0);
     await expect(gone.getByRole('button', { name: /^Sign out/ })).toHaveCount(0);
   });
 
   test('a signed-out device that holds nothing is still listed by name, remembered until a date', async ({ page }) => {
     await openRecord(page);
+    await openSignedOut(page);
     const ipad = card(page, 'Signed-in devices').locator('.device', { hasText: 'Safari 17 on iOS 17.5' });
     await expect(ipad).toContainText('Signed out');
-    await expect(ipad).toContainText('iOS');
-    await expect(ipad.locator('[data-life="remembered"]')).toContainText('Device remembered until');
+    await expect(ipad).toContainText('Its session has ended.');
+    await expect(ipad.locator('[data-life="remembered"]')).toContainText('Remembered until');
     await expect(ipad.locator('.device-clients')).toHaveCount(0);
     await expect(ipad).not.toContainText('Offline access');
   });
@@ -389,6 +417,7 @@ test.describe('signed-in devices', () => {
       sessionId: 'sess-unknown', clientId: 'admin-console', scope: ['openid', 'offline_access'], issuedAt: dana.refreshTokens[0].issuedAt, expiresAt: dana.refreshTokens[0].expiresAt, dpopBound: false,
     }] };
     await openRecord(page, { state: { ...state, users: [orphan, quiet] } });
+    await openSignedOut(page);
     const unnamed = card(page, 'Signed-in devices').locator('.device', { hasText: 'Signed-out device' });
     await expect(unnamed).toHaveCount(1);
     await expect(unnamed).toContainText('admin-console');
@@ -397,10 +426,18 @@ test.describe('signed-in devices', () => {
 
   test('every device table shares one column grid', async ({ page }) => {
     await openRecord(page);
+    await openSignedOut(page);
     const lefts = await card(page, 'Signed-in devices').locator('.device-clients').evaluateAll(tables =>
       tables.map(table => [...table.querySelectorAll('.dc.h > span')].map(cell => Math.round(cell.getBoundingClientRect().left))));
     expect(lefts.length).toBe(3);
     for (const row of lefts) expect(row).toEqual(lefts[0]);
+  });
+
+  test('the "Apps with access" link moves to the apps card', async ({ page }) => {
+    await openRecord(page);
+    const link = card(page, 'Signed-in devices').getByRole('button', { name: 'Go to Apps with access' }).first();
+    await expect(link).toHaveText('Apps with access');
+    await expect(link.locator('xpath=preceding-sibling::*[1]')).toHaveText('Offline access');
   });
 
   test('the arrow moves to Apps with access', async ({ page }) => {
@@ -415,6 +452,7 @@ test.describe('signed-in devices', () => {
     const request = await findRequest(api.requests, 'DELETE', '/users/sessions');
     expect(request.searchParams).toEqual({ id: danaId, sessionId: chromeSessionId });
     // The user agent is still remembered: the device stays listed, signed out, by name.
+    await openSignedOut(page);
     const chrome = card(page, 'Signed-in devices').locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
     await expect(chrome).toContainText('Signed out');
     await expect(chrome.getByRole('button', { name: /^Sign out device/ })).toHaveCount(0);
@@ -436,6 +474,7 @@ test.describe('signed-in devices', () => {
     // Every device stays remembered, none is signed in, and the button has nothing left to do.
     await expect(card(page, 'Signed-in devices').locator('.chip.ok')).toHaveCount(0);
     await expect(card(page, 'Signed-in devices').locator('.device')).toHaveCount(4);
+    await expect(card(page, 'Signed-in devices').locator('details.signed-out .device')).toHaveCount(4);
     await expect(page.getByRole('button', { name: 'Sign out everywhere…' })).toBeDisabled();
     await expect(card(page, 'Apps with access')).toContainText('No app holds offline access');
   });
@@ -456,6 +495,7 @@ test.describe('signed-in devices', () => {
 
   test('Forget device asks first, then removes that device, its session and its offline access', async ({ page }) => {
     const api = await openRecord(page);
+    await expect(page.getByRole('button', { name: /^Forget device Chrome 130/ })).not.toHaveClass(/btn-danger/);
     await page.getByRole('button', { name: /^Forget device Chrome 130/ }).click();
     await expect(confirmDialog(page)).toContainText('Chrome 130 on macOS 14.6');
     await expect(confirmDialog(page)).toContainText('Dana Reyes');
@@ -475,6 +515,7 @@ test.describe('signed-in devices', () => {
 
   test('forgetting a signed-out device removes it and the offline access issued on it', async ({ page }) => {
     const api = await openRecord(page);
+    await openSignedOut(page);
     await page.getByRole('button', { name: /^Forget device Firefox 131/ }).click();
     await confirmDialog(page).getByRole('button', { name: 'Forget', exact: true }).click();
     expect((await findRequest(api.requests, 'DELETE', '/users/user-agents')).searchParams).toEqual({ id: danaId, userAgentId: firefoxAgentId });
@@ -487,6 +528,7 @@ test.describe('signed-in devices', () => {
     await page.route('**/users/user-agents?id=*', route => route.request().method() === 'DELETE'
       ? route.fulfill({ status: 404, body: 'User agent not found' })
       : route.fallback());
+    await openSignedOut(page);
     await page.getByRole('button', { name: /^Forget device Safari 17/ }).click();
     await confirmDialog(page).getByRole('button', { name: 'Forget', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('User agent not found');
@@ -558,6 +600,7 @@ test.describe('apps with offline access', () => {
 
   test('the revoked token of a signed-out device leaves it listed, with nothing issued on it', async ({ page }) => {
     await openRecord(page);
+    await openSignedOut(page);
     const firefox = card(page, 'Signed-in devices').locator('.device', { hasText: 'Firefox 131 on Windows 10 / 11' });
     await expect(firefox.locator('.device-clients')).toHaveCount(1);
     await page.locator('.app[data-client="storefront-web"]').last().getByRole('button', { name: /^Revoke/ }).click();
@@ -575,6 +618,12 @@ test.describe('phone layout of devices and passkeys', () => {
   test('a device is a card: facts one per line, clients stacked, full-width action at the bottom', async ({ page }) => {
     await openRecord(page);
     const chrome = card(page, 'Signed-in devices').locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
+    const name = await chrome.locator('.device-name').evaluate(node => {
+      const title = node.firstElementChild!.getBoundingClientRect();
+      const chip = node.querySelector('.chip')!.getBoundingClientRect();
+      return { sameColumn: Math.abs(title.left - chip.left) < 1, below: chip.top >= title.bottom - 1 };
+    });
+    expect(name).toEqual({ sameColumn: true, below: true });
     const facts = await chrome.locator('.device-facts div').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
     expect(new Set(facts).size).toBe(facts.length);
     const client = chrome.getByRole('row').filter({ hasText: 'storefront-web' });
