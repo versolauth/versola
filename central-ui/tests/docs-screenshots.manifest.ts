@@ -70,8 +70,8 @@ const scopes = [
 ];
 
 const permissions = [
-  { permission: 'orders.read', description: { en: 'Read orders' }, endpointIds: [301] },
-  { permission: 'orders.write', description: { en: 'Create and update orders' }, endpointIds: [302] },
+  { permission: 'orders:read', description: { en: 'Read orders' }, endpointIds: [301] },
+  { permission: 'orders:write', description: { en: 'Create and update orders' }, endpointIds: [302] },
 ];
 
 const ordersApi = {
@@ -80,7 +80,7 @@ const ordersApi = {
   audience: ['storefront-web'],
   endpoints: [
     { id: 301, method: 'GET', path: '/orders', fetchUserInfo: false, allow: 'true', inject: [] },
-    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders.write' in token.scope", inject: [] },
+    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders:write' in token.scope", inject: [] },
   ],
   internal: true,
   secretRotation: false,
@@ -148,7 +148,7 @@ const serviceClient = {
   clientName: { en: 'Billing Job' },
   redirectUris: [],
   scope: [],
-  permissions: ['orders.read'],
+  permissions: ['orders:read'],
   secretRotation: false,
   accessTokenTtl: 3600,
   authMethod: 'client_secret' as const,
@@ -159,7 +159,7 @@ const serviceClient = {
   createdAt: '2026-09-03T14:30:00Z',
 };
 
-const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders.read', 'orders.write'], active: true };
+const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders:read', 'orders:write'], active: true };
 const userRole = { id: 'user', description: { en: 'Self-registered user' }, permissions: [], active: true };
 
 const dana = {
@@ -451,8 +451,8 @@ const serviceBasics: Act = async page => {
 const servicePermissions: Act = async page => {
   await serviceBasics(page);
   await page.getByRole('button', { name: 'Continue to permissions', exact: true }).click();
-  await page.getByRole('button', { name: 'orders.read', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'orders.read', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'orders:read', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'orders:read', exact: true })).toHaveAttribute('aria-pressed', 'true');
 };
 
 const serviceReview: Act = async page => {
@@ -589,7 +589,7 @@ const consoleShots: DocsShot[] = [
     name: 'console/client-edit-permissions-service', kind: 'frame', path: clientsPath, state: { ...withClients(serviceClient), tenants: standardTenants },
     before: async page => {
       await editClient('billing-job', 'permissions', 'Permissions')(page);
-      await expect(page.locator('versola-client-form .checkbox-item', { hasText: 'orders.read' }).getByRole('checkbox')).toBeChecked();
+      await expect(page.locator('versola-client-form .checkbox-item', { hasText: 'orders:read' }).getByRole('checkbox')).toBeChecked();
     },
   },
   {
@@ -801,7 +801,7 @@ const consoleShots: DocsShot[] = [
   // OTP templates
   {
     name: 'console/otp-templates', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Email' })).toContainText('2 of 2'); },
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Email' }).locator('.chip.value', { hasText: 'ru' })).toBeVisible(); },
   },
   {
     name: 'console/otp-templates-panel', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}&id=default:otp:email`, state: alpha,
@@ -980,7 +980,7 @@ const consoleShots: DocsShot[] = [
       await expandResource(page);
       await page.locator('.endpoint-card').filter({ hasText: 'POST' }).first().locator('.endpoint-card-header').click();
       const card = page.locator('.endpoint-card').filter({ hasText: 'user.orderLimit' });
-      await expect(card.locator('.permission-tag')).toHaveText(['orders.write']);
+      await expect(card.locator('.permission-tag')).toHaveText(['orders:write']);
       await expect(card.getByText('600 seconds')).toBeVisible();
     },
   },
@@ -1015,8 +1015,8 @@ const consoleShots: DocsShot[] = [
       await endpoint.locator('select').first().selectOption('GET');
       await endpoint.getByPlaceholder('/users').fill('/invoices');
       await endpoint.getByRole('textbox', { name: 'Allow expression' }).click();
-      await page.keyboard.type("'orders.read' in token.scope");
-      await expect(endpoint.getByText("'orders.read' in token.scope")).toBeVisible();
+      await page.keyboard.type("'orders:read' in token.scope");
+      await expect(endpoint.getByText("'orders:read' in token.scope")).toBeVisible();
     },
   },
   {
@@ -1148,7 +1148,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/permissions-list-expanded', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: /^Open permission (.* )?orders\.read$/ }).click();
+      await page.getByRole('button', { name: /^Open permission (.* )?orders:read$/ }).click();
       await expect(sidePanel(page, 'Read orders').getByRole('region', { name: 'Endpoints' })).toContainText('/orders');
     },
   },
@@ -1164,7 +1164,7 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
       const dialog = sidePanel(page, 'Create permission');
-      await dialog.getByLabel('Permission ID *').fill('orders.cancel');
+      await dialog.getByLabel('Permission ID *').fill('orders:cancel');
       await dialog.locator('#permission-description').fill('Cancel orders');
       await dialog.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
       await dialog.getByRole('button', { name: 'Add resource', exact: true }).click();
@@ -1185,7 +1185,7 @@ const consoleShots: DocsShot[] = [
     name: 'entities/roles-list-expanded', kind: 'frame', path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
       await page.getByRole('button', { name: /^Open role (.* )?alpha_admin$/ }).click();
-      await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('orders.read');
+      await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions' })).toContainText('orders:read');
     },
   },
   {
@@ -1202,8 +1202,8 @@ const consoleShots: DocsShot[] = [
       const dialog = sidePanel(page, 'Create role');
       await dialog.getByLabel('Role ID *').fill('support');
       await dialog.locator('#role-description').fill('Customer support agent');
-      await dialog.getByRole('checkbox', { name: /orders\.read/ }).check();
-      await expect(dialog.getByRole('checkbox', { name: /orders\.read/ })).toBeChecked();
+      await dialog.getByRole('checkbox', { name: /orders:read/ }).check();
+      await expect(dialog.getByRole('checkbox', { name: /orders:read/ })).toBeChecked();
     },
   },
 ];

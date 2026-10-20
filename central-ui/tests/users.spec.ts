@@ -59,7 +59,7 @@ const openidScope = {
   claims: [{ claim: 'sub', description: { en: 'Subject' } }],
 };
 
-const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true };
+const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['alpha:read'], active: true };
 const alphaReader = { id: 'alpha_reader', description: { en: 'Alpha reader' }, permissions: [], active: true };
 
 function userCard(page: Page, text: string) {

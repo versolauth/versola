@@ -164,6 +164,24 @@ export const chipStyles = css`
   .chip.danger {
     border-color: var(--danger);
   }
+
+  /* A value in a chip (a permission ID, a claim, a resource): mono, cut with an ellipsis when
+     it is long (.mono for IDs and paths). .chip.more is the "+N" that stands for the values not drawn. */
+  .chip.value {
+    display: inline-block;
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chip.value.mono {
+    font-family: var(--font-mono);
+    font-weight: 400;
+  }
+
+  .chip.more {
+    color: var(--text-secondary);
+  }
 `;
 
 /** A tag: a small filled mono label for one value of a list (a scope, a permission, a tenant).

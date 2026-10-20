@@ -10,6 +10,7 @@ import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../ut
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateEdgeId } from '../utils/validators';
 import { statusIcon } from './status-icon';
+import { valueChips } from './value-chips';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
 import './danger-card';
@@ -465,10 +466,6 @@ export class VersolaEdgesList extends LitElement {
     return this.edges.filter(edge => this.matchesFilter(edge) && (!query || edge.id.toLowerCase().includes(query)));
   }
 
-  private count(filter: EdgeFilter): number {
-    return this.edges.filter(edge => this.matchesFilter(edge, filter)).length;
-  }
-
   private keyChip(edge: Edge) {
     return edge.hasOldKey
       ? html`<span class="chip warn">Key rotation</span>`
@@ -486,7 +483,7 @@ export class VersolaEdgesList extends LitElement {
         <input class="search-input" type="search" aria-label="Search edges" placeholder="Search edges by ID"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter edges"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as EdgeFilter}></versola-filter-bar>
       </div>
@@ -500,10 +497,7 @@ export class VersolaEdgesList extends LitElement {
           <span class="row-title">${edge.id}</span>
         </button>` },
       ...(this.tenants.length ? [{ id: 'tenants', label: 'Tenants', cell: (edge: Edge) => {
-        const linked = this.linkedTenants(edge);
-        return linked.length
-          ? html`<div class="chips"><span>${linked.length}</span>${linked.slice(0, 3).map(tenant => html`<span class="chip">${tenant.id}</span>`)}${linked.length > 3 ? html`<span class="muted">+${linked.length - 3}</span>` : ''}</div>`
-          : html`<span class="muted">0</span>`;
+        return valueChips(this.linkedTenants(edge).map(tenant => tenant.id), { empty: 'None' });
       } }] : []),
       { id: 'key', label: 'Key', cell: edge => html`<div class="chips">${this.keyChip(edge)}</div>` },
       { id: 'dpop', label: 'DPoP nonce', class: 'muted', cell: edge => edge.requireDpopNonce ? 'Required' : 'Not required' },
@@ -518,7 +512,7 @@ export class VersolaEdgesList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredEdges}
         .rowKey=${(edge: Edge) => edge.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(edge: Edge) => `Actions for ${edge.id}`}
         @row-select=${(e: CustomEvent<{ row: Edge }>) => this.openView(e.detail.row)}

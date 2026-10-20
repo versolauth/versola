@@ -24,6 +24,7 @@ import './loading-cards';
 import './record-card';
 import './record-header';
 import './side-panel';
+import { valueChips } from './value-chips';
 
 type KeyFilter = 'all' | 'sign' | 'verify';
 /** `jwk` edits a key's JSON; `metadata` edits the server metadata overrides; `add` is the paste-a-JWK create. */
@@ -396,10 +397,6 @@ export class VersolaKeysMetadata extends LitElement {
     return this.keys.filter(key => this.matchesFilter(key));
   }
 
-  private count(filter: KeyFilter): number {
-    return this.keys.filter(key => this.matchesFilter(key, filter)).length;
-  }
-
   private usageChip(key: StoredKey) {
     return this.canSign(key) ? html`<span class="chip ok">Can sign</span>` : html`<span class="chip">Verify only</span>`;
   }
@@ -408,7 +405,7 @@ export class VersolaKeysMetadata extends LitElement {
     if (this.tenantsError) return html`<span class="muted" title=${this.tenantsError}>—</span>`;
     if (this.tenants === null) return html`<span class="muted">…</span>`;
     const tenants = this.usedBy(key.kid);
-    return tenants.length ? html`<span title=${tenants.map(tenant => tenant.id).join(', ')}>${tenants.length} ${tenants.length === 1 ? 'tenant' : 'tenants'}</span>` : html`<span class="muted">—</span>`;
+    return valueChips(tenants.map(tenant => tenant.id));
   }
 
   private renderTable() {
@@ -430,7 +427,7 @@ export class VersolaKeysMetadata extends LitElement {
         .columns=${columns}
         .rows=${this.filteredKeys}
         .rowKey=${(key: StoredKey) => key.kid}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(key: StoredKey) => `Actions for ${key.kid}`}
         @row-select=${(e: CustomEvent<{ row: StoredKey }>) => this.openView(e.detail.row)}
@@ -443,7 +440,7 @@ export class VersolaKeysMetadata extends LitElement {
     return html`
       <div class="list-toolbar">
         <versola-filter-bar label="Filter keys"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as KeyFilter}></versola-filter-bar>
       </div>
