@@ -12,7 +12,20 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initialForms)))
     val repository = stub[FormRepository]
     val localeService = stub[LocaleService]
-    val service = FormService.Impl(cache, repository, localeService)
+    val translations = stub[FormTranslationRepository]
+    val service = FormService.Impl(cache, repository, localeService, translations)
+
+  private val translatedForm = FormRecord(
+    FormId("f"),
+    1,
+    true,
+    "style",
+    None,
+    None,
+    Map("en" -> Map("title" -> "Hello", "hint" -> "Code {code}"), "ru" -> Map("title" -> "Привет", "hint" -> "Код {code}")),
+    Vector.empty,
+  )
+  private def activeLocale(code: String, active: Boolean = true) = LocaleRecord(code, code, isDefault = code == "en", active = active)
 
   def spec = suite("FormService")(
     test("updateForm stores through the repository and leaves the cache to the change notification") {
@@ -50,6 +63,7 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(activeForm, inactiveForm))
 
       for
+        _ <- env.translations.getAll.succeedsWith(Vector.empty)
         _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))
         result <- env.service.getSyncForms
       yield assertTrue(result.map(_.id) == Vector(FormId("a")))
@@ -68,10 +82,44 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(form))
 
       for
+        _ <- env.translations.getAll.succeedsWith(Vector.empty)
         _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))
         result <- env.service.getSyncForms
       yield assertTrue(result.head.localizations == Map("en" -> Map("title" -> "Hello")))
     },
+    suite("getSyncForms lays the stored translations over the form's own texts")(
+      test("a language only the store carries is served, whole when the store has every key") {
+        val env = new Env(Vector(translatedForm))
+        val kk = FormTranslationRecord(formId = FormId("f"), locale = "kk", texts = Map("title" -> "Сәлем", "hint" -> "Код {code}"))
+        for
+          _ <- env.translations.getAll.succeedsWith(Vector(kk))
+          _ <- env.localeService.getActive.succeedsWith(Vector(activeLocale("en"), activeLocale("ru"), activeLocale("kk")))
+          result <- env.service.getSyncForms
+        yield assertTrue(result.head.localizations("kk") == kk.texts, result.head.localizations("en") == translatedForm.localizations("en"))
+      },
+      test("a key the store sets wins, and a key it leaves out keeps the form's") {
+        val env = new Env(Vector(translatedForm))
+        val ru = FormTranslationRecord(formId = FormId("f"), locale = "ru", texts = Map("title" -> "Здравствуйте"))
+        for
+          _ <- env.translations.getAll.succeedsWith(Vector(ru))
+          _ <- env.localeService.getActive.succeedsWith(Vector(activeLocale("en"), activeLocale("ru")))
+          result <- env.service.getSyncForms
+        yield assertTrue(result.head.localizations("ru") == Map("title" -> "Здравствуйте", "hint" -> "Код {code}"))
+      },
+      test("a translation of another form, or into a language that is not active, is not served") {
+        val env = new Env(Vector(translatedForm))
+        for
+          _ <- env.translations.getAll.succeedsWith(
+            Vector(
+              FormTranslationRecord(formId = FormId("other"), locale = "kk", texts = Map("title" -> "x")),
+              FormTranslationRecord(formId = FormId("f"), locale = "kk", texts = Map("title" -> "y")),
+            ),
+          )
+          _ <- env.localeService.getActive.succeedsWith(Vector(activeLocale("en"), activeLocale("ru")))
+          result <- env.service.getSyncForms
+        yield assertTrue(result.head.localizations.keySet == Set("en", "ru"))
+      },
+    ),
     test("getAllForms returns all forms sorted by id") {
       val formB = FormRecord(FormId("b"), 1, true, "style", None, None, Map.empty, Vector.empty)
       val formA = FormRecord(FormId("a"), 1, true, "style", None, None, Map.empty, Vector.empty)

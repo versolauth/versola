@@ -65,7 +65,9 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             FormController.routes.provideEnvironment(
-              ZEnvironment[FormService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
+              ZEnvironment[FormService](service) ++ ZEnvironment[FormTranslationService](
+                stub[FormTranslationService],
+              ) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
             ),
           ),

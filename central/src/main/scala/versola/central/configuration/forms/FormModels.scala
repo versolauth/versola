@@ -20,3 +20,14 @@ case class SetActiveVersionRequest(
     id: FormId,
     version: Int,
 ) derives Schema, JsonCodec
+
+case class GetFormTranslationsResponse(
+    translations: Vector[FormTranslationRecord],
+) derives Schema, JsonCodec
+
+/** Replaces the texts of `formId` in `locale`. */
+case class PutFormTranslationRequest(
+    formId: FormId,
+    locale: String,
+    texts: Map[String, String],
+) derives Schema, JsonCodec

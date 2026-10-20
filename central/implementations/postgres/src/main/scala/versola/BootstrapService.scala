@@ -449,6 +449,7 @@ object BootstrapService:
       Permission("locales:read"),
       localized("View locales", "Просмотр локалей"),
       Set(
+        endpointId("GET", "/configuration/forms/translations"),
         endpointId("GET", "/configuration/locales"),
       ),
     ),
@@ -456,6 +457,8 @@ object BootstrapService:
       Permission("locales:manage"),
       localized("Manage locales", "Управление локалями"),
       Set(
+        endpointId("PUT", "/configuration/forms/translations"),
+        endpointId("DELETE", "/configuration/forms/translations"),
         endpointId("PUT", "/configuration/locales"),
         endpointId("PUT", "/configuration/locales/default"),
       ),
@@ -867,6 +870,9 @@ object BootstrapService:
     "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
     "PUT" -> "/configuration/forms/active",
+    "GET" -> "/configuration/forms/translations",
+    "PUT" -> "/configuration/forms/translations",
+    "DELETE" -> "/configuration/forms/translations",
     "GET" -> "/configuration/jwks",
     "GET" -> "/configuration/jwks/keys",
     "POST" -> "/configuration/jwks",

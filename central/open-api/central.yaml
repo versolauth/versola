@@ -1640,6 +1640,82 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /configuration/forms/translations:
+    get:
+      tags: [Forms]
+      summary: List the stored form translations
+      description: |
+        The texts of the login forms kept apart from the forms themselves, one entry per form and language.
+        `auth` is served each form with the translations of its languages laid over the form's own texts, so a
+        translation takes effect for whichever version of the form is active.
+      operationId: getFormTranslations
+      responses:
+        '200':
+          description: Every stored translation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetFormTranslationsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Forms]
+      summary: Store the texts of a form in a language
+      description: |
+        Replaces what is stored for the form in the language. No form is opened, versioned or activated: the texts
+        are laid over the form's own for that language when the form is served, and a key set here wins over the form's
+        while a key left out keeps the form's. The language must be registered, active or not, so texts can be
+        written before it is switched on; switching it on is checked against the forms' own texts and these together
+        (see `PUT /configuration/locales`).
+
+        A translation need not be complete. It is refused with `400` when the form has no active version, the
+        language is not registered, a key is not one of the form's, a text is blank (leave the key out to remove it), or
+        a text spells its `{placeholders}` differently from the form's English text.
+      operationId: putFormTranslation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutFormTranslationRequest'
+      responses:
+        '204':
+          description: Texts stored.
+        '400':
+          description: 'The reason, as `{"message": ...}`.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                required: [message]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Forms]
+      summary: Remove a form's translation into a language
+      description: |
+        The form keeps the texts its own record carries for the language. Deleting a locale deletes its translations with it.
+      operationId: deleteFormTranslation
+      parameters:
+        - name: formId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/FormId'
+        - name: locale
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Removed, or there was nothing to remove.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /configuration/locales:
     get:
       tags: [Locales]
@@ -1659,7 +1735,8 @@ paths:
       summary: Add and remove locales
       description: |
         A locale can only be activated once every form, scope and OTP template has content for
-        it; otherwise the missing keys are reported.
+        it; otherwise the missing keys are reported. A form's content for the locale is its own record's texts with
+        the form's stored translation (`/configuration/forms/translations`) laid over them.
       operationId: updateLocales
       requestBody:
         required: true
@@ -5221,6 +5298,39 @@ components:
           items:
             $ref: '#/components/schemas/BackendProperty'
       required: [id, style, localizations, properties]
+    FormTranslation:
+      type: object
+      description: The texts of one form in one language, message key to text.
+      properties:
+        formId:
+          $ref: '#/components/schemas/FormId'
+        locale:
+          type: string
+          description: A registered language tag.
+        texts:
+          $ref: '#/components/schemas/LocalizedText'
+      required: [formId, locale, texts]
+    GetFormTranslationsResponse:
+      type: object
+      properties:
+        translations:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormTranslation'
+      required: [translations]
+    PutFormTranslationRequest:
+      type: object
+      properties:
+        formId:
+          $ref: '#/components/schemas/FormId'
+        locale:
+          type: string
+        texts:
+          type: object
+          additionalProperties:
+            type: string
+          description: Message key to text. Every key must be one of the form's.
+      required: [formId, locale, texts]
     SetActiveVersionRequest:
       type: object
       properties:

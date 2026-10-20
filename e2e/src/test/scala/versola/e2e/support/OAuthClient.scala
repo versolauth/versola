@@ -1361,6 +1361,24 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"deleteAuthorizationDetailType failed: status=${resp.status} body=$body"))
 
+  /** PUT /configuration/forms/translations: stores the texts of a login form in a language, apart from the form. */
+  def putFormTranslation(formId: String, locale: String, texts: Map[String, String]): Task[Response] =
+    val body = Json.Obj(
+      "formId" -> Json.Str(formId),
+      "locale" -> Json.Str(locale),
+      "texts" -> Json.Obj(texts.toSeq.map((key, text) => key -> (Json.Str(text): Json))*),
+    )
+    val req = Request.put(s"${config.centralUrl}/configuration/forms/translations", Body.fromString(body.toJson))
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  /** DELETE /configuration/forms/translations: removes a form's translation into a language. */
+  def deleteFormTranslation(formId: String, locale: String): Task[Response] =
+    val req = Request.delete(s"${config.centralUrl}/configuration/forms/translations?formId=${encode(formId)}&locale=${encode(locale)}")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client))
+
   /** GET /configuration/server-metadata — reads the current Central server metadata document. */
   def serverMetadata: Task[Json.Obj] =
     val req = Request.get(s"${config.centralUrl}/configuration/server-metadata")
