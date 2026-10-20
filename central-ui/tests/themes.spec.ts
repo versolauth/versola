@@ -48,22 +48,22 @@ test.describe('list', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Themes' })).toBeVisible();
     await expect(page.getByRole('columnheader')).toHaveText(['Theme', 'Base', 'Look', 'Used by', 'Actions']);
     await expect(page.getByRole('button', { name: '+ Create theme' })).toHaveCount(1);
-    await expect(group(page, 'Filter themes').getByRole('button')).toHaveText(['All', 'Visual', 'Stylesheet', 'This tenant']);
+    await expect(group(page, 'Filter themes').getByRole('button')).toHaveText(['All', 'This tenant']);
     // One column that says where a theme lives, not two stacked groups.
     await expect(themeRow(page, 'default')).toContainText('Global');
     await expect(themeRow(page, 'shop-brand')).toContainText('This tenant');
     await expect(page.locator('versola-themes-list .group-title')).toHaveCount(0);
   });
 
-  test('names the overridden tokens, never counts them; a stylesheet says so', async ({ page }) => {
+  test('names the overridden tokens, never counts them; a stored stylesheet is listed as legacy and read-only', async ({ page }) => {
     await loadAdminApp(page, { path: listPath, state });
 
     await expect(themeRow(page, 'default')).toContainText('Versola');
     await expect(themeRow(page, 'default')).toContainText('No overrides');
     await expect(themeRow(page, 'shop-brand')).toContainText('Overrides: brand, page +1');
     await expect(themeRow(page, 'partner-green')).toContainText('Overrides: brand');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('Stylesheet');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('Replaces the default CSS');
+    await expect(themeRow(page, 'legacy-2024')).toContainText('Stylesheet (legacy)');
+    await expect(themeRow(page, 'legacy-2024')).toContainText('Read-only');
   });
 
   test('shows the look as a thumbnail and the brand colour, its own override or its base\'s', async ({ page }) => {
@@ -71,7 +71,7 @@ test.describe('list', () => {
 
     await expect(themeRow(page, 'shop-brand').locator('code')).toHaveText('#e5484d');
     await expect(themeRow(page, 'default').locator('code')).toHaveText('#155e75');
-    await expect(themeRow(page, 'midnight').locator('code')).toHaveText('#5b5bd6');
+    await expect(themeRow(page, 'ledger').locator('code')).toHaveText('#5b5bd6');
     await expect(themeRow(page, 'shop-brand').locator('versola-theme-thumb')).toHaveAttribute('brand', '#e5484d');
     await expect(themeRow(page, 'legacy-2024')).toContainText('Set by its CSS');
     await expect(themeRow(page, 'legacy-2024').locator('versola-theme-thumb')).toHaveCount(0);
@@ -82,7 +82,7 @@ test.describe('list', () => {
 
     await expect(themeRow(page, 'shop-brand').locator('.tag')).toHaveText(['shop-mobile', 'storefront-web']);
     await expect(themeRow(page, 'partner-green').locator('.tag')).toHaveText(['partner-portal']);
-    await expect(themeRow(page, 'midnight')).toContainText('No clients');
+    await expect(themeRow(page, 'ledger')).toContainText('No clients');
     await expect(themeRow(page, 'legacy-2024')).toContainText('No clients');
   });
 
@@ -101,16 +101,13 @@ test.describe('list', () => {
     await expect(themeRow(page, 'default').locator('.tag')).toHaveText(['bare']);
   });
 
-  test('filters by kind and by scope, and searches by ID', async ({ page }) => {
+  test('filters by scope, never by kind, and searches by ID', async ({ page }) => {
     await loadAdminApp(page, { path: listPath, state });
     const filter = group(page, 'Filter themes');
     const rows = page.getByRole('row').filter({ has: page.getByRole('button', { name: /^Open theme/ }) });
     await expect(rows).toHaveCount(5);
 
-    await filter.getByRole('button', { name: 'Visual' }).click();
-    await expect(rows).toHaveCount(4);
-    await filter.getByRole('button', { name: 'Stylesheet' }).click();
-    await expect(rows).toHaveCount(1);
+    await expect(filter.getByRole('button', { name: /Visual|Stylesheet/ })).toHaveCount(0);
     await filter.getByRole('button', { name: 'This tenant' }).click();
     await expect(rows).toHaveCount(3);
     await filter.getByRole('button', { name: 'All' }).click();
@@ -122,9 +119,9 @@ test.describe('list', () => {
 
   test('a row opens the theme; the row menu opens it and copies the ID', async ({ page }) => {
     await loadAdminApp(page, { path: listPath, state });
-    await themeRow(page, 'midnight').click();
-    await expect(page.getByRole('heading', { level: 1, name: 'midnight' })).toBeVisible();
-    await expect(page).toHaveURL(/id=midnight/);
+    await themeRow(page, 'ledger').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'ledger' })).toBeVisible();
+    await expect(page).toHaveURL(/id=ledger/);
 
     await crumb(page, 'Themes').click();
     await page.getByRole('button', { name: 'Actions for partner-green' }).click();
@@ -215,18 +212,19 @@ test.describe('record', () => {
   });
 
   test('a theme no client uses says No clients in its header', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('midnight'), state });
+    await loadAdminApp(page, { path: recordPath('ledger'), state });
 
     await expect(page.locator('versola-record-header')).toContainText('No clients');
   });
 
-  test('is cards: Base theme, Look (with Extra CSS collapsed) and Delete last', async ({ page }) => {
+  test('is cards: Base theme, Look and Delete last, with no Extra CSS section', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('shop-brand'), state });
 
     await expect(page.locator('versola-theme-record section.card, versola-theme-record versola-danger-card section.card').evaluateAll(
       (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Base theme', 'Look', 'Delete theme']);
-    await expect(page.locator('details.advanced')).not.toHaveAttribute('open', '');
-    await expect(page.getByText('Extra CSS (optional)')).toBeVisible();
+    await expect(page.locator('details.advanced')).toHaveCount(0);
+    await expect(page.getByText('Extra CSS (optional)')).toHaveCount(0);
+    await expect(page.locator('versola-code-editor')).toHaveCount(0);
   });
 
   test('opens a stored theme on its base with its overrides, named and not counted', async ({ page }) => {
@@ -240,14 +238,30 @@ test.describe('record', () => {
     await expect(save(page)).toBeDisabled();
   });
 
-  test('each overridden token has a badge against the base value and a Reset', async ({ page }) => {
+  test('each overridden token has an accent dot, the base value in its title and a Reset', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('shop-brand'), state });
 
-    await expect(page.getByText('Overridden · base: #155e75')).toBeVisible();
-    await expect(page.getByText('Overridden · base: bold')).toBeVisible();
-    await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: #155e75')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: bold')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: glow')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reset shape to the base' })).toHaveCount(0);
-    await expect(page.getByText(/Overridden/)).toHaveCount(3);
+    await expect(page.getByRole('img', { name: 'Overridden' })).toHaveCount(3);
+    // No wordy badge in the row any more.
+    await expect(page.getByText(/Overridden ·/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Reset (brand|surface|background)/ })).toHaveCount(3);
+  });
+
+  test('the background thumbnails are drawn in the scheme the preview shows', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.emulateMedia({ colorScheme: 'light' });
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const swatches = page.locator('.bg-swatch');
+
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
+    await page.getByRole('group', { name: 'Preview scheme' }).getByRole('button', { name: 'Dark' }).click();
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'dark');
+    await page.getByRole('group', { name: 'Preview scheme' }).getByRole('button', { name: 'Light' }).click();
+    await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
   });
 
   test('is two columns at 1440 with a 560px preview, 380px at 1024 and a band above below 900px', async ({ page }) => {
@@ -266,9 +280,15 @@ test.describe('record', () => {
 
     await page.setViewportSize({ width: 600, height: 900 });
     expect((await pane.boundingBox())!.y).toBeLessThan((await controls.boundingBox())!.y);
-    const toggle = pane.getByRole('button', { name: /Preview/ });
-    await toggle.click();
+    // Collapsed behind a toggle until asked for; the choice stays for the session.
+    const toggle = pane.getByRole('button', { name: 'Show preview' });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('iframe.preview-iframe')).toBeHidden();
+    await toggle.click();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('iframe.preview-iframe')).toBeVisible();
+    await page.reload();
+    await expect(pane.getByRole('button', { name: 'Hide preview' })).toHaveAttribute('aria-expanded', 'true');
     expect(await noSideScroll(page)).toBe(true);
   });
 
@@ -311,10 +331,10 @@ test.describe('editing', () => {
     await loadAdminApp(page, { path: recordPath('default'), state });
 
     await page.getByRole('button', { name: '#5b5bd6' }).click();
-    await expect(page.getByText('Overridden · base: #155e75')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: #155e75')).toBeVisible();
     await expect(card(page, 'Look')).toContainText('Overrides on Versola: brand colour.');
     await page.getByRole('button', { name: 'Reset brand to the base' }).click();
-    await expect(page.getByText(/Overridden/)).toHaveCount(0);
+    await expect(page.getByRole('img', { name: 'Overridden' })).toHaveCount(0);
 
     // Typing the base's own colour overrides nothing.
     await page.getByLabel('Brand colour, #rrggbb').fill('#155E75');
@@ -375,37 +395,36 @@ test.describe('editing', () => {
     await expect.poll(() => srcdoc(page)).toContain(baseStylesheetMock);
   });
 
-  test('keeps the theme\'s own CSS next to its tokens', async ({ page }) => {
-    const api = await loadAdminApp(page, { path: recordPath('default'), state });
-    await page.getByText('Extra CSS (optional)').click();
-    await page.locator('versola-code-editor').evaluate((editor: HTMLElement) => {
-      editor.dispatchEvent(new CustomEvent('code-input', { detail: { value: '.x { top: 0; }' } }));
-    });
-    await expect(bar(page)).toHaveText('Unsaved: extra CSS');
+  test('has no Extra CSS editor, and keeps CSS that was stored with the tokens when it is saved', async ({ page }) => {
+    const themes = [{ id: 'extra', css: '.y{}', tenantId: null, tokens: { base: 'versola' } }];
+    const api = await loadAdminApp(page, { path: recordPath('extra'), state: { ...state, themes } });
+
+    await expect(page.getByText('Extra CSS (optional)')).toHaveCount(0);
+    await expect(page.locator('versola-code-editor')).toHaveCount(0);
+    await expect(card(page, 'Look')).toContainText('carries extra CSS that was stored through the API');
+    await page.getByRole('button', { name: 'Studio' }).click();
     await save(page).click();
 
-    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ css: '.x { top: 0; }', tokens: { base: 'versola' } });
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({ id: 'extra', css: '.y{}', tokens: { base: 'studio' } });
   });
 
-  test('a theme with extra CSS opens with the section open', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('extra'), state: { ...state, themes: [{ id: 'extra', css: '.y{}', tenantId: null, tokens: { base: 'versola' } }] } });
-
-    await expect(page.locator('details.advanced')).toHaveAttribute('open', '');
-  });
-
-  test('a theme written as CSS opens in the CSS editor and is saved without tokens', async ({ page }) => {
+  test('a stored stylesheet theme is shown read-only as legacy, with Delete only', async ({ page }) => {
     const api = await loadAdminApp(page, { path: recordPath('legacy-2024'), state });
 
+    await expect(header(page)).toContainText('Stylesheet (legacy)');
     await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
-    await expect(header(page)).toContainText('Stylesheet');
-    await expect(page.getByText('A theme written as CSS replaces the default stylesheet entirely.')).toBeVisible();
-    await page.locator('versola-code-editor').evaluate((editor: HTMLElement) => {
-      editor.dispatchEvent(new CustomEvent('code-input', { detail: { value: 'body { color: red; }' } }));
-    });
-    await expect(bar(page)).toHaveText('Unsaved: stylesheet');
-    await save(page).click();
-
-    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({ id: 'legacy-2024', css: 'body { color: red; }' });
+    await expect(page.locator('versola-theme-record section.card, versola-theme-record versola-danger-card section.card').evaluateAll(
+      (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Stylesheet (legacy)', 'Delete theme']);
+    await expect(card(page, 'Stylesheet (legacy)')).toContainText('The console no longer creates or edits these');
+    await expect(page.getByRole('textbox', { name: 'CSS (read-only)' })).toBeDisabled();
+    await expect(page.getByRole('textbox', { name: 'CSS (read-only)' })).toHaveValue('body { font-family: Georgia, serif; }');
+    // Nothing to save: no bar, no Save.
+    await expect(bar(page)).toHaveCount(0);
+    await expect(save(page)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Delete theme legacy-2024' })).toBeEnabled();
+    // The preview still draws the stored stylesheet.
+    await expect.poll(() => srcdoc(page)).toContain('Georgia');
+    expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
   });
 
   test('Cancel with edits asks first; keeping them stays, discarding returns to the list', async ({ page }) => {
@@ -452,7 +471,7 @@ test.describe('background and shape', () => {
     await expect.poll(() => srcdoc(page)).toContain('--background:glow');
 
     await backgrounds(page).getByRole('button', { name: 'Horizon' }).click();
-    await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+    await expect(page.getByTitle('Overridden · base: glow')).toBeVisible();
     await expect.poll(() => srcdoc(page)).toContain('--background:horizon');
     await save(page).click();
     expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ tokens: { base: 'versola', overrides: { background: 'horizon' } } });
@@ -594,31 +613,31 @@ test.describe('delete', () => {
   });
 
   test('a theme no client uses is deleted after a confirm that names it', async ({ page }) => {
-    const api = await loadAdminApp(page, { path: recordPath('midnight'), state });
-    await page.getByRole('button', { name: 'Delete theme midnight' }).click();
+    const api = await loadAdminApp(page, { path: recordPath('ledger'), state });
+    await page.getByRole('button', { name: 'Delete theme ledger' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toContainText('Delete theme');
-    await expect(dialog).toContainText('midnight');
+    await expect(dialog).toContainText('ledger');
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     expect(api.requests.filter(request => request.method === 'DELETE')).toHaveLength(0);
 
-    await page.getByRole('button', { name: 'Delete theme midnight' }).click();
+    await page.getByRole('button', { name: 'Delete theme ledger' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
-    expect((await findRequest(api.requests, 'DELETE', '/configuration/themes')).searchParams['id']).toBe('midnight');
+    expect((await findRequest(api.requests, 'DELETE', '/configuration/themes')).searchParams['id']).toBe('ledger');
     await expect(page.getByRole('heading', { level: 1, name: 'Themes' })).toBeVisible();
-    await expect(page.getByRole('status').filter({ hasText: 'Deleted theme midnight.' })).toBeVisible();
-    await expect(themeRow(page, 'midnight')).toHaveCount(0);
+    await expect(page.getByRole('status').filter({ hasText: 'Deleted theme ledger.' })).toBeVisible();
+    await expect(themeRow(page, 'ledger')).toHaveCount(0);
   });
 
   test('a refusal from central (a client of another tenant uses it) is shown', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('midnight'), state });
-    await page.route('**/configuration/themes?id=midnight', route => route.fulfill({ status: 409, contentType: 'application/json', body: '{"message":"One or more clients still use this theme"}' }));
-    await page.getByRole('button', { name: 'Delete theme midnight' }).click();
+    await loadAdminApp(page, { path: recordPath('ledger'), state });
+    await page.route('**/configuration/themes?id=ledger', route => route.fulfill({ status: 409, contentType: 'application/json', body: '{"message":"One or more clients still use this theme"}' }));
+    await page.getByRole('button', { name: 'Delete theme ledger' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
     await expect(page.getByRole('alert').filter({ hasText: 'clients still use this theme' })).toBeVisible();
-    await expect(page.getByRole('heading', { level: 1, name: 'midnight' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'ledger' })).toBeVisible();
   });
 });
 
@@ -627,7 +646,6 @@ test.describe('create', () => {
     const api = await newTheme(page);
     await page.getByPlaceholder('e.g. default').fill('mine');
 
-    await expect(group(page, 'Built as').getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('button', { name: 'Versola' })).toHaveAttribute('aria-pressed', 'true');
     await expect(card(page, 'Look')).toContainText('No overrides: this theme is the base theme.');
     await expect(bar(page)).toHaveText('New theme');
@@ -664,22 +682,21 @@ test.describe('create', () => {
     await expect(save(page, 'Create theme')).toBeEnabled();
   });
 
-  test('a theme can still be written as a stylesheet', async ({ page }) => {
-    const api = await newTheme(page);
-    await page.getByPlaceholder('e.g. default').fill('plain');
-    await group(page, 'Built as').getByRole('button', { name: 'Stylesheet' }).click();
-
-    await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
-    expect(await created(page, api)).toEqual({ id: 'plain', css: '', tenantId: null });
-  });
-
-  test('offers only stylesheets when central has no built-in themes', async ({ page }) => {
-    const api = await newTheme(page, { themePresets: [] });
-    await page.getByPlaceholder('e.g. default').fill('plain');
+  test('has no stylesheet path: no Built as choice, no CSS editor, every new theme is built on a base', async ({ page }) => {
+    await newTheme(page);
 
     await expect(page.getByRole('group', { name: 'Built as' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
-    expect(await created(page, api)).toEqual({ id: 'plain', css: '', tenantId: null });
+    await expect(page.getByRole('button', { name: 'Stylesheet' })).toHaveCount(0);
+    await expect(page.locator('versola-code-editor')).toHaveCount(0);
+    await expect(page.getByText('Extra CSS')).toHaveCount(0);
+  });
+
+  test('cannot be created when central has no built-in themes to build on', async ({ page }) => {
+    await newTheme(page, { themePresets: [] });
+    await page.getByPlaceholder('e.g. default').fill('plain');
+
+    await expect(group(page, 'Base theme').getByRole('button')).toHaveCount(0);
+    await expect(save(page, 'Create theme')).toBeDisabled();
   });
 
   test('an existing ID is refused by central and shown', async ({ page }) => {
@@ -699,7 +716,7 @@ test.describe('create', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Themes' })).toBeVisible();
   });
 
-  test('opens as a visual theme on the default base once the built-in themes have arrived', async ({ page }) => {
+  test('opens on the default base once the built-in themes have arrived', async ({ page }) => {
     await setupConfigApiMocks(page, state);
     let release: () => void = () => {};
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -710,7 +727,6 @@ test.describe('create', () => {
     await page.goto(newPath);
     release();
 
-    await expect(group(page, 'Built as').getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('button', { name: 'Versola' })).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -719,6 +735,69 @@ test.describe('create', () => {
 
     await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(245, 243, 238)');
     await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(245, 243, 238)');
+  });
+});
+
+const presetIds = ['Versola', 'Studio', 'Fintech', 'Wellness', 'Editorial', 'Sunny', 'Berry'];
+
+test.describe('base theme picker', () => {
+  test('lists all seven built-in themes as one row of pills, the selected one filled, and no thumbnails', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('shop-brand'), state });
+    const pills = group(page, 'Base theme').getByRole('button');
+
+    await expect(pills).toHaveText(presetIds);
+    await expect(pills.filter({ has: page.locator('.dot') })).toHaveCount(7);
+    await expect(group(page, 'Base theme').locator('versola-theme-thumb')).toHaveCount(0);
+    await expect(page.locator('versola-theme-record versola-theme-thumb')).toHaveCount(0);
+    await expect(group(page, 'Base theme').getByRole('button', { pressed: true })).toHaveText('Versola');
+    await expect(group(page, 'Base theme').getByRole('button', { name: 'Versola' })).toHaveClass(/seg-active/);
+    // Each pill's dot is the preset's own brand colour.
+    await expect(pills.nth(1).locator('.dot')).toHaveCSS('background-color', 'rgb(255, 107, 74)');
+    await expect(pills.nth(6).locator('.dot')).toHaveCSS('background-color', 'rgb(180, 52, 138)');
+  });
+
+  test('says under the picker what the chosen built-in theme sets, and never calls one dark or light', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('shop-brand'), state });
+    const hint = page.locator('#preset-hint');
+
+    await expect(hint).toContainText('Versola: Brand #155e75, soft corners, bold page, glow background.');
+    await page.getByRole('button', { name: 'Editorial' }).click();
+    await expect(hint).toContainText('Editorial: Brand #14130f, sharp corners, neutral page, flat background.');
+    await page.getByRole('button', { name: 'Wellness' }).click();
+    await expect(hint).toContainText('Wellness: Brand #0e9f8e, round corners, soft page, horizon background.');
+    await expect(hint).not.toContainText(/midnight|\bdark theme\b|\blight theme\b/i);
+    for (const name of presetIds) await expect(group(page, 'Base theme').getByRole('button', { name })).not.toContainText(/dark|light|midnight/i);
+  });
+
+  test('every built-in theme is scheme-neutral: the preview\'s Light and Dark are the only place the scheme shows', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('shop-brand'), state });
+
+    await expect(group(page, 'Colour scheme').getByRole('button', { pressed: true })).toHaveText('Auto');
+    for (const name of presetIds) {
+      await page.getByRole('button', { name, exact: true }).click();
+      await expect(group(page, 'Colour scheme').getByRole('button', { pressed: true })).toHaveText('Auto');
+    }
+    await expect(group(page, 'Preview scheme').getByRole('button')).toHaveText(['Light', 'Dark']);
+  });
+
+  test('stays a compact row that does not eat the page, at 1440, 1024 and 375', async ({ page }) => {
+    for (const [width, rows] of [[1440, 2], [1024, 4], [375, 4]] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await loadAdminApp(page, { path: recordPath('shop-brand'), state });
+      const box = (await group(page, 'Base theme').boundingBox())!;
+      // Pills are 32px high: at most `rows` rows with their gaps.
+      expect(box.height, `${width}px`).toBeLessThanOrEqual(rows * 32 + (rows - 1) * 8 + 2);
+      expect(await noSideScroll(page), `${width}px`).toBe(true);
+      await expect(group(page, 'Base theme').getByRole('button', { name: 'Berry' })).toBeVisible();
+    }
+  });
+
+  test('a new theme can be built on any of the seven', async ({ page }) => {
+    const api = await newTheme(page);
+    await page.getByPlaceholder('e.g. default').fill('sunny-web');
+    await page.getByRole('button', { name: 'Sunny', exact: true }).click();
+
+    expect(await created(page, api)).toEqual({ id: 'sunny-web', css: '', tenantId: null, tokens: { base: 'sunny' } });
   });
 });
 

@@ -17,7 +17,6 @@
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { ftForms } from './forms-themes-fixtures';
 import type { MockConfigState } from './mocks';
 
 export type DocsTheme = 'dark' | 'light';
@@ -372,7 +371,6 @@ const resolve = (tokens: { base: string; overrides?: Partial<Tokens> }): Tokens 
 
 const themes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
-  { id: 'legacy-acme', css: 'body { font-family: Georgia, serif; }', tenantId: null },
   { id: 'acme', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#2563eb' } } },
   { id: 'storefront', css: '', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } } },
 ];
@@ -408,19 +406,18 @@ const brandingState = async (): Promise<MockState> => ({
   themes,
 });
 
-// The Forms screens: credential has a v2 stored but not active and no Russian text for two keys, plus a custom form.
+// The Forms screens: the built-in forms only (the docs never show a form somebody made up). credential has a v2 stored but
+// not active, and no Russian text for two keys, which the JSON editor lists as problems.
 const formsDocsState = async (): Promise<MockState> => {
   const state = await brandingState();
   const forms = state.forms!;
   const credential = forms.find(form => form.id === 'credential')!;
   const withGaps = { ...credential.localizations, ru: Object.fromEntries(Object.entries(credential.localizations.ru).filter(([key]) => !['passkey_button', 'phone_hint'].includes(key))) };
-  const custom = ftForms().find(form => form.id === 'support-contact')!;
   return {
     ...state,
     forms: [
       ...forms.map(form => (form.id === 'credential' ? { ...form, localizations: withGaps } : form)),
       { ...credential, version: 2, active: false, localizations: withGaps },
-      { ...custom, localizations: { en: custom.localizations.en, ru: custom.localizations.ru } },
     ],
   };
 };
@@ -745,7 +742,7 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await editClient('acme-wallet', 'branding and logout', 'Branding and logout')(page);
       const block = page.getByRole('region', { name: 'Appearance for this app' });
-      await expect(block.getByText('Overridden · base: #2563eb')).toBeVisible();
+      await expect(block.getByTitle('Overridden · base: #2563eb')).toBeVisible();
       await block.scrollIntoViewIfNeeded();
     },
   },
@@ -993,11 +990,10 @@ const consoleShots: DocsShot[] = [
       await realThemeCss(page);
       // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.getByRole('button', { name: 'Russian' }).click();
-      await page.getByLabel('Missing only').check();
-      await page.getByRole('textbox', { name: 'passkey_button', exact: true }).focus();
+      await page.getByLabel('Language', { exact: true }).selectOption('ru');
+      await expect(page.getByRole('list', { name: 'Problems in the texts' })).toContainText('Russian is missing "');
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
-      await expect(page.frameLocator('iframe.preview-iframe').locator('[data-vm]').first()).toBeVisible();
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('"locale":"ru"');
     },
   },
   {
@@ -1052,6 +1048,7 @@ const consoleShots: DocsShot[] = [
     name: 'entities/user-forget-device-confirm', kind: 'frame', path: userPath, state: userClientsState,
     before: async page => {
       await userLoaded(page);
+      await page.getByRole('region', { name: 'Signed-in devices' }).locator('details.signed-out summary').click();
       await page.getByRole('button', { name: /^Forget device Firefox 140/ }).click();
       await expect(page.getByRole('dialog')).toContainText('Auth no longer remembers it');
     },
@@ -1137,7 +1134,7 @@ const consoleShots: DocsShot[] = [
       await page.getByLabel('Method').selectOption('GET');
       await page.getByLabel('Relative path').fill('/orders/{orderId}/invoice');
       await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
-      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await page.getByLabel('Max auth age').fill('10m');
       await expect(page.getByRole('status')).toContainText('(new)');
     },
   },
@@ -1163,7 +1160,7 @@ const consoleShots: DocsShot[] = [
       await page.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
       await page.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
       await page.getByRole('checkbox', { name: 'otp', exact: true }).check();
-      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await page.getByLabel('Max auth age').fill('10m');
       await page.getByRole('button', { name: 'Add rule', exact: true }).click();
       await page.getByLabel('Target').selectOption('body');
       await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');

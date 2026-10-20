@@ -105,6 +105,8 @@ object ConversationRenderService:
         phoneRegions: Option[List[PhoneRegion]],
         passwordRegex: Option[String],
         registration: Boolean,
+        /** Only a passkey of the identified user is asked for; the form starts it by itself. */
+        passkeyOnly: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -714,10 +716,10 @@ object ConversationRenderService:
         responseMode: ResponseMode,
     ): Task[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
           for
             phoneRegions <-
-              if primaryCredentials.contains(PrimaryCredential.phone) then
+              if primaryCredentials.contains(PrimaryCredential.phone) && !passkeyOnly then
                 configuration.getPhoneRegions(clientId).map(Some(_))
               else
                 ZIO.none
@@ -731,6 +733,7 @@ object ConversationRenderService:
             phoneRegions,
             passwordRegex,
             registration,
+            passkeyOnly,
           )
 
         case _: ConversationStep.Password =>

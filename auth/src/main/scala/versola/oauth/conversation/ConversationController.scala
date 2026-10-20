@@ -29,6 +29,7 @@ object ConversationController extends Controller:
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
+    submitPasskeyUnavailableRoute,
     submitSetPasswordRoute,
     submitConsentRoute,
     submitConsentDenyRoute,
@@ -120,6 +121,9 @@ object ConversationController extends Controller:
 
   val submitPasskeySkipRoute =
     submit[PasskeySkipSubmission](Method.POST / "challenge" / "passkey" / "skip")
+
+  val submitPasskeyUnavailableRoute =
+    submit[PasskeyUnavailableSubmission](Method.POST / "challenge" / "passkey" / "unavailable")
 
   val submitSetPasswordRoute =
     submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
@@ -290,6 +294,9 @@ object ConversationController extends Controller:
 
   given FormDecoder[PasskeySkipSubmission] = (form: Form) =>
     FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeySkipSubmission(_))
+
+  given FormDecoder[PasskeyUnavailableSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeyUnavailableSubmission(_))
 
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
     for

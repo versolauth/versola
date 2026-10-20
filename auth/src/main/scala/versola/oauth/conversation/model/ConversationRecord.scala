@@ -162,6 +162,13 @@ object ConversationRecord:
         case step: ConversationStep.PasskeyEnroll => Some(step)
         case _ => None
 
+  /** A credential step that asks for a passkey and nothing else. */
+  object PasskeyOnly:
+    def unapply(record: ConversationRecord): Option[ConversationStep.Credential] =
+      record.step match
+        case step: ConversationStep.Credential if step.passkeyOnly => Some(step)
+        case _ => None
+
   object Consent:
     def unapply(record: ConversationRecord): Option[ConversationStep.Consent] =
       record.step match

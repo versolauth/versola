@@ -353,9 +353,9 @@ export class VersolaResourcesList extends LitElement {
         if (endpoints.length === 0) return html`<span class="muted">None yet</span>`;
         const rest = endpoints.slice(2);
         return html`
-          <div class="cell-flow">
+          <div class="cell-lines">
             ${endpoints.slice(0, 2).map(endpoint => html`<span class="cell-line">${methodBadge(endpoint.method)}<span>${breakPath(endpoint.path)}</span></span>`)}
-            ${rest.length ? html`<span class="chip more" title=${rest.map(endpointLabel).join(', ')}>+${rest.length}</span>` : nothing}
+            ${rest.length ? html`<span class="muted more-endpoints" title=${rest.map(endpointLabel).join(', ')}>+${rest.length} more ${rest.length === 1 ? 'endpoint' : 'endpoints'}</span>` : nothing}
           </div>`;
       } },
       { id: 'audience', label: 'Audience', cell: resource => {

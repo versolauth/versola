@@ -1110,6 +1110,26 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("\"error\":\"passkey_failed\""))
       },
+      test("renders a passkey-only Credential step without the fields it has no use for") {
+        val env = Env()
+        val step = ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true)
+        val record = conversationRecord.copy(step = step)
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+          regionLookups = env.configuration.getPhoneRegions.times
+        yield assertTrue(
+          body.contains("\"passkeyOnly\":true"),
+          body.contains("\"passkey\":true"),
+          !body.contains("phoneRegions"),
+          regionLookups == 0,
+        )
+      },
       test("fetches allowed phone prefixes and skips the password regex for a phone-only Credential step") {
         val env = Env()
         val step = ConversationStep.Credential(List(PrimaryCredential.phone), false, false)

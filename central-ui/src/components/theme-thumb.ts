@@ -4,8 +4,7 @@ import type { ThemeShape, ThemeSurface } from '../types';
 
 /**
  * A small sketch of what a theme gives a login page: the page colour, the sheet and the brand.
- * The preset cards of the theme editor draw it at 4.5rem; the themes list draws a `small` one
- * beside the hex. The colours are the login forms' own, not the console's: a theme looks the same
+ * The themes list draws a `small` one beside the hex. The colours are the login forms' own, not the console's: a theme looks the same
  * whatever the console's scheme is (the deliberate literals the design system lists).
  *
  * The page backgrounds repeat those of ThemeCss (util) and common.css: bold = brand 24% into

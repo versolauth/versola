@@ -26,12 +26,17 @@ test.describe('list', () => {
     await expect(orders).toContainText('orders.internal.example.com');
     await expect(orders).toContainText('Internal');
     await expect(orders).toContainText('Secret rotation');
+    // At most two endpoints, one per line, and a muted overflow line under them.
     await expect(orders.locator('.method-badge')).toHaveText(['GET', 'GET']);
-    // The rest is an overflow marker that names it, not a count in words.
-    await expect(orders.locator('.chip.more').first()).toHaveText('+4');
-    await expect(orders.locator('.chip.more').first()).toHaveAttribute('title', /POST \/orders\/\{orderId\}\/refund/);
+    await expect(orders.locator('.cell-line')).toHaveCount(2);
+    const lines = await orders.locator('.cell-line').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+    expect(lines[1]).toBeGreaterThan(lines[0]);
+    await expect(orders.locator('.more-endpoints')).toHaveText('+4 more endpoints');
+    await expect(orders.locator('.more-endpoints')).toHaveAttribute('title', /POST \/orders\/\{orderId\}\/refund/);
+    await expect(resourceRow(page, 'catalog-api').locator('.more-endpoints')).toHaveText('+1 more endpoint');
+    await expect(resourceRow(page, 'support-desk').locator('.more-endpoints')).toHaveCount(0);
     await expect(orders.locator('.tag')).toHaveText(['storefront-web', 'shop-mobile']);
-    await expect(orders.locator('.chip.more').last()).toHaveText('+2');
+    await expect(orders.locator('.chip.more')).toHaveText('+2');
 
     await expect(resourceRow(page, 'catalog-api')).toContainText('Public');
     await expect(resourceRow(page, 'loyalty-api')).toContainText('None yet');
@@ -175,6 +180,11 @@ test.describe('record', () => {
     const table = page.getByRole('table', { name: 'Endpoints of orders-api' });
     await expect(table.getByRole('columnheader')).toHaveText(['Endpoint', 'Who may call', 'Step-up', 'Added to the request']);
     await expect(table.getByRole('row')).toHaveCount(7);
+    // Each injection is stacked: badge and name on one line, the value under it.
+    const injection = table.locator('tr[data-endpoint="GET /orders"] .inj').first();
+    const head = await injection.locator('.inj-head').boundingBox();
+    const value = await injection.locator('.inj-value').boundingBox();
+    expect(value!.y).toBeGreaterThan(head!.y + head!.height - 1);
     const refund = table.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
     await expect(refund).toContainText('userinfo');
     await expect(refund).toContainText('orders:refund');
@@ -189,15 +199,43 @@ test.describe('record', () => {
     await expect(remove).toContainText('orders:refund');
     await expect(remove.getByTitle('600 seconds')).toBeVisible();
     await expect(remove).toContainText('Nothing');
-    await expect(table.locator('tr[data-endpoint="GET /orders"]')).toContainText('No extra check');
+    // Allow is shown only where there is a rule; the userinfo chip says what it does.
+    await expect(table.locator('tr[data-endpoint="GET /orders"]')).not.toContainText('No extra check');
+    await expect(table.locator('tr[data-endpoint="GET /orders"]').getByText('Allow', { exact: true })).toHaveCount(0);
+    await expect(refund.getByText('Allow', { exact: true })).toHaveCount(1);
+    await expect(refund.getByText('userinfo')).toHaveAttribute('title', /\/userinfo/);
 
-    await expect(card(page, 'Secret')).toContainText('Set. It is shown once, when it is created or rotated.');
+    await expect(card(page, 'Secret')).toContainText('Shown once, when it is created or rotated.');
     await expect(card(page, 'Secret')).toContainText('Waiting for activation');
+    // The one action while a new secret waits is the banner's.
+    await expect(card(page, 'Secret').getByRole('button')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Activate new secret' })).toHaveCount(1);
     await expect(card(page, 'Fixed')).toContainText('Resource ID');
     await expect(card(page, 'Fixed')).toContainText('Internal: edge authenticates with its secret');
-    await expect(card(page, 'Fixed').getByText('Set at creation')).toHaveCount(2);
+    // The lock and "Set at creation" once, in the card's head, not on each row.
+    await expect(card(page, 'Fixed').getByText('Set at creation')).toHaveCount(1);
+    await expect(card(page, 'Fixed').locator('.record-fixed')).toHaveCount(1);
     // The danger card is last.
     await expect(page.locator('versola-danger-card').last().getByRole('button', { name: 'Delete resource orders-api' })).toBeVisible();
+  });
+
+  test('the Step-up column is drawn only when an endpoint has step-up', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('catalog-api'), state: shopState });
+
+    const table = page.getByRole('table', { name: 'Endpoints of catalog-api' });
+    await expect(table.getByRole('columnheader')).toHaveText(['Endpoint', 'Who may call', 'Added to the request']);
+    await expect(table.getByText('No extra check')).toHaveCount(0);
+  });
+
+  test('the method badge and the path share a line where the path fits', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: shopState });
+
+    const row = page.getByRole('table', { name: 'Endpoints of orders-api' }).locator('tr[data-endpoint="GET /orders"]');
+    const badge = await row.locator('.method-badge').boundingBox();
+    const path = await row.locator('.path').boundingBox();
+    expect(Math.abs(badge!.y - path!.y)).toBeLessThan(8);
+    expect((await row.locator('td').first().boundingBox())!.width).toBeGreaterThanOrEqual(207);
   });
 
   test('a public resource has no secret, and says so when it has no endpoints or clients', async ({ page }) => {
@@ -239,6 +277,25 @@ test.describe('record', () => {
     // An edit URL does not open an editor for someone who cannot save.
     await page.goto(recordPath('orders-api', 'general'));
     await expect(page.getByRole('heading', { level: 1, name: 'orders-api' })).toBeVisible();
+  });
+
+  test('at 375 each endpoint is a card of vertical blocks; General and Audience stack at 1024 and 375', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 900 });
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: shopState });
+    const row = page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
+    const cells = await row.locator('td').evaluateAll(nodes => nodes.map(node => { const box = node.getBoundingClientRect(); return [box.top, box.left]; }));
+    for (let i = 1; i < cells.length; i++) {
+      expect(cells[i][0]).toBeGreaterThan(cells[i - 1][0]);
+      expect(cells[i][1]).toBe(cells[0][1]);
+    }
+    await expect(row.locator('td[data-label]')).toHaveCount(3);
+
+    for (const width of [1024, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      const general = await card(page, 'General').boundingBox();
+      const audience = await card(page, 'Audience').boundingBox();
+      expect(audience!.y).toBeGreaterThan(general!.y + general!.height - 1);
+    }
   });
 
   test('the page never scrolls sideways at 1024 and 375', async ({ page }) => {
@@ -368,10 +425,8 @@ test.describe('endpoints editor', () => {
 
     const list = page.getByRole('list', { name: 'Endpoints' });
     await expect(list.getByRole('button')).toHaveCount(6);
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Allow');
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Step-up');
-    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Inject');
-    await expect(endpointRow(page, 'PUT /orders/{orderId}/address')).not.toContainText('Inject');
+    // The registry names the endpoint only: no rule summary.
+    await expect(list).not.toContainText(/allow|inject|step-up/i);
 
     await endpointRow(page, 'POST /orders/{orderId}/refund').click();
     await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toHaveAttribute('aria-current', 'true');
@@ -383,7 +438,7 @@ test.describe('endpoints editor', () => {
     await expect(page.getByRole('textbox', { name: 'Step-up condition' })).toHaveValue('request.body.amount > 10000');
     await expect(page.getByRole('checkbox', { name: 'mfa' })).toBeChecked();
     await expect(page.getByRole('checkbox', { name: 'pwd' })).not.toBeChecked();
-    await expect(page.getByLabel('Max auth age (seconds)')).toHaveValue('300');
+    await expect(page.getByLabel('Max auth age')).toHaveValue('5m');
     await expect(page.getByRole('region', { name: 'Inject' }).getByLabel('Name').first()).toHaveValue('X-User-Id');
     await expect(page.getByRole('region', { name: 'Inject' }).getByLabel('Name').last()).toHaveValue('refundedBy');
     await expect(page.getByRole('button', { name: 'Save endpoints' })).toBeDisabled();
@@ -424,8 +479,7 @@ test.describe('endpoints editor', () => {
     await page.getByRole('textbox', { name: 'Step-up condition' }).fill('true');
     await page.getByRole('checkbox', { name: 'hwk' }).check();
     await page.getByRole('checkbox', { name: 'pwd' }).check();
-    await page.getByLabel('Max auth age (seconds)').fill('90');
-    await expect(page.getByText('90 seconds.')).toBeVisible();
+    await page.getByLabel('Max auth age').fill('90s');
     await page.getByRole('button', { name: 'Add rule' }).click();
     await page.getByLabel('Target').selectOption('query');
     await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('tenant');
@@ -524,11 +578,12 @@ test.describe('endpoints editor', () => {
     await expect(page.getByRole('alert').filter({ hasText: /^Invalid step-up condition in POST/ })).toBeVisible();
     await page.getByRole('textbox', { name: 'Step-up condition' }).fill('true');
 
-    await page.getByLabel('Max auth age (seconds)').fill('1.5');
-    await expect(page.getByText('Whole seconds, 0 or more.')).toBeVisible();
+    await page.getByLabel('Max auth age').fill('1.5');
+    await expect(page.getByText('A number and a unit: 30s, 5m, 1h or 1d.')).toBeVisible();
+    await expect(endpointRow(page, 'POST /orders/{orderId}/refund')).toContainText('Fix');
     await page.getByRole('button', { name: 'Save endpoints' }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'Max auth age must be whole seconds in POST /orders/{orderId}/refund' })).toBeVisible();
-    await page.getByLabel('Max auth age (seconds)').fill('300');
+    await expect(page.getByRole('alert').filter({ hasText: 'Max auth age must be a number and a unit (30s, 5m, 1h, 1d) in POST /orders/{orderId}/refund' })).toBeVisible();
+    await page.getByLabel('Max auth age').fill('5m');
 
     await page.getByRole('button', { name: 'Add rule' }).click();
     await page.getByRole('button', { name: 'Save endpoints' }).click();
@@ -541,6 +596,36 @@ test.describe('endpoints editor', () => {
     await expect(page.getByRole('alert').filter({ hasText: /^Invalid inject expression in POST .* for X-Extra/ })).toBeVisible();
 
     expect(putBodies(api.requests)).toHaveLength(0);
+  });
+
+  test('Max auth age is a duration: 5m and 1h are sent as seconds, and the stored seconds read back short', async ({ page }) => {
+    const api = await open(page);
+    await endpointRow(page, 'GET /orders').click();
+    await page.getByLabel('Max auth age').fill('1h');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+
+    const body = (await findRequest(api.requests, 'PUT', '/configuration/resources')).body as { createEndpoints: Array<{ maxAge: number | null }> };
+    expect(body.createEndpoints[0].maxAge).toBe(3600);
+  });
+
+  test('Allow and Condition are highlighting editors with variable buttons that insert at the caret', async ({ page }) => {
+    await open(page);
+    await endpointRow(page, 'GET /orders').click();
+    await expect(page.locator('versola-cel-editor[aria-label="Allow expression"]')).toBeVisible();
+    await expect(page.locator('versola-cel-editor[aria-label="Step-up condition"]')).toBeVisible();
+
+    await page.getByRole('group', { name: 'Insert a variable' }).first().getByRole('button', { name: 'Insert token' }).click();
+    await expect(page.getByRole('textbox', { name: 'Allow expression' })).toHaveValue(/token$/);
+    await page.getByRole('group', { name: 'Insert a variable' }).last().getByRole('button', { name: 'Insert request' }).click();
+    await expect(page.getByRole('textbox', { name: 'Step-up condition' })).toHaveValue(/request$/);
+  });
+
+  test('an endpoint with an invalid expression is marked in the list', async ({ page }) => {
+    await open(page);
+    await endpointRow(page, 'GET /orders').click();
+    await expect(endpointRow(page, 'GET /orders')).not.toContainText('Fix');
+    await page.getByRole('textbox', { name: 'Allow expression' }).fill('(unterminated');
+    await expect(endpointRow(page, 'GET /orders').locator('.marker.fix')).toHaveText('Fix');
   });
 
   test('a rule is removed with its X, and a stored ACR the vocabulary lacks stays visible', async ({ page }) => {
@@ -653,12 +738,12 @@ test.describe('secret', () => {
     await page.getByRole('button', { name: "I've saved it" }).click();
     await expect(page.locator('.secret-value')).toHaveCount(0);
 
-    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Activate new secret' }).click();
+    await page.getByRole('button', { name: 'Activate new secret' }).click();
     await expect(dialog(page)).toContainText('Do this only after the upstream accepts the new secret');
     await dialog(page).getByRole('button', { name: 'Cancel' }).click();
     expect(api.requests.some(request => request.method === 'DELETE' && request.pathname.endsWith('previous-secret'))).toBe(false);
 
-    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Activate new secret' }).click();
+    await page.getByRole('button', { name: 'Activate new secret' }).click();
     await dialog(page).getByRole('button', { name: 'Activate', exact: true }).click();
     expect((await findRequest(api.requests, 'DELETE', '/configuration/resources/previous-secret')).searchParams).toEqual({ resourceId: 'orders-api' });
     await expect(page.getByText('A new secret was issued')).toHaveCount(0);
@@ -740,7 +825,7 @@ test.describe('create', () => {
     await expect(page.getByText('Resource created: invoices-api')).toBeVisible();
     await expect(page.locator('.secret-value')).toHaveText('generated-invoices-api');
     await expect(page.locator('versola-record-header')).toContainText('Internal');
-    await expect(card(page, 'Secret')).toContainText('Set. It is shown once');
+    await expect(card(page, 'Secret')).toContainText('Shown once, when it is created or rotated.');
     await page.getByRole('button', { name: "I've saved it" }).click();
     await expect(page.locator('.secret-value')).toHaveCount(0);
   });
@@ -841,5 +926,24 @@ test.describe('delete', () => {
     await dialog(page).getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('Database unavailable');
     await expect(page.getByRole('heading', { level: 1, name: 'catalog-api' })).toBeVisible();
+  });
+});
+
+test.describe('endpoints editor on a phone', () => {
+  test.use({ viewport: { width: 375, height: 800 } });
+
+  test('the list is a screen; selecting an endpoint opens the detail as a screen with a Back link', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('orders-api', 'endpoints'), state: shopState });
+
+    await expect(page.getByRole('list', { name: 'Endpoints' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Request' })).toHaveCount(0);
+    await endpointRow(page, 'POST /orders/{orderId}/refund').click();
+    await expect(page.getByRole('region', { name: 'Request' })).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Endpoints' })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await page.getByRole('button', { name: /Back to endpoints/ }).click();
+    await expect(page.getByRole('list', { name: 'Endpoints' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Request' })).toHaveCount(0);
   });
 });

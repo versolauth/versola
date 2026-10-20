@@ -100,8 +100,10 @@ object AccountSettingsController extends Controller:
         config <- ZIO.service[CoreConfig]
         settings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(body.clientId))
           .someOrFail(BadRequest("passkeys are not enabled"))
-        displayName <- displayNameOf(body.userId)
-        ceremony <- ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, body.userId, displayName))
+        user <- ZIO.serviceWithZIO[UserRepository](_.find(body.userId))
+        accountName = user.flatMap(_.passkeyAccountName).getOrElse(settings.rpName)
+        displayName = user.flatMap(_.nameClaim).getOrElse(accountName)
+        ceremony <- ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, body.userId, accountName, displayName))
         now <- Clock.instant
         ticket = PasskeyEnrollmentTicket.serialize(
           PasskeyEnrollmentTicket(body.userId, now.plus(enrollmentTtl), ceremony.request),
@@ -228,11 +230,6 @@ object AccountSettingsController extends Controller:
       lastUsedAt = lastUsedAt,
       createdAt = createdAt,
     )
-
-  /** The name the authenticator shows in its account picker, resolved the same way the
-    * enrollment step of the login flow resolves it. */
-  private def displayNameOf(userId: UserId): ZIO[UserRepository, Throwable, String] =
-    ZIO.serviceWithZIO[UserRepository](_.find(userId)).map(_.map(_.passkeyDisplayName).getOrElse(userId.toString))
 
   /** `userId` is the edge-injected caller context (needed to scope the revocation to the
     * caller's own account). `targetSessionId` is the id of the session to invalidate,

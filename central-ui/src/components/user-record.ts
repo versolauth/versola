@@ -8,7 +8,7 @@ import { fetchAllClients, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
-import { buildDevices, deviceLabel, platformLabel, userDisplayName, userLabel, type Device } from '../utils/user-display';
+import { buildDevices, deviceLabel, platformLabel, relativeTime, userDisplayName, userLabel, type Device } from '../utils/user-display';
 import {
   DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
   deletePasskey,
@@ -242,11 +242,143 @@ export class VersolaUserRecord extends LitElement {
         border-bottom: 0;
       }
 
-      .device-head {
+      .device {
         display: grid;
         grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+        grid-template-areas:
+          'icon main actions'
+          '. clients clients';
         gap: var(--spacing-md);
+        align-items: start;
+      }
+
+      .device-icon {
+        grid-area: icon;
+      }
+
+      .device-main {
+        grid-area: main;
+        min-width: 0;
+      }
+
+      .device-actions {
+        grid-area: actions;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+        justify-content: flex-end;
+      }
+
+      /* Short label, value: one per line on a phone, in a row from 721px. */
+      .device-facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.125rem var(--spacing-lg);
+        margin: 0.25rem 0 0;
+        font-size: var(--text-sm);
+      }
+
+      .device-facts div {
+        display: flex;
+        gap: 0 var(--spacing-sm);
+      }
+
+      .device-facts dt {
+        color: var(--text-secondary);
+      }
+
+      .device-facts dd {
+        margin: 0;
+        color: var(--text-primary);
+      }
+
+      /* The absolute date under a relative one: desktop only, the title carries it on a phone. */
+      .device-facts .abs {
+        display: block;
+        font-size: var(--text-xs);
+        color: var(--text-secondary);
+      }
+
+      .signed-out > summary {
+        display: flex;
         align-items: center;
+        gap: var(--spacing-sm);
+        min-height: 2.75rem;
+        padding: 0 var(--spacing-lg);
+        border-top: 1px solid var(--border-subtle);
+        font-weight: 600;
+        color: var(--text-secondary);
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .signed-out > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .signed-out > summary::before {
+        content: '';
+        width: 0.5rem;
+        height: 0.5rem;
+        border-right: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: rotate(-45deg);
+        transition: transform var(--transition-fast);
+      }
+
+      .signed-out[open] > summary::before {
+        transform: rotate(45deg);
+      }
+
+      .signed-out > summary:hover {
+        color: var(--text-primary);
+      }
+
+      .signed-out > summary:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
+      }
+
+      .signed-out:not([open]) > summary:last-child {
+        border-bottom: 0;
+      }
+
+      .passkey {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: var(--spacing-sm) var(--spacing-md);
+        align-items: start;
+        padding: var(--spacing-md) var(--spacing-lg);
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .passkey:last-child {
+        border-bottom: 0;
+      }
+
+      .passkey-name {
+        font-weight: 600;
+        color: var(--text-primary);
+        overflow-wrap: anywhere;
+      }
+
+      .passkey-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem var(--spacing-sm);
+        align-items: center;
+        margin-top: 0.375rem;
+      }
+
+      .passkey-when {
+        margin-top: 0.375rem;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+      }
+
+      .passkey .row-actions {
+        grid-column: 2;
+        grid-row: 1 / span 3;
       }
 
       .device-icon {
@@ -281,17 +413,6 @@ export class VersolaUserRecord extends LitElement {
         color: var(--text-secondary);
       }
 
-      .device-life {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0 var(--spacing-sm);
-      }
-
-      .device-life > span + span::before {
-        content: '·';
-        margin-right: var(--spacing-sm);
-      }
-
       .device-actions {
         display: flex;
         flex-wrap: wrap;
@@ -300,8 +421,8 @@ export class VersolaUserRecord extends LitElement {
       }
 
       .device-clients {
-        --device-grid: minmax(0, 1fr) 10rem 11rem 11.5rem;
-        margin: var(--spacing-md) 0 0 calc(2.25rem + var(--spacing-md));
+        --device-grid: minmax(0, 1fr) 9rem 10.5rem 14.5rem;
+        grid-area: clients;
         border: 1px solid var(--border-subtle);
         border-radius: var(--radius-md);
         background: var(--surface-inset);
@@ -338,21 +459,24 @@ export class VersolaUserRecord extends LitElement {
         align-items: center;
       }
 
+      /* "Apps with access": a small text link after the Offline access chip. */
       .down {
         background: none;
         border: 0;
-        padding: 0 0.375rem;
-        min-width: 1.5rem;
+        padding: 0 0.25rem;
         min-height: 1.5rem;
         font: inherit;
+        font-size: var(--text-xs);
         font-weight: 600;
-        color: var(--text-secondary);
+        color: var(--accent);
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
         cursor: pointer;
         border-radius: var(--radius-sm);
       }
 
       .down:hover {
-        color: var(--accent);
+        color: var(--accent-hover);
       }
 
       .down:focus-visible,
@@ -530,53 +654,93 @@ export class VersolaUserRecord extends LitElement {
       }
 
       @media (max-width: 720px) {
+        .device-name {
+          display: grid;
+          justify-items: start;
+        }
+
+        .device-facts .abs {
+          display: none;
+        }
+
+        .signed-out > summary {
+          padding: 0 var(--spacing-md);
+        }
+
         .device {
           padding: var(--spacing-md);
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            'main'
+            'clients'
+            'actions';
+          gap: var(--spacing-sm);
         }
 
-        .device-head {
-          grid-template-columns: 2.25rem minmax(0, 1fr);
+        .device-icon {
+          display: none;
         }
 
-        .device-head > .device-actions {
-          grid-column: 1 / -1;
-          justify-content: flex-start;
+        .device-facts {
+          display: grid;
+          gap: 0.125rem;
         }
 
-        .device-life {
-          flex-direction: column;
+        .device-facts div {
+          display: grid;
+          grid-template-columns: 9.5rem minmax(0, 1fr);
         }
 
-        .device-life > span + span::before {
-          content: none;
+        .device-actions {
+          display: grid;
+          justify-content: stretch;
+          gap: var(--spacing-sm);
         }
 
-        .device-clients {
-          margin-left: 0;
+        .device-actions .btn,
+        .passkey .row-actions .btn {
+          width: 100%;
+          justify-content: center;
         }
 
         .dc.h {
           display: none;
         }
 
+        /* A client: name and ID, then entered and access token until, then the chip. */
         .dc {
-          grid-template-columns: 1fr 1fr;
-          gap: 0.25rem var(--spacing-md);
+          display: block;
+          padding: var(--spacing-sm) var(--spacing-md);
         }
 
-        .dc > :first-child,
-        .dc > .dc-marker {
-          grid-column: 1 / -1;
+        .dc > * + * {
+          display: block;
+          margin-top: 0.25rem;
+        }
+
+        .dc > [data-label] {
+          display: inline-block;
+          margin-right: var(--spacing-md);
         }
 
         .dc [data-label]::before {
-          content: attr(data-label);
-          display: block;
+          content: attr(data-label) ' ';
           color: var(--text-secondary);
-          font-size: var(--text-xs);
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
+          font-weight: 600;
+        }
+
+        .passkey {
+          grid-template-columns: minmax(0, 1fr);
+          padding: var(--spacing-md);
+        }
+
+        .passkey .row-actions {
+          grid-column: 1;
+          grid-row: auto;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          justify-content: stretch;
+          margin-top: var(--spacing-xs);
         }
 
         .record-card-head {
@@ -1073,39 +1237,31 @@ export class VersolaUserRecord extends LitElement {
     const held = new Set(device.tokens.map(token => token.clientId));
     const marker = (clientId: string) => held.has(clientId) ? html`
       <span class="dc-marker"><span class="chip">Offline access</span>
-        <button type="button" class="down" aria-label="Go to Apps with access" title="Apps with access"
-          @click=${this.scrollToOfflineAccess}>↓</button></span>` : html`<span></span>`;
+        <button type="button" class="down" aria-label="Go to Apps with access"
+          @click=${this.scrollToOfflineAccess}>Apps with access</button></span>` : html`<span></span>`;
     const offlineNote = held.size > 0 ? ' Offline access issued on it is still valid.' : '';
-    const sub = session
-      ? `${platformLabel(platform)} · signed in ${when(session.createdAt)}`
-      : agent
-        ? `${platformLabel(platform)} · its session has ended.${offlineNote}`
-        : `Its session has ended.${offlineNote}`;
+    // The OS is in the name (`Chrome 130 on macOS 14.6`); the platform is said only when the name lacks it.
+    const platformNamed = !!(agent ?? session)?.os?.trim();
+    const sub = platformNamed || !agent
+      ? `Its session has ended.${offlineNote}`
+      : `${platformLabel(platform)} · its session has ended.${offlineNote}`;
+    const sessionEnds = session ? relativeTime(session.expiresAt) : '';
 
     return html`
       <div class="device" data-device=${device.key}>
-        <div class="device-head">
-          ${this.deviceIcon(platform)}
-          <div>
-            <div class="device-name">${name}
-              ${session ? html`<span class="chip ok">Signed in</span>` : html`<span class="chip">Signed out</span>`}</div>
-            <div class="device-sub">${sub}</div>
-            ${session || agent ? html`<div class="device-sub device-life">
-              ${session ? html`<span data-life="session">Session expires ${when(session.expiresAt)}</span>` : nothing}
-              ${session?.idleExpiresAt ? html`<span data-life="idle">Idle timeout ${when(session.idleExpiresAt)}</span>` : nothing}
-              ${agent ? html`<span data-life="remembered">Device remembered until ${when(agent.expiresAt)}</span>` : nothing}
-            </div>` : nothing}
-          </div>
-          ${this.canManage && (session?.publicId || agent) ? html`<div class="device-actions">
-            ${session?.publicId ? html`
-              <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Sign out device ${name}`}
-                ?disabled=${this.busy.has(`device:${session.publicId}`)}
-                @click=${() => this.signOutDevice(device)}>Sign out device</button>` : nothing}
-            ${agent ? html`
-              <button type="button" class="btn btn-secondary btn-danger-outline btn-sm" aria-label=${`Forget device ${name}`}
-                ?disabled=${this.busy.has(`forget:${agent.id}`)}
-                @click=${() => this.forgetDevice(device)}>Forget device</button>` : nothing}
-          </div>` : nothing}
+        ${this.deviceIcon(platform)}
+        <div class="device-main">
+          <div class="device-name"><span class="device-title">${name}</span>
+            ${session ? html`<span class="chip ok">Signed in</span>` : html`<span class="chip">Signed out</span>`}</div>
+          ${session ? nothing : html`<div class="device-sub">${sub}</div>`}
+          ${session || agent ? html`<dl class="device-facts">
+            ${session ? html`
+              ${platformNamed ? nothing : html`<div><dt>Platform</dt> <dd>${platformLabel(platform)}</dd></div>`}
+              <div data-life="signed-in"><dt>Signed in</dt> <dd>${when(session.createdAt)}</dd></div>
+              <div data-life="session"><dt>Session expires</dt> <dd title=${when(session.expiresAt)}>${sessionEnds || when(session.expiresAt)}${sessionEnds ? html`<span class="abs">${when(session.expiresAt)}</span>` : nothing}</dd></div>` : nothing}
+            ${session?.idleExpiresAt ? html`<div data-life="idle"><dt>Idle expires</dt> <dd>${when(session.idleExpiresAt)}</dd></div>` : nothing}
+            ${agent ? html`<div data-life="remembered"><dt>Remembered until</dt> <dd>${when(agent.expiresAt)}</dd></div>` : nothing}
+          </dl>` : nothing}
         </div>
         ${session ? html`
           <div class="device-clients" role="table" aria-label=${`Clients entered on ${name}`}>
@@ -1136,8 +1292,24 @@ export class VersolaUserRecord extends LitElement {
               </div>`;
             })}
           </div>` : nothing}
+        ${this.canManage && (session?.publicId || agent) ? html`<div class="device-actions">
+          ${session?.publicId ? html`
+            <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Sign out device ${name}`}
+              ?disabled=${this.busy.has(`device:${session.publicId}`)}
+              @click=${() => this.signOutDevice(device)}>Sign out device</button>` : nothing}
+          ${agent ? html`
+            <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Forget device ${name}`}
+              ?disabled=${this.busy.has(`forget:${agent.id}`)}
+              @click=${() => this.forgetDevice(device)}>Forget device</button>` : nothing}
+        </div>` : nothing}
       </div>
     `;
+  }
+
+  /** The devices whose session has ended, folded away under the signed-in ones: they matter when something is wrong, not every visit. */
+  private renderSignedOut(devices: Device[]) {
+    if (devices.length === 0) return nothing;
+    return html`<details class="signed-out"><summary>Signed-out devices</summary>${devices.map(device => this.renderDevice(device))}</details>`;
   }
 
   private renderDevicesCard() {
@@ -1152,7 +1324,7 @@ export class VersolaUserRecord extends LitElement {
     const body = this.devices.status === 'ready'
       ? (devices.length === 0
         ? html`<div class="part-note">Not signed in on any device.</div>`
-        : devices.map(device => this.renderDevice(device)))
+        : html`${devices.filter(device => device.session).map(device => this.renderDevice(device))}${this.renderSignedOut(devices.filter(device => !device.session))}`)
       : this.partNote(this.devices, 'devices', () => void this.loadDevices());
     return this.card('devices', 'Signed-in devices',
       'One row per browser or app install auth remembers. Each holds at most one session, with when it expires; the clients entered during it are listed under it. A device stays listed, signed out, until it is forgotten or its remembered time runs out.',
@@ -1234,23 +1406,24 @@ export class VersolaUserRecord extends LitElement {
         ? html`<div class="part-note">No passkeys registered.</div>`
         : this.passkeys.data.map(passkey => {
           const name = passkey.name ?? 'Unnamed passkey';
+          const kind = passkey.deviceType === 'multiDevice' ? 'Multi-device' : passkey.deviceType === 'singleDevice' ? 'Single device' : passkey.deviceType;
           return html`
-            <div class="record-row" data-passkey=${passkey.id}>
-              <div class="record-label">${name}</div>
-              <div class="record-value">
-                <div class="chips">
-                  <span>${passkey.deviceType === 'multiDevice' ? 'Multi-device' : passkey.deviceType === 'singleDevice' ? 'Single device' : passkey.deviceType}</span>
+            <div class="passkey" data-passkey=${passkey.id}>
+              <div>
+                <div class="passkey-name">${name}</div>
+                <div class="passkey-chips">
+                  <span class="chip">${kind}</span>
                   <span class="chip ${passkey.backedUp ? 'ok' : ''}">${passkey.backedUp ? 'Synced' : 'Not synced'}</span>
                   ${passkey.transports.map(transport => html`<span class="chip">${transport}</span>`)}
                 </div>
-                <div class="muted">Last used ${passkey.lastUsedAt ? when(passkey.lastUsedAt) : 'never'} · enrolled ${when(passkey.createdAt)}</div>
+                <div class="passkey-when">Last used ${passkey.lastUsedAt ? when(passkey.lastUsedAt) : 'never'} · enrolled ${when(passkey.createdAt)}</div>
               </div>
               ${this.canManage ? html`<div class="row-actions">
                 <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Rename passkey ${name}`}
                   ?disabled=${this.busy.has(`passkey:${passkey.id}`)} @click=${() => this.renamePasskeyOf(passkey)}>Rename</button>
                 <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Delete passkey ${name}`}
                   ?disabled=${this.busy.has(`passkey:${passkey.id}`)} @click=${() => this.deletePasskeyOf(passkey)}>Delete…</button>
-              </div>` : html`<div></div>`}
+              </div>` : nothing}
             </div>`;
         });
     return this.card('passkeys', 'Passkeys', 'Credentials the user signs in with on their devices.', null, body);

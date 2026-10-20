@@ -7,7 +7,7 @@ import type { SaveResourceEndpointPayload } from '../utils/central-api';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
-import { splitDuration } from '../utils/duration';
+import { formatDurationShort, parseDurationShort } from '../utils/duration';
 import { statusIcon } from './status-icon';
 import { breakPath } from './break-text';
 import { acrValues, methodBadge } from './resource-endpoints-table';
@@ -68,7 +68,7 @@ function snapshot(draft: Pick<Draft, 'method' | 'path' | 'fetchUserInfo' | 'allo
   return JSON.stringify([
     draft.method, draft.path.trim(), draft.fetchUserInfo, draft.allow.trim(),
     draft.inject.map(rule => [rule.target, rule.name.trim(), rule.expression.trim()]),
-    draft.stepUpCondition.trim(), draft.stepUpAcr.trim().split(/\s+/).filter(Boolean).join(' '), draft.maxAge.trim(),
+    draft.stepUpCondition.trim(), draft.stepUpAcr.trim().split(/\s+/).filter(Boolean).join(' '), parseDurationShort(draft.maxAge) ?? draft.maxAge.trim(),
   ]);
 }
 
@@ -83,7 +83,7 @@ function toDraft(endpoint: ResourceEndpoint): Draft {
     inject: cloneInject(endpoint.inject),
     stepUpCondition: endpoint.stepUpCondition ?? '',
     stepUpAcr: endpoint.stepUpAcr ?? '',
-    maxAge: endpoint.maxAge?.toString() ?? '',
+    maxAge: endpoint.maxAge != null ? formatDurationShort(endpoint.maxAge) : '',
     baseline: null,
   };
   draft.baseline = snapshot(draft);
@@ -94,7 +94,7 @@ function toPayload(draft: Draft): SaveResourceEndpointPayload {
   const allow = draft.allow.trim();
   const condition = draft.stepUpCondition.trim();
   const acr = acrValues(draft.stepUpAcr).join(' ');
-  const maxAge = parseInt(draft.maxAge, 10);
+  const maxAge = parseDurationShort(draft.maxAge);
   return {
     ...(draft.id !== null ? { id: draft.id } : {}),
     method: draft.method,
@@ -104,7 +104,7 @@ function toPayload(draft: Draft): SaveResourceEndpointPayload {
     inject: draft.inject.map(rule => ({ target: rule.target, name: rule.name.trim(), expression: rule.expression })),
     stepUpCondition: condition.length > 0 ? condition : null,
     stepUpAcr: acr.length > 0 ? acr : null,
-    maxAge: Number.isFinite(maxAge) ? maxAge : null,
+    maxAge,
   };
 }
 
@@ -147,6 +147,11 @@ export class VersolaResourceEndpointsEditor extends LitElement {
   @state() private filter = '';
   @state() private problem: Problem | null = null;
   @state() private infoOpen = false;
+  /** Below 720px the list and the selected endpoint are two screens, one at a time. */
+  @state() private narrow = false;
+  @state() private screen: 'list' | 'detail' = 'list';
+  private readonly media = window.matchMedia('(max-width: 720px)');
+  private readonly onMedia = () => { this.narrow = this.media.matches; };
   private initializedFor: ResourceEndpoint[] | null = null;
   private nextNew = 0;
 
@@ -269,26 +274,6 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         font-weight: 600;
         overflow-wrap: break-word;
         color: var(--text-primary);
-      }
-
-      .ep-rules {
-        grid-column: 2 / -1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.25rem;
-      }
-
-      .mini {
-        display: inline-flex;
-        padding: 0.0625rem 0.5rem;
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-pill);
-        font-size: var(--text-xs);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--text-secondary);
-        background: var(--surface);
       }
 
       .marker {
@@ -465,6 +450,58 @@ export class VersolaResourceEndpointsEditor extends LitElement {
 
       .inject-row .form-group {
         margin-bottom: 0;
+      }
+
+      .vars {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem var(--spacing-sm);
+        margin-top: var(--spacing-sm);
+      }
+
+      .var-chip {
+        min-height: 1.5rem;
+        padding: 0 0.5rem;
+        border: 1px solid var(--accent-border);
+        border-radius: var(--radius-pill);
+        background: var(--accent-subtle);
+        color: var(--accent-text);
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        cursor: pointer;
+      }
+
+      .var-chip:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+
+      .var-chip:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+
+      .back {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        min-height: 2.75rem;
+        margin: 0 0 var(--spacing-sm) calc(-1 * 0.25rem);
+        padding: 0 0.25rem;
+        border: 0;
+        background: none;
+        color: var(--accent);
+        font: inherit;
+        font-weight: 600;
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+        cursor: pointer;
+        border-radius: var(--radius-sm);
+      }
+
+      .back:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       .icon-x {
@@ -661,16 +698,25 @@ export class VersolaResourceEndpointsEditor extends LitElement {
           padding-inline: var(--spacing-md);
         }
       }
+
+      @media (max-width: 720px) {
+        .master-list {
+          max-height: none;
+        }
+      }
     `,
   ];
 
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.closeInfo);
+    this.narrow = this.media.matches;
+    this.media.addEventListener('change', this.onMedia);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.closeInfo);
+    this.media.removeEventListener('change', this.onMedia);
     super.disconnectedCallback();
   }
 
@@ -682,6 +728,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
       this.drafts = this.endpoints.map(toDraft);
       this.removed = [];
       this.selectedKey = this.drafts[0]?.key ?? null;
+      this.screen = 'list';
       this.problem = null;
     }
   }
@@ -720,6 +767,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
     this.drafts = [...this.drafts, draft];
     this.filter = '';
     this.selectedKey = draft.key;
+    this.screen = 'detail';
     await this.updateComplete;
     const path = this.renderRoot.querySelector<HTMLInputElement>('#endpoint-path');
     path?.focus();
@@ -745,6 +793,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
     const index = this.drafts.findIndex(candidate => candidate.key === draft.key);
     this.drafts = this.drafts.filter(candidate => candidate.key !== draft.key);
     this.selectedKey = this.drafts[Math.min(index, this.drafts.length - 1)]?.key ?? null;
+    this.screen = 'list';
     this.problem = null;
   }
 
@@ -771,7 +820,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
   }
 
   private maxAgeError(draft: Draft): string {
-    return draft.maxAge.trim() && !/^\d+$/.test(draft.maxAge.trim()) ? 'Whole seconds, 0 or more.' : '';
+    return draft.maxAge.trim() && parseDurationShort(draft.maxAge) === null ? 'A number and a unit: 30s, 5m, 1h or 1d.' : '';
   }
 
   private injectErrors(draft: Draft): string[] {
@@ -801,7 +850,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         const result = validateCel(draft.stepUpCondition);
         if (!result.valid) return { draftKey: draft.key, message: `Invalid step-up condition in ${label}: ${result.error.message}` };
       }
-      if (this.maxAgeError(draft)) return { draftKey: draft.key, message: `Max auth age must be whole seconds in ${label}` };
+      if (this.maxAgeError(draft)) return { draftKey: draft.key, message: `Max auth age must be a number and a unit (30s, 5m, 1h, 1d) in ${label}` };
       for (const rule of draft.inject) {
         const named = rule.name ? ` for ${rule.name}` : '';
         if (!rule.name.trim()) return { draftKey: draft.key, message: `Inject name is required in ${label}` };
@@ -814,7 +863,10 @@ export class VersolaResourceEndpointsEditor extends LitElement {
   }
 
   private hasProblem(draft: Draft): boolean {
-    return !!(this.pathError(draft) || this.clashError(draft) || this.maxAgeError(draft) || this.injectErrors(draft).some(Boolean));
+    const badCel = (text: string) => text.trim() !== '' && !validateCel(text).valid;
+    return !!(this.pathError(draft) || this.clashError(draft) || this.maxAgeError(draft) || this.injectErrors(draft).some(Boolean)
+      || badCel(draft.allow) || badCel(draft.stepUpCondition)
+      || draft.inject.some(rule => rule.expression.trim() === '' || badCel(rule.expression)));
   }
 
   private save() {
@@ -823,6 +875,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
     this.problem = problem;
     if (problem) {
       this.selectedKey = problem.draftKey;
+      this.screen = 'detail';
       return;
     }
     const changed = this.drafts.filter(draft => this.statusOf(draft) !== 'same');
@@ -846,21 +899,14 @@ export class VersolaResourceEndpointsEditor extends LitElement {
 
   private renderRow(draft: Draft) {
     const status = this.statusOf(draft);
-    const stepUp = !!(draft.stepUpAcr.trim() || draft.stepUpCondition.trim() || draft.maxAge.trim());
     const fix = this.hasProblem(draft);
     return html`
       <li>
         <button type="button" class="ep-row" aria-current=${draft.key === this.selectedKey ? 'true' : 'false'}
-          @click=${() => { this.selectedKey = draft.key; }}>
+          @click=${() => { this.selectedKey = draft.key; this.screen = 'detail'; }}>
           ${methodBadge(draft.method)}
           <span class="ep-path">${breakPath(draft.path || '/')}</span>
-          ${fix ? html`<span class="marker fix">Fix</span>` : status === 'new' ? html`<span class="marker new">New</span>` : status === 'edited' ? html`<span class="marker">Edited</span>` : html`<span></span>`}
-          ${draft.allow.trim() || stepUp || draft.inject.length ? html`
-            <span class="ep-rules">
-              ${draft.allow.trim() ? html`<span class="mini">Allow</span>` : nothing}
-              ${stepUp ? html`<span class="mini">Step-up</span>` : nothing}
-              ${draft.inject.length ? html`<span class="mini">Inject</span>` : nothing}
-            </span>` : nothing}
+          ${fix ? html`<span class="marker fix" title="This endpoint has a problem that blocks saving">Fix</span>` : status === 'new' ? html`<span class="marker new">New</span>` : status === 'edited' ? html`<span class="marker">Edited</span>` : html`<span></span>`}
         </button>
       </li>`;
   }
@@ -947,6 +993,17 @@ export class VersolaResourceEndpointsEditor extends LitElement {
       </section>`;
   }
 
+  /** The variables a rule can read, as buttons that put the name at the caret of the editor they sit under. */
+  private renderVariables(id: string, editor: string) {
+    return html`
+      <div class="vars" role="group" id=${id} aria-label="Insert a variable">
+        <span class="muted">Variables</span>
+        ${['token', 'user', 'request'].map(name => html`
+          <button type="button" class="var-chip" ?disabled=${this.saving} aria-label=${`Insert ${name}`}
+            @click=${() => this.renderRoot.querySelector<HTMLElement & { insertText(text: string): void }>(editor)?.insertText(name)}>${name}</button>`)}
+      </div>`;
+  }
+
   private renderWho(draft: Draft) {
     const permissions = draft.id !== null ? this.permissionsByEndpoint.get(draft.id) ?? [] : [];
     return html`
@@ -974,7 +1031,8 @@ export class VersolaResourceEndpointsEditor extends LitElement {
           <versola-cel-editor multiline .rows=${this.celRows(draft.allow, 2)} .value=${draft.allow} ?disabled=${this.saving}
             placeholder="leave empty for no authorization check" aria-label="Allow expression"
             @cel-input=${(e: CustomEvent<{ value: string }>) => this.patch(draft.key, { allow: e.detail.value })}></versola-cel-editor>
-          <div class="hint">Must evaluate to <code>true</code>. Leave empty for no extra check. Variables: <code>token</code>, <code>user</code>, <code>request</code>.</div>
+          <div class="hint">Must evaluate to <code>true</code>. Leave empty for no extra check.</div>
+          ${this.renderVariables('allow-vars', 'versola-cel-editor[aria-label="Allow expression"]')}
         </div>
       </section>`;
   }
@@ -983,8 +1041,6 @@ export class VersolaResourceEndpointsEditor extends LitElement {
     const selected = acrValues(draft.stepUpAcr);
     const choices = [...new Set([...Object.keys(this.acrVocabulary), ...selected])];
     const maxAgeError = this.maxAgeError(draft);
-    const seconds = parseInt(draft.maxAge, 10);
-    const human = Number.isFinite(seconds) && !maxAgeError && seconds > 0 ? (() => { const { value, unit } = splitDuration(seconds); return `${value} ${value === 1 ? unit.replace(/s$/, '') : unit}`; })() : '';
     return html`
       <section class="editor-box" aria-labelledby="panel-stepup">
         <h3 id="panel-stepup">Step-up</h3>
@@ -995,6 +1051,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
             placeholder="e.g. true or request.body.amount > 1000" aria-label="Step-up condition"
             @cel-input=${(e: CustomEvent<{ value: string }>) => this.patch(draft.key, { stepUpCondition: e.detail.value })}></versola-cel-editor>
           <div class="hint">The ACR below is asked for only when this is <code>true</code>; use <code>true</code> to always ask. Empty switches step-up off. Max auth age applies regardless.</div>
+          ${this.renderVariables('condition-vars', 'versola-cel-editor[aria-label="Step-up condition"]')}
         </div>
         <div class="form-group">
           <span class="kicker" id="acr-label">Required ACR</span>
@@ -1014,13 +1071,13 @@ export class VersolaResourceEndpointsEditor extends LitElement {
           : html`<div class="muted">No ACR values registered. Add them under Security › Step-up (ACR).</div>`}
         </div>
         <div class="form-group">
-          <label for="endpoint-max-age">Max auth age (seconds)</label>
-          <input id="endpoint-max-age" type="number" min="0" step="1" class="compact-input ${maxAgeError ? 'input-error' : ''}" placeholder="e.g. 3600"
+          <label for="endpoint-max-age">Max auth age</label>
+          <input id="endpoint-max-age" type="text" inputmode="text" autocomplete="off" spellcheck="false" class="compact-input mono ${maxAgeError ? 'input-error' : ''}" placeholder="e.g. 5m or 1h"
             .value=${draft.maxAge} aria-invalid=${maxAgeError ? 'true' : 'false'} aria-describedby="endpoint-max-age-hint"
             @input=${(e: Event) => this.patch(draft.key, { maxAge: (e.target as HTMLInputElement).value })} />
           ${maxAgeError
             ? html`<div class="error-message" id="endpoint-max-age-hint" role="alert">${maxAgeError}</div>`
-            : html`<div class="hint" id="endpoint-max-age-hint">${human ? `${human}. ` : ''}Edge refuses a token whose sign-in is older than this, by its <code>auth_time</code>. Empty switches the check off.</div>`}
+            : html`<div class="hint" id="endpoint-max-age-hint">Edge refuses a token whose sign-in is older than this, by its <code>auth_time</code>. Seconds, minutes, hours or days: <code>30s</code>, <code>5m</code>, <code>1h</code>, <code>1d</code>. Empty switches the check off.</div>`}
         </div>
       </section>`;
   }
@@ -1073,6 +1130,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
     }
     return html`
       <div class="detail" role="group" aria-label=${`Endpoint ${endpointLabel(draft)}`}>
+        ${this.narrow ? html`<button type="button" class="back" @click=${() => { this.screen = 'list'; }}>‹ Back to endpoints</button>` : nothing}
         <div class="detail-head">
           <h2 class="detail-title">${methodBadge(draft.method)}<span class="ep-path">${breakPath(draft.path || '/')}</span></h2>
           <button type="button" class="btn btn-danger-secondary btn-sm" ?disabled=${this.saving}
@@ -1104,7 +1162,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
       ${this.error ? html`<div class="editor-error" role="alert">${this.error}</div>` : nothing}
       ${this.problem ? html`<div class="editor-error" role="alert">${this.problem.message}</div>` : nothing}
       <div class="card split">
-        <div class="master">
+        ${this.narrow && this.screen === 'detail' ? nothing : html`<div class="master">
           <div class="master-tools">
             <input type="search" aria-label="Filter endpoints" placeholder="Filter endpoints" autocomplete="off"
               .value=${this.filter} @input=${(e: Event) => { this.filter = (e.target as HTMLInputElement).value; }} />
@@ -1113,8 +1171,8 @@ export class VersolaResourceEndpointsEditor extends LitElement {
           ${this.drafts.length === 0 ? html`<div class="master-empty">No endpoints yet.</div>`
             : visible.length === 0 ? html`<div class="master-empty">No endpoints match.</div>`
             : html`<ul class="master-list" aria-label="Endpoints">${visible.map(draft => this.renderRow(draft))}</ul>`}
-        </div>
-        ${this.renderDetail(this.selected)}
+        </div>`}
+        ${this.narrow && this.screen === 'list' ? nothing : this.renderDetail(this.selected)}
       </div>
       <div class="bar">
         <div class="bar-note" role="status">

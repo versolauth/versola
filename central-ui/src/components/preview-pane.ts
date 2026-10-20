@@ -4,6 +4,15 @@ import { theme } from '../styles/theme';
 
 const NARROW = '(max-width: 899.98px)';
 const BAND_HEIGHT = 260;
+const OPEN_KEY = 'versola-preview-open';
+
+function readOpen(): boolean {
+  try { return sessionStorage.getItem(OPEN_KEY) === 'true'; } catch { return false; }
+}
+
+function writeOpen(open: boolean) {
+  try { sessionStorage.setItem(OPEN_KEY, String(open)); } catch { /* storage may be blocked: the choice then lasts the page's life */ }
+}
 
 /**
  * The live preview of a record that is its own editor (a form, a theme): a card with a toolbar
@@ -13,7 +22,8 @@ const BAND_HEIGHT = 260;
  *
  * It sits in a column that stays on screen while the controls beside it scroll. Below 900px it is a
  * band above the controls: a toggle collapses it, and the stage is 260px tall (the page scrolls
- * inside the frame).
+ * inside the frame). A band starts collapsed behind a "Show preview" toggle, and the choice is
+ * kept in sessionStorage.
  */
 @customElement('versola-preview-pane')
 export class VersolaPreviewPane extends LitElement {
@@ -24,7 +34,8 @@ export class VersolaPreviewPane extends LitElement {
   /** The picture is older than the controls (a render failed): drawn dimmed. */
   @property({ type: Boolean, reflect: true }) stale = false;
 
-  @state() private open = true;
+  /** Below 900px the pane starts collapsed; the choice is kept for the session and shared by every preview. */
+  @state() private open = readOpen();
   @state() private scale = 1;
   @state() private narrow = false;
 
@@ -73,12 +84,6 @@ export class VersolaPreviewPane extends LitElement {
         font-weight: 700;
         color: var(--text-primary);
         cursor: pointer;
-      }
-
-      .toggle-state {
-        font-size: var(--text-sm);
-        font-weight: 600;
-        color: var(--text-secondary);
       }
 
       .toggle:focus-visible {
@@ -182,8 +187,8 @@ export class VersolaPreviewPane extends LitElement {
     const frameHeight = height * this.scale;
     return html`
       <section class="pane ${this.open ? '' : 'collapsed'}" aria-label=${this.heading}>
-        <button type="button" class="toggle" aria-expanded=${this.open ? 'true' : 'false'} @click=${() => { this.open = !this.open; }}>
-          <span>${this.heading}</span><span class="toggle-state">${this.open ? 'Hide' : 'Show'}</span>
+        <button type="button" class="toggle" aria-expanded=${this.open ? 'true' : 'false'} @click=${() => { this.open = !this.open; writeOpen(this.open); }}>
+          <span>${this.open ? 'Hide' : 'Show'} ${this.heading.toLowerCase()}</span>
         </button>
         <div class="toolbar"><slot name="toolbar"></slot></div>
         <div class="stage ${this.stale ? 'stale' : ''}" aria-busy=${this.busy ? 'true' : 'false'}>
