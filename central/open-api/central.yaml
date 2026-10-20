@@ -704,6 +704,8 @@ paths:
       responses:
         '201':
           description: Permission created.
+        '400':
+          description: The body is malformed, or the permission ID contains `.` (new IDs are colon-separated only).
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -2156,8 +2158,18 @@ components:
     Permission:
       type: string
       pattern: '^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$'
-      description: Segments of lowercase letters, digits and underscores, separated by `.` or `:`.
-      examples: ['billing:invoice.read']
+      description: |
+        Segments of lowercase letters, digits and underscores, separated by `:` (or, in IDs created
+        before the colon-only rule, `.`). Existing IDs containing `.` stay valid everywhere they are
+        referenced; only creating a permission refuses them (see `NewPermission`).
+      examples: ['billing:invoice_read']
+    NewPermission:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$'
+      description: |
+        The ID of a permission being created: segments of lowercase letters, digits and underscores,
+        separated by `:`. A `.` is refused with 400.
+      examples: ['billing:invoice_read']
     AuthorizationDetailType:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -3955,7 +3967,7 @@ components:
         tenantId:
           $ref: '#/components/schemas/TenantId'
         permission:
-          $ref: '#/components/schemas/Permission'
+          $ref: '#/components/schemas/NewPermission'
         description:
           $ref: '#/components/schemas/LocalizedText'
         endpointIds:
