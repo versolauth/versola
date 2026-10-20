@@ -2132,8 +2132,8 @@ test('shows the values of the theme the app uses as inherited, and sends only wh
 
   await block.getByLabel('Brand colour, #rrggbb').fill('112233');
   await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
-  await expect(block.getByText('Overridden · base: #5b5bd6')).toBeVisible();
-  await expect(block.getByText('Overridden · base: sharp')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: #5b5bd6')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: sharp')).toBeVisible();
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233', shape: 'round' });
@@ -2150,7 +2150,7 @@ test('the background of an app starts at the theme\'s, is overridden from the pr
   await expect(cards.getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
 
   await cards.getByRole('button', { name: 'Horizon' }).click();
-  await expect(block.getByText('Overridden · base: linear')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: linear')).toBeVisible();
   await block.getByRole('button', { name: 'Reset background to the base' }).click();
   await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
 
