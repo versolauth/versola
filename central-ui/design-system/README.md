@@ -246,7 +246,7 @@ is remembered; a signed-out device stays listed by its user agent's name until i
 signed-out device), and *Apps with access*, one row per
 refresh token. All nested device tables share one column grid so dates line up down the page. The
 wording is fixed: **Sign out** for sessions, **Forget device** for a remembered user agent, **Revoke** for offline access (the refresh token, shown as an
-`Offline access` chip with a muted `↓` to the Apps card), never "long-lived" or "invalidate". No counters
+`Offline access` chip followed by an `Apps with access` text link to the Apps card), never "long-lived" or "invalidate". No counters
 anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
 Reference: `users-list.ts`, `user-record.ts`.
 
