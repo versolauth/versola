@@ -1,4 +1,4 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { codeHighlightStyles } from '../styles/code-highlight';
@@ -12,6 +12,8 @@ export class VersolaCodeEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
   @property({ type: Boolean }) invalid = false;
   @property({ type: String }) placeholder = '';
+  /** The accessible name of the text area: a `<label for>` cannot reach into this shadow root. */
+  @property({ type: String }) label = '';
 
   @query('textarea') private textarea!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
@@ -29,16 +31,17 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-page);
-        border: 1px solid var(--border-input);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         overflow: hidden;
         transition: border-color var(--transition-fast);
       }
       .wrapper:focus-within {
-        border-color: var(--accent);
+        background: var(--surface);
+        border-color: var(--text-primary);
         outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
+        outline-offset: 2px;
       }
       .wrapper.invalid {
         border-color: var(--danger);
@@ -94,6 +97,8 @@ export class VersolaCodeEditor extends LitElement {
         <textarea
           .value=${this.value}
           ?disabled=${this.disabled}
+          aria-label=${this.label || nothing}
+          aria-invalid=${this.invalid ? 'true' : nothing}
           spellcheck="false"
           autocomplete="off"
           autocorrect="off"

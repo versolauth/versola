@@ -21,6 +21,14 @@ trait UserService:
 
   def getSessions(id: UserId): Task[List[SessionResponse]]
 
+  /** Every remembered device of the user -- user agent, and the live session under it or `None` once
+    * signed out -- as auth stores them. */
+  def getDevices(id: UserId): Task[List[DeviceResponse]]
+
+  /** Forgets a device: its user agent, session and the refresh tokens bound to that session.
+    * `false` when the user agent is not the user's. */
+  def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean]
+
   def invalidateSession(userId: UserId): Task[Unit]
 
   /** Signs one user agent out: ends that session of the user, relying parties told. `false`
@@ -108,6 +116,33 @@ object UserService:
         ttlByClientId = clients.map(c => c.id -> c.accessTokenTtl).toMap
       yield sessions.map(toSessionResponse(_, ttlByClientId))
 
+    override def getDevices(id: UserId): Task[List[DeviceResponse]] =
+      for
+        devices <- authClient.getUserDevices(id)
+        clients <- oAuthClientService.getAllClients
+        ttlByClientId = clients.map(c => c.id -> c.accessTokenTtl).toMap
+      yield devices.map: device =>
+        DeviceResponse(
+          userAgent = device.userAgent.map(toUserAgentResponse),
+          session = device.session.map(toSessionResponse(_, ttlByClientId)),
+          endedSessionIds = device.endedSessionIds,
+        )
+
+    override def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean] =
+      authClient.forgetUserAgent(userId, userAgentId)
+
+    private def toUserAgentResponse(agent: AuthClient.UserAgentDto): UserAgentResponse =
+      UserAgentResponse(
+        id = agent.id,
+        userAgent = agent.userAgent,
+        platform = agent.platform,
+        os = agent.os,
+        browser = agent.browser,
+        version = agent.version,
+        createdAt = agent.createdAt,
+        expiresAt = agent.expiresAt,
+      )
+
     private def toSessionResponse(
         session: AuthClient.SessionDto,
         ttlByClientId: Map[ClientId, Duration],
@@ -131,6 +166,9 @@ object UserService:
         browser = session.browser,
         version = session.version,
         createdAt = session.createdAt,
+        expiresAt = session.expiresAt,
+        idleExpiresAt = session.idleExpiresAt,
+        userAgent = session.userAgent.map(toUserAgentResponse),
       )
 
     override def invalidateSession(userId: UserId): Task[Unit] =

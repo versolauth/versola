@@ -526,6 +526,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authorizationDetails: Option[String] = None,
       /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
       claims: Option[String] = None,
+      /** The `User-Agent` header the browser would send; auth stores it, parsed, with the user agent
+        * the sign-in creates. None sends the HTTP client's own. */
+      userAgent: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -542,7 +545,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
       ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
-      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+      request = userAgent.fold(Request.get(url))(ua => Request.get(url).addHeader(Header.Custom("User-Agent", ua)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
           s"No SSO_CONVERSATION cookie in /authorize response (status=${response.status})",

@@ -5,7 +5,8 @@ import './versola-logo';
 import './tenant-selector';
 import './theme-switcher';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'themes' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
+export type NavItem = 'security' | 'clients' | 'resources' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
+  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'forms' | 'themes';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -153,8 +154,8 @@ export class VersolaNavigation extends LitElement {
       .brand {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
-        padding: 1rem 1.5rem;
+        gap: 0.625rem;
+        padding: 1.125rem 1.5rem 1rem;
         border-bottom: 1px solid var(--border-default);
         text-decoration: none;
       }
@@ -178,7 +179,7 @@ export class VersolaNavigation extends LitElement {
           width: 2.25rem;
           height: 2.25rem;
           padding: 0;
-          border: 1px solid var(--border-input);
+          border: 1.5px solid var(--border-input);
           border-radius: var(--radius-md);
           background: transparent;
           color: var(--text-secondary);
@@ -190,8 +191,8 @@ export class VersolaNavigation extends LitElement {
         }
 
         .brand-close:hover {
-          border-color: var(--accent);
-          color: var(--accent);
+          border-color: var(--text-primary);
+          color: var(--text-primary);
         }
 
         /* In the drawer the items are touch targets: 44px, not the desktop's 33. */
@@ -207,10 +208,12 @@ export class VersolaNavigation extends LitElement {
         line-height: 0;
       }
 
-      .brand-name {
-        font-size: var(--text-2xl);
-        font-weight: 700;
-        color: var(--accent);
+      /* The website's monoline wordmark (Wordmark.astro), in ink next to the mark. */
+      .brand-wordmark {
+        display: block;
+        height: 20px;
+        width: auto;
+        color: var(--text-primary);
       }
 
       .tenant-section {
@@ -226,12 +229,13 @@ export class VersolaNavigation extends LitElement {
         margin-bottom: 0.75rem;
       }
 
+      /* A group label is a kicker in the brand colour, as the site's section labels. */
       .nav-section-title {
         font-size: var(--text-xs);
-        font-weight: 600;
+        font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-secondary);
+        letter-spacing: 0.1em;
+        color: var(--accent);
         padding: 0.375rem 0.75rem;
         margin-bottom: 0.125rem;
       }
@@ -325,7 +329,7 @@ export class VersolaNavigation extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -335,7 +339,9 @@ export class VersolaNavigation extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:read');
       case 'users':
@@ -343,8 +349,6 @@ export class VersolaNavigation extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:read');
-      case 'locales':
-        return p.has('locales:read');
       default:
         return false;
     }
@@ -369,9 +373,9 @@ export class VersolaNavigation extends LitElement {
         <div class="nav-scroll">
           <div class="brand">
             <div class="brand-logo">
-              <versola-logo size="40"></versola-logo>
+              <versola-logo size="36"></versola-logo>
             </div>
-            <div class="brand-name">Versola</div>
+            <svg class="brand-wordmark" role="img" aria-label="Versola" viewBox="-2 0 286 56" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 22 L18 48 L34 22"/><path d="M50 35 H76 A13 13 0 1 0 72.5 44.3"/><path d="M98 22 V48 M98 36 C98 26 104 22 114 22"/><path d="M158.5 27 C156.5 23 152.5 22 148.5 22 C142.5 22 138.5 25 138.5 29 C138.5 33 142.5 34.5 148.5 36 C154.5 37.5 158.5 39 158.5 42.5 C158.5 46.5 154.5 48.5 148.5 48.5 C143.5 48.5 139.5 46.5 138 42.5"/><circle cx="193.5" cy="35" r="13"/><path d="M228.5 6 V48"/><circle cx="263.5" cy="35" r="13"/><path d="M276.5 22 V48"/></svg>
             <button
               type="button"
               class="brand-close"
@@ -389,25 +393,26 @@ export class VersolaNavigation extends LitElement {
 
           <nav class="nav" aria-label="Sections">
             <div class="nav-section">
-              <div class="nav-section-title">Tenant Scoped</div>
-              ${this.navItem('challenges', 'Challenges & Security')}
+              <div class="nav-section-title">Tenant</div>
+              ${this.navItem('security', 'Security')}
               ${this.navItem('clients', 'Clients')}
-              ${this.navItem('permissions', 'Permissions')}
               ${this.navItem('resources', 'Resources')}
-              ${this.navItem('roles', 'Roles')}
               ${this.navItem('scopes', 'Scopes')}
+              ${this.navItem('permissions', 'Permissions')}
+              ${this.navItem('roles', 'Roles')}
+              ${this.navItem('otp-templates', 'OTP templates')}
+              ${this.navItem('authorization-details', 'Authorization details')}
             </div>
 
             <div class="nav-section">
               <div class="nav-section-title">Global</div>
+              ${this.navItem('tenants', 'Tenants')}
               ${this.navItem('edges', 'Edges')}
+              ${this.navItem('users', 'Users')}
+              ${this.navItem('keys', 'Keys & metadata')}
+              ${this.navItem('system-settings', 'System settings')}
               ${this.navItem('forms', 'Forms')}
               ${this.navItem('themes', 'Themes')}
-              ${this.navItem('locales', 'Locales')}
-              ${this.navItem('system-settings', 'System Settings')}
-              ${this.navItem('tenants', 'Tenants')}
-              ${this.navItem('users', 'Users')}
-              ${this.navItem('well-known', 'Well Known')}
             </div>
           </nav>
         </div>

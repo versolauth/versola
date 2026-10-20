@@ -36,9 +36,9 @@ export class VersolaNavToggle extends LitElement {
         width: 2.75rem;
         height: 2.75rem;
         padding: 0;
-        border: 1px solid var(--border-input);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
-        background: var(--surface);
+        background: transparent;
         color: var(--text-primary);
         font-family: var(--font-family);
         font-size: var(--text-2xl);
@@ -48,8 +48,7 @@ export class VersolaNavToggle extends LitElement {
       }
 
       button:hover {
-        border-color: var(--accent);
-        color: var(--accent);
+        border-color: var(--text-primary);
       }
     `,
   ];

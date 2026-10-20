@@ -19,6 +19,8 @@ object UserController extends Controller:
     findUsersEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
+    getUserDevicesEndpoint,
+    forgetUserAgentEndpoint,
     getUserRefreshTokensEndpoint,
     revokeRefreshTokensEndpoint,
     createUserEndpoint,
@@ -78,6 +80,35 @@ object UserController extends Controller:
         id <- request.queryZIO[UserId]("id")
         sessions <- service.getSessions(id)
       yield Response.json(sessions.toJson)
+    }
+
+  /** Every remembered device, signed in (`session`) or signed out (`session: null`). Separate from
+    * [[getUserSessionsEndpoint]], whose items are always live sessions. */
+  val getUserDevicesEndpoint =
+    Method.GET / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        devices <- service.getDevices(id)
+      yield Response.json(devices.toJson)
+    }
+
+  /** Forgets a device: its user agent, its session and the refresh tokens bound to it. 404 when the
+    * user agent is not the user's. */
+  val forgetUserAgentEndpoint =
+    Method.DELETE / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        userId <- request.queryZIO[UserId]("id")
+        userAgentId <- request.queryZIO[String]("userAgentId")
+        _ <- Observability.setUserId(userId.toString)
+        forgotten <- service.forgetUserAgent(userId, userAgentId)
+        response <-
+          if forgotten then ZIO.succeed(Response.status(Status.NoContent))
+          else Observability.setError("user_agent_not_found").as(Response.status(Status.NotFound))
+      yield response
     }
 
   /** Independent of getUserSessionsEndpoint: a refresh token's expiry is fixed at issuance and

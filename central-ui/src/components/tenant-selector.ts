@@ -39,13 +39,13 @@ export class TenantSelector extends LitElement {
          edge, so the control lines up with every other field. */
       .selector-button {
         width: 100%;
-        padding: 0.75rem 2.75rem 0.75rem 1rem;
-        background: var(--surface);
+        padding: 0.6875rem 2.75rem 0.6875rem 1rem;
+        background: var(--field);
         background-image: var(--select-chevron);
         background-position: calc(100% - 1rem) 50%;
         background-size: 0.625rem 0.375rem;
         background-repeat: no-repeat;
-        border: 1px solid var(--border-input);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-size: var(--text-base);
@@ -58,8 +58,8 @@ export class TenantSelector extends LitElement {
       }
 
       .selector-button:hover {
-        border-color: var(--accent);
-        background-color: var(--accent-subtle);
+        border-color: var(--text-primary);
+        background-color: var(--field-hover);
       }
 
       .selector-button:focus-visible {
@@ -69,10 +69,10 @@ export class TenantSelector extends LitElement {
 
       .selector-label {
         font-size: var(--text-xs);
-        font-weight: 600;
-        color: var(--text-secondary);
+        font-weight: 700;
+        color: var(--accent);
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.1em;
         margin-bottom: 0.5rem;
       }
 
@@ -90,10 +90,10 @@ export class TenantSelector extends LitElement {
         top: calc(100% + 0.5rem);
         left: 0;
         right: 0;
-        background: var(--bg-page);
+        background: var(--surface-raised);
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
-        box-shadow: var(--shadow-lg);
+        border-radius: var(--radius-inner);
+        box-shadow: var(--shadow-card);
         max-height: 320px;
         overflow: hidden;
         z-index: var(--z-dropdown);
@@ -110,9 +110,9 @@ export class TenantSelector extends LitElement {
         width: 100%;
         box-sizing: border-box;
         padding: 0.5rem 0.75rem;
-        background: var(--bg-page);
-        border: 1px solid var(--border-input);
-        border-radius: var(--radius-md);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
+        border-radius: var(--radius-pill);
         color: var(--text-primary);
         font-size: var(--text-sm);
         font-family: var(--font-mono);
@@ -121,8 +121,9 @@ export class TenantSelector extends LitElement {
 
       .search-input:focus {
         outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
-        border-color: var(--accent);
+        outline-offset: 2px;
+        background: var(--surface);
+        border-color: var(--text-primary);
       }
 
       .search-input::placeholder {

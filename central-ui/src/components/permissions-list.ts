@@ -10,6 +10,7 @@ import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../ut
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validatePermission } from '../utils/validators';
 import { localizedValue } from './localized-value';
+import { valueChips } from './value-chips';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
@@ -24,6 +25,7 @@ import './localized-text-editor';
 import './record-card';
 import './record-header';
 import './side-panel';
+import './typeahead-select';
 
 type PermissionGroup = 'general' | 'endpoints';
 type ResolvedEndpoint = { method: string; path: string };
@@ -111,16 +113,62 @@ export class VersolaPermissionsList extends LitElement {
         align-items: center;
       }
 
-      .endpoint-list {
+      /* The endpoints of a permission, per resource: the resource's host on a line of its own
+         (cut with an ellipsis, the full host in its title), then one row per endpoint. A host
+         plus a method plus a path does not fit the panel's label / value row. */
+      .endpoint-group {
         display: grid;
-        gap: 0.375rem;
+        gap: 0.5rem;
+        padding: 0.75rem var(--spacing-lg);
+        border-bottom: 1px solid var(--border-subtle);
       }
 
+      .record-compact .endpoint-group {
+        padding: 0.75rem var(--spacing-md);
+      }
+
+      .endpoint-group:last-child {
+        border-bottom: 0;
+      }
+
+      .endpoint-host {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        font-weight: 600;
+        color: var(--accent);
+      }
+
+      .endpoint-rows {
+        display: grid;
+        gap: 0.375rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      /* The badge and the path share a row; a path too long for what is left drops under the
+         badge and takes the full width instead of breaking in a sliver. */
       .endpoint {
         display: flex;
-        gap: 0.625rem;
-        align-items: center;
         flex-wrap: wrap;
+        gap: 0.25rem 0.625rem;
+        align-items: baseline;
+        min-width: 0;
+      }
+
+      .endpoint .method-badge {
+        flex: none;
+      }
+
+      .endpoint .endpoint-path {
+        flex: 1 1 18rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: normal;
       }
 
       .record-page .record-card {
@@ -271,7 +319,7 @@ export class VersolaPermissionsList extends LitElement {
   private get draftIdError(): string {
     const id = this.draftId.trim();
     if (!id) return this.submitted ? 'A permission ID is required.' : '';
-    if (!validatePermission(id)) return 'Lowercase segments separated by dots or colons, each starting with a letter.';
+    if (!validatePermission(id)) return 'Lowercase segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.';
     if (this.permissions.some(permission => permission.id === id)) return 'A permission with this ID already exists.';
     return '';
   }
@@ -366,17 +414,20 @@ export class VersolaPermissionsList extends LitElement {
       .filter(option => this.count(option.id) > 0);
     const options = [
       { id: 'all', label: 'All' },
-      ...resourceOptions,
       { id: 'unlinked', label: 'Unlinked' },
       ...(this.count('detached') > 0 ? [{ id: 'detached', label: 'Detached' }] : []),
     ];
+    const byResource = this.filter.startsWith('resource:');
     return html`
       <div class="list-toolbar">
         <input class="search-input" type="search" aria-label="Search permissions" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
+        <versola-typeahead-select label="Resource" placeholder="Resource" emptyText="No resource matches"
+          .options=${resourceOptions} .value=${byResource ? this.filter : ''}
+          @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id || 'all'}></versola-typeahead-select>
         <versola-filter-bar label="Filter permissions"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
-          .value=${this.filter}
+          .options=${options}
+          .value=${byResource ? '' : this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id}></versola-filter-bar>
       </div>
     `;
@@ -391,13 +442,12 @@ export class VersolaPermissionsList extends LitElement {
         </button>` },
       { id: 'resources', label: 'Resources', cell: permission => {
         const { groups } = this.resolve(permission);
-        return groups.length ? html`<div class="chips">${groups.map(group => html`<span class="chip">${formatResourceLabel(group.resource.resource)}</span>`)}</div>` : html`<span class="muted">—</span>`;
+        return valueChips(groups.map(group => formatResourceLabel(group.resource.resource)), { mono: false });
       } },
       { id: 'endpoints', label: 'Endpoints', cell: permission => {
         const { groups, detached } = this.resolve(permission);
-        const linked = groups.reduce((sum, group) => sum + group.endpoints.length, 0);
-        return html`<div class="chips">${linked || !detached.length ? html`<span class=${linked ? '' : 'muted'}>${linked}</span>` : ''}
-          ${detached.length ? html`<span class="chip warn">${detached.length} detached</span>` : ''}</div>`;
+        const linked = groups.flatMap(group => group.endpoints.map(endpoint => `${endpoint.method} ${endpoint.path}`));
+        return valueChips(linked, { extra: detached.length ? html`<span class="chip warn" title=${detached.map(id => `#${id}`).join(', ')}>Detached</span>` : nothing });
       } },
     ];
     const menuItems = (permission: Permission): RowMenuItem[] => [
@@ -410,7 +460,7 @@ export class VersolaPermissionsList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredPermissions}
         .rowKey=${(permission: Permission) => permission.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(permission: Permission) => `Actions for ${permission.id}`}
         @row-select=${(e: CustomEvent<{ row: Permission }>) => this.openView(e.detail.row)}
@@ -424,9 +474,16 @@ export class VersolaPermissionsList extends LitElement {
     return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
-  private renderEndpoints(endpoints: ResolvedEndpoint[]) {
-    return html`<div class="endpoint-list">${endpoints.map(endpoint => html`
-      <div class="endpoint"><span class=${`method-badge method-${endpoint.method.toLowerCase()}`}>${endpoint.method}</span><span class="endpoint-path">${endpoint.path}</span></div>`)}</div>`;
+  private renderEndpointGroup(group: ResourceEndpoints) {
+    const host = formatResourceLabel(group.resource.resource);
+    return html`
+      <div class="endpoint-group">
+        <div class="endpoint-host" title=${host}>${host}</div>
+        <ul class="endpoint-rows" aria-label=${`Endpoints of ${host}`}>
+          ${group.endpoints.map(endpoint => html`
+            <li class="endpoint"><span class=${`method-badge method-${endpoint.method.toLowerCase()}`}>${endpoint.method}</span><span class="endpoint-path">${endpoint.path}</span></li>`)}
+        </ul>
+      </div>`;
   }
 
   private renderGroups(permission: Permission) {
@@ -442,7 +499,7 @@ export class VersolaPermissionsList extends LitElement {
 
       <versola-record-card heading="Endpoints" subheading="What a token carrying this permission may call through edge." ?editable=${this.canManage}
         .body=${groups.length || detached.length ? html`
-          ${groups.map(group => this.row(formatResourceLabel(group.resource.resource), this.renderEndpoints(group.endpoints)))}
+          ${groups.map(group => this.renderEndpointGroup(group))}
           ${detached.length ? this.row('Detached endpoints', html`<span class="chip warn">${detached.map(id => `#${id}`).join(', ')}</span>`) : ''}`
           : html`<div class="record-row"><div class="record-value muted">No endpoints linked. The permission can be granted but opens nothing.</div></div>`}
         @edit=${() => this.openEditor('endpoints')}></versola-record-card>
@@ -479,12 +536,8 @@ export class VersolaPermissionsList extends LitElement {
   }
 
   private renderMeta(permission: Permission) {
-    const { groups, detached } = this.resolve(permission);
-    const linked = groups.reduce((sum, group) => sum + group.endpoints.length, 0);
-    return html`
-      <span class="chip">${linked} ${linked === 1 ? 'endpoint' : 'endpoints'}</span>
-      ${detached.length ? html`<span class="chip warn">Detached endpoints</span>` : ''}
-    `;
+    const { detached } = this.resolve(permission);
+    return detached.length ? html`<span class="chip warn">Detached endpoints</span>` : '';
   }
 
   private renderRecordPage(permission: Permission) {
@@ -543,7 +596,7 @@ export class VersolaPermissionsList extends LitElement {
                 aria-invalid=${idError ? 'true' : nothing} aria-describedby="permission-id-hint" placeholder="e.g. orders:read"
                 @input=${(e: Event) => this.draftId = (e.target as HTMLInputElement).value} />
               ${idError ? html`<div class="error-message" id="permission-id-hint" role="alert">${idError}</div>`
-                : html`<div class="hint" id="permission-id-hint">Lowercase segments separated by dots or colons, each starting with a letter.</div>`}
+                : html`<div class="hint" id="permission-id-hint">Lowercase segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.</div>`}
             </div>
             ${this.renderDescriptionField()}
           </div>

@@ -35,16 +35,17 @@ export class VersolaCelEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-page);
-        border: 1px solid var(--border-input);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
         overflow: hidden;
       }
       .wrapper:focus-within {
-        border-color: var(--accent);
+        background: var(--surface);
+        border-color: var(--text-primary);
         outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
+        outline-offset: 2px;
       }
       :host([has-error]) .wrapper { border-color: var(--danger); }
       .error-message {

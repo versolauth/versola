@@ -115,6 +115,9 @@ object UserServiceSpec extends UnitSpecBase:
         browser = None,
         version = None,
         createdAt = enteredAt.toString,
+        expiresAt = enteredAt.plusSeconds(3600),
+        idleExpiresAt = None,
+        userAgent = None,
       )
       for
         _ <- env.authClient.getUserSessions.succeedsWith(List(sessionDto))
@@ -125,6 +128,98 @@ object UserServiceSpec extends UnitSpecBase:
         result.head.clients.head.clientId == clientId,
         result.head.clients.head.expiresAt == enteredAt.plus(ttl.asJava),
       )
+    },
+    test("getSessions passes the session's expiry, idle expiry and user agent through") {
+      val env = Env()
+      val created = Instant.parse("2024-01-01T00:00:00Z")
+      val agent = AuthClient.UserAgentDto(
+        id = "00000000-0000-0000-0000-0000000000a1",
+        userAgent = Some("raw"),
+        platform = Some("desktop"),
+        os = Some("macOS 14.6"),
+        browser = Some("Chrome"),
+        version = Some("130"),
+        createdAt = created,
+        expiresAt = created.plusSeconds(86400),
+      )
+      val sessionDto = AuthClient.SessionDto(
+        publicId = "public-session-1",
+        clients = Nil,
+        platform = Some("desktop"),
+        os = Some("macOS 14.6"),
+        browser = Some("Chrome"),
+        version = Some("130"),
+        createdAt = created.toString,
+        expiresAt = created.plusSeconds(3600),
+        idleExpiresAt = Some(created.plusSeconds(600)),
+        userAgent = Some(agent),
+      )
+      for
+        _ <- env.authClient.getUserSessions.succeedsWith(List(sessionDto))
+        _ <- env.oAuthClientService.getAllClients.succeedsWith(Vector.empty)
+        result <- env.service.getSessions(userId)
+      yield assertTrue(
+        result.map(_.expiresAt) == List(created.plusSeconds(3600)),
+        result.map(_.idleExpiresAt) == List(Some(created.plusSeconds(600))),
+        result.flatMap(_.userAgent).map(_.id) == List(agent.id),
+        result.flatMap(_.userAgent).flatMap(_.userAgent) == List("raw"),
+        result.flatMap(_.userAgent).map(_.expiresAt) == List(created.plusSeconds(86400)),
+      )
+    },
+    test("getDevices maps a signed-in device with its session and a signed-out one with no session") {
+      val env = Env()
+      val created = Instant.parse("2024-01-01T00:00:00Z")
+      def agent(id: String, raw: Option[String]) = AuthClient.UserAgentDto(
+        id = id,
+        userAgent = raw,
+        platform = Some("ios"),
+        os = Some("iOS 17"),
+        browser = Some("Safari"),
+        version = Some("17"),
+        createdAt = created,
+        expiresAt = created.plusSeconds(86400),
+      )
+      val signedIn = AuthClient.DeviceDto(
+        userAgent = Some(agent("ua-1", Some("raw-1"))),
+        session = Some(
+          AuthClient.SessionDto(
+            publicId = "public-session-1",
+            clients = Nil,
+            platform = Some("ios"),
+            os = Some("iOS 17"),
+            browser = Some("Safari"),
+            version = Some("17"),
+            createdAt = created.toString,
+            expiresAt = created.plusSeconds(3600),
+            idleExpiresAt = None,
+            userAgent = Some(agent("ua-1", Some("raw-1"))),
+          ),
+        ),
+        endedSessionIds = Nil,
+      )
+      val signedOut = AuthClient.DeviceDto(userAgent = Some(agent("ua-2", None)), session = None, endedSessionIds = List("old-1", "old-2"))
+      for
+        _ <- env.authClient.getUserDevices.succeedsWith(List(signedIn, signedOut))
+        _ <- env.oAuthClientService.getAllClients.succeedsWith(Vector.empty)
+        result <- env.service.getDevices(userId)
+      yield assertTrue(
+        env.authClient.getUserDevices.calls == List(userId),
+        result.map(_.userAgent.map(_.id)) == List(Some("ua-1"), Some("ua-2")),
+        result.map(_.session.map(_.publicId)) == List(Some("public-session-1"), None),
+        result.head.session.map(_.expiresAt).contains(created.plusSeconds(3600)),
+        result.head.session.flatMap(_.idleExpiresAt).isEmpty,
+        result.head.userAgent.flatMap(_.userAgent).contains("raw-1"),
+        result(1).userAgent.flatMap(_.userAgent).isEmpty,
+        result(1).userAgent.map(_.expiresAt).contains(created.plusSeconds(86400)),
+        result(1).endedSessionIds == List("old-1", "old-2"),
+      )
+    },
+    test("forgetUserAgent delegates to authClient and answers whether it was forgotten") {
+      val env = Env()
+      for
+        _ <- env.authClient.forgetUserAgent.succeedsWith(false)
+        forgotten <- env.service.forgetUserAgent(userId, "ua-1")
+      yield assertTrue(!forgotten, env.authClient.forgetUserAgent.calls == List((userId, "ua-1")))
     },
     test("getSessions sorts client entries by enteredAt descending (most recently issued first)") {
       val env = Env()
@@ -181,6 +276,9 @@ object UserServiceSpec extends UnitSpecBase:
         browser = None,
         version = None,
         createdAt = olderEnteredAt.toString,
+        expiresAt = olderEnteredAt.plusSeconds(3600),
+        idleExpiresAt = None,
+        userAgent = None,
       )
       for
         _ <- env.authClient.getUserSessions.succeedsWith(List(sessionDto))

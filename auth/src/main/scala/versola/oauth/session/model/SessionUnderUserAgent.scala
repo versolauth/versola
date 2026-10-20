@@ -21,4 +21,8 @@ case class SessionUnderUserAgent(
     browser: Option[String],
     version: Option[String],
     expiresAt: Instant,
+    /** `None` when the session was created without an idle window. */
+    idleExpiresAt: Option[Instant],
+    /** The user agent row this session runs under; `None` if it has expired and been swept. */
+    userAgent: Option[UserAgentRecord],
 )

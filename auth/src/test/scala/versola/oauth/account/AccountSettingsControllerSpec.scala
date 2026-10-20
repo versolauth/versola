@@ -41,6 +41,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     browser = Some("Firefox"),
     version = Some("140"),
     expiresAt = Instant.EPOCH,
+    idleExpiresAt = None,
+    userAgent = None,
   )
 
   private val otherDeviceSession = ownSession.copy(publicId = PublicSessionId("session-on-another-device"))

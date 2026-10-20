@@ -144,3 +144,12 @@ The same applies to a nested class or object, an `object`'s members, and compani
 write `Outer.Inner`, not a bare `Inner` imported from `Outer`. Import the outer type, not the
 nested one. On a genuine name clash, prefer an import rename (`import a.Foo as AFoo`) over a
 full path.
+
+# Scala Construction Rules
+
+When constructing a case class, or calling any method, with three or more parameters, or with two
+or more parameters of the same type, pass every argument by name, in declaration order. Positional
+arguments are fine only for one- or two-parameter constructors of distinct types, and for tuples.
+
+- Wrong: `ChallengeSettingsRecord(tenantId, phoneRegions, emailRegistration, defaultRoles, ...)`
+- Right: `ChallengeSettingsRecord(tenantId = tenantId, phoneRegions = phoneRegions, emailRegistration = ..., ...)`

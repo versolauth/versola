@@ -9,6 +9,7 @@ import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.model.{Nonce, RefreshToken}
 import versola.oauth.session.model.{
   ClientEntry,
+  EndedSession,
   PriorSession,
   PublicSessionId,
   RefreshAlreadyExchanged,
@@ -17,6 +18,7 @@ import versola.oauth.session.model.{
   RevokedFamily,
   SessionId,
   SessionRecord,
+  StoredSession,
   UserAgentId,
 }
 import versola.oauth.session.model.{
@@ -59,6 +61,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     jsonBCodec[Map[PassedAuthFactor, PassedFactorRecord]]
   given clientEntriesDbCodec: DbCodec[List[ClientEntry]] = jsonBCodec[List[ClientEntry]]
   given DbCodec[SessionRecord] = DbCodec.derived[SessionRecord]
+  given DbCodec[EndedSession] = DbCodec.derived[EndedSession]
 
   // ── refresh-token codecs ──────────────────────────────────────────────────
   given DbCodec[RefreshTokenFamilyId] = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
@@ -171,19 +174,33 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.update.run()
       .unit
 
-  override def findByUserId(userId: UserId): Task[List[SessionRecord]] =
+  override def findByUserId(userId: UserId): Task[List[StoredSession]] =
     for
       now <- Clock.instant
       result <- xa.connectMeasured("find-sessions-by-user"):
         sql"""
-          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
+          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at, idle_expires_at
           FROM sso_sessions
           WHERE
             user_id = $userId
             AND expires_at > $now
             AND (idle_expires_at IS NULL OR idle_expires_at > $now)
           ORDER BY created_at DESC
-        """.query[SessionRecord].run().toList
+        """.query[(SessionRecord, Option[Instant])].run().toList
+    yield result.map(StoredSession(_, _))
+
+  override def findEndedByUserId(userId: UserId): Task[List[EndedSession]] =
+    for
+      now <- Clock.instant
+      result <- xa.connectMeasured("find-ended-sessions-by-user"):
+        sql"""
+          SELECT public_id, user_agent_id
+          FROM sso_sessions
+          WHERE
+            user_id = $userId
+            AND (expires_at <= $now OR idle_expires_at <= $now)
+          ORDER BY created_at DESC
+        """.query[EndedSession].run().toList
     yield result
 
   /** Atomically expires all active sessions and refresh tokens for the given user.

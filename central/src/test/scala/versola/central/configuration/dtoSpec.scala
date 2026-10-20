@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow}
+import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.util.Patch
 import zio.json.*
@@ -17,7 +18,35 @@ object dtoSpec extends ZIOSpecDefault:
         """"permissions":{"add":[],"remove":[]}"""
     s"""{$required$field}""".fromJson[UpdateClientRequest]
 
+  private def createPermission(id: String): Either[String, CreatePermissionRequest] =
+    s"""{"tenantId":"t","permission":"$id","description":{},"endpointIds":[]}""".fromJson[CreatePermissionRequest]
+
   def spec = suite("DTO JSON Codecs")(
+    suite("CreatePermissionRequest permission ID")(
+      test("colon-separated IDs are accepted") {
+        assertTrue(
+          createPermission("users:read").map(_.permission) == Right(Permission("users:read")),
+          createPermission("billing:invoice:read_all").isRight,
+          createPermission("admin").isRight,
+        )
+      },
+      test("an ID with a dot is refused with the colon-only reason") {
+        val result = createPermission("orders.read_all")
+        assertTrue(result.isLeft, result.left.exists(_.contains("separated by ':'")))
+      },
+      test("an ID outside the alphabet is refused") {
+        assertTrue(
+          createPermission("Users:read").isLeft,
+          createPermission("users:1read").isLeft,
+          createPermission("users:").isLeft,
+          createPermission("users-read").isLeft,
+        )
+      },
+      test("a stored ID with a dot still decodes where it is referenced, e.g. in an update") {
+        val update = """{"tenantId":"t","permission":"legacy.read","description":{"add":{},"delete":[]},"endpointIds":null}"""
+        assertTrue(update.fromJson[UpdatePermissionRequest].map(_.permission) == Right(Permission("legacy.read")))
+      },
+    ),
     suite("UpdateClientRequest nullable fields distinguish absent from null")(
       test("an absent auth flow means no change, an explicit null clears it") {
         val absent = decodeUpdate("")

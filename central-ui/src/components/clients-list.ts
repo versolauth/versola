@@ -642,7 +642,7 @@ export class VersolaClientsList extends LitElement {
       /* ── client page ── */
       .banner {
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-inner);
         padding: var(--spacing-md) var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
         background: var(--surface);
@@ -716,10 +716,6 @@ export class VersolaClientsList extends LitElement {
       && (!query
         || client.id.toLowerCase().includes(query)
         || getLocalizedDescription(client.clientName).toLowerCase().includes(query)));
-  }
-
-  private kindCount(kind: 'all' | ClientKind): number {
-    return kind === 'all' ? this.clients.length : this.clients.filter(client => clientKindOf(client) === kind).length;
   }
 
   private async openView(client: OAuthClient) {
@@ -1253,7 +1249,7 @@ export class VersolaClientsList extends LitElement {
           @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value}
           placeholder="Search by name or client ID" />
         <versola-filter-bar label="Filter by type"
-          .options=${filters.map(filter => ({ id: filter.id, label: filter.label, count: this.kindCount(filter.id) }))}
+          .options=${filters.map(filter => ({ id: filter.id, label: filter.label }))}
           .value=${this.typeFilter}
           @change=${(e: CustomEvent<{ id: string }>) => this.typeFilter = e.detail.id as 'all' | ClientKind}
         ></versola-filter-bar>
@@ -1374,7 +1370,7 @@ export class VersolaClientsList extends LitElement {
 
       ${conformance.conformant ? html`
         <div class="banner ok" role="status">
-          <div class="banner-title">${this.icon('shield')}Meets FAPI 2.0 · ${posture.length} of ${posture.length} checks</div>
+          <div class="banner-title">${this.icon('shield')}Meets FAPI 2.0</div>
           <ul>${posture.map(check => html`<li>${this.icon('check')}${check.text}</li>`)}</ul>
         </div>
       ` : html`

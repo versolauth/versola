@@ -4,8 +4,8 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
-import zio.json.JsonCodec
 import zio.json.ast.Json
+import zio.json.{JsonCodec, jsonExplicitNull}
 import zio.schema.{Schema, derived}
 
 import java.time.Instant
@@ -142,6 +142,35 @@ case class SessionResponse(
     browser: Option[String],
     version: Option[String],
     createdAt: String,
+    /** When the session ends regardless of activity. */
+    expiresAt: Instant,
+    /** When the session ends if it stays idle; `None` when no idle timeout applies to it. */
+    idleExpiresAt: Option[Instant],
+    /** The user agent the session runs under; `None` only if its row has expired and been swept. */
+    userAgent: Option[UserAgentResponse],
+) derives JsonCodec, Schema
+
+/** The user agent (device or browser install) as auth stores it. */
+case class UserAgentResponse(
+    id: String,
+    /** The raw `User-Agent` header as last seen on sign-in. */
+    userAgent: Option[String],
+    platform: Option[String],
+    os: Option[String],
+    browser: Option[String],
+    version: Option[String],
+    createdAt: Instant,
+    /** The device is remembered until then; it slides forward on every sign-in. */
+    expiresAt: Instant,
+) derives JsonCodec, Schema
+
+/** One remembered device: its user agent and the live session under it, `null` once signed out. */
+case class DeviceResponse(
+    userAgent: Option[UserAgentResponse],
+    @jsonExplicitNull session: Option[SessionResponse],
+    /** Public ids of the sessions of this user agent that ended and are still stored. A refresh
+     *  token names only its session, so these tie a token that outlived its session to the device. */
+    endedSessionIds: List[String],
 ) derives JsonCodec, Schema
 
 case class RefreshTokenResponse(

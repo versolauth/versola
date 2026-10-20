@@ -16,10 +16,11 @@ info:
     rather than with the HTTP Basic credentials below; they are not part of this document:
     the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
     `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
-    who registered themselves so that central can index them), `PUT /users/email` and
-    `PUT /users/phone` (auth sets a user's email or phone once the user has proven they own the new
-    one) and `POST /configuration/clients/edge-certificate/sign` (an edge asks for a certificate
-    for a client whose key it generated).
+    who registered themselves so that central can index them), `GET /configuration/edges/overload/sync`
+    (an edge asks for its own overload policy), `PUT /users/email` and `PUT /users/phone` (auth sets a
+    user's email or phone once the user has proven they own the new one) and
+    `POST /configuration/clients/edge-certificate/sign` (an edge asks for a certificate for a client
+    whose key it generated).
 
     ## Authentication
 
@@ -708,6 +709,8 @@ paths:
       responses:
         '201':
           description: Permission created.
+        '400':
+          description: The body is malformed, or the permission ID contains `.` (new IDs are colon-separated only).
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -1064,7 +1067,10 @@ paths:
             $ref: '#/components/schemas/UserId'
       responses:
         '200':
-          description: Active sessions, each with the clients entered during it.
+          description: |
+            Active sessions, each with the clients entered during it, when it ends (`expiresAt`, and
+            `idleExpiresAt` when an idle timeout applies) and the user agent it runs under. Signed-out
+            devices are not listed here; see `GET /users/user-agents`.
           content:
             application/json:
               schema:
@@ -1107,6 +1113,119 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: The `sessionId` is not a live session of this user.
+
+  /users/user-agents:
+    get:
+      tags: [Users]
+      summary: List a user's remembered devices
+      description: |
+        Every user agent (browser or app install) auth still remembers for the user, newest first,
+        with the live SSO session under it. A user agent holds at most one session; once it ended,
+        `session` is `null` and `endedSessionIds` lists the ended sessions auth has not yet swept,
+        which is how a refresh token (it names only its session) is tied back to the device it was
+        issued on. A live session whose user agent row has already expired is listed with
+        `userAgent` absent.
+
+        A user agent is remembered until `userAgent.expiresAt`, which slides forward on every
+        sign-in; auth stores no separate last-seen time. Separate from `GET /users/sessions`,
+        whose items are always live sessions.
+      operationId: getUserDevices
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '200':
+          description: The user's devices, signed in and signed out.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceResponse'
+              examples:
+                signedInAndSignedOut:
+                  summary: One signed-in device and one signed out
+                  value:
+                    - userAgent:
+                        id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                        userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-01T09:30:00Z'
+                        expiresAt: '2027-01-15T09:30:00Z'
+                      session:
+                        publicId: c2lkLTAxOThiMmE0
+                        clients:
+                          - clientId: web-portal
+                            enteredAt: '2026-10-15T08:00:00Z'
+                            expiresAt: '2026-10-15T08:10:00Z'
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-15T08:00:00Z'
+                        expiresAt: '2026-10-22T08:00:00Z'
+                        idleExpiresAt: '2026-10-15T09:00:00Z'
+                        userAgent:
+                          id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                          userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                          platform: desktop
+                          os: macOS 10.15.7
+                          browser: Chrome
+                          version: '130'
+                          createdAt: '2026-10-01T09:30:00Z'
+                          expiresAt: '2027-01-15T09:30:00Z'
+                      endedSessionIds: []
+                    - userAgent:
+                        id: 0198b2a4-9e02-7b44-8a61-2f0c5d9e1a07
+                        userAgent: Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1
+                        platform: ios
+                        os: iOS 17.5
+                        browser: Safari
+                        version: '17'
+                        createdAt: '2026-09-20T18:00:00Z'
+                        expiresAt: '2026-12-19T18:00:00Z'
+                      session: null
+                      endedSessionIds: [c2lkLTAxOThiMmEx]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Forget a device
+      description: |
+        Removes the user agent from what auth remembers, ends its session the way the user's own
+        logout would (relying parties included) and expires the refresh tokens bound to its
+        sessions. Refresh tokens name only their session, so a token whose session row auth has
+        already swept cannot be reached this way; revoke it with `DELETE /users/refresh-tokens`.
+        A `userAgentId` that is not this user's is refused with `404` rather than removed.
+      operationId: forgetUserAgent
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: userAgentId
+          in: query
+          required: true
+          description: The `userAgent.id` from `GET /users/user-agents`.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The device was forgotten.
+        '400':
+          description: Either `id` or `userAgentId` is missing.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `userAgentId` is not a remembered user agent of this user.
 
   /users/refresh-tokens:
     get:
@@ -1361,6 +1480,9 @@ paths:
       description: |
         Omitted TTL members keep their stored value, or fall back to the built-in default when
         the tenant has no settings yet.
+
+        The whole record is written, so a client that edits one member overwrites a concurrent edit of
+        another: change members of existing settings with `PATCH`, and use this call to create them.
       operationId: upsertChallengeSettings
       requestBody:
         required: true
@@ -1379,6 +1501,60 @@ paths:
             a profile other than the one the tenant was created with, which cannot be changed,
             or because `signingKeyId` names an RS256 key for a tenant on the `fapi2` profile
             (FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding; a `standard` tenant may select one).
+
+    patch:
+      tags: [Challenges]
+      summary: Patch a tenant's challenge settings
+      description: |
+        JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members: a member
+        the body names is replaced, one it leaves out keeps its stored value. Two admins patching
+        different members at once both land -- the merge runs on the stored row under a lock, so
+        neither overwrites the other, which a `PUT` of the whole record cannot promise.
+
+        A named member is replaced whole, never merged into: `submissionLimits`, `passkeySettings`,
+        `emailRegistration` and `acrVocabulary` are sent in full, and so are `phoneRegions` and the
+        other lists. `null` clears a member, but only the optional ones --
+        `sessionIdleTtlSeconds`, `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`,
+        `signingKeyId`, `logoLight` and `logoDark`. `null` for any other member is refused with
+        `400` rather than read as absent, and so is a key the record does not have.
+
+        The record that would result is validated exactly as a `PUT` validates its record (the
+        header/encoding pair, the logo pair, the assertion lifetime range, phone regions, email
+        domains, default roles, the signing key), and nothing is stored when it is refused.
+        Unlike `PUT`, this does not create settings: a tenant that has none gets `404`.
+      operationId: patchChallengeSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchChallengeSettingsRequest'
+            examples:
+              onlyTheSessionLifetime:
+                summary: Change one member; every other keeps its value
+                value:
+                  tenantId: acme
+                  sessionTtlSeconds: 43200
+              clearTheSigningKey:
+                summary: Clear an optional member and change a second one
+                value:
+                  tenantId: acme
+                  signingKeyId: null
+                  otpLength: 8
+      responses:
+        '204':
+          description: Settings stored.
+        '400':
+          description: |
+            Refused, with nothing stored: a key the record does not have, `null` for a member that
+            is not optional, a body without `tenantId`, or a resulting record that breaks a rule
+            of `PUT` (see above), among them a `securityProfile` other than the one the tenant
+            was created with.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The tenant has no challenge settings yet; create them with `PUT`.
+
 
   /configuration/forms:
     get:
@@ -1926,6 +2102,45 @@ paths:
         '404':
           description: No edge is registered under that id.
 
+  /configuration/edges/overload:
+    put:
+      tags: [Edges]
+      summary: Set what an edge does when it is asked for more than it can do
+      description: |
+        The overload policy of one edge: its inbound admission limits (with priorities, so a new
+        login is refused before work already begun, and the proxied calls last), an adaptive limit
+        inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
+        its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
+        removes it and returns the edge to the values of its own deployment.
+
+        Every field is optional and means "what the edge starts with" when absent, so a policy is
+        a patch over the deployment. `mode` is `off`, `shadow` (count what `enforce` would
+        refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
+        change up on its next configuration sync and, while central is unreachable, keeps the last
+        policy it received.
+      operationId: setEdgeOverloadPolicy
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverloadPolicy'
+      responses:
+        '204':
+          description: Policy recorded.
+        '400':
+          description: The policy does not validate; the body names the first field that is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverloadPolicyError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
   /configuration/edges/rotate-key:
     post:
       tags: [Edges]
@@ -2103,8 +2318,18 @@ components:
     Permission:
       type: string
       pattern: '^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$'
-      description: Segments of lowercase letters, digits and underscores, separated by `.` or `:`.
-      examples: ['billing:invoice.read']
+      description: |
+        Segments of lowercase letters, digits and underscores, separated by `:` (or, in IDs created
+        before the colon-only rule, `.`). Existing IDs containing `.` stay valid everywhere they are
+        referenced; only creating a permission refuses them (see `NewPermission`).
+      examples: ['billing:invoice_read']
+    NewPermission:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$'
+      description: |
+        The ID of a permission being created: segments of lowercase letters, digits and underscores,
+        separated by `:`. A `.` is refused with 400.
+      examples: ['billing:invoice_read']
     AuthorizationDetailType:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -3904,7 +4129,7 @@ components:
         tenantId:
           $ref: '#/components/schemas/TenantId'
         permission:
-          $ref: '#/components/schemas/Permission'
+          $ref: '#/components/schemas/NewPermission'
         description:
           $ref: '#/components/schemas/LocalizedText'
         endpointIds:
@@ -4273,7 +4498,70 @@ components:
         createdAt:
           type: string
           format: date-time
-      required: [publicId, clients, createdAt]
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session ends regardless of activity.
+        idleExpiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the session ends if it stays idle, pushed forward by activity. Absent when no idle
+            timeout applies to the session.
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: The user agent the session runs under. Absent only if its row has expired and been swept.
+      required: [publicId, clients, createdAt, expiresAt]
+    UserAgentResponse:
+      type: object
+      description: A user agent (browser or app install) as auth stores it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        userAgent:
+          type: string
+          description: The raw `User-Agent` header as last seen on sign-in. Absent when none was sent.
+        platform:
+          type: string
+          enum: [ios, android, desktop]
+          description: Parsed from the header; absent when it matched none.
+        os:
+          type: string
+        browser:
+          type: string
+        version:
+          type: string
+          description: The browser's major version.
+        createdAt:
+          type: string
+          format: date-time
+          description: When auth first saw this user agent.
+        expiresAt:
+          type: string
+          format: date-time
+          description: The device is remembered until then; it slides forward on every sign-in.
+      required: [id, createdAt, expiresAt]
+    DeviceResponse:
+      type: object
+      properties:
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: Absent only for a live session whose user agent row has expired and been swept.
+        session:
+          oneOf:
+            - $ref: '#/components/schemas/SessionResponse'
+            - type: 'null'
+          description: The live session under this user agent; `null` once signed out.
+        endedSessionIds:
+          type: array
+          items:
+            type: string
+          description: |
+            Public ids of this user agent's sessions that ended and are still stored. Empty while
+            signed in. A refresh token's `sessionId` matches one of these when it was issued on this
+            device.
+      required: [session, endedSessionIds]
     RefreshTokenResponse:
       type: object
       properties:
@@ -4689,6 +4977,93 @@ components:
         - passkeySettings
         - ipHeader
 
+    PatchChallengeSettingsRequest:
+      type: object
+      description: >-
+        A JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members:
+        absent keeps the stored value, a value replaces it whole, `null` clears an optional member.
+        Members that are not listed here are refused. Types are those of
+        `UpsertChallengeSettingsRequest`, except that none of the members but `tenantId` is
+        required and only the ones marked nullable accept `null`.
+      additionalProperties: false
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
+          type: array
+          uniqueItems: true
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoleId'
+        submissionLimits:
+          $ref: '#/components/schemas/SubmissionLimits'
+        otpLength:
+          type: integer
+        otpResendAfter:
+          type: integer
+        passkeySettings:
+          $ref: '#/components/schemas/PasskeySettings'
+        authConversationTtlSeconds:
+          type: integer
+        sessionTtlSeconds:
+          type: integer
+        sessionIdleTtlSeconds:
+          type: [integer, 'null']
+          description: Null clears the idle timeout.
+        userAgentTtlSeconds:
+          type: integer
+        ipHeader:
+          type: string
+        acrVocabulary:
+          type: [object, 'null']
+          description: Replaced whole; null clears the vocabulary.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        postLogoutRedirectUris:
+          type: array
+          items:
+            type: string
+        requireDpopNonce:
+          type: boolean
+        mtlsCertificateHeader:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch it and mtlsCertificateEncoding must both be set or both
+            be absent.
+        mtlsCertificateEncoding:
+          oneOf:
+            - $ref: '#/components/schemas/MtlsCertificateEncoding'
+            - type: 'null'
+        signingKeyId:
+          type: [string, 'null']
+          description: >-
+            Null clears the selection, falling back to auth's configured private key. Validated as
+            in `UpsertChallengeSettingsRequest`.
+        clientAssertionMaxLifetimeSeconds:
+          type: integer
+          description: Refused outside 30..900.
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
+          description: >-
+            Fixed when the tenant is created: naming the stored profile changes nothing, any other
+            is refused with `400`.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch `logoLight` and `logoDark` must both be set or both be
+            absent.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme.
+      required:
+        - tenantId
+
     # ────────────────────────────── Forms ──────────────────────────────
     BackendProperty:
       type: object
@@ -5077,7 +5452,153 @@ components:
             RFC 9449 §9: whether every DPoP proof this edge checks on a proxied call must
             carry a nonce it issued. Governs that edge only, and only the calls it proxies —
             auth's own endpoints follow the tenant setting of the same name.
+        overloadPolicy:
+          $ref: '#/components/schemas/OverloadPolicy'
+          description: The edge's overload policy; absent when none is set.
       required: [id, hasOldKey, requireDpopNonce]
+    OverloadPolicy:
+      type: object
+      description: |
+        A patch over the settings an edge starts with; every field is optional.
+      properties:
+        inbound:
+          $ref: '#/components/schemas/InboundOverloadPolicy'
+        outbound:
+          $ref: '#/components/schemas/OutboundOverloadPolicy'
+    OverloadMode:
+      type: string
+      enum: [off, shadow, enforce]
+      description: |
+        `off` does nothing; `shadow` counts what `enforce` would refuse and refuses nothing;
+        `enforce` refuses.
+    InboundOverloadPolicy:
+      type: object
+      description: Admission control at the edge's entry; a refusal is `503` with `Retry-After`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxInFlight:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: Requests in flight at once; ignored while the adaptive limit is on.
+        continuationShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: |
+            The share of the limit work already begun (code exchange, logout) may use; above it
+            such requests are refused. New logins use `startShare`, proxied calls the whole limit.
+        startShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: The share of the limit a new login may use; must not exceed `continuationShare`.
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+        adaptive:
+          type: object
+          description: |
+            A limit that follows the pod: it shrinks when call times rise or the executor stalls,
+            and grows back while calls are fast, inside `[minLimit, maxLimit]`.
+          properties:
+            enabled:
+              type: boolean
+            minLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            maxLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            tolerance:
+              type: number
+              minimum: 1
+              maximum: 5
+              description: How much slower than usual a call may get before the limit shrinks.
+            smoothing:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            lagTargetMillis:
+              type: integer
+              minimum: 5
+              maximum: 10000
+              description: How late the executor may run a timer before it counts as stalled.
+    OutboundOverloadPolicy:
+      type: object
+      description: |
+        Bounds on the edge's calls to auth and to resource backends, per peer. A refusal is `503`
+        with `Retry-After`, a call that took too long is `504`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxConcurrent:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        maxQueue:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        queueTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        requestTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        breaker:
+          type: object
+          description: |
+            Opens when `failureRatio` of the calls in the window fail (a transport error, a
+            timeout, or a `502`/`503`/`504`), refuses at once while open, then lets `probeCalls`
+            probes through.
+          properties:
+            enabled:
+              type: boolean
+            failureRatio:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            minCalls:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            windowSeconds:
+              type: integer
+              minimum: 1
+              maximum: 300
+            openSeconds:
+              type: integer
+              minimum: 1
+              maximum: 600
+            probeCalls:
+              type: integer
+              minimum: 1
+              maximum: 100
+        retryBudget:
+          type: object
+          description: What retries may add to the load on a peer, as a share of its calls.
+          properties:
+            ratio:
+              type: number
+              minimum: 0
+              maximum: 1
+            minPerSecond:
+              type: number
+              minimum: 0
+              maximum: 1000
+    OverloadPolicyError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     SetEdgeDpopRequest:
       type: object
       properties:
