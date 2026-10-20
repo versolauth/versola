@@ -241,7 +241,8 @@ export class VersolaResourceRecord extends LitElement {
         font-family: var(--font-mono);
       }
 
-      @media (max-width: 900px) {
+      /* The sidebar takes 250px: below 1180px of window the two cards would get under 440px each. */
+      @media (max-width: 1180px) {
         .grid-2 {
           grid-template-columns: minmax(0, 1fr);
         }

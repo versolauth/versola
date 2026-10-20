@@ -479,6 +479,42 @@ test.describe('apps with offline access', () => {
   });
 });
 
+test.describe('phone layout of devices and passkeys', () => {
+  test.use({ viewport: { width: 375, height: 900 } });
+
+  test('a device is a card: facts one per line, clients stacked, full-width action at the bottom', async ({ page }) => {
+    await openRecord(page);
+    const chrome = card(page, 'Signed-in devices').locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
+    const facts = await chrome.locator('.device-facts div').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+    expect(new Set(facts).size).toBe(facts.length);
+    const client = chrome.getByRole('row').filter({ hasText: 'storefront-web' });
+    await expect(client.locator('[data-label="Entered"]')).toBeVisible();
+    await expect(client.locator('[data-label="Access token until"]')).toBeVisible();
+    expect(await client.locator('[data-label="Entered"]').evaluate(node => getComputedStyle(node, '::before').content)).toContain('Entered');
+    const action = await chrome.getByRole('button', { name: /Sign out device/ }).boundingBox();
+    const clients = await chrome.locator('.device-clients').boundingBox();
+    const deviceBox = await chrome.boundingBox();
+    expect(action!.y).toBeGreaterThan(clients!.y + clients!.height);
+    expect(action!.width).toBeGreaterThan(deviceBox!.width - 48);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+
+  test('a passkey is a card: name, chips, dates, then Rename and Delete side by side', async ({ page }) => {
+    await openRecord(page);
+    const passkey = card(page, 'Passkeys').locator('[data-passkey="cred-icloud"]');
+    const name = await passkey.locator('.passkey-name').boundingBox();
+    const chips = await passkey.locator('.passkey-chips').boundingBox();
+    const when = await passkey.locator('.passkey-when').boundingBox();
+    expect(chips!.y).toBeGreaterThan(name!.y);
+    expect(when!.y).toBeGreaterThan(chips!.y);
+    const rename = await passkey.getByRole('button', { name: /^Rename/ }).boundingBox();
+    const del = await passkey.getByRole('button', { name: /^Delete/ }).boundingBox();
+    expect(rename!.y).toBeGreaterThan(when!.y);
+    expect(del!.y).toBe(rename!.y);
+    expect(del!.x).toBeGreaterThan(rename!.x + rename!.width);
+  });
+});
+
 test.describe('passkeys', () => {
   test('lists passkeys with their properties', async ({ page }) => {
     await openRecord(page);
