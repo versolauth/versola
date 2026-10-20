@@ -90,6 +90,47 @@ object PasskeyStepUpSpec extends E2ESpec:
         assertTrue(claims.contains(s""""acr":"${Acr.PasskeyLevel}"""")).label(s"acr claim in $claims") &&
         assertTrue(claims.contains("swk") || claims.contains("hwk")).label(s"amr claim in $claims")
     },
+    test("every step-up asks for the passkey again, even right after one that just succeeded") {
+      for
+        (s, auth) <- freshUser
+        enrolled <- enroll(s, auth)
+        (cookie1, challenge1, _) <- startStepUp(s, auth, enrolled.idToken)
+        options1 <- auth.getPasskeyOptions(cookie1).flatMap(_.body.asString)
+        response1 <- TestAuthenticator.get(enrolled.credential, options1, passkeyOrigin, s.userId)
+        done <- auth.submitPasskeyAssertion(cookie1, response1.toJson, challenge1.csrf)
+        _ <- done.assertRedirect
+        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the first step-up"))
+        // The browser now holds a session that has just passed a passkey. The app asks again, as it does for every loan.
+        second <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          prompt = Some("login"),
+          acrValues = Some(Acr.PasskeyLevel),
+          idTokenHint = Some(enrolled.idToken),
+          sessionCookie = Some(session),
+        ).assertChallengeRedirect
+        challenge2 <- auth.getChallenge(second.conversationCookie.get)
+      yield assertTrue(challenge2.step.contains(ConversationStep.Credential), challenge2.html.contains("\"passkeyOnly\":true"))
+        .label("the second step-up shows the passkey step instead of reusing the session")
+    },
+    test("without prompt=login a session that just passed a passkey is reused: the app must send it") {
+      for
+        (s, auth) <- freshUser
+        enrolled <- enroll(s, auth)
+        (cookie1, challenge1, _) <- startStepUp(s, auth, enrolled.idToken)
+        options1 <- auth.getPasskeyOptions(cookie1).flatMap(_.body.asString)
+        response1 <- TestAuthenticator.get(enrolled.credential, options1, passkeyOrigin, s.userId)
+        done <- auth.submitPasskeyAssertion(cookie1, response1.toJson, challenge1.csrf)
+        _ <- done.assertRedirect
+        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the first step-up"))
+        silent <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          acrValues = Some(Acr.PasskeyLevel),
+          sessionCookie = Some(session),
+        )
+      yield assertTrue(silent.location.contains("code=")).label(s"a silent code without a new passkey: ${silent.location}")
+    },
     test("a password cannot stand in for the passkey: the conversation stays on the passkey step and yields no code") {
       for
         (s, auth) <- setup(Flows.Id.PasskeyLogin)
