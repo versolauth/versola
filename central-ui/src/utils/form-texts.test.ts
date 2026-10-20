@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, localeSummary, missingKeys, namesWithOverflow, placeholdersOf, textKeys } from './form-texts';
+import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, localeSummary, missingKeys, namesWithOverflow, placeholdersOf, textKeys, keyOffsets, withSampleValues } from './form-texts';
 
 const localizations = {
   en: { title: 'Sign in', continue: 'Continue', login_failed: 'Wrong login' },
@@ -79,7 +79,7 @@ describe('checking the texts as one JSON object', () => {
     expect(check('[]').errors[0]).toMatch(/top level must be an object/);
     expect(check('"en"').parsed).toBeNull();
     expect(check({ en: ['a'] }).errors).toEqual(['"en" must be an object of key and text pairs.']);
-    expect(check({ en: { title: 3 } }).errors).toEqual(['"en" "title" must be a text.']);
+    expect(check({ en: { title: 3 } }).errors).toEqual(['The English text of "title" must be a text.']);
   });
 
   it('refuses a language that is not active, naming the active ones', () => {
@@ -89,28 +89,47 @@ describe('checking the texts as one JSON object', () => {
   });
 
   it('refuses a missing reference language, since the others have nothing to be held to', () => {
-    expect(check({ ru }).errors[0]).toMatch(/reference language "en" is missing/);
+    expect(check({ ru }).errors[0]).toMatch(/reference language English is missing/);
   });
 
-  it('names the keys a language lacks and the keys it adds', () => {
-    expect(check({ en, ru: { title: 'Вход' } }).errors).toEqual(['"ru" is missing the key hint, which "en" has.']);
-    expect(check({ en, ru: { ...ru, extra: 'x', more: 'y' } }).errors).toEqual(['"ru" has keys extra, more, which "en" lacks.']);
-    const many = Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f'].map(key => [key, 'x']));
-    expect(check({ en: many, ru: {} }).errors).toEqual(['"ru" is missing keys a, b, c, d +2, which "en" has.']);
+  it('names each key a language lacks and each key it adds, in plain words', () => {
+    expect(check({ en, ru: { title: 'Вход' } }).errors).toEqual(['Russian is missing "hint"']);
+    expect(check({ en, ru: { ...ru, extra: 'x', more: 'y' } }, {}).errors)
+      .toEqual(['Russian has "extra", which English does not', 'Russian has "more", which English does not']);
   });
 
-  it('names a key whose placeholders differ between languages', () => {
-    expect(check({ en, ru: { ...ru, hint: 'Код для {address} через {seconds}с' } }).errors)
-      .toEqual(['Key "hint": "en" uses {destination}, {seconds} but "ru" uses {address}, {seconds}.']);
-    expect(check({ en, ru: { ...ru, title: 'Вход, {name}' } }).errors)
-      .toEqual(['Key "title": "en" uses none but "ru" uses {name}.']);
+  it('names a key whose placeholders differ between languages, in both directions', () => {
+    const names = { kk: 'Kazakh' };
+    expect(check({ en, ru: { ...ru, hint: 'Код для {address} через {seconds}с' } }, { names }).errors).toEqual([
+      'The Russian text of "hint" has no {destination}, the English one does',
+      'The Russian text of "hint" has {address}, the English one does not',
+    ]);
+    expect(check({ en: { title: 'Hi {name}' }, ru: { title: 'Привет' } }, { names }).errors)
+      .toEqual(['The Russian text of "title" has no {name}, the English one does']);
+    expect(check({ en, ru: { ...ru, title: 'Вход, {name}' } }, { names }).errors)
+      .toEqual(['The Russian text of "title" has {name}, the English one does not']);
+  });
+
+  it('points each problem at the line of its key', () => {
+    const typed = JSON.stringify({ en, ru: { title: 'Вход', extra: 'x' } }, null, 2);
+    const lineOf = (offset: number | undefined) => typed.slice(0, offset).split('\n').length;
+    const result = checkLocalizations(typed, { ...rules });
+    expect(result.problems.map(problem => problem.message)).toEqual(['Russian is missing "hint"', 'Russian has "extra", which English does not']);
+    expect(lineOf(result.problems[0].offset)).toBe(typed.split('\n').findIndex(line => line.startsWith('  "ru"')) + 1);
+    expect(lineOf(result.problems[1].offset)).toBe(typed.split('\n').findIndex(line => line.includes('"extra"')) + 1);
+    expect(keyOffsets(typed).get('en\0hint')).toBe(typed.indexOf('    "hint"'));
+  });
+
+  it('fills placeholders with sample values for a preview', () => {
+    expect(withSampleValues('Hi {name}, {minutes} min, {x}')).toBe('Hi Dana, 5 min, x');
+    expect(withSampleValues('No placeholders')).toBe('No placeholders');
   });
 
   it('holds a built-in form to its own keys in every language, the reference too', () => {
     const builtIn = { ...rules, builtInKeys: ['title', 'hint'] };
     expect(check({ en, ru }, builtIn).errors).toEqual([]);
-    expect(check({ en: { title: 'x' }, ru }, builtIn).errors).toContain('"en" is missing the key hint, which the form has.');
-    expect(check({ en: { ...en, invented: 'x' }, ru }, builtIn).errors).toContain('"en" has the key invented, which the form does not use.');
+    expect(check({ en: { title: 'x' }, ru }, builtIn).errors).toContain('English is missing "hint"');
+    expect(check({ en: { ...en, invented: 'x' }, ru }, builtIn).errors).toContain('English has "invented", which the form does not');
   });
 
   it('keeps counting blank texts as missing in the summary, though they are not an error', () => {
