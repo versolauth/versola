@@ -61,17 +61,13 @@ object FormService:
     ): Task[Unit] =
       for
         _ <- ZIO.fromEither(FormLocalizations.validate(localizations)).mapError(IllegalArgumentException(_))
+        // The cache is not replaced here: the row's trigger notifies, and `sync` applies that one record. A wholesale
+        // `set` from a read taken before a concurrent write's notification was applied would drop that write's form.
         _ <- repository.upsertForm(id, style, jsSource, jsCompiled, localizations, properties, activate)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
       yield ()
 
     override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
-      for
-        _ <- repository.setActiveVersion(id, version)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
-      yield ()
+      repository.setActiveVersion(id, version)
 
     override def sync(event: SyncEvent.FormsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
