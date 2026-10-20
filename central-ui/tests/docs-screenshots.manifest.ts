@@ -163,6 +163,26 @@ const serviceClient = {
 const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders:read', 'orders:write'], active: true };
 const userRole = { id: 'user', description: { en: 'Self-registered user' }, permissions: [], active: true };
 
+const chromeAgent = {
+  id: '00000000-0000-0000-0000-0000000000a1',
+  userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+  platform: 'desktop' as const,
+  os: 'macOS 15',
+  browser: 'Chrome',
+  version: '145',
+  createdAt: '2026-07-14T08:00:00',
+  expiresAt: '2027-03-19T20:36:00',
+};
+const shopAgent = {
+  id: '00000000-0000-0000-0000-0000000000a2',
+  userAgent: 'ExampleShop/4.2 (iPhone; iOS 18.1)',
+  platform: 'ios' as const,
+  os: 'iOS 18.1',
+  browser: 'Example Shop app',
+  createdAt: '2026-08-30T17:50:00',
+  expiresAt: '2027-03-19T18:03:00',
+};
+
 const dana = {
   id: '00000000-0000-0000-0000-000000000042',
   email: 'dana@example.com',
@@ -180,6 +200,8 @@ const dana = {
     lastUsedAt: '2026-09-14T15:24:30',
     createdAt: '2026-09-12T19:00:35',
   }],
+  // The four user agents auth remembers for Dana (user agent TTL 180 days from the last sign-in): Chrome and the
+  // shop app are signed in, Firefox signed out leaving offline access, an iPad signed out and only remembered.
   sessions: [
     {
       publicId: 'sess-chrome-macos',
@@ -188,6 +210,9 @@ const dana = {
       browser: 'Chrome',
       version: '145',
       createdAt: '2026-09-20T20:36:00',
+      expiresAt: '2026-09-21T20:36:00',
+      idleExpiresAt: '2026-09-20T21:52:00',
+      userAgent: chromeAgent,
       clients: [
         { clientId: 'storefront-web', enteredAt: '2026-09-20T20:36:00', expiresAt: '2026-09-20T21:36:00' },
         { clientId: 'admin-console', enteredAt: '2026-09-20T20:52:00', expiresAt: '2026-09-20T21:52:00' },
@@ -198,13 +223,41 @@ const dana = {
       platform: 'ios' as const,
       os: 'iOS 18.1',
       browser: 'Example Shop app',
-      createdAt: '2026-09-08T18:03:00',
-      clients: [{ clientId: 'shop-mobile', enteredAt: '2026-09-08T18:03:00', expiresAt: '2026-09-08T19:03:00' }],
+      createdAt: '2026-09-20T18:03:00',
+      expiresAt: '2026-09-21T18:03:00',
+      userAgent: shopAgent,
+      clients: [{ clientId: 'shop-mobile', enteredAt: '2026-09-20T18:03:00', expiresAt: '2026-09-20T19:03:00' }],
+    },
+  ],
+  userAgents: [
+    chromeAgent,
+    shopAgent,
+    {
+      id: '00000000-0000-0000-0000-0000000000a3',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0',
+      platform: 'desktop' as const,
+      os: 'Windows 10 / 11',
+      browser: 'Firefox',
+      version: '140',
+      createdAt: '2026-05-02T09:40:00',
+      expiresAt: '2027-02-21T11:30:00',
+      endedSessionIds: ['sess-firefox-gone'],
+    },
+    {
+      id: '00000000-0000-0000-0000-0000000000a4',
+      userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+      platform: 'ios' as const,
+      os: 'iOS 18.1',
+      browser: 'Safari',
+      version: '18',
+      createdAt: '2026-06-12T08:10:00',
+      expiresAt: '2026-12-30T10:15:00',
+      endedSessionIds: ['sess-ipad-ended'],
     },
   ],
   refreshTokens: [
     { sessionId: 'sess-chrome-macos', clientId: 'storefront-web', scope: ['openid', 'profile', 'offline_access'], issuedAt: '2026-09-20T20:36:00', expiresAt: '2026-12-31T20:36:00', dpopBound: false },
-    { sessionId: 'sess-shop-ios', clientId: 'shop-mobile', scope: ['openid', 'orders', 'offline_access'], issuedAt: '2026-09-08T18:03:00', expiresAt: '2027-03-07T18:03:00', dpopBound: true },
+    { sessionId: 'sess-shop-ios', clientId: 'shop-mobile', scope: ['openid', 'orders', 'offline_access'], issuedAt: '2026-09-20T18:03:00', expiresAt: '2027-03-19T18:03:00', dpopBound: true },
     { sessionId: 'sess-firefox-gone', clientId: 'storefront-web', scope: ['openid', 'offline_access'], issuedAt: '2026-08-25T11:30:00', expiresAt: '2026-12-31T11:30:00', dpopBound: false },
   ],
 };
@@ -521,7 +574,10 @@ const userClientsState = (): MockState => ({
 const userLoaded: Act = async page => {
   await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
-  await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(3);
+  // Four devices: two signed in (one with an idle timeout), a signed-out one that still holds offline
+  // access and a signed-out one that is only remembered. Each is named by its user agent and says when
+  // its session expires and how long the device is remembered.
+  await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(4);
   await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('MacBook');
 };
 
@@ -991,6 +1047,14 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/user-offline-access', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
     section: page => page.getByRole('region', { name: 'Apps with access' }),
+  },
+  {
+    name: 'entities/user-forget-device-confirm', kind: 'frame', path: userPath, state: userClientsState,
+    before: async page => {
+      await userLoaded(page);
+      await page.getByRole('button', { name: /^Forget device Firefox 140/ }).click();
+      await expect(page.getByRole('dialog')).toContainText('Auth no longer remembers it');
+    },
   },
   {
     name: 'entities/user-delete-confirm', kind: 'frame', path: userPath, state: userClientsState,

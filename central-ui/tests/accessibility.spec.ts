@@ -60,7 +60,7 @@ for (const theme of themes) {
 
     await loadAdminApp(page, { path: base, state: userState });
     await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
-    await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(3);
+    await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(4);
     expect(await scan()).toEqual([]);
 
     // The record with nothing to show: no devices, no offline access, no passkeys.

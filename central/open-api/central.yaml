@@ -1060,7 +1060,10 @@ paths:
             $ref: '#/components/schemas/UserId'
       responses:
         '200':
-          description: Active sessions, each with the clients entered during it.
+          description: |
+            Active sessions, each with the clients entered during it, when it ends (`expiresAt`, and
+            `idleExpiresAt` when an idle timeout applies) and the user agent it runs under. Signed-out
+            devices are not listed here; see `GET /users/user-agents`.
           content:
             application/json:
               schema:
@@ -1103,6 +1106,119 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: The `sessionId` is not a live session of this user.
+
+  /users/user-agents:
+    get:
+      tags: [Users]
+      summary: List a user's remembered devices
+      description: |
+        Every user agent (browser or app install) auth still remembers for the user, newest first,
+        with the live SSO session under it. A user agent holds at most one session; once it ended,
+        `session` is `null` and `endedSessionIds` lists the ended sessions auth has not yet swept,
+        which is how a refresh token (it names only its session) is tied back to the device it was
+        issued on. A live session whose user agent row has already expired is listed with
+        `userAgent` absent.
+
+        A user agent is remembered until `userAgent.expiresAt`, which slides forward on every
+        sign-in; auth stores no separate last-seen time. Separate from `GET /users/sessions`,
+        whose items are always live sessions.
+      operationId: getUserDevices
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '200':
+          description: The user's devices, signed in and signed out.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceResponse'
+              examples:
+                signedInAndSignedOut:
+                  summary: One signed-in device and one signed out
+                  value:
+                    - userAgent:
+                        id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                        userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-01T09:30:00Z'
+                        expiresAt: '2027-01-15T09:30:00Z'
+                      session:
+                        publicId: c2lkLTAxOThiMmE0
+                        clients:
+                          - clientId: web-portal
+                            enteredAt: '2026-10-15T08:00:00Z'
+                            expiresAt: '2026-10-15T08:10:00Z'
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-15T08:00:00Z'
+                        expiresAt: '2026-10-22T08:00:00Z'
+                        idleExpiresAt: '2026-10-15T09:00:00Z'
+                        userAgent:
+                          id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                          userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                          platform: desktop
+                          os: macOS 10.15.7
+                          browser: Chrome
+                          version: '130'
+                          createdAt: '2026-10-01T09:30:00Z'
+                          expiresAt: '2027-01-15T09:30:00Z'
+                      endedSessionIds: []
+                    - userAgent:
+                        id: 0198b2a4-9e02-7b44-8a61-2f0c5d9e1a07
+                        userAgent: Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1
+                        platform: ios
+                        os: iOS 17.5
+                        browser: Safari
+                        version: '17'
+                        createdAt: '2026-09-20T18:00:00Z'
+                        expiresAt: '2026-12-19T18:00:00Z'
+                      session: null
+                      endedSessionIds: [c2lkLTAxOThiMmEx]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Forget a device
+      description: |
+        Removes the user agent from what auth remembers, ends its session the way the user's own
+        logout would (relying parties included) and expires the refresh tokens bound to its
+        sessions. Refresh tokens name only their session, so a token whose session row auth has
+        already swept cannot be reached this way; revoke it with `DELETE /users/refresh-tokens`.
+        A `userAgentId` that is not this user's is refused with `404` rather than removed.
+      operationId: forgetUserAgent
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: userAgentId
+          in: query
+          required: true
+          description: The `userAgent.id` from `GET /users/user-agents`.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The device was forgotten.
+        '400':
+          description: Either `id` or `userAgentId` is missing.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `userAgentId` is not a remembered user agent of this user.
 
   /users/refresh-tokens:
     get:
@@ -4267,7 +4383,70 @@ components:
         createdAt:
           type: string
           format: date-time
-      required: [publicId, clients, createdAt]
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session ends regardless of activity.
+        idleExpiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the session ends if it stays idle, pushed forward by activity. Absent when no idle
+            timeout applies to the session.
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: The user agent the session runs under. Absent only if its row has expired and been swept.
+      required: [publicId, clients, createdAt, expiresAt]
+    UserAgentResponse:
+      type: object
+      description: A user agent (browser or app install) as auth stores it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        userAgent:
+          type: string
+          description: The raw `User-Agent` header as last seen on sign-in. Absent when none was sent.
+        platform:
+          type: string
+          enum: [ios, android, desktop]
+          description: Parsed from the header; absent when it matched none.
+        os:
+          type: string
+        browser:
+          type: string
+        version:
+          type: string
+          description: The browser's major version.
+        createdAt:
+          type: string
+          format: date-time
+          description: When auth first saw this user agent.
+        expiresAt:
+          type: string
+          format: date-time
+          description: The device is remembered until then; it slides forward on every sign-in.
+      required: [id, createdAt, expiresAt]
+    DeviceResponse:
+      type: object
+      properties:
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: Absent only for a live session whose user agent row has expired and been swept.
+        session:
+          oneOf:
+            - $ref: '#/components/schemas/SessionResponse'
+            - type: 'null'
+          description: The live session under this user agent; `null` once signed out.
+        endedSessionIds:
+          type: array
+          items:
+            type: string
+          description: |
+            Public ids of this user agent's sessions that ended and are still stored. Empty while
+            signed in. A refresh token's `sessionId` matches one of these when it was issued on this
+            device.
+      required: [session, endedSessionIds]
     RefreshTokenResponse:
       type: object
       properties:
