@@ -55,8 +55,18 @@ object WebAuthnError:
   case object PasskeysNotEnabled extends WebAuthnError("passkeys are not enabled")
 
 trait WebAuthnService:
-  /** Begin an enrollment ceremony for the given user. */
-  def startRegistration(settings: PasskeySettings, userId: UserId, displayName: String): IO[WebAuthnError, PasskeyCeremony]
+  /** Begin an enrollment ceremony for the given user.
+    *
+    * `accountName` is what the authenticator's account picker shows as the account (`user.name`): an
+    * identifier the person knows, such as the phone number or email they sign in with. `displayName` is the
+    * secondary label. The user handle (`user.id`) is derived from `userId` and never from either.
+    */
+  def startRegistration(
+      settings: PasskeySettings,
+      userId: UserId,
+      accountName: String,
+      displayName: String,
+  ): IO[WebAuthnError, PasskeyCeremony]
 
   /** Verify an enrollment response and persist the resulting passkey.
     * Looks up the client's passkey settings internally; fails with
@@ -169,10 +179,23 @@ object WebAuthnService:
             .build()
         .toSet.asJava
 
-    private def buildRp(settings: PasskeySettings): RelyingParty =
+    /** The library looks up the credentials to exclude from a registration by `user.name`. That is now what the
+      * person recognises (their phone number, their email), not our key for the user, so for this one ceremony
+      * the name given answers for the user's own passkeys: an authenticator that already holds one is not
+      * offered a second. Everything else is the shared repository. */
+    private def registrationRepo(userId: UserId, accountName: String): CredentialRepository =
+      new CredentialRepository:
+        private def keyOf(username: String) = if username == accountName then userId.toString else username
+        override def getCredentialIdsForUsername(username: String) = CredRepo.getCredentialIdsForUsername(keyOf(username))
+        override def getUserHandleForUsername(username: String) = CredRepo.getUserHandleForUsername(keyOf(username))
+        override def getUsernameForUserHandle(userHandle: ByteArray) = CredRepo.getUsernameForUserHandle(userHandle)
+        override def lookup(credentialId: ByteArray, userHandle: ByteArray) = CredRepo.lookup(credentialId, userHandle)
+        override def lookupAll(credentialId: ByteArray) = CredRepo.lookupAll(credentialId)
+
+    private def buildRp(settings: PasskeySettings, repository: CredentialRepository = CredRepo): RelyingParty =
       RelyingParty.builder()
         .identity(RelyingPartyIdentity.builder().id(settings.rpId).name(settings.rpName).build())
-        .credentialRepository(CredRepo)
+        .credentialRepository(repository)
         .origins(settings.origins.toSet.asJava)
         .build()
 
@@ -184,14 +207,15 @@ object WebAuthnService:
     override def startRegistration(
         settings: PasskeySettings,
         userId: UserId,
+        accountName: String,
         displayName: String,
     ): IO[WebAuthnError, PasskeyCeremony] =
       ZIO.attemptBlocking:
-        val opts = buildRp(settings).startRegistration(
+        val opts = buildRp(settings, registrationRepo(userId, accountName)).startRegistration(
           StartRegistrationOptions.builder()
             .user(
               UserIdentity.builder()
-                .name(userId.toString)
+                .name(accountName)
                 .displayName(displayName)
                 .id(userIdToHandle(userId))
                 .build(),
