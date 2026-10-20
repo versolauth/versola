@@ -123,7 +123,7 @@ for (const theme of themes) {
     expect(await scan()).toEqual([]);
 
     // The record with a one-time secret on it, and one with nothing to show.
-    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Activate new secret' }).click();
+    await page.getByRole('button', { name: 'Activate new secret' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Activate', exact: true }).click();
     await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Rotate secret' }).click();
     await expect(page.locator('.secret-value')).toBeVisible();

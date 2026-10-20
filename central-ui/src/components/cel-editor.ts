@@ -164,6 +164,20 @@ export class VersolaCelEditor extends LitElement {
     }));
   }
 
+  /** Replaces the selection (or inserts at the caret) with `text`, keeps the caret after it and tells the host. */
+  insertText(text: string) {
+    const ta = this.textarea;
+    if (!ta || this.disabled) return;
+    const start = ta.selectionStart;
+    const next = ta.value.slice(0, start) + text + ta.value.slice(ta.selectionEnd);
+    this.value = next;
+    this.dispatchEvent(new CustomEvent('cel-input', { detail: { value: next }, bubbles: true, composed: true }));
+    void this.updateComplete.then(() => {
+      ta.focus();
+      ta.setSelectionRange(start + text.length, start + text.length);
+    });
+  }
+
   private handleInput(event: Event) {
     const next = (event.target as HTMLTextAreaElement).value;
     this.value = next;

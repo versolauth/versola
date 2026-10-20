@@ -742,7 +742,7 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await editClient('acme-wallet', 'branding and logout', 'Branding and logout')(page);
       const block = page.getByRole('region', { name: 'Appearance for this app' });
-      await expect(block.getByText('Overridden · base: #2563eb')).toBeVisible();
+      await expect(block.getByTitle('Overridden · base: #2563eb')).toBeVisible();
       await block.scrollIntoViewIfNeeded();
     },
   },
@@ -991,7 +991,7 @@ const consoleShots: DocsShot[] = [
       // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
       await page.getByLabel('Language', { exact: true }).selectOption('ru');
-      await expect(page.getByRole('list', { name: 'Problems in the texts' })).toContainText('"ru" is missing keys');
+      await expect(page.getByRole('list', { name: 'Problems in the texts' })).toContainText('Russian is missing "');
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('"locale":"ru"');
     },
@@ -1048,6 +1048,7 @@ const consoleShots: DocsShot[] = [
     name: 'entities/user-forget-device-confirm', kind: 'frame', path: userPath, state: userClientsState,
     before: async page => {
       await userLoaded(page);
+      await page.getByRole('region', { name: 'Signed-in devices' }).locator('details.signed-out summary').click();
       await page.getByRole('button', { name: /^Forget device Firefox 140/ }).click();
       await expect(page.getByRole('dialog')).toContainText('Auth no longer remembers it');
     },
@@ -1133,7 +1134,7 @@ const consoleShots: DocsShot[] = [
       await page.getByLabel('Method').selectOption('GET');
       await page.getByLabel('Relative path').fill('/orders/{orderId}/invoice');
       await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
-      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await page.getByLabel('Max auth age').fill('10m');
       await expect(page.getByRole('status')).toContainText('(new)');
     },
   },
@@ -1159,7 +1160,7 @@ const consoleShots: DocsShot[] = [
       await page.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
       await page.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
       await page.getByRole('checkbox', { name: 'otp', exact: true }).check();
-      await page.getByLabel('Max auth age (seconds)').fill('600');
+      await page.getByLabel('Max auth age').fill('10m');
       await page.getByRole('button', { name: 'Add rule', exact: true }).click();
       await page.getByLabel('Target').selectOption('body');
       await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');

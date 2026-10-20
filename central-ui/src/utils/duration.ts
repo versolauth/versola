@@ -31,3 +31,14 @@ export function formatDurationShort(seconds: number): string {
   const { value, unit } = splitDuration(seconds);
   return `${value}${unit[0]}`;
 }
+
+/**
+ * Reads what `formatDurationShort` writes (`45s`, `5m`, `1h`, `2d`) into seconds; a bare number is seconds. Anything
+ * else (a sign, a fraction, an unknown unit, nothing) is `null`.
+ */
+export function parseDurationShort(text: string): number | null {
+  const match = /^(\d+)\s*([smhd]?)$/i.exec(text.trim());
+  if (!match) return null;
+  const unit = DURATION_UNITS.find(candidate => candidate.id[0] === match[2].toLowerCase()) ?? DURATION_UNITS[0];
+  return Number(match[1]) * unit.seconds;
+}
