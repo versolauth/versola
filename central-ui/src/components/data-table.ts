@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { cardStyles, chipStyles, iconButtonStyles } from '../styles/components';
+import { cardStyles, chipStyles, iconButtonStyles, methodBadgeStyles, tagStyles } from '../styles/components';
 import { statusIcon } from './status-icon';
 
 export type DataTableColumn<T> = {
@@ -61,6 +61,8 @@ export class VersolaDataTable<T = unknown> extends LitElement {
     theme,
     cardStyles,
     chipStyles,
+    tagStyles,
+    methodBadgeStyles,
     iconButtonStyles,
     css`
       :host {
@@ -182,6 +184,49 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      /* A record named by an ID (a resource): the ID is the title, in mono and the accent, never
+         broken inside; a muted line under it (.row-host) carries the host, which breaks only
+         where a <wbr> allows it (after a dot). */
+      .row-title.mono {
+        font-family: var(--font-mono);
+        font-size: var(--text-base);
+        color: var(--accent);
+        overflow-wrap: normal;
+        word-break: normal;
+      }
+
+      .row-host {
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        font-weight: 400;
+        color: var(--text-secondary);
+        overflow-wrap: normal;
+        word-break: normal;
+      }
+
+      /* A cell that holds a few short lines (a resource's endpoints, its clients). */
+      .cell-lines {
+        display: grid;
+        gap: 0.375rem;
+        justify-items: start;
+      }
+
+      .cell-flow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.375rem 0.75rem;
+        align-items: center;
+      }
+
+      .cell-line {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 0.125rem 0.5rem;
+        align-items: center;
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
       }
 
       /* A column whose ID is what the operator came for (a user): shown whole, never cut. */

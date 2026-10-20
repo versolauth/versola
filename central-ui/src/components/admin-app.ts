@@ -560,6 +560,8 @@ export class VersolaAdmin extends LitElement {
     * one record of it when `id` is given (a default role, a signing key, a tenant). */
   private handleNavigateView = (e: CustomEvent<{ view: NavItem; id?: string }>) => {
     this.recordRoute = { ...EMPTY_RECORD_ROUTE, id: e.detail.id ?? null };
+    // Clients still opens a record by its expand-on-load id; a client named by another section opens that way.
+    if (e.detail.view === 'clients') this.clientToExpandOnLoad = e.detail.id ?? null;
     this.currentView = e.detail.view;
   };
 
@@ -597,7 +599,7 @@ export class VersolaAdmin extends LitElement {
       case 'permissions':
         return html`<versola-permissions-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('permissions')} .route=${this.recordRoute}></versola-permissions-list>`;
       case 'resources':
-        return html`<versola-resources-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('resources')}></versola-resources-list>`;
+        return html`<versola-resources-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('resources')} .route=${this.recordRoute}></versola-resources-list>`;
       case 'roles':
         return html`<versola-roles-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('roles')} .route=${this.recordRoute}></versola-roles-list>`;
       case 'tenants':

@@ -75,14 +75,14 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
 };
-type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
-type ResourceEndpointWriteDto = {
+export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
+export type ResourceEndpointWriteDto = {
   id?: string | number;
   method: string;
   path: string;
@@ -912,23 +912,33 @@ export async function deletePreviousResourceSecret(resourceId: string): Promise<
   resourcesStore.clear();
 }
 
+/**
+ * One PUT for any group of a resource: the URI, the audience (sent as a patch against what the
+ * caller last saw) and the endpoints. Endpoints are a patch too: `deleteEndpoints` leaves the
+ * server's set, `createEndpoints` are added, and one whose id already exists overwrites it, so an
+ * edited endpoint is sent only in `createEndpoints` and keeps its id (and the permissions linked
+ * to it). A group the caller does not touch is left out and is not changed.
+ */
 export async function updateResource(
   resourceId: string,
-  existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
-  resource: string,
-  existingAudience: string[],
-  audience: string[],
-  endpoints?: SaveResourceEndpointPayload[],
+  patch: {
+    resource?: string;
+    audience?: { existing: string[]; next: string[] };
+    deleteEndpoints?: ResourceEndpointId[];
+    createEndpoints?: SaveResourceEndpointPayload[];
+  },
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
-  const createEndpoints = (endpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
-  const nextEndpointIds = new Set(createEndpoints.map(endpoint => endpoint.id));
-  const deleteEndpoints = existingEndpoints
-    .map(endpoint => endpoint.id)
-    .filter(endpointId => !nextEndpointIds.has(endpointId));
+  const createEndpoints = (patch.createEndpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, audience: patchSet(existingAudience, audience), deleteEndpoints, createEndpoints },
+    body: {
+      resourceId,
+      ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
+      audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      deleteEndpoints: patch.deleteEndpoints ?? [],
+      createEndpoints,
+    },
   });
 
   resourcesStore.clear();

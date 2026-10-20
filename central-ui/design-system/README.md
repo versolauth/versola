@@ -247,6 +247,23 @@ wording is fixed: **Sign out** for sessions, **Revoke** for offline access (the 
 anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
 Reference: `users-list.ts`, `user-record.ts`.
 
+**Record with a nested table and a master/detail editor (Resources).** A large entity whose main
+content is a list of its own (a resource's endpoints) keeps the record-view rules and adds two things.
+The list is a table *inside* a record card (`versola-resource-endpoints-table`), whose columns answer the
+questions an operator asks without opening an editor (which request, who may call it, what step-up, what
+is added to the forwarded request); below 720px of room each row is a card and each cell names its
+column. The card's one button is `Edit endpoints`, which opens `&edit=endpoints`: the list on the left
+(method, path, `new` / `edited` markers, which rules each row carries) and the selected row's panels on the
+right (Request, Who may call, Step-up, Inject), a bar at the bottom that names what is not saved yet
+(`Not saved yet: GET /x (new), POST /y (edited)`) and Cancel / `Save endpoints`. Edits only change drafts;
+Save sends the removed IDs and the new and edited rows in one request, an edited row under its own ID.
+Removing a row that something refers to says what loses it. Small groups (General, Audience) sit side by
+side; the secret and Fixed cards pair the same way; the page has no primary action; the ID is the title in
+mono (`idAsTitle` on the record header) and a banner carries the secret that create and rotate return,
+once, asking before the operator leaves without saving it. Create is a single form (the endpoints are added
+on the record, where the permissions that guard them are visible). Reference: `resources-list.ts`,
+`resource-record.ts`, `resource-endpoints-editor.ts`.
+
 **Wizard (create).** Stepped, with a step list on top, each step a stack of bordered panels
 (title, one-line subtitle, body), a rule the type sets shown as a locked row (lock icon, text,
 reason), and a review step in the page's own groups with `Change` back to the step that sets it.
@@ -268,8 +285,8 @@ inputs, never two primary buttons in one region.
 | Component | Element | Use it for | Not for |
 |---|---|---|---|
 | `content-header` | `<content-header title description>` + `slot="actions"` | Every list and settings page: title, one-line description, the one primary action | Record pages (use the record header) |
-| Record header | `<versola-record-header .crumbs .heading .recordId idLabel .meta>` | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips | Pages with no ID |
-| Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
+| Record header | `<versola-record-header .crumbs .heading .recordId idLabel ?idAsTitle .meta>` | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips; `idAsTitle` for a record named by its ID (the title is mono and the ID is not printed twice) | Pages with no ID |
+| Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .editLabel .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
 | Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
 | Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
 | Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
@@ -279,6 +296,9 @@ inputs, never two primary buttons in one region.
 | Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value, plus a `Missing: ru` warning chip when an active locale has none (a count of languages says nothing); `languagesCell` is the list's Languages column, the language codes as chips or the Missing chip | Editing (use `versola-localized-text-editor`) |
 | Typeahead select | `<versola-typeahead-select label placeholder emptyText .options .value @change>` | A filter with too many values for a row of pills (Permissions › Resource): the ARIA 1.2 combobox with list autocomplete (`role=combobox` field, `role=listbox` of the matches). Opens on focus, click or the down arrow; typing filters; arrows move, Home/End jump, Enter picks, the first Escape closes the list (the side panel does not close), Tab leaves; a clear button while a value is chosen. The screen keeps the `All` / `Unlinked` pills next to it | Fewer than about six values (use the filter bar) |
 | Value chips | `valueChips(values, { max, empty, mono, extra })` from `value-chips.ts` | A list column that holds values (Roles › Permissions, Scopes › Claims, Permissions › Endpoints and Resources): up to two chips (`.chip.value`, mono for IDs and paths, cut with an ellipsis) and `+N` (`.chip.more`) whose `title` names the rest. A count alone never stands for values | A single value (print it) |
+| Client picker | `<versola-client-picker label heading .clients .value @change>` | Choosing clients (D7: a resource's audience): a filter field from four clients, one bordered group headed by `heading` with `Select all` / `Clear all`, a checkbox per client with its name; ids the tenant no longer has stay listed so they can be unticked | One client (use a `select`) |
+| Endpoints table | `<versola-resource-endpoints-table .endpoints .permissionsByEndpoint .resourceId>` | The endpoints of a resource inside its record card, read-only: method badge and path (breaking after `/`), `userinfo` tag, permissions joined by `or` and the `allow` rule, step-up (ACR, condition, `at most 5m` with the seconds in its title), the injections | Editing (the endpoints editor) |
+| Break text | `breakPath(path)`, `breakHost(host)`, `breakAfter(value, chars)` from `break-text.ts` | A path or a host in a place that may wrap: a `<wbr>` after each `/` or `.` is the only place it breaks, never inside a word | IDs (they do not break at all) |
 | Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters above a table (no counts), as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
