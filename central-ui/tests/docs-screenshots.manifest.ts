@@ -17,7 +17,6 @@
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { ftForms } from './forms-themes-fixtures';
 import type { MockConfigState } from './mocks';
 
 export type DocsTheme = 'dark' | 'light';
@@ -372,7 +371,6 @@ const resolve = (tokens: { base: string; overrides?: Partial<Tokens> }): Tokens 
 
 const themes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
-  { id: 'legacy-acme', css: 'body { font-family: Georgia, serif; }', tenantId: null },
   { id: 'acme', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#2563eb' } } },
   { id: 'storefront', css: '', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } } },
 ];
@@ -408,19 +406,18 @@ const brandingState = async (): Promise<MockState> => ({
   themes,
 });
 
-// The Forms screens: credential has a v2 stored but not active and no Russian text for two keys, plus a custom form.
+// The Forms screens: the built-in forms only (the docs never show a form somebody made up). credential has a v2 stored but
+// not active, and no Russian text for two keys, which the JSON editor lists as problems.
 const formsDocsState = async (): Promise<MockState> => {
   const state = await brandingState();
   const forms = state.forms!;
   const credential = forms.find(form => form.id === 'credential')!;
   const withGaps = { ...credential.localizations, ru: Object.fromEntries(Object.entries(credential.localizations.ru).filter(([key]) => !['passkey_button', 'phone_hint'].includes(key))) };
-  const custom = ftForms().find(form => form.id === 'support-contact')!;
   return {
     ...state,
     forms: [
       ...forms.map(form => (form.id === 'credential' ? { ...form, localizations: withGaps } : form)),
       { ...credential, version: 2, active: false, localizations: withGaps },
-      { ...custom, localizations: { en: custom.localizations.en, ru: custom.localizations.ru } },
     ],
   };
 };
@@ -993,11 +990,10 @@ const consoleShots: DocsShot[] = [
       await realThemeCss(page);
       // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.getByRole('button', { name: 'Russian' }).click();
-      await page.getByLabel('Missing only').check();
-      await page.getByRole('textbox', { name: 'passkey_button', exact: true }).focus();
+      await page.getByLabel('Language', { exact: true }).selectOption('ru');
+      await expect(page.getByRole('list', { name: 'Problems in the texts' })).toContainText('"ru" is missing keys');
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
-      await expect(page.frameLocator('iframe.preview-iframe').locator('[data-vm]').first()).toBeVisible();
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('"locale":"ru"');
     },
   },
   {

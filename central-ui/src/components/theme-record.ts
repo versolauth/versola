@@ -8,10 +8,9 @@ import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
-import { joinNames, overrideKeys, tokenLongName, unsavedNames } from '../utils/theme-summary';
+import { joinNames, overrideKeys, presetHint, tokenLongName, unsavedNames } from '../utils/theme-summary';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { statusIcon } from './status-icon';
-import { themeThumb } from './theme-thumb';
 import './code-editor';
 import './danger-card';
 import './nav-toggle';
@@ -23,9 +22,11 @@ import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-c
 export type ThemeSaved = { theme: ThemeRecord; created: boolean };
 
 /**
- * One theme's page, which is also its editor. A visual theme is a base theme (preset cards) with the
- * tokens it overrides (the Look card: each overridden token with a badge and Reset, `Clear overrides`,
- * Extra CSS collapsed); a stylesheet theme is a CSS editor. Delete is the last card, disabled with the
+ * One theme's page, which is also its editor. A theme is a base theme (a row of pills, the preview beside
+ * it shows the result) with the tokens it overrides (the Look card: each overridden token with a badge and
+ * Reset, `Clear overrides`). A theme stored as a stylesheet (the API still accepts them) is shown read-only as
+ * "Stylesheet (legacy)": its CSS, the preview and Delete, so an operator who has one can see it and remove it,
+ * but the console neither creates nor edits one. Delete is the last card, disabled with the
  * clients that use the theme. A bar sticks to the bottom with Cancel and Save and names what is not
  * saved yet. The preview is a real login form drawn from the theme: a column that stays on screen
  * beside the controls, a band above them below 900px.
@@ -59,7 +60,6 @@ export class VersolaThemeRecord extends LitElement {
   @state() private overrides: ThemeOverrides = {};
   /** The colour field holds text that is not a #rrggbb colour (reported by the token controls). */
   @state() private brandInvalid = false;
-  @state() private advancedOpen = false;
   @state() private submitted = false;
 
   @state() private renderedCss = '';
@@ -79,8 +79,6 @@ export class VersolaThemeRecord extends LitElement {
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   /** Bumped by every edit, so an answer to an earlier request is dropped, however it arrives. */
   private renderSeq = 0;
-  /** Whether the person picked Visual or Stylesheet; until then the default follows what central offers. */
-  private kindChosen = false;
 
   static styles = [
     theme,
@@ -167,58 +165,35 @@ export class VersolaThemeRecord extends LitElement {
         flex: none;
       }
 
+      /* The base theme's pills: the shared segmented buttons, each with its brand colour as a dot. */
       .presets {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
         gap: var(--spacing-sm);
       }
 
-      .preset {
-        text-align: left;
-        padding: 0.5rem;
-        font: inherit;
-        color: var(--text-primary);
-        background: transparent;
-        border: 1.5px solid var(--border-default);
-        border-radius: var(--radius-md);
-        cursor: pointer;
+      .presets .seg-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-height: 2rem;
+        padding-left: 0.625rem;
       }
 
-      .preset:hover {
-        border-color: var(--text-secondary);
+      .dot {
+        flex: none;
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 50%;
+        box-shadow: 0 0 0 1.5px var(--border-input);
       }
 
-      .preset:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
+      .seg-active .dot {
+        box-shadow: 0 0 0 1.5px var(--bg-page);
       }
 
-      .preset[aria-pressed='true'] {
-        border-color: var(--text-primary);
-        background: var(--surface-inset);
-      }
-
-      .preset b {
-        display: block;
+      .preset-hint {
+        margin: var(--spacing-sm) 0 0;
         font-size: var(--text-sm);
-        margin-top: 0.375rem;
-      }
-
-      details.advanced {
-        border-top: 1px solid var(--border-default);
-        padding: var(--spacing-md) var(--spacing-lg);
-      }
-
-      details.advanced summary {
-        cursor: pointer;
-        font-weight: 600;
-        font-size: var(--text-base);
-        min-height: 1.5rem;
-      }
-
-      details.advanced summary:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
+        color: var(--text-secondary);
       }
 
       /* ── the bar ── */
@@ -276,12 +251,6 @@ export class VersolaThemeRecord extends LitElement {
         font-size: var(--text-sm);
       }
 
-      .kind-note {
-        margin: 0.25rem 0 var(--spacing-sm);
-        font-size: var(--text-sm);
-        color: var(--text-secondary);
-      }
-
       .field-label {
         display: block;
         margin-bottom: var(--spacing-sm);
@@ -302,22 +271,19 @@ export class VersolaThemeRecord extends LitElement {
     if (changed.has('theme') && this.theme) {
       this.editId = this.theme.id;
       this.editCss = this.theme.css;
-      this.kindChosen = false;
       this.scope = this.theme.tenantId ? 'tenant' : 'global';
-      this.kind = this.theme.tokens || (this.isNew && this.presets.length > 0) ? 'tokens' : 'css';
+      // A theme the console makes is always built from a base; one without tokens is a stored stylesheet, shown read-only.
+      this.kind = this.theme.tokens || this.isNew ? 'tokens' : 'css';
       this.base = this.theme.tokens?.base ?? this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
       this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
       this.brandInvalid = false;
       this.submitted = false;
       this.error = '';
-      this.advancedOpen = this.kind === 'tokens' && this.editCss.trim() !== '';
       this.saved = { base: this.kind === 'tokens' ? this.base : '', overrides: { ...this.overrides }, css: this.editCss };
       this.scheduleRender();
     } else if (changed.has('presets') && this.theme) {
-      // The built-in themes arrived after the theme was opened: pick the default base, and start a new theme as a
-      // visual one unless the person already chose.
+      // The built-in themes arrived after the theme was opened: pick the default base.
       if (this.base === '' || !this.basePreset) this.base = this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
-      if (this.isNew && !this.kindChosen && this.presets.length > 0) this.kind = 'tokens';
       this.saved = { ...this.saved, base: this.kind === 'tokens' && !this.theme.tokens ? this.base : this.saved.base };
       this.scheduleRender();
     }
@@ -363,7 +329,7 @@ export class VersolaThemeRecord extends LitElement {
 
   private get unsaved(): string[] {
     const now = { base: this.tokensKind ? this.base : '', overrides: this.tokensKind ? this.overrides : {}, css: this.editCss };
-    return unsavedNames(this.saved, now, this.tokensKind ? 'extra CSS' : 'stylesheet');
+    return unsavedNames(this.saved, now, 'stylesheet');
   }
 
   private get dirty(): boolean {
@@ -485,12 +451,6 @@ export class VersolaThemeRecord extends LitElement {
     }
   }
 
-  private setKind(kind: 'tokens' | 'css') {
-    this.kind = kind;
-    this.kindChosen = true;
-    this.scheduleRender();
-  }
-
   // ── preview ─────────────────────────────────────────────────────────────
 
   private get previewForm(): FormRecord | undefined {
@@ -547,31 +507,25 @@ export class VersolaThemeRecord extends LitElement {
               ${this.tenantId ? html`<option value="tenant" ?selected=${this.scope === 'tenant'}>This tenant (${this.tenantId})</option>` : nothing}
             </select>
           </div>
-          ${this.presets.length > 0 ? html`
-            <div class="form-group">
-              <span class="field-label" id="kind-label">Built as</span>
-              <p class="kind-note">Chosen when the theme is created; it cannot be switched afterwards.</p>
-              <div class="seg-control" role="group" aria-labelledby="kind-label">
-                <button type="button" class="seg-btn ${this.tokensKind ? 'seg-active' : ''}" aria-pressed=${this.tokensKind ? 'true' : 'false'} @click=${() => this.setKind('tokens')}>Visual</button>
-                <button type="button" class="seg-btn ${!this.tokensKind ? 'seg-active' : ''}" aria-pressed=${!this.tokensKind ? 'true' : 'false'} @click=${() => this.setKind('css')}>Stylesheet</button>
-              </div>
-            </div>` : nothing}
         </div>
       </section>`;
   }
 
   private renderBase(): TemplateResult {
+    const base = this.basePreset;
     return html`
       <section class="card record-card" aria-label="Base theme">
         <div class="record-card-head"><div><h2>Base theme</h2>
-          <div class="record-card-sub">Start from a built-in look. What you change below is kept as overrides, so switching the base keeps them.</div></div></div>
+          <div class="record-card-sub">Start from a built-in look; the preview shows it. What you change below is kept as overrides, so switching the base keeps them.</div></div></div>
         <div class="card-body">
-          <div class="presets" role="group" aria-label="Base theme">
+          <div class="seg-control presets" role="group" aria-label="Base theme">
             ${this.presets.map(p => html`
-              <button type="button" class="preset" aria-pressed=${this.base === p.id ? 'true' : 'false'} ?disabled=${!this.canManage} @click=${() => this.pickBase(p.id)}>
-                ${themeThumb(p.tokens)}<b>${p.title.en ?? p.id}</b>
+              <button type="button" class="seg-btn ${this.base === p.id ? 'seg-active' : ''}" aria-pressed=${this.base === p.id ? 'true' : 'false'}
+                ?disabled=${!this.canManage} @click=${() => this.pickBase(p.id)}>
+                <span class="dot" style=${`background:${p.tokens.brand}`} aria-hidden="true"></span>${p.title.en ?? p.id}
               </button>`)}
           </div>
+          ${base ? html`<p class="preset-hint" id="preset-hint">${base.title.en ?? base.id}: ${presetHint(base.tokens)}</p>` : nothing}
         </div>
       </section>`;
   }
@@ -592,23 +546,20 @@ export class VersolaThemeRecord extends LitElement {
           <versola-theme-token-controls ruled .base=${base} .overrides=${this.overrides}
             @overrides-change=${(e: CustomEvent<OverridesChange>) => this.onOverridesChange(e.detail)}></versola-theme-token-controls>
         </div>
-        <details class="advanced" ?open=${this.advancedOpen} @toggle=${(e: Event) => { this.advancedOpen = (e.target as HTMLDetailsElement).open; }}>
-          <summary>Extra CSS (optional)</summary>
-          <p class="hint" style="margin-top:0.5rem">Added after the generated styles. Leave it empty unless a token cannot do what you need.</p>
-          <versola-code-editor language="css" rows="8" label="Extra CSS" ?disabled=${!this.canManage} .value=${this.editCss}
-            @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}></versola-code-editor>
-        </details>
+        ${this.editCss.trim() !== '' ? html`
+          <p class="hint" style="margin:0;padding:var(--spacing-md) var(--spacing-lg);border-top:1px solid var(--border-default)">This theme also carries extra CSS that was stored through the API.
+            The console keeps it as it is and applies it after the generated styles; it neither shows nor edits it.</p>` : nothing}
       </section>`;
   }
 
   private renderStylesheet(): TemplateResult {
     return html`
-      <section class="card record-card" aria-label="Stylesheet">
-        <div class="record-card-head"><div><h2>Stylesheet</h2>
-          <div class="record-card-sub">Applied to all forms using this theme. A theme written as CSS replaces the default stylesheet entirely.</div></div></div>
+      <section class="card record-card" aria-label="Stylesheet (legacy)">
+        <div class="record-card-head"><div><h2>Stylesheet (legacy)</h2>
+          <div class="record-card-sub">This theme is a CSS file stored through the API and replaces the default stylesheet. The console no longer creates or edits these:
+            it stays as it is, clients can keep using it, and it can be deleted once none does. Build a replacement from a base theme.</div></div></div>
         <div class="card-body">
-          <versola-code-editor language="css" rows="22" label="CSS" ?disabled=${!this.canManage} .value=${this.editCss}
-            @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}></versola-code-editor>
+          <versola-code-editor language="css" rows="8" label="CSS (read-only)" disabled .value=${this.editCss}></versola-code-editor>
         </div>
       </section>`;
   }
@@ -653,14 +604,14 @@ export class VersolaThemeRecord extends LitElement {
         </div>
         ${this.renderError ? html`<p class="render-error" role="alert">${this.renderError}. The preview shows the last version that rendered.</p>` : nothing}
         ${forms.length === 0 ? nothing : html`<iframe class="preview-iframe" title="Preview" .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>`}
-        <div slot="note">${this.tokensKind ? 'Rendered by central from the tokens as you change them.' : 'Your stylesheet, drawn on the form chosen above.'} The width is the phone a client's users most likely hold.</div>
+        <div slot="note">${this.tokensKind ? 'Rendered by central from the tokens as you change them.' : 'The stored stylesheet, drawn on the form chosen above.'} The width is the phone a client's users most likely hold.</div>
       </versola-preview-pane>`;
   }
 
   private renderMeta(): TemplateResult {
     const rest = this.usedBy.slice(2);
     return html`
-      <span class="chip">${this.theme.tokens ? 'Visual' : 'Stylesheet'}</span>
+      <span class="chip">${this.theme.tokens ? 'Visual' : 'Stylesheet (legacy)'}</span>
       <span class="chip">${this.theme.tenantId ? 'This tenant' : 'Global'}</span>
       ${this.usedBy.length === 0 ? html`<span class="chip">No clients</span>` : html`
         <span class="muted">Used by</span>
@@ -692,7 +643,7 @@ export class VersolaThemeRecord extends LitElement {
         ${this.renderPreview()}
       </div>
 
-      ${this.canManage ? html`
+      ${this.canManage && this.tokensKind ? html`
         <div class="bar">
           <div class="bar-text" role="status">${this.isNew ? (unsaved.length ? `New theme: ${unsaved.join(', ')}` : 'New theme') : unsaved.length ? `Unsaved: ${unsaved.join(', ')}` : 'No unsaved changes'}</div>
           <div class="bar-actions">

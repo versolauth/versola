@@ -6,6 +6,7 @@ import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 
 object FormController extends Controller:
@@ -46,12 +47,12 @@ object FormController extends Controller:
 
   val updateFormEndpoint =
     Method.PUT / "configuration" / "forms" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[FormService]
         body <- request.bodyAs[UpdateFormRequest]
         _ <- service.updateForm(body.id, body.style, body.jsSource, body.jsCompiled, body.localizations, body.properties, activate = false)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent)).catchSome(badRequest)
     }
 
   val setActiveVersionEndpoint =
@@ -63,3 +64,9 @@ object FormController extends Controller:
         _ <- service.setActiveVersion(body.id, body.version)
       yield Response.status(Status.NoContent)
     }
+
+  // What a refused version answers: the reason, as a 400 with the `{"message": ...}` shape the themes use. The reason
+  // names keys and language codes from the request, which Json.Str encodes, so it cannot break out of the string.
+  private val badRequest: PartialFunction[Throwable, ZIO[Any, Nothing, Response]] =
+    case e: IllegalArgumentException =>
+      ZIO.succeed(Response.json(Json.Obj("message" -> Json.Str(e.getMessage)).toJson).status(Status.BadRequest))

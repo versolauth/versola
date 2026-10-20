@@ -6,9 +6,11 @@ import type { MockConfigState } from './mocks';
  * screenshots (example.com data). Pure data and node's own modules: the docs manifest imports this
  * file directly (type stripping) and passes in the compiled form bundles it builds itself.
  *
- * Forms: five built-in ones (credential has a v8 stored but not active and gaps in ru and kk;
- * set-password lacks kk) and two custom ones. Themes: the default, a stylesheet one and three
- * visual ones; the clients name them, so the list can say who uses what.
+ * Forms: five built-in ones (credential's active v7 has gaps in ru and kk and its newer v8, not
+ * active, is complete; set-password lacks kk) and two custom ones, which are for the Playwright specs
+ * only: the docs screenshots take `ftBuiltInForms`, so they never show a form somebody made up.
+ * Themes: the default, a legacy stylesheet one and visual ones on the built-in themes; the clients
+ * name them, so the list can say who uses what.
  */
 export const ftTenant = 'tenant-alpha';
 export const ftPath = (view: 'forms' | 'themes', rest = '') => `/?view=${view}&tenant=${ftTenant}${rest}`;
@@ -53,22 +55,28 @@ var h='<div class="container"><h1>'+(t.title||'')+'</h1><p>'+(t.intro||'')+'</p>
 if(s.showPhone){h+='<label>'+(t.phone||'')+'</label><input placeholder="'+(t.phone_placeholder||'')+'">';}
 h+='<button>'+(t.submit||'')+'</button></div>';document.getElementById('versola-form-root').innerHTML=h;})();`;
 
-export function ftForms(bundles: Record<string, string> = {}) {
+export function ftBuiltInForms(bundles: Record<string, string> = {}) {
   const credential = i18n('credential');
   const credentialRu = without(credential.ru, ['passkey_button', 'phone_hint']);
   const credentialTexts = { ...credential, ru: credentialRu, kk: without(withKazakh({ ...credential, ru: credentialRu }).kk, []) };
+  return [
+    builtIn('credential', bundles, 6, false, { ...credentialTexts, ru: { ...credentialRu, title: 'Вход (старый)' } }),
+    builtIn('credential', bundles, 7, true, credentialTexts),
+    builtIn('credential', bundles, 8, false, withKazakh({ ...credential, en: { ...credential.en, title: 'Sign in to Example Shop' } })),
+    builtIn('password', bundles, 4, true, withKazakh(i18n('password'))),
+    builtIn('otp', bundles, 5, true, withKazakh(i18n('otp'))),
+    builtIn('consent', bundles, 6, true, withKazakh(i18n('consent'))),
+    builtIn('set-password', bundles, 2, true, withKazakh(i18n('set-password'), ['title'])),
+  ];
+}
+
+/** Two forms an author made, for the specs that need a custom one (backend properties, Properties tab, create). */
+export function ftCustomForms() {
   const customProperties = [
     { type: 'BooleanProperty' as const, name: 'showPhone' },
     { type: 'StringArrayProperty' as const, name: 'channel', allowedValues: ['sms', 'email'] },
   ];
   return [
-    builtIn('credential', bundles, 6, false, { ...credentialTexts, ru: { ...credentialRu, title: 'Вход (старый)' } }),
-    builtIn('credential', bundles, 7, true, credentialTexts),
-    builtIn('credential', bundles, 8, false, { ...credentialTexts, en: { ...credential.en, title: 'Sign in to Example Shop' } }),
-    builtIn('password', bundles, 4, true, withKazakh(i18n('password'))),
-    builtIn('otp', bundles, 5, true, withKazakh(i18n('otp'))),
-    builtIn('consent', bundles, 6, true, withKazakh(i18n('consent'))),
-    builtIn('set-password', bundles, 2, true, withKazakh(i18n('set-password'), ['title'])),
     {
       id: 'support-contact', version: 3, active: true, style: '.container { padding: 1.5rem; }', jsSource: 'export const Form = () => null;', jsCompiled: customScript,
       localizations: {
@@ -86,16 +94,22 @@ export function ftForms(bundles: Record<string, string> = {}) {
   ];
 }
 
+export const ftForms = (bundles: Record<string, string> = {}) => [...ftBuiltInForms(bundles), ...ftCustomForms()];
+
 export const ftPresets = [
-  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
-  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
-  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
+  { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'studio', title: { en: 'Studio', ru: 'Студия' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech', ru: 'Финтех' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
+  { id: 'wellness', title: { en: 'Wellness', ru: 'Велнес' }, tokens: { brand: '#0e9f8e', shape: 'round', surface: 'soft', mode: 'auto', background: 'horizon' } },
+  { id: 'editorial', title: { en: 'Editorial', ru: 'Редакционный' }, tokens: { brand: '#14130f', shape: 'sharp', surface: 'neutral', mode: 'auto', background: 'flat' } },
+  { id: 'sunny', title: { en: 'Sunny', ru: 'Солнечный' }, tokens: { brand: '#f5c518', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'berry', title: { en: 'Berry', ru: 'Ягодный' }, tokens: { brand: '#b4348a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
 ];
 
 export const ftThemes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'shop-brand', css: '', tenantId: ftTenant, tokens: { base: 'versola', overrides: { brand: '#e5484d', surface: 'soft', background: 'horizon' } } },
-  { id: 'midnight', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { mode: 'dark', surface: 'bold' } } },
+  { id: 'ledger', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { mode: 'dark', surface: 'bold' } } },
   { id: 'partner-green', css: '', tenantId: ftTenant, tokens: { base: 'versola', overrides: { brand: '#2f9e63' } } },
   { id: 'legacy-2024', css: 'body { font-family: Georgia, serif; }', tenantId: ftTenant },
 ];

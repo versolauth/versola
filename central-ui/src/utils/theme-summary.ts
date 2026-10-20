@@ -27,6 +27,13 @@ export function resolveTokens(theme: ThemeRecord, presets: ThemePreset[]): Resol
   return base ? { ...base, ...(theme.tokens.overrides ?? {}) } : undefined;
 }
 
+/** What a built-in theme sets, for the line under the picker: `Brand #155e75, soft corners, bold page, glow background`.
+ *  A built-in theme has no colour scheme of its own: the scheme is the visitor's (Auto) or the theme's Colour scheme control. */
+export function presetHint(tokens: ResolvedThemeTokens): string {
+  const corners = { round: 'round', soft: 'soft', sharp: 'sharp' }[tokens.shape] ?? tokens.shape;
+  return `Brand ${tokens.brand}, ${corners} corners, ${tokens.surface} page, ${tokens.background} background.`;
+}
+
 /** The clients that name the theme (a client with none uses `default`). */
 export function clientsUsingTheme(clients: OAuthClient[], themeId: string): string[] {
   return clients.filter(client => (client.theme || 'default') === themeId).map(client => client.id);

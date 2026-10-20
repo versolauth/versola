@@ -5,7 +5,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, segment
 import type { BackendProperty, FormPreview, FormRecord, Locale, StringArrayProperty, ThemeRecord } from '../types';
 import { setActiveFormVersion, updateForm } from '../utils/central-api';
 import { confirmDiscardDraft } from '../utils/draft-guard';
-import { effectiveTexts, groupKeys, isBuiltInForm, localeGaps, missingKeys, namesWithOverflow, textKeys, type Localizations } from '../utils/form-texts';
+import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, namesWithOverflow, type Localizations } from '../utils/form-texts';
 import { exclusiveAnyOfValues, humanizeLabel, toggleAnyOf } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { buildPreviewSrcdoc, localeNamesOf, previewStylesheets } from '../utils/preview';
@@ -54,11 +54,13 @@ export class VersolaFormRecord extends LitElement {
   @state() private baseVersion = 0;
   @state() private editStyle = '';
   @state() private editJsSource = '';
+  /** The texts as last read from a well-formed edit; what the preview and the summary show while the text is mid-edit. */
   @state() private editLocalizations: Localizations = {};
+  /** What is typed in the JSON editor, kept as typed whatever its faults. */
+  @state() private localizationsText = '';
+  @state() private localizationErrors: string[] = [];
   @state() private editProperties: BackendProperty[] = [];
   @state() private locale = 'en';
-  @state() private missingOnly = false;
-  @state() private activeKey: string | null = null;
   @state() private previewVersion: number | null = null;
   @state() private previewTheme = '';
   @state() private previewScenarioId = '';
@@ -115,6 +117,10 @@ export class VersolaFormRecord extends LitElement {
         font-family: var(--font-mono);
       }
 
+      .muted {
+        color: var(--text-secondary);
+      }
+
       .form-title {
         font-size: var(--text-4xl);
         font-weight: 800;
@@ -133,7 +139,7 @@ export class VersolaFormRecord extends LitElement {
 
       .layout {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 400px;
+        grid-template-columns: minmax(0, 1fr) 340px;
         gap: var(--spacing-lg);
         align-items: start;
       }
@@ -215,115 +221,66 @@ export class VersolaFormRecord extends LitElement {
       }
 
       /* ── texts ── */
-      .texts-bar {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--spacing-sm) var(--spacing-md);
-        padding: var(--spacing-md);
-      }
-
-      .seg-btn .gap-dot {
-        display: inline-block;
-        margin-left: 0.375rem;
-      }
-
-      .seg-btn.seg-active .gap-dot {
-        background: var(--warning-border);
-      }
-
-      .check {
-        text-transform: none;
-        letter-spacing: 0;
-        font-weight: 400;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: var(--text-base);
-        color: var(--text-primary);
-        cursor: pointer;
-      }
-
-      .missing-line {
-        margin: 0;
-        padding: 0 var(--spacing-md) var(--spacing-md);
-        font-size: var(--text-sm);
-        color: var(--warning-text);
-      }
-
-      .missing-line code {
-        font-family: var(--font-mono);
-      }
-
-      .group-head {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        margin: 0;
-        padding: 0.5rem var(--spacing-md);
-        background: var(--surface-inset);
-        border-top: 1px solid var(--border-default);
-        border-bottom: 1px solid var(--border-default);
-        font-size: var(--text-xs);
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: var(--accent);
-      }
-
-      .entry {
+      .texts-summary {
         display: grid;
-        gap: 0.25rem;
-        padding: var(--spacing-sm) var(--spacing-md) var(--spacing-md);
-        border-bottom: 1px solid var(--border-subtle);
-        border-left: 3px solid transparent;
-      }
-
-      .entry.active {
-        background: var(--accent-subtle);
-        border-left-color: var(--accent);
-      }
-
-      .entry-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: var(--spacing-sm);
-      }
-
-      .key {
-        text-transform: none;
-        letter-spacing: 0;
-        font-weight: 400;
-        font-family: var(--font-mono);
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.25rem var(--spacing-md);
+        margin: 0 0 var(--spacing-md);
+        padding: var(--spacing-sm) var(--spacing-md);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
         font-size: var(--text-sm);
-        color: var(--text-secondary);
-        overflow-wrap: anywhere;
       }
 
-      .ref {
-        display: flex;
-        gap: 0.5rem;
-        font-size: var(--text-sm);
-        color: var(--text-secondary);
-      }
-
-      .ref .lang {
+      .texts-summary dt {
         font-size: var(--text-xs);
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
+        color: var(--text-secondary);
+        padding-top: 0.125rem;
       }
 
-      .text-field {
-        width: 100%;
-        resize: vertical;
+      .texts-summary dd {
+        margin: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.75rem;
+        min-width: 0;
       }
 
-      .entry.missing .text-field {
-        background: var(--warning-subtle);
-        border-color: var(--warning);
+      .texts-summary code {
+        font-family: var(--font-mono);
+      }
+
+      .texts-summary .gap {
+        color: var(--warning-text);
+        overflow-wrap: anywhere;
+      }
+
+      .texts-errors {
+        margin: var(--spacing-sm) 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .texts-errors li {
+        padding: 0.25rem 0 0.25rem var(--spacing-md);
+        border-left: 3px solid var(--danger);
+        font-size: var(--text-sm);
+        color: var(--danger-text);
+        overflow-wrap: anywhere;
+      }
+
+      .texts-errors li + li {
+        margin-top: 0.25rem;
+      }
+
+      .texts-ok {
+        margin: var(--spacing-sm) 0 0;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
       }
 
       .empty-note {
@@ -441,18 +398,6 @@ export class VersolaFormRecord extends LitElement {
       .number-field {
         width: 5rem;
       }
-
-      .note-ring {
-        display: inline-block;
-        padding: 0 0.25rem;
-        border-radius: var(--radius-sm);
-        outline: 2px dashed var(--accent);
-        outline-offset: 1px;
-      }
-
-      .note-ring.warn {
-        outline-color: var(--warning);
-      }
     `,
   ];
 
@@ -514,8 +459,27 @@ export class VersolaFormRecord extends LitElement {
     return localeGaps(this.editLocalizations, this.usableLocales.map(locale => locale.code));
   }
 
+  /** A built-in form's own keys: the reference language of its newest stored version. A custom form's are its author's. */
+  private get builtInKeys(): string[] | null {
+    if (!this.builtIn) return null;
+    const stored = this.latest?.localizations ?? {};
+    const texts = stored[this.reference] ?? Object.values(stored)[0];
+    return texts ? Object.keys(texts) : null;
+  }
+
+  /** The text of the editor while it is not well-formed is part of what is unsaved, though the texts are not yet known. */
   private snapshot(): string {
-    return JSON.stringify([this.isNew ? this.editId.trim() : '', this.editStyle, this.editJsSource, this.editLocalizations, this.editProperties]);
+    const pending = this.localizationErrors.length > 0 && this.localizationsText !== this.baselineText ? this.localizationsText : '';
+    return JSON.stringify([this.isNew ? this.editId.trim() : '', this.editStyle, this.editJsSource, this.editLocalizations, this.editProperties, pending]);
+  }
+
+  private baselineText = '';
+
+  private setLocalizationsText(text: string) {
+    this.localizationsText = text;
+    const check = checkLocalizations(text, { locales: this.usableLocales.map(locale => locale.code), reference: this.reference, builtInKeys: this.builtInKeys });
+    this.localizationErrors = check.errors;
+    if (check.parsed) this.editLocalizations = check.parsed;
   }
 
   private get dirty(): boolean {
@@ -530,6 +494,13 @@ export class VersolaFormRecord extends LitElement {
     this.editLocalizations = Object.fromEntries(
       Object.entries(version?.localizations ?? {}).map(([code, texts]) => [code, typeof texts === 'object' && texts !== null ? { ...texts } : {}]),
     );
+    // The stored texts are shown as they are, faults included: a version saved before the rules were
+    // enforced is fixed here, not hidden.
+    this.localizationsText = formatLocalizations(Object.keys(this.editLocalizations).length === 0
+      ? Object.fromEntries(this.usableLocales.map(locale => [locale.code, {}]))
+      : this.editLocalizations);
+    this.baselineText = this.localizationsText;
+    this.setLocalizationsText(this.localizationsText);
     this.baseline = this.snapshot();
   }
 
@@ -545,8 +516,7 @@ export class VersolaFormRecord extends LitElement {
       this.error = '';
       this.activated = null;
       this.submitted = false;
-      this.missingOnly = false;
-    }
+    } else if (changed.has('locales') || changed.has('previews')) this.setLocalizationsText(this.localizationsText);
     if (!this.usableLocales.some(locale => locale.code === this.locale)) this.locale = this.reference;
     this.scheduleFrame();
   }
@@ -580,7 +550,7 @@ export class VersolaFormRecord extends LitElement {
   private buildSrcdoc(): string {
     const source = this.previewSource;
     const themeId = this.previewThemeId;
-    // Every key shows in English until the edited language has a text for it, as the form itself does.
+    // Every key shows in the reference language until the chosen one has a text for it, as the form itself does.
     const shown: Localizations = {
       ...source.localizations,
       [this.locale]: effectiveTexts(source.localizations, this.locale, this.reference),
@@ -614,48 +584,6 @@ export class VersolaFormRecord extends LitElement {
     this.docTimer = setTimeout(() => { this.frameDoc = this.pendingDoc; }, 200);
   }
 
-  private onFrameLoad(e: Event) {
-    const frame = e.target as HTMLIFrameElement;
-    this.markFrame(frame);
-    // The form draws itself as its script runs; mark again once it has.
-    setTimeout(() => this.markFrame(frame), 150);
-  }
-
-  /** Rings, in the preview, the text of the key being edited (dashed accent) and the English text
-   *  that stands in for each key the edited language lacks (dashed warning). */
-  private markFrame(frame: HTMLIFrameElement | null = this.renderRoot.querySelector<HTMLIFrameElement>('iframe.preview-iframe')) {
-    const doc = frame?.contentDocument;
-    if (!doc?.body) return;
-    const colours = getComputedStyle(this);
-    let style = doc.getElementById('versola-marks');
-    if (!style) {
-      style = doc.createElement('style');
-      style.id = 'versola-marks';
-      doc.head.appendChild(style);
-    }
-    style.textContent = `[data-vm]{outline:2px dashed ${colours.getPropertyValue('--warning').trim()} !important;outline-offset:2px}[data-vm="active"]{outline-color:${colours.getPropertyValue('--accent').trim()} !important}`;
-    for (const el of doc.querySelectorAll('[data-vm]')) el.removeAttribute('data-vm');
-
-    const source = this.previewSource.localizations;
-    const reference = source[this.reference] ?? {};
-    const shown = effectiveTexts(source, this.locale, this.reference);
-    const missing = new Set(missingKeys(source, this.locale));
-    const mark = (text: string | undefined, kind: 'active' | 'missing') => {
-      const wanted = (text ?? '').trim();
-      if (!wanted) return;
-      for (const el of doc.body.querySelectorAll<HTMLElement>('*')) {
-        const own = Array.from(el.childNodes).filter(node => node.nodeType === 3).map(node => node.textContent ?? '').join('').trim();
-        const attrs = [el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('title')];
-        if (own === wanted || attrs.includes(wanted)) {
-          if (kind === 'active' || !el.hasAttribute('data-vm')) el.setAttribute('data-vm', kind);
-        }
-      }
-    };
-    for (const key of missing) mark(reference[key], 'missing');
-    if (this.activeKey) mark(shown[this.activeKey], missing.has(this.activeKey) ? 'missing' : 'active');
-    if (this.activeKey && !missing.has(this.activeKey)) mark(shown[this.activeKey], 'active');
-  }
-
   // ── actions ─────────────────────────────────────────────────────────────
 
   private selectTab(tab: FormTab) {
@@ -679,6 +607,12 @@ export class VersolaFormRecord extends LitElement {
     if (this.saving) return;
     this.submitted = true;
     if (!this.formId || this.idError) return;
+    if (this.localizationErrors.length > 0) {
+      // The faults are listed under the editor; bring the person to them rather than to a banner that repeats them.
+      this.selectTab('texts');
+      this.focusTextsEditor();
+      return;
+    }
     this.saving = true;
     this.error = '';
     try {
@@ -690,6 +624,13 @@ export class VersolaFormRecord extends LitElement {
     } finally {
       this.saving = false;
     }
+  }
+
+  /** The Texts tab is drawn after the route changes, which is not this component's update: look for the editor for a moment. */
+  private focusTextsEditor(attempts = 20) {
+    const textarea = this.renderRoot.querySelector<HTMLElement>('#form-texts')?.shadowRoot?.querySelector('textarea');
+    if (textarea) textarea.focus();
+    else if (attempts > 0) requestAnimationFrame(() => this.focusTextsEditor(attempts - 1));
   }
 
   /** What is stored as compiled: the base version's, which the console does not change. */
@@ -717,10 +658,6 @@ export class VersolaFormRecord extends LitElement {
     this.loadBase(version);
     this.previewVersion = null;
     this.selectTab('texts');
-  }
-
-  private setText(locale: string, key: string, value: string) {
-    this.editLocalizations = { ...this.editLocalizations, [locale]: { ...(this.editLocalizations[locale] ?? {}), [key]: value } };
   }
 
   // ── properties (a custom form's) ────────────────────────────────────────
@@ -754,56 +691,30 @@ export class VersolaFormRecord extends LitElement {
   // ── rendering ───────────────────────────────────────────────────────────
 
   private renderTexts(): TemplateResult {
-    const locales = this.usableLocales;
-    const keys = textKeys(this.editLocalizations);
-    const locale = this.locale;
-    const isReference = locale === this.reference;
-    const gaps = this.gaps;
-    const missing = new Set(gaps[locale] ?? []);
-    const shownKeys = this.missingOnly ? keys.filter(key => missing.has(key)) : keys;
-    const reference = this.editLocalizations[this.reference] ?? {};
-    const own = this.editLocalizations[locale] ?? {};
-    const name = locales.find(l => l.code === locale)?.name ?? locale;
+    const codes = this.usableLocales.map(locale => locale.code);
+    const texts = this.editLocalizations;
+    const gaps = localeGaps(texts, codes);
+    const present = Object.keys(texts);
+    const errors = this.localizationErrors;
     return html`
-      <div class="texts-bar">
-        <div class="seg-control" role="group" aria-label="Language being edited">
-          ${locales.map(l => html`
-            <button type="button" class="seg-btn ${l.code === locale ? 'seg-active' : ''}" aria-pressed=${l.code === locale ? 'true' : 'false'}
-              @click=${() => { this.locale = l.code; }}>${l.name}${l.code in gaps ? html`<span class="gap-dot" title=${`Missing texts in ${l.name}`}></span>` : nothing}</button>
-          `)}
+      <div class="panel-pad">
+        <p class="hint">All languages in one JSON object: the language code, then each key with its text. Every language has the same keys, and a
+          <code class="mono">{placeholder}</code> is spelled the same wherever a key uses it.</p>
+        <dl class="texts-summary" aria-label="Summary of the texts">
+          <dt>Languages</dt>
+          <dd>${present.length === 0 ? html`<span class="muted">none yet</span>` : present.map(code => html`<code>${code}</code>`)}</dd>
+          <dt>Missing</dt>
+          <dd>${Object.keys(gaps).length === 0 ? html`<span class="muted">Every language has every key.</span>`
+            : Object.entries(gaps).map(([code, keys]) => html`<span class="gap"><code>${code}</code>: ${namesWithOverflow(keys)}</span>`)}</dd>
+        </dl>
+        <versola-code-editor id="form-texts" language="json" rows="24" label="Form texts, JSON" ?disabled=${!this.canManage} ?invalid=${errors.length > 0}
+          .value=${this.localizationsText} @code-input=${(e: CustomEvent<{ value: string }>) => this.setLocalizationsText(e.detail.value)}></versola-code-editor>
+        <div aria-live="polite" aria-atomic="true">
+          ${errors.length > 0 ? html`
+            <ul class="texts-errors" aria-label="Problems in the texts">${errors.map(error => html`<li>${error}</li>`)}</ul>`
+            : html`<p class="texts-ok">${statusIcon('check')} The texts can be saved.</p>`}
         </div>
-        <label class="check"><input type="checkbox" .checked=${this.missingOnly}
-          @change=${(e: Event) => { this.missingOnly = (e.target as HTMLInputElement).checked; }} />Missing only</label>
-      </div>
-      ${missing.size > 0 ? html`
-        <p class="missing-line" role="status">Missing in ${locale}: ${namesWithOverflow([...missing]).split(/(, )/).map((part, i) => i % 2 ? part : html`<code>${part}</code>`)}</p>` : nothing}
-      ${keys.length === 0 ? html`<div class="empty-note">This form has no texts yet. The texts a form shows are stored with its versions.</div>`
-        : shownKeys.length === 0 ? html`<div class="empty-note">Nothing is missing in ${name}.</div>`
-        : groupKeys(shownKeys).map(({ group, keys: groupKeysList }) => html`
-          <h3 class="group-head">${group}</h3>
-          ${groupKeysList.map(key => {
-            const value = own[key] ?? '';
-            const isMissing = missing.has(key);
-            const id = `text-${key.replace(/[^a-z0-9_-]/gi, '-')}`;
-            const long = value.length > 70 || (reference[key] ?? '').length > 70;
-            const field = long
-              ? html`<textarea id=${id} class="text-field" rows="3" ?readonly=${!this.canManage} .value=${value} placeholder=${isMissing && !isReference ? 'Shown in English until translated' : ''}
-                  @focus=${() => { this.activeKey = key; }} @blur=${() => { if (this.activeKey === key) this.activeKey = null; }}
-                  @input=${(e: Event) => this.setText(locale, key, (e.target as HTMLTextAreaElement).value)}></textarea>`
-              : html`<input id=${id} type="text" class="text-field" autocomplete="off" ?readonly=${!this.canManage} .value=${value} placeholder=${isMissing && !isReference ? 'Shown in English until translated' : ''}
-                  @focus=${() => { this.activeKey = key; }} @blur=${() => { if (this.activeKey === key) this.activeKey = null; }}
-                  @input=${(e: Event) => this.setText(locale, key, (e.target as HTMLInputElement).value)} />`;
-            return html`
-              <div class="entry ${isMissing ? 'missing' : ''} ${this.activeKey === key ? 'active' : ''}" data-key=${key}>
-                <div class="entry-head">
-                  <label class="key" for=${id}>${key}</label>
-                  ${isMissing ? html`<span class="chip warn">Missing in ${locale}</span>` : nothing}
-                </div>
-                ${isReference ? nothing : html`<div class="ref"><span class="lang" aria-hidden="true">${this.reference}</span><span>${reference[key] ?? ''}</span></div>`}
-                ${field}
-              </div>`;
-          })}`)}
-    `;
+      </div>`;
   }
 
   private renderStyle(): TemplateResult {
@@ -911,6 +822,12 @@ export class VersolaFormRecord extends LitElement {
     const source = this.previewSource;
     return html`
       <div class="preview-toolbar" slot="toolbar">
+        <div class="ctrl-group">
+          <label class="ctrl-label" for="preview-locale">Language</label>
+          <select id="preview-locale" .value=${this.locale} @change=${(e: Event) => { this.locale = (e.target as HTMLSelectElement).value; }}>
+            ${this.usableLocales.map(l => html`<option value=${l.code} ?selected=${l.code === this.locale}>${l.name}</option>`)}
+          </select>
+        </div>
         ${renderScenarioControl(scenarios, pickScenario(scenarios, this.previewScenarioId)?.id ?? '', id => { this.previewScenarioId = id; })}
         ${this.themes.length > 0 ? html`
           <div class="ctrl-group">
@@ -1037,16 +954,11 @@ export class VersolaFormRecord extends LitElement {
         </section>
         <versola-preview-pane heading="Preview" .logicalWidth=${this.previewWidth} .logicalHeight=${this.previewWidth > 500 ? 720 : 600}>
           ${this.renderPreviewToolbar()}
-          <iframe class="preview-iframe" title="Form preview" .srcdoc=${this.frameDoc} sandbox="allow-same-origin allow-scripts"
-            @load=${(e: Event) => this.onFrameLoad(e)}></iframe>
-          <div slot="note">The language follows the one you edit. <span class="note-ring">Dashed accent</span>: the text you are typing in. ${this.locale === this.reference ? nothing : html`<span class="note-ring warn">Dashed warning</span>: shown in ${this.usableLocales.find(l => l.code === this.reference)?.name ?? this.reference} because ${this.locale} has no text.`}</div>
+          <iframe class="preview-iframe" title="Form preview" .srcdoc=${this.frameDoc} sandbox="allow-same-origin allow-scripts"></iframe>
+          <div slot="note">Follows the texts as you type them, in the language chosen above.${this.locale === this.reference ? nothing : ` A key that ${this.locale} lacks shows in ${this.usableLocales.find(l => l.code === this.reference)?.name ?? this.reference}.`}</div>
         </versola-preview-pane>
       </div>
     `;
-  }
-
-  updated(changed: PropertyValues) {
-    if (changed.has('activeKey') || changed.has('locale') || changed.has('editLocalizations') || changed.has('previewVersion')) this.markFrame();
   }
 
   private onTabKey(e: KeyboardEvent, tabs: FormTab[], current: FormTab) {

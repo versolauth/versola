@@ -1571,6 +1571,15 @@ paths:
       description: |
         Creates a new version without activating it. Activate it separately with
         `PUT /configuration/forms/active`.
+
+        `localizations` is language first, `{ "en": { "<key>": "..." }, "ru": { ... } }`, the shape of a form's
+        `<name>.i18n.json`. The languages must agree: each has exactly the same keys, and a key has the same
+        `{placeholder}` names in every language (their order may differ). A version that breaks this is refused with
+        a `400` and nothing is stored, because the form looks a text up by key and fills its placeholders from the
+        page, so a language that differs breaks the page for its readers only. Central compares the others with
+        `en` (the first language by code when there is no `en`). A language need not be a registered or active
+        locale: central stores texts ahead of a language being switched on, and activating a locale checks it is
+        complete.
       operationId: updateForm
       requestBody:
         required: true
@@ -1581,6 +1590,15 @@ paths:
       responses:
         '204':
           description: Version stored.
+        '400':
+          description: >-
+            Refused, with nothing stored: the languages of `localizations` do not share one set of keys and
+            placeholders. The message names the first few faults (a language lacking a key, a key a language adds,
+            a key whose placeholders differ), for example `Locale 'ru' has no text for 'title', which 'en' has`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '401':
           $ref: '#/components/responses/Unauthorized'
 

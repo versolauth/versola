@@ -269,20 +269,23 @@ on the record, where the permissions that guard them are visible). Reference: `r
 
 **Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
 record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
-editor, with a live preview pinned beside it (`versola-preview-pane`: 500px at 1440, 400px at 1024, 560px
+editor, with a live preview pinned beside it (`versola-preview-pane`: 500px at 1440, 340px at 1024, 560px
 for a theme's login form, a collapsible band above the controls below 900px; the previewed page is scaled to
 the room it has). Nothing is saved until the one primary action: a **form**'s is `Save as new version` in the
 header (saving stores a version without activating it; `Set active` on any stored version lives under the
 Versions tab, with a "stored but not active" warning and no delete, because the API has none); a **theme**'s is
 `Save theme` in a bar that sticks to the bottom of the page with Cancel and names what is not saved yet
 (`Unsaved: brand colour, shape`), Delete is the last card, disabled with the clients that block it. Leaving
-with edits asks (`confirmDiscardDraft`). Forms: tabs `Texts` (stacked entries under sticky group headers: key,
-the default language's text as a muted reference, the field; a missing translation is a warning field, a
-`Missing only` filter, the first missing keys with `+N`; the preview shows the edited language, rings the key
-being typed dashed in the accent and a missing key's English dashed in the warning colour), `Style`, `Script`,
+with edits asks (`confirmDiscardDraft`). Forms: tabs `Texts` (ONE JSON editor for all languages, `{ "en": { "<key>": "..." }, "ru": { ... } }`, the shape of
+`forms/<name>/<name>.i18n.json`: a compact read-only summary above it names the languages present and the keys each
+lacks with `+N`; problems are listed under it in an `aria-live` region and the typed text is kept; a Language
+switch in the preview toolbar picks the language the preview shows), `Style`, `Script`,
 `Properties` (custom forms only: a built-in form's states come from central) and `Versions`; the tab is
-`?edit=<tab>`. Themes: Base theme (preset cards), Look (each overridden token with an `Overridden` badge and
-Reset, `Clear overrides`, Extra CSS collapsed), a stylesheet theme is one CSS editor; "Used by" is computed in
+`?edit=<tab>`. Themes: Base theme (a wrapping row of pills, each with its brand colour as a dot, the selected one filled, and a
+one-line hint of what it sets: no thumbnails, the preview shows the result; a built-in theme is never "dark" or "light", the
+Colour scheme control and the preview's Light/Dark are the only place the scheme shows), Look (each overridden token with
+an `Overridden` badge and Reset, `Clear overrides`; no Extra CSS), a theme stored as a stylesheet is shown read-only as
+"Stylesheet (legacy)" with Delete only; "Used by" is computed in
 the console from the tenant's clients (central has no usage endpoint). Lists are tables with a kind filter and
 no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
 `forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.
@@ -323,7 +326,7 @@ inputs, never two primary buttons in one region.
 | Endpoints table | `<versola-resource-endpoints-table .endpoints .permissionsByEndpoint .resourceId>` | The endpoints of a resource inside its record card, read-only: method badge and path (breaking after `/`), `userinfo` tag, permissions joined by `or` and the `allow` rule, step-up (ACR, condition, `at most 5m` with the seconds in its title), the injections | Editing (the endpoints editor) |
 | Break text | `breakPath(path)`, `breakHost(host)`, `breakAfter(value, chars)` from `break-text.ts` | A path or a host in a place that may wrap: a `<wbr>` after each `/` or `.` is the only place it breaks, never inside a word | IDs (they do not break at all) |
 | Preview pane | `<versola-preview-pane heading .logicalWidth .logicalHeight ?busy ?stale>` + `slot="toolbar"`, an `<iframe>` in the default slot, `slot="note"` | The live preview of a record that is its own editor: sticky card, toolbar, the previewed page scaled to the room, a collapsible band below 900px, scrolls inside itself when taller than the window | A static picture |
-| Theme thumb | `themeThumb(tokens, { small })` from `theme-thumb.ts` | A sketch of what a theme gives a login page (page, sheet, brand): preset cards at 4.5rem, the themes list's `small` one | The console's own colours |
+| Theme thumb | `themeThumb(tokens, { small })` from `theme-thumb.ts` | A sketch of what a theme gives a login page (page, sheet, brand): the themes list's `small` one | The console's own colours |
 | Segmented pills | `segmentedStyles`: `.ctrl-group`, `.ctrl-label`, `.seg-control`, `button.seg-btn[.seg-active]` | A choice of one (or several) among a few in a preview toolbar or a theme's controls; the active pill is ink-filled like the filter bar's | Filtering a table (the filter bar) |
 | Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters above a table (no counts), as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |

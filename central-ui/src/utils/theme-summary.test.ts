@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientsUsingTheme, joinNames, overrideKeys, overridesText, resolveTokens, unsavedNames } from './theme-summary';
+import { clientsUsingTheme, joinNames, overrideKeys, overridesText, presetHint, resolveTokens, unsavedNames } from './theme-summary';
 
 describe('theme summary', () => {
   it('names the overridden tokens in the editor order', () => {
@@ -33,5 +33,10 @@ describe('theme summary', () => {
     expect(unsavedNames(saved, saved, 'extra CSS')).toEqual([]);
     expect(unsavedNames(saved, { base: 'studio', overrides: { brand: '#222222', shape: 'sharp' as const }, css: 'x{}' }, 'extra CSS'))
       .toEqual(['base theme', 'brand colour', 'shape', 'extra CSS']);
+  });
+
+  it('says what a built-in theme sets: colour, shape, page and background, never a colour scheme', () => {
+    expect(presetHint({ brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' })).toBe('Brand #ff6b4a, round corners, bold page, glow background.');
+    expect(presetHint({ brand: '#14130f', shape: 'sharp', surface: 'neutral', mode: 'auto', background: 'flat' })).not.toMatch(/dark|light/i);
   });
 });

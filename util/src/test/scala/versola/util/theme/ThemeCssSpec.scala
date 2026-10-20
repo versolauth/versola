@@ -237,6 +237,23 @@ object ThemeCssSpec extends ZIOSpecDefault:
           ThemePresets.all.forall(p => p.title.contains("en") && p.title.contains("ru")),
         )
       },
+      test("pins each built-in theme to the website's list, and none of them fixes a colour scheme") {
+        // versolauth/versola-website src/lib/theme-presets.ts is a port of this list: a change here is a change there.
+        val expected = Vector(
+          ("versola", "#155e75", Shape.soft, Surface.bold, Background.glow),
+          ("studio", "#ff6b4a", Shape.round, Surface.bold, Background.glow),
+          ("fintech", "#5b5bd6", Shape.soft, Surface.neutral, Background.linear),
+          ("wellness", "#0e9f8e", Shape.round, Surface.soft, Background.horizon),
+          ("editorial", "#14130f", Shape.sharp, Surface.neutral, Background.flat),
+          ("sunny", "#f5c518", Shape.soft, Surface.bold, Background.glow),
+          ("berry", "#b4348a", Shape.round, Surface.bold, Background.glow),
+        )
+        assertTrue(
+          ThemePresets.all.size == 7,
+          ThemePresets.all.map(p => (p.id, p.tokens.brand.value, p.tokens.shape, p.tokens.surface, p.tokens.background)) == expected,
+          ThemePresets.all.forall(_.tokens.mode == Mode.auto),
+        )
+      },
       test("the default preset is what common.css already looks like") {
         val css = ThemeCss.generate(ThemePresets.all.head.tokens)
         assertTrue(css.contains("--brand:#155e75;"), css.contains("--rf:14px;--rb:14px;--rs:24px;"), !css.contains("--page-"))

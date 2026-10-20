@@ -30,6 +30,18 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached == Vector(record),
       )
     },
+    test("updateForm refuses texts whose languages disagree and stores nothing") {
+      val env = new Env()
+      val ragged = Map("en" -> Map("title" -> "Hello", "hint" -> "Code {code}"), "ru" -> Map("title" -> "Привет"))
+
+      for
+        result <- env.service.updateForm(FormId("test"), "style", None, None, ragged, Vector.empty, activate = false).either
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[IllegalArgumentException]),
+        result.left.exists(_.getMessage == "Locale 'ru' has no text for 'hint', which 'en' has"),
+        env.repository.upsertForm.calls.isEmpty,
+      )
+    },
     test("getSyncForms excludes inactive forms") {
       val activeForm = FormRecord(FormId("a"), 1, true, "style", None, None, Map("en" -> Map("k" -> "v")), Vector.empty)
       val inactiveForm = FormRecord(FormId("b"), 1, false, "style", None, None, Map("en" -> Map("k" -> "v")), Vector.empty)
