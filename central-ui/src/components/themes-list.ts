@@ -18,11 +18,11 @@ import './filter-bar';
 import './loading-cards';
 import './theme-record';
 
-type ThemeFilter = 'all' | 'visual' | 'stylesheet' | 'tenant';
+type ThemeFilter = 'all' | 'tenant';
 
 /**
- * Themes: the table of the themes a tenant can use (base and overrides or stylesheet, the look as a
- * thumbnail and the brand colour, the clients that use it), the theme's own page (`?view=themes&id=<id>`)
+ * Themes: the table of the themes a tenant can use (base and overrides, the look as a thumbnail and the
+ * brand colour, the clients that use it; a theme stored as a stylesheet is listed as read-only "Stylesheet (legacy)"), the theme's own page (`?view=themes&id=<id>`)
  * which is also its editor, and the create form (`&new=1`). "Used by" is computed here from the
  * tenant's clients, which the screen loads: central has no usage endpoint, and a global theme may
  * also be used by clients of other tenants, which the delete (refused by central) reports.
@@ -134,8 +134,6 @@ export class VersolaThemesList extends LitElement {
     return this.themes.filter(record => {
       if (query && !record.id.toLowerCase().includes(query)) return false;
       switch (this.filter) {
-        case 'visual': return !!record.tokens;
-        case 'stylesheet': return !record.tokens;
         case 'tenant': return !!record.tenantId;
         default: return true;
       }
@@ -170,8 +168,6 @@ export class VersolaThemesList extends LitElement {
   private renderToolbar() {
     const options: Array<{ id: ThemeFilter; label: string }> = [
       { id: 'all', label: 'All' },
-      { id: 'visual', label: 'Visual' },
-      { id: 'stylesheet', label: 'Stylesheet' },
       { id: 'tenant', label: 'This tenant' },
     ];
     return html`
@@ -189,7 +185,7 @@ export class VersolaThemesList extends LitElement {
         <button type="button" class="row-link" aria-label=${`Open theme ${record.id}`}><span class="row-title mono">${record.id}</span></button>
         <div class="muted">${record.tenantId ? 'This tenant' : 'Global'}</div>` },
       { id: 'base', label: 'Base', cell: record => {
-        if (!record.tokens) return html`<div class="cell-lines"><span class="chip value">Stylesheet</span><span class="muted">Replaces the default CSS</span></div>`;
+        if (!record.tokens) return html`<div class="cell-lines"><span class="chip value">Stylesheet (legacy)</span><span class="muted">Read-only; delete it when no client uses it</span></div>`;
         const base = this.presets.find(preset => preset.id === record.tokens!.base);
         return html`<div class="cell-lines"><strong>${base?.title.en ?? record.tokens.base}</strong><span class="muted">${overridesText(record.tokens.overrides)}</span></div>`;
       } },

@@ -9,6 +9,10 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 trait FormService:
   def getAllForms: Task[Vector[FormRecord]]
   def getSyncForms: Task[Vector[FormRecord]]
+
+  /** Stores a new version. Fails with an [[IllegalArgumentException]] when the languages of `localizations` do not
+    * share one set of keys and placeholders, see [[FormLocalizations]].
+    */
   def updateForm(
       id: FormId,
       style: String,
@@ -56,6 +60,7 @@ object FormService:
         activate: Boolean,
     ): Task[Unit] =
       for
+        _ <- ZIO.fromEither(FormLocalizations.validate(localizations)).mapError(IllegalArgumentException(_))
         _ <- repository.upsertForm(id, style, jsSource, jsCompiled, localizations, properties, activate)
         forms <- repository.getAll
         _ <- cache.set(forms)

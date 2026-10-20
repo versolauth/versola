@@ -268,7 +268,9 @@ for (const theme of themes) {
     await expect(page.getByRole('button', { name: 'Delete theme shop-brand' })).toBeDisabled();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByRole('button', { name: 'Discard' }).click();
+    // A stored stylesheet theme: read-only, with Delete only.
     await page.getByRole('button', { name: 'Open theme legacy-2024', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Stylesheet (legacy)' })).toBeVisible();
     await clean();
 
     await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Themes' }).click();
@@ -292,10 +294,14 @@ for (const theme of themes) {
     await expect(page.locator('versola-preview-pane iframe')).toHaveCount(1);
     await clean();
 
-    // The missing-only state, in the language that has gaps, with a key focused (the ringed entry).
-    await page.getByRole('button', { name: 'Русский' }).click();
-    await page.getByLabel('Missing only').check();
-    await page.getByRole('textbox', { name: 'passkey_button', exact: true }).focus();
+    // The JSON editor with problems listed under it (a language lacking a key and a spelled-differently placeholder), and the preview in another language.
+    const editor = page.getByRole('textbox', { name: 'Form texts, JSON' });
+    const shown = JSON.parse(await editor.inputValue());
+    delete shown.ru.passkey_button;
+    shown.kk.title = 'Кіру, {name}';
+    await editor.fill(JSON.stringify(shown, null, 2));
+    await expect(page.getByRole('list', { name: 'Problems in the texts' }).getByRole('listitem')).toHaveCount(2);
+    await page.getByLabel('Language', { exact: true }).selectOption('ru');
     await clean();
 
     for (const name of ['Style', 'Script', 'Versions']) {
@@ -304,6 +310,7 @@ for (const theme of themes) {
     }
 
     await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Forms' }).click();
+    await page.getByRole('button', { name: 'Discard' }).click(); // the texts were edited above
     await page.getByRole('button', { name: '+ Create form' }).click();
     await clean();
   });

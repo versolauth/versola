@@ -13,6 +13,12 @@ const formRow = (page: Page, id: string) => page.getByRole('row').filter({ has: 
 const srcdoc = (page: Page) => page.locator('iframe.preview-iframe').evaluate((frame: HTMLIFrameElement) => frame.srcdoc);
 const crumb = (page: Page, name: string) => page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name });
 const tab = (page: Page, name: string) => page.getByRole('tab', { name });
+/** The texts editor: one JSON object, language first. */
+const editor = (page: Page) => page.getByRole('textbox', { name: 'Form texts, JSON' });
+const texts = async (page: Page) => JSON.parse(await editor(page).inputValue()) as Record<string, Record<string, string>>;
+const setTexts = (page: Page, value: unknown) => editor(page).fill(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+const problems = (page: Page) => page.getByRole('list', { name: 'Problems in the texts' }).getByRole('listitem');
+const summary = (page: Page) => page.getByRole('term').filter({ hasText: /^(Languages|Missing)$/ });
 const putForms = (requests: Array<{ method: string; pathname: string; body?: unknown }>) =>
   requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/forms');
 
@@ -152,7 +158,7 @@ test.describe('record', () => {
     await expect(header).toContainText('Built-in');
     await expect(header).toContainText('Active v7');
     await expect(header).toContainText('v8 not active');
-    await expect(header.locator('.chip.warn').last()).toHaveText('Missing: ru, kk');
+    await expect(header.locator('.chip.warn').last()).toHaveText('v8 not active');
     await expect(page.getByRole('button', { name: 'Save as new version' })).toHaveCount(1);
     // A form has no delete: no danger card.
     await expect(page.getByRole('button', { name: /^Delete/ })).toHaveCount(0);
@@ -201,113 +207,153 @@ test.describe('record', () => {
   test('a read-only record shows the fields but cannot change them', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('password'), state: { ...ftState(), myPermissions: readOnly } });
 
-    await expect(page.getByRole('textbox', { name: 'title', exact: true })).toHaveAttribute('readonly', '');
+    await expect(editor(page)).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Save as new version' })).toHaveCount(0);
     await expect(page.getByRole('note')).toHaveCount(0);
   });
 });
 
 test.describe('texts', () => {
-  test('stacks each key with its English reference and a field, under group headers', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
+  test('is one JSON editor for every language, in the shape of the form\'s i18n file', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
 
-    await expect(page.getByRole('heading', { level: 3 })).toHaveText(['Page', 'Fields', 'Buttons', 'Errors']);
-    const entry = page.locator('.entry[data-key="continue"]');
-    await expect(entry.locator('.key')).toHaveText('continue');
-    await expect(entry.locator('.ref')).toContainText('Continue');
-    await expect(page.getByRole('textbox', { name: 'continue', exact: true })).toHaveValue('Продолжить');
+    // One field for all of it: no field per key (the preview is a frame, so it adds none).
+    await expect(page.getByRole('textbox')).toHaveCount(1);
+    const shown = await texts(page);
+    const file = JSON.parse(await readFile(new URL('../forms/password/password.i18n.json', import.meta.url), 'utf8'));
+    expect(Object.keys(shown)).toEqual(['en', 'ru', 'kk']);
+    expect(shown.en).toEqual(file.en);
+    expect(shown.ru).toEqual(file.ru);
+    // The rows, the group headers and the filter of the old editor are gone.
+    await expect(page.getByLabel('Missing only')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 3 })).toHaveCount(0);
+    await expect(page.getByRole('group', { name: 'Language being edited' })).toHaveCount(0);
   });
 
-  test('the reference language shows no reference line', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
+  test('summarises the languages present and what each lacks, with +N for the rest', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('kyc-upload'), state: ftState() });
 
-    await expect(page.locator('.entry .ref')).toHaveCount(0);
-    await expect(page.getByRole('textbox', { name: 'continue', exact: true })).toHaveValue('Continue');
-  });
-
-  test('a missing translation is a warning field that says it is shown in English', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
-
-    const entry = page.locator('.entry[data-key="passkey_button"]');
-    await expect(entry).toHaveClass(/missing/);
-    await expect(entry.locator('.chip.warn')).toHaveText('Missing in ru');
-    await expect(entry.getByRole('textbox')).toHaveAttribute('placeholder', 'Shown in English until translated');
-    await expect(page.locator('.entry[data-key="continue"]')).not.toHaveClass(/missing/);
-  });
-
-  test('marks the languages that have gaps and names the first missing keys with +N', async ({ page }) => {
-    const state = ftState();
-    await loadAdminApp(page, { path: recordPath('kyc-upload'), state });
-    await page.getByRole('button', { name: 'Русский' }).click();
-
-    const languages = page.getByRole('group', { name: 'Language being edited' });
-    await expect(languages.locator('.gap-dot')).toHaveCount(2);
-    await expect(page.getByRole('status').filter({ hasText: 'Missing in ru' })).toHaveText('Missing in ru: intro, submit +1');
+    await expect(summary(page)).toHaveText(['Languages', 'Missing']);
+    const list = page.getByRole('list', { name: 'Summary of the texts' }).or(page.locator('dl.texts-summary'));
+    await expect(list.locator('dd').first()).toHaveText('en');
+    await expect(list.locator('dd').nth(1)).toContainText('ru: intro, submit +1');
+    await expect(list.locator('dd').nth(1)).toContainText('kk: intro, submit +1');
     await expect(page.getByRole('tab', { name: 'Texts' }).locator('.gap-dot')).toBeVisible();
   });
 
-  test('Missing only keeps the keys the language lacks, and says when nothing is missing', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
-    const entries = page.locator('.entry');
-    const total = await entries.count();
+  test('says every language has every key when none lacks one', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
 
-    await page.getByLabel('Missing only').check();
-    await expect(entries).toHaveCount(2);
-    await expect(entries.locator('.key')).toHaveText(['phone_hint', 'passkey_button']);
-    expect(total).toBeGreaterThan(2);
-
-    await page.getByRole('button', { name: 'English' }).click();
-    await expect(page.getByText('Nothing is missing in English.')).toBeVisible();
-    await page.getByLabel('Missing only').uncheck();
-    await expect(entries).toHaveCount(total);
+    await expect(page.locator('dl.texts-summary dd').nth(1)).toHaveText('Every language has every key.');
+    await expect(page.getByText('The texts can be saved.')).toBeVisible();
+    await expect(problems(page)).toHaveCount(0);
   });
 
-  test('editing a text updates the preview in the language being edited', async ({ page }) => {
+  test('opens a stored version with faults as it is, and lists them', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('set-password'), state: ftState() });
+
+    await expect(problems(page)).toHaveText(['"kk" is missing the key title, which the form has.']);
+    await expect(editor(page)).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('keeps the typed text and lists the reason when it is not JSON', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
+    await setTexts(page, '{ "en": { "title": ');
+
+    await expect(problems(page)).toHaveCount(1);
+    await expect(problems(page).first()).toContainText('Not valid JSON');
+    await expect(editor(page)).toHaveValue('{ "en": { "title": ');
+    await expect(page.locator('[aria-live="polite"]').filter({ has: page.getByRole('list', { name: 'Problems in the texts' }) })).toBeVisible();
+  });
+
+  test('refuses a language that is not active, naming the active ones', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('kyc-upload'), state: ftState() });
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, fr: shown.en });
+
+    await expect(problems(page)).toHaveText(['"fr" is not an active language (en, ru, kk). Activate it under Locales first, or remove it.']);
+  });
+
+  test('refuses a language that lacks a key, adds one, or spells a placeholder differently', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('otp'), state: ftState() });
+    const shown = await texts(page);
+    const { description, ...ruWithoutDescription } = shown.ru;
+
+    await setTexts(page, { ...shown, ru: ruWithoutDescription });
+    await expect(problems(page)).toHaveText(['"ru" is missing the key description, which the form has.']);
+
+    await setTexts(page, { ...shown, ru: { ...shown.ru, invented: 'x' } });
+    await expect(problems(page)).toHaveText(['"ru" has the key invented, which the form does not use.']);
+
+    await setTexts(page, { ...shown, ru: { ...shown.ru, description: 'Мы отправили код на {адрес}' } });
+    await expect(problems(page)).toHaveText(['Key "description": "en" uses {destination} but "ru" uses none.']);
+
+    await setTexts(page, shown);
+    await expect(problems(page)).toHaveCount(0);
+    expect(description).toBeTruthy();
+  });
+
+  test('holds a custom form to the keys of its reference language', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('support-contact'), state: ftState() });
+    const shown = await texts(page);
+
+    await setTexts(page, { ...shown, en: { ...shown.en, extra: 'More' } });
+    await expect(problems(page)).toHaveText(['"ru" is missing the key extra, which "en" has.', '"kk" is missing the key extra, which "en" has.']);
+    await setTexts(page, { ru: shown.ru });
+    await expect(problems(page).first()).toContainText('reference language "en" is missing');
+  });
+
+  test('a save with problems is not sent, and brings the person to the list of them', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('password', 'style'), state: ftState() });
+    await tab(page, 'Texts').click();
+    await setTexts(page, '{ nope');
+    await tab(page, 'Style').click();
+    await page.getByRole('button', { name: 'Save as new version' }).click();
+
+    await expect(tab(page, 'Texts')).toHaveAttribute('aria-selected', 'true');
+    await expect(problems(page).first()).toContainText('Not valid JSON');
+    await expect(editor(page)).toBeFocused();
+    expect(putForms(api.requests)).toHaveLength(0);
+  });
+
+  test('editing the JSON updates the preview, in the language chosen in the switcher', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
+    const language = page.getByLabel('Language', { exact: true });
+    await language.selectOption('ru');
     await expect.poll(() => srcdoc(page)).toContain('"locale":"ru"');
 
-    await page.getByRole('textbox', { name: 'continue', exact: true }).fill('Дальше');
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, ru: { ...shown.ru, continue: 'Дальше' } });
     await expect.poll(() => srcdoc(page)).toContain('"continue":"Дальше"');
+    await language.selectOption('en');
+    await expect.poll(() => srcdoc(page)).toContain('"locale":"en"');
+    await expect.poll(() => srcdoc(page)).toContain('"continue":"Continue"');
   });
 
-  test('a key the language lacks reaches the preview in English', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
-
-    await expect.poll(() => srcdoc(page)).toContain('"passkey_button":"Sign in with Passkey"');
-    await page.getByRole('textbox', { name: 'passkey_button', exact: true }).fill('Войти по ключу');
-    await expect.poll(() => srcdoc(page)).toContain('"passkey_button":"Войти по ключу"');
-  });
-
-  test('the preview rings the key being typed in (accent) and the English text of each missing key (warning)', async ({ page }) => {
+  test('a key the language lacks reaches the preview in the reference language', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('kyc-upload'), state: ftState() });
-    await page.getByRole('button', { name: 'Русский' }).click();
-    const frame = page.frameLocator('iframe.preview-iframe');
-    await expect(frame.locator('h1')).toHaveText('Verify your identity');
+    await page.getByLabel('Language', { exact: true }).selectOption('ru');
 
-    // Every missing key shows English, ringed in the warning colour.
-    await expect(frame.locator('h1')).toHaveAttribute('data-vm', 'missing');
-    await expect(frame.locator('button')).toHaveAttribute('data-vm', 'missing');
-
-    // Typing the title gives it the accent ring; the others keep theirs.
-    const field = page.getByRole('textbox', { name: 'title', exact: true });
-    await field.focus();
-    await field.fill('Подтвердите личность');
-    await expect(frame.locator('h1')).toHaveText('Подтвердите личность');
-    await expect(frame.locator('h1')).toHaveAttribute('data-vm', 'active');
-    await expect(frame.locator('button')).toHaveAttribute('data-vm', 'missing');
-    await page.getByRole('textbox', { name: 'intro', exact: true }).focus();
-    await expect(frame.locator('h1')).not.toHaveAttribute('data-vm', 'active');
+    await expect.poll(() => srcdoc(page)).toContain('"title":"Verify your identity"');
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, ru: { title: 'Подтвердите личность' } });
+    await expect.poll(() => srcdoc(page)).toContain('"title":"Подтвердите личность"');
   });
 
-  test('a form with no texts says so', async ({ page }) => {
+  test('a form with no texts starts from an empty object per active language, new or stored', async ({ page }) => {
     const forms = ftForms().map(form => (form.id === 'kyc-upload' ? { ...form, localizations: {} } : form));
     await loadAdminApp(page, { path: recordPath('kyc-upload'), state: { ...ftState(), forms } });
 
-    await expect(page.getByText('This form has no texts yet.')).toBeVisible();
+    expect(await texts(page)).toEqual({ en: {}, ru: {}, kk: {} });
+    await expect(problems(page)).toHaveCount(0);
+  });
+
+  test('the preview carries no dashed rings and the old marks are gone', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('kyc-upload'), state: ftState() });
+    await page.getByLabel('Language', { exact: true }).selectOption('ru');
+
+    await expect(page.frameLocator('iframe.preview-iframe').locator('h1')).toHaveText('Verify your identity');
+    await expect(page.frameLocator('iframe.preview-iframe').locator('[data-vm]')).toHaveCount(0);
   });
 });
 
@@ -368,7 +414,7 @@ test.describe('preview', () => {
 
     await page.frameLocator('iframe.preview-iframe').locator('.locale-trigger').click();
     await page.frameLocator('iframe.preview-iframe').getByRole('option', { name: 'Русский' }).click();
-    await expect(page.getByRole('button', { name: 'Русский' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Language', { exact: true })).toHaveValue('ru');
   });
 
   test('keeps the authorization form card vertical', async ({ page }) => {
@@ -405,19 +451,20 @@ test.describe('preview', () => {
     await expect(page.locator('iframe.preview-iframe')).toBeHidden();
   });
 
-  test('is 400px wide at 1024', async ({ page }) => {
+  test('is 340px wide at 1024, so the four tabs fit beside it', async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 900 });
     await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
 
     const box = await page.locator('versola-preview-pane').boundingBox();
-    expect(Math.round(box!.width)).toBe(400);
+    expect(Math.round(box!.width)).toBe(340);
   });
 });
 
 test.describe('saving', () => {
   test('Save as new version sends the form with its edited texts, keeping what was not touched', async ({ page }) => {
     const api = await loadAdminApp(page, { path: recordPath('support-contact'), state: ftState() });
-    await page.getByRole('textbox', { name: 'title', exact: true }).fill('Reach support');
+    const shown = await texts(page);
+    await setTexts(page, { ...shown, en: { ...shown.en, title: 'Reach support' } });
     await page.getByRole('button', { name: 'Save as new version' }).click();
 
     const body = (await findRequest(api.requests, 'PUT', '/configuration/forms')).body as Record<string, any>;
@@ -492,7 +539,7 @@ test.describe('saving', () => {
 
   test('leaving with unsaved edits asks first, and keeping them stays on the form', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('password'), state: ftState() });
-    await page.getByRole('textbox', { name: 'title', exact: true }).fill('Changed');
+    await setTexts(page, { ...(await texts(page)), en: { ...(await texts(page)).en, title: 'Changed' } });
 
     await crumb(page, 'Forms').click();
     await expect(page.getByRole('dialog')).toContainText('Discard changes?');
@@ -567,8 +614,14 @@ test.describe('versions', () => {
 
     await expect(tab(page, 'Texts')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('note')).toContainText('Editing a copy of v6');
-    await page.getByRole('button', { name: 'Русский' }).click();
-    await expect(page.getByRole('textbox', { name: 'title', exact: true })).toHaveValue('Вход (старый)');
+    const shown = await texts(page);
+    expect(shown.ru.title).toBe('Вход (старый)');
+    // v6 predates the rules: it is shown as it was stored, with its faults, and cannot be saved until they are fixed.
+    await expect(problems(page).first()).toContainText('"ru" is missing keys');
+    await page.getByRole('button', { name: 'Save as new version' }).click();
+    expect(putForms(api.requests)).toHaveLength(0);
+    await setTexts(page, { ...shown, ru: { ...shown.en, title: 'Вход (старый)' }, kk: { ...shown.en } });
+    await expect(problems(page)).toHaveCount(0);
     await page.getByRole('button', { name: 'Save as new version' }).click();
     expect(((await findRequest(api.requests, 'PUT', '/configuration/forms')).body as Record<string, any>).localizations.ru.title).toBe('Вход (старый)');
   });
