@@ -20,7 +20,7 @@ function backendPath(pathname: string): string {
 }
 
 type SecurityProfileDto = 'standard' | 'fapi2';
-type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto };
+type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
@@ -33,8 +33,11 @@ type PermissionDto = { permission: string; description: Record<string, string>; 
 type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
-type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
-type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
+type ResourceEndpointDto = {
+  id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[];
+  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null;
+};
+type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
@@ -116,14 +119,16 @@ type CreateResourceRequest = {
   tenantId: string;
   resourceId: string;
   resource: string;
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  audience?: string[];
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
   internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
   resource?: string;
+  audience?: { add: string[]; remove: string[] };
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -181,13 +186,39 @@ type PasskeyInfoDto = {
 };
 
 type SessionClientEntryDto = { clientId: string; enteredAt: string; expiresAt: string };
+type UserAgentDto = {
+  id: string;
+  userAgent?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+  createdAt: string;
+  expiresAt: string;
+};
 type UserSessionDto = {
+  publicId?: string;
   clients: SessionClientEntryDto[];
   createdAt?: string;
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
+  expiresAt?: string;
+  idleExpiresAt?: string;
+  userAgent?: UserAgentDto;
+};
+/** A remembered user agent as the mock stores it; the device listing pairs it with the live session
+ *  that names it and adds the ended sessions of the agent, the way auth does. */
+type UserAgentRecordDto = UserAgentDto & { endedSessionIds?: string[] };
+
+type UserRefreshTokenDto = {
+  sessionId: string;
+  clientId: string;
+  scope: string[];
+  issuedAt: string;
+  expiresAt: string;
+  dpopBound: boolean;
 };
 
 type UserDto = {
@@ -199,6 +230,9 @@ type UserDto = {
   rolesByTenant?: Record<string, string[]>;
   passkeys?: PasskeyInfoDto[];
   sessions?: UserSessionDto[];
+  /** Every user agent the user has, signed in or not. */
+  userAgents?: UserAgentRecordDto[];
+  refreshTokens?: UserRefreshTokenDto[];
 };
 
 type RateLimitDto = { maxAttempts: number; windowSeconds: number };
@@ -206,6 +240,7 @@ type SubmissionLimitsDto = {
   otpRequest: RateLimitDto[];
   otpSubmit: RateLimitDto[];
   passwordSubmit: RateLimitDto[];
+  passkeyAssertion?: RateLimitDto[];
   banDurationSeconds: number;
 };
 type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
@@ -221,9 +256,18 @@ type ChallengeSettingsDto = {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
+  authConversationTtlSeconds?: number;
+  sessionTtlSeconds?: number;
+  sessionIdleTtlSeconds?: number | null;
+  userAgentTtlSeconds?: number;
+  ipHeader?: string;
+  acrVocabulary?: Record<string, string[]> | null;
+  postLogoutRedirectUris?: string[] | null;
   requireDpopNonce?: boolean | null;
   signingKeyId?: string | null;
   mtlsCertificateHeader?: string | null;
+  mtlsCertificateEncoding?: string | null;
+  clientAssertionMaxLifetimeSeconds?: number | null;
   logoLight?: string | null;
   logoDark?: string | null;
 };
@@ -266,6 +310,21 @@ const profileOf = (state: MockConfigState, tenantId: string): SecurityProfileDto
   state.challengeSettings[tenantId]?.securityProfile
     ?? state.tenants.find(tenant => tenant.id === tenantId)?.securityProfile
     ?? 'fapi2';
+
+/** The signing key, like the profile, lives in the challenge settings; a seed on the tenant stands in for a settings row. */
+const signingKeyOf = (state: MockConfigState, tenantId: string): string | null =>
+  state.challengeSettings[tenantId]?.signingKeyId
+    ?? state.tenants.find(tenant => tenant.id === tenantId)?.signingKeyId
+    ?? null;
+
+/** `TenantResponse`: the stored tenant plus what central reads from its challenge settings. */
+const tenantResponse = (state: MockConfigState, tenant: TenantDto) => ({
+  id: tenant.id,
+  description: tenant.description,
+  edgeId: tenant.edgeId ?? null,
+  securityProfile: profileOf(state, tenant.id),
+  signingKeyId: signingKeyOf(state, tenant.id),
+});
 
 // One key central generated (both halves, so it can sign) and one seeded from
 // `bootstrap.jwks` (public half only, so it can only verify) -- the two states the key list
@@ -315,6 +374,7 @@ export type MockConfigState = {
   authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
   localeActivationMissing: Record<string, string[]>;
+  serverMetadata: Record<string, unknown> | null;
   myPermissions: MyPermissionsDto;
 };
 
@@ -350,24 +410,24 @@ const defaultState: MockConfigState = {
   ],
   myPermissions: defaultMyPermissions,
   clients: {
-    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
-    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
+    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha:read'], secretRotation: false }],
+    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo:read'], secretRotation: false }],
   },
   scopes: {
     'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [{ claim: 'sub', description: { en: 'Subject' } }] }],
     'tenant-bravo': [{ scope: 'email', description: { en: 'Email scope' }, claims: [{ claim: 'email', description: { en: 'Email address' } }] }],
   },
   permissions: {
-    'tenant-alpha': [{ permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] }],
-    'tenant-bravo': [{ permission: 'bravo.read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
+    'tenant-alpha': [{ permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] }],
+    'tenant-bravo': [{ permission: 'bravo:read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
   },
   resources: {
     'tenant-alpha': [{ resourceId: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
     'tenant-bravo': [{ resourceId: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
   },
   roles: {
-    'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true }],
-    'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo.read'], active: true }],
+    'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha:read'], active: true }],
+    'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo:read'], active: true }],
   },
   edges: [],
   authorizationPresets: {},
@@ -390,6 +450,7 @@ const defaultState: MockConfigState = {
   authorizationDetailTypes: {},
   locales: [],
   localeActivationMissing: {},
+  serverMetadata: { issuer: 'https://auth.example' },
 };
 
 function clone<T>(value: T): T {
@@ -421,6 +482,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
     localeActivationMissing: clone(overrides.localeActivationMissing ?? defaultState.localeActivationMissing),
+    serverMetadata: 'serverMetadata' in overrides ? clone(overrides.serverMetadata ?? null) : clone(defaultState.serverMetadata),
     myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
 }
@@ -428,6 +490,12 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
 function readBody(request: Request): unknown {
   const body = request.postData();
   return body ? JSON.parse(body) : undefined;
+}
+
+/** Remembers an ended session on its user agent, as auth keeps ended sessions until it sweeps them. */
+function endedSession(user: UserDto, session: UserSessionDto) {
+  const agent = user.userAgents?.find(candidate => candidate.id === session.userAgent?.id);
+  if (agent && session.publicId) agent.endedSessionIds = [...(agent.endedSessionIds ?? []), session.publicId];
 }
 
 function pageSlice<T>(items: T[], url: URL): T[] {
@@ -560,7 +628,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
-        await route.fulfill(json({ tenants: state.tenants }));
+        await route.fulfill(json({ tenants: state.tenants.map(tenant => tenantResponse(state, tenant)) }));
         return;
       }
 
@@ -590,6 +658,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         tenant.description = payload.description;
+        tenant.edgeId = payload.edgeId ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -818,7 +887,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
-        const detailType = tenantTypes.find(candidate => candidate.type === payload.type);
+        const detailType = (state.authorizationDetailTypes[payload.tenantId] ?? []).find(candidate => candidate.type === payload.type);
         if (!detailType) {
           await route.fulfill(json({ message: `Authorization detail type ${payload.type} was not found` }, 404));
           return;
@@ -963,6 +1032,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const createdResource: ResourceDto = {
           resourceId: payload.resourceId,
           resource: payload.resource,
+          audience: [...(payload.audience ?? [])],
           endpoints: payload.endpoints.map(endpoint => ({
             id: endpoint.id ?? endpointId++,
             method: endpoint.method,
@@ -970,6 +1040,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             fetchUserInfo: endpoint.fetchUserInfo,
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
+            ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+            ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
+            ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
           })),
           internal: payload.internal ?? false,
           secretRotation: false,
@@ -993,6 +1066,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         if (payload.resource !== undefined) resource.resource = payload.resource;
+        if (payload.audience) {
+          resource.audience = [...(resource.audience ?? []).filter(id => !payload.audience!.remove.includes(id)), ...payload.audience.add];
+        }
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -1006,6 +1082,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             fetchUserInfo: endpoint.fetchUserInfo,
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
+            ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+            ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
+            ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
           })));
 
         await route.fulfill({ status: 204, body: '' });
@@ -1436,15 +1515,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
         state.challengeSettings[payload.tenantId] = {
-          tenantId: payload.tenantId,
+          ...clone(payload),
           securityProfile: profileOf(state, payload.tenantId),
-          phoneRegions: payload.phoneRegions.map(r => ({ ...r })),
           passwordRegex: payload.passwordRegex ?? null,
-          emailRegistration: { ...payload.emailRegistration, domains: [...payload.emailRegistration.domains] },
-          defaultRoles: [...payload.defaultRoles],
-          submissionLimits: payload.submissionLimits,
-          otpLength: payload.otpLength,
-          otpResendAfter: payload.otpResendAfter,
           passkeySettings: payload.passkeySettings ?? null,
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
@@ -1455,11 +1528,69 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+
+      if (method === 'PATCH') {
+        // Central's merge patch (RFC 7396) of the record's members: absent keeps the stored value, a value replaces it,
+        // null clears an optional member. The mock refuses what central refuses, so a console that sends the whole
+        // record back, a null for a required member or a misspelt key fails here as it would there.
+        const payload = body as Record<string, unknown> & { tenantId?: string };
+        const optional = new Set(['sessionIdleTtlSeconds', 'acrVocabulary', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId', 'logoLight', 'logoDark']);
+        const members = new Set([
+          'tenantId', 'phoneRegions', 'emailRegistration', 'defaultRoles', 'submissionLimits', 'otpLength', 'otpResendAfter', 'passkeySettings',
+          'authConversationTtlSeconds', 'sessionTtlSeconds', 'sessionIdleTtlSeconds', 'userAgentTtlSeconds', 'ipHeader', 'acrVocabulary',
+          'postLogoutRedirectUris', 'requireDpopNonce', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId',
+          'clientAssertionMaxLifetimeSeconds', 'securityProfile', 'logoLight', 'logoDark',
+        ]);
+        const stored = payload.tenantId ? state.challengeSettings[payload.tenantId] : undefined;
+        if (!stored) {
+          await route.fulfill({ status: 404, body: '' });
+          return;
+        }
+        const unknown = Object.keys(payload).find(key => !members.has(key));
+        const cleared = Object.keys(payload).find(key => key !== 'tenantId' && payload[key] === null && !optional.has(key));
+        if (unknown || cleared) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: unknown ? `Unknown key ${unknown}` : `${cleared} cannot be cleared: it is not optional` });
+          return;
+        }
+        const merged = { ...stored, ...clone(payload) } as ChallengeSettingsDto;
+        if (!merged.logoLight !== !merged.logoDark) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'logoLight and logoDark must be set or cleared together' });
+          return;
+        }
+        state.challengeSettings[merged.tenantId] = merged;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
     }
 
     if (pathname === '/configuration/jwks') {
       if (method === 'GET') {
         await route.fulfill(json({ keys: state.jwksKeys }));
+        return;
+      }
+
+      if (method === 'POST' || method === 'PUT') {
+        const payload = body as JwksKeyDto;
+        const existing = state.jwksKeys.findIndex(key => key.kid === payload.kid);
+        if (method === 'POST' && existing >= 0) {
+          await route.fulfill(json({ message: `Key ${payload.kid} already exists` }, 409));
+          return;
+        }
+        if (existing >= 0) state.jwksKeys[existing] = clone(payload);
+        else {
+          state.jwksKeys = [...state.jwksKeys, clone(payload)];
+          // A pasted key is its public half: central can verify with it, not sign.
+          state.jwksKeySummaries = [...state.jwksKeySummaries, { kid: payload.kid, algorithm: payload.alg ?? null, keyType: payload.kty, curve: null, canSign: false }];
+        }
+        await route.fulfill({ status: method === 'POST' ? 201 : 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const kid = url.searchParams.get('kid');
+        state.jwksKeys = state.jwksKeys.filter(key => key.kid !== kid);
+        state.jwksKeySummaries = state.jwksKeySummaries.filter(key => key.kid !== kid);
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }
@@ -1490,7 +1621,13 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/server-metadata') {
       if (method === 'GET') {
-        await route.fulfill(json({ issuer: 'https://auth.example' }));
+        await route.fulfill(json(state.serverMetadata));
+        return;
+      }
+
+      if (method === 'POST') {
+        state.serverMetadata = clone(body as Record<string, unknown>);
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }
@@ -1570,11 +1707,31 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
 
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        const index = state.users.findIndex(candidate => candidate.id === id);
+        if (index < 0) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        state.users.splice(index, 1);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
       if (method === 'PATCH') {
         const payload = body as { id: string; email?: string | null; phone?: string | null; login?: string | null };
         const user = state.users.find(candidate => candidate.id === payload.id);
         if (!user) {
           await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+          return;
+        }
+        const taken = state.users.some(other => other.id !== user.id && (
+          (payload.email && other.email === payload.email) ||
+          (payload.phone && other.phone === payload.phone) ||
+          (payload.login && other.login === payload.login)));
+        if (taken) {
+          await route.fulfill(json({ message: 'Identifier already taken' }, 409));
           return;
         }
         if (payload.email !== undefined) user.email = payload.email ?? undefined;
@@ -1642,12 +1799,94 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'DELETE') {
+        // Mirrors central: `userId` alone signs the user out everywhere (and revokes every
+        // refresh token); `id` with `sessionId` ends that one session, 404 for a foreign one.
+        const sessionId = url.searchParams.get('sessionId');
+        if (sessionId) {
+          const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+          const session = user?.sessions?.find(candidate => candidate.publicId === sessionId);
+          if (!user || !session) {
+            await route.fulfill(json({ message: 'Session not found' }, 404));
+            return;
+          }
+          user.sessions = (user.sessions ?? []).filter(candidate => candidate.publicId !== sessionId);
+          endedSession(user, session);
+          await route.fulfill({ status: 204, body: '' });
+          return;
+        }
         const userId = url.searchParams.get('userId') ?? '';
         const user = state.users.find(candidate => candidate.id === userId);
         if (user) {
+          (user.sessions ?? []).forEach(session => endedSession(user, session));
           user.sessions = [];
+          user.refreshTokens = [];
         }
         await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/user-agents') {
+      if (method === 'GET') {
+        // Mirrors central: every remembered user agent with the live session under it, `session: null` once signed out.
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        const agents = user.userAgents ?? [];
+        const devices = agents.map(({ endedSessionIds, ...userAgent }) => {
+          const session = (user.sessions ?? []).find(candidate => candidate.userAgent?.id === userAgent.id) ?? null;
+          return { userAgent, session, endedSessionIds: session ? [] : (endedSessionIds ?? []) };
+        });
+        // A live session whose user agent row is gone is listed without one.
+        const orphans = (user.sessions ?? [])
+          .filter(session => !agents.some(agent => agent.id === session.userAgent?.id))
+          .map(session => ({ session, endedSessionIds: [] as string[] }));
+        await route.fulfill(json([...devices, ...orphans]));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        // `userAgentId` that is not the user's: 404. Otherwise the agent, its session and the refresh
+        // tokens bound to its sessions (live or ended) go.
+        const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+        const userAgentId = url.searchParams.get('userAgentId');
+        const agent = user?.userAgents?.find(candidate => candidate.id === userAgentId);
+        if (!user || !agent) {
+          await route.fulfill(json({ message: 'User agent not found' }, 404));
+          return;
+        }
+        const live = (user.sessions ?? []).filter(session => session.userAgent?.id === agent.id);
+        const sessionIds = new Set([...live.map(session => session.publicId), ...(agent.endedSessionIds ?? [])]);
+        user.sessions = (user.sessions ?? []).filter(session => session.userAgent?.id !== agent.id);
+        user.refreshTokens = (user.refreshTokens ?? []).filter(token => !sessionIds.has(token.sessionId));
+        user.userAgents = (user.userAgents ?? []).filter(candidate => candidate.id !== agent.id);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/refresh-tokens') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        await route.fulfill(json(user.refreshTokens ?? []));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const user = state.users.find(candidate => candidate.id === url.searchParams.get('id'));
+        const clientId = url.searchParams.get('clientId');
+        if (user) {
+          user.refreshTokens = (user.refreshTokens ?? []).filter(token => token.clientId !== clientId);
+        }
+        await route.fulfill({ status: 204, body: '' });
         return;
       }
     }

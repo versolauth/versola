@@ -67,6 +67,22 @@ paths:
       security:
         - clientSecretBasic: []
         - {}
+      parameters:
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            RFC 9449 §10.1 proof-of-possession JWT, for the PAR endpoint (`htm` `POST`, `htu` this
+            endpoint's URL). A proof sent here binds the authorization code to its key, exactly as
+            if the key's thumbprint had been sent as `dpop_jkt`, so the token endpoint then holds
+            the code's redemption to that key. If `dpop_jkt` is also sent it must equal the proof's
+            thumbprint. At most one proof may be sent. A proof is checked under the same policy as
+            at the token endpoint (the client's registered algorithms, the tenant's nonce setting)
+            and may be refused with `invalid_dpop_proof` (malformed, wrong key, already used, or a
+            `dpop_jkt` for another key) or `use_dpop_nonce` (retry with the nonce from the
+            accompanying `DPoP-Nonce` response header).
       requestBody:
         required: true
         content:
@@ -130,6 +146,9 @@ components:
         response_type:
           type: string
           enum: [code, code id_token]
+          description: |
+            `code id_token` (OIDC hybrid) is refused with `unsupported_response_type` for a client
+            of a `fapi2` tenant, whose only flow is the authorization code flow.
         scope:
           type: string
         code_challenge:
@@ -240,7 +259,9 @@ components:
         (RFC 9101 §10.5) and pushed a plain parameter set rather than a `request` object. Otherwise the authorization-request validation error, reported
         with the same `error` code `/authorize` would have redirected — for example
         `unsupported_response_type`, `invalid_scope`, `invalid_target` or
-        `invalid_authorization_details`.
+        `invalid_authorization_details`. `invalid_dpop_proof` when the `DPoP` header is not an
+        acceptable proof, and `use_dpop_nonce` — with the nonce in the `DPoP-Nonce` header — when
+        the tenant requires one.
       headers:
         Cache-Control:
           schema:

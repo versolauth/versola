@@ -118,6 +118,43 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
             ),
       ),
       controllerTestCase(
+        description = "hands every DPoP header to the service, which decides whether they are acceptable",
+        request = parRequest(validForm()).addHeader(Header.Custom("DPoP", "proof-1")).addHeader(Header.Custom("DPoP", "proof-2")),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyService = service =>
+          ZIO.succeed(assertTrue(service.push.calls.head._5 == List("proof-1", "proof-2"))),
+      ),
+      controllerTestCase(
+        description = "passes no proofs when the request has no DPoP header",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyService = service =>
+          ZIO.succeed(assertTrue(service.push.calls.head._5 == Nil)),
+      ),
+      controllerTestCase(
+        description = "answers use_dpop_nonce with the nonce in the DPoP-Nonce header",
+        request = parRequest(validForm()).addHeader(Header.Custom("DPoP", "proof")),
+        expectedStatus = Status.BadRequest,
+        setup = _.push.failsWith(PushedAuthorizationError.UseDpopNonce("fresh-nonce")),
+        verify = response =>
+          response.body.asString.map(body =>
+            assertTrue(
+              body.contains("use_dpop_nonce"),
+              response.rawHeader("DPoP-Nonce") == Some("fresh-nonce"),
+            ),
+          ),
+      ),
+      controllerTestCase(
+        description = "answers an unacceptable proof with invalid_dpop_proof",
+        request = parRequest(validForm()).addHeader(Header.Custom("DPoP", "proof")),
+        expectedStatus = Status.BadRequest,
+        setup = _.push.failsWith(PushedAuthorizationError.InvalidDpopProof("bad signature")),
+        verify = response =>
+          response.body.asString.map(body => assertTrue(body.contains("invalid_dpop_proof"))),
+      ),
+      controllerTestCase(
         description = "authenticates with client_secret_post",
         request = parRequest(
           validForm("client_secret" -> Base64.urlEncode(clientSecret)),

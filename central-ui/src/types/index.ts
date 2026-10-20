@@ -4,10 +4,10 @@ export interface Tenant {
   name: string;
   description?: string;
   edgeId?: string | null;
-  /** From the tenant's challenge settings; fixed when the tenant is created. */
-  securityProfile?: SecurityProfile;
+  /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
+  securityProfile: SecurityProfile;
   /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
-  signingKeyId?: string | null;
+  signingKeyId: string | null;
 }
 
 // Authorization Preset
@@ -256,6 +256,10 @@ export interface ChallengeSettingsRecord {
   logoLight?: string | null;
   logoDark?: string | null;
 }
+
+/** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`
+ * clears an optional member. The tenant is named beside them and the profile cannot be patched. */
+export type ChallengeSettingsChanges = Partial<Omit<ChallengeSettingsRecord, 'tenantId' | 'securityProfile'>>;
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the
 // private half needed to sign with it. Never carries the key material itself.
@@ -527,6 +531,20 @@ export interface SessionClientEntry {
   expiresAt: string;
 }
 
+/** The user agent (browser or app install) as auth stores it. */
+export interface UserAgent {
+  id: string;
+  /** The raw `User-Agent` header as last seen on sign-in. */
+  userAgent?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+  createdAt: string;
+  /** The device is remembered until then; it slides forward on every sign-in. */
+  expiresAt: string;
+}
+
 export interface UserSession {
   /** What `endUserSession` takes to end this one session. */
   publicId?: string;
@@ -536,6 +554,21 @@ export interface UserSession {
   os?: string;
   browser?: string;
   version?: string;
+  /** When the session ends regardless of activity. */
+  expiresAt?: string;
+  /** When it ends if it stays idle; absent when no idle timeout applies. */
+  idleExpiresAt?: string;
+  userAgent?: UserAgent;
+}
+
+/** One remembered device: its user agent and the session under it, `null` once signed out. */
+export interface UserDevice {
+  /** Absent only for a live session whose user agent row has expired and been swept. */
+  userAgent?: UserAgent;
+  session: UserSession | null;
+  /** Public ids of this user agent's sessions that ended and are still stored: what ties a refresh
+   *  token (it names only its session) to a signed-out device. */
+  endedSessionIds: string[];
 }
 
 /** A live refresh token, one per grant; it outlives the session it was issued under. */

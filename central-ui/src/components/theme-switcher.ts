@@ -36,9 +36,9 @@ export class VersolaThemeSwitcher extends LitElement {
         width: 2.25rem;
         height: 2.25rem;
         padding: 0;
-        border: 1px solid var(--border-input);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
-        background: var(--surface);
+        background: transparent;
         color: var(--text-secondary);
         cursor: pointer;
         transition: border-color var(--transition-fast), color var(--transition-fast);
@@ -46,8 +46,8 @@ export class VersolaThemeSwitcher extends LitElement {
 
       .trigger:hover,
       .trigger[aria-expanded='true'] {
-        border-color: var(--accent);
-        color: var(--accent);
+        border-color: var(--text-primary);
+        color: var(--text-primary);
       }
 
       .trigger:focus-visible,
@@ -69,12 +69,12 @@ export class VersolaThemeSwitcher extends LitElement {
         z-index: var(--z-dropdown);
         min-width: 8rem;
         margin: 0;
-        padding: 0.25rem;
+        padding: 0.375rem;
         list-style: none;
         background: var(--surface-raised);
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
-        box-shadow: var(--shadow-lg);
+        border-radius: var(--radius-inner);
+        box-shadow: var(--shadow-card);
       }
 
       .option {

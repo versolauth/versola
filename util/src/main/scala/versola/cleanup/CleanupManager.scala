@@ -122,7 +122,10 @@ object CleanupManager:
       for
         _ <- ZIO.logInfo("Stopping cleanup manager...")
         fib <- fibers.get
-        _ <- ZIO.foreachParDiscard(fib)(fiber => fiber.interrupt *> fiber.join.ignore)
+        // interrupt already waits for the fiber to finish. Joining it as well would hand the fiber's
+        // interruption to this one, and the parallel loop would then cancel the siblings that had not
+        // been interrupted yet, leaving their jobs running.
+        _ <- ZIO.foreachParDiscard(fib)(_.interrupt)
         _ <- ZIO.logInfo(s"Stopped ${fib.size} cleanup jobs")
       yield ()
 

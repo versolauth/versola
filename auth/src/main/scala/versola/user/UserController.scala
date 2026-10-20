@@ -9,7 +9,7 @@ import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
@@ -34,6 +34,8 @@ object UserController extends Controller:
     findRolesEndpoint,
     findSessionsEndpoint,
     invalidateSessionEndpoint,
+    findUserAgentsEndpoint,
+    forgetUserAgentEndpoint,
     findRefreshTokensEndpoint,
     revokeRefreshTokensEndpoint,
     resetLimitsEndpoint,
@@ -121,18 +123,69 @@ object UserController extends Controller:
         sessionService <- ZIO.service[SessionService]
         userId <- request.url.queryZIO[UserId]("id")
         sessions <- sessionService.listByUser(userId)
-        responses = sessions.map { session =>
-          SessionResponse(
-            publicId = session.publicId,
-            clients = session.clients.map(c => ClientEntryResponse(c.clientId, c.enteredAt)),
-            platform = session.platform,
-            os = session.os,
-            browser = session.browser,
-            version = session.version,
-            createdAt = session.createdAt,
-          )
-        }
+        responses = sessions.map(sessionResponse)
       yield Response.json(SessionListResponse(responses).toJson)
+    }
+
+  private def userAgentResponse(agent: UserAgentRecord): UserAgentResponse =
+    UserAgentResponse(
+      id = agent.id.toString,
+      userAgent = agent.userAgent,
+      platform = agent.platform,
+      os = agent.os,
+      browser = agent.browser,
+      version = agent.version,
+      createdAt = agent.createdAt,
+      expiresAt = agent.expiresAt,
+    )
+
+  private def sessionResponse(session: SessionUnderUserAgent): SessionResponse =
+    SessionResponse(
+      publicId = session.publicId,
+      clients = session.clients.map(c => ClientEntryResponse(c.clientId, c.enteredAt)),
+      platform = session.platform,
+      os = session.os,
+      browser = session.browser,
+      version = session.version,
+      createdAt = session.createdAt,
+      expiresAt = session.expiresAt,
+      idleExpiresAt = session.idleExpiresAt,
+      userAgent = session.userAgent.map(userAgentResponse),
+    )
+
+  /** Every remembered user agent with its live session, or `session: null` for a signed-out one.
+    * Separate from [[findSessionsEndpoint]], whose items are always sessions. */
+  val findUserAgentsEndpoint =
+    Method.GET / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        sessionService <- ZIO.service[SessionService]
+        userId <- request.url.queryZIO[UserId]("id")
+        devices <- sessionService.listDevicesByUser(userId)
+        responses = devices.map: device =>
+          DeviceResponse(
+            userAgent = device.userAgent.map(userAgentResponse),
+            session = device.session.map(sessionResponse),
+            endedSessionIds = device.endedSessionIds,
+          )
+      yield Response.json(DeviceListResponse(responses).toJson)
+    }
+
+  /** Forgets a device: its user agent, session and the refresh tokens bound to that session go.
+    * A user agent that is not the user's answers 404. */
+  val forgetUserAgentEndpoint =
+    Method.DELETE / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        logoutService <- ZIO.service[LogoutService]
+        userId <- request.queryZIO[UserId]("userId")
+        userAgentId <- request.queryZIO[UserAgentId]("userAgentId")
+        _ <- Observability.setUserId(userId.toString)
+        forgotten <- logoutService.forgetUserAgent(userId, userAgentId)
+        response <-
+          if forgotten then ZIO.succeed(Response.status(Status.NoContent))
+          else Observability.setError("user_agent_not_found").as(Response.status(Status.NotFound))
+      yield response
     }
 
   /** With `sessionId` ends that one session of the user; without it, every session. A

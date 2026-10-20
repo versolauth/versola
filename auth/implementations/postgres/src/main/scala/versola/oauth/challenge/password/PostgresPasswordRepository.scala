@@ -13,9 +13,7 @@ import zio.{Clock, IO, Task, ZLayer}
 import java.time.Instant
 import java.util.UUID
 
-class PostgresPasswordRepository(
-  xa: TransactorZIO,
-) extends PasswordRepository, BasicCodecs:
+class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, BasicCodecs:
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Salt] = DbCodec.ByteArrayCodec.biMap(Salt(_), identity[Array[Byte]])
@@ -128,6 +126,6 @@ object PostgresPasswordRepository:
     * wait, never a correctness issue.
     */
   private[password] val PasswordHistoryLockNamespace: Int = 92
-  
-  val live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
+
+  def live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
     ZLayer.fromFunction(PostgresPasswordRepository(_))

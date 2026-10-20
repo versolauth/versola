@@ -72,7 +72,10 @@ object AcrResolutionService:
                               req match
                                 case PassedAuthFactor.otp => hasOtp
                                 case PassedAuthFactor.password => hasPassword
-                                case PassedAuthFactor.passkey => hasPasskey
+                                // A passkey the client's flow cannot ask for is not reachable, however many
+                                // the user has: nothing would present it.
+                                case PassedAuthFactor.passkey =>
+                                  if flow.passkey.isDefined then hasPasskey else ZIO.succeed(false)
                       .map(if _ then Some(acr) else None)
         yield achievable
 

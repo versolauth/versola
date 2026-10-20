@@ -9,6 +9,10 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 trait FormService:
   def getAllForms: Task[Vector[FormRecord]]
   def getSyncForms: Task[Vector[FormRecord]]
+
+  /** Stores a new version. Fails with an [[IllegalArgumentException]] when the languages of `localizations` do not
+    * share one set of keys and placeholders, see [[FormLocalizations]].
+    */
   def updateForm(
       id: FormId,
       style: String,
@@ -56,17 +60,14 @@ object FormService:
         activate: Boolean,
     ): Task[Unit] =
       for
+        _ <- ZIO.fromEither(FormLocalizations.validate(localizations)).mapError(IllegalArgumentException(_))
+        // The cache is not replaced here: the row's trigger notifies, and `sync` applies that one record. A wholesale
+        // `set` from a read taken before a concurrent write's notification was applied would drop that write's form.
         _ <- repository.upsertForm(id, style, jsSource, jsCompiled, localizations, properties, activate)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
       yield ()
 
     override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
-      for
-        _ <- repository.setActiveVersion(id, version)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
-      yield ()
+      repository.setActiveVersion(id, version)
 
     override def sync(event: SyncEvent.FormsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

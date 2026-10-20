@@ -71,9 +71,11 @@ export class VersolaSidePanel extends LitElement {
         flex-direction: column;
         width: min(100vw, 35rem);
         background: var(--surface);
-        border-left: 1px solid var(--border-default);
-        box-shadow: var(--shadow-lg);
+        /* The login sheet: rounded on its free edge, the sheet shadow, no line. */
+        border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+        box-shadow: var(--shadow-sheet);
         color: var(--text-primary);
+        overflow: hidden;
       }
 
       :host([wide]) .panel {
@@ -129,7 +131,8 @@ export class VersolaSidePanel extends LitElement {
       .panel-title {
         margin: 0;
         font-size: var(--text-2xl);
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: -0.02em;
         overflow-wrap: anywhere;
       }
 
@@ -204,7 +207,7 @@ export class VersolaSidePanel extends LitElement {
 
       @media (max-width: 720px) {
         .panel {
-          border-left: 0;
+          border-radius: 0;
         }
 
         .panel-head {
@@ -255,13 +258,19 @@ export class VersolaSidePanel extends LitElement {
     this.syncInset();
   }
 
-  /** At 1440px and up the panel takes its 560px from the page instead of covering the table:
-    * `admin-app` pads `<main>` by `--panel-inset`. Narrower screens keep the overlay. */
-  private static readonly INSET_QUERY = '(min-width: 1440px)';
+  /** While the panel is open to read (not modal), the page reserves its width instead of letting it
+    * cover the table and its row menus: `admin-app` pads `<main>` by `--panel-inset`, with a
+    * transition, and the sidebar does not move. It does so only while at least `MIN_CONTENT_PX`
+    * stay for the page itself (the 250px sidebar and the page padding included); on narrower
+    * windows the panel overlays as before, and below 1024px it is a sheet. */
+  private static readonly MIN_CONTENT_PX = 320;
+  private static readonly CHROME_PX = 250 + 64;
 
   private syncInset() {
-    const inset = this.mode === 'view' && window.matchMedia(VersolaSidePanel.INSET_QUERY).matches && !this.wide;
-    if (inset) document.documentElement.style.setProperty('--panel-inset', '35rem');
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const width = (this.wide ? 45 : 35) * rem;
+    const fits = window.innerWidth >= 1024 && window.innerWidth - VersolaSidePanel.CHROME_PX - width >= VersolaSidePanel.MIN_CONTENT_PX;
+    if (this.mode === 'view' && fits) document.documentElement.style.setProperty('--panel-inset', this.wide ? '45rem' : '35rem');
     else document.documentElement.style.removeProperty('--panel-inset');
   }
 

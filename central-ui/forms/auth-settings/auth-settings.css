@@ -3,8 +3,7 @@
  * instead of centered. */
 .account-container {
   width: min(560px, calc(100vw - 40px));
-  max-height: min(800px, calc(100dvh - 40px));
-  padding: 32px 40px 28px;
+  max-height: min(720px, calc(100dvh - 40px));
   text-align: left;
   overflow-y: auto;
 }
@@ -12,13 +11,13 @@
   text-align: center;
 }
 .account-section + .account-section {
-  margin-top: 20px;
+  margin-top: 32px;
 }
 .account-section h2 {
   font-size: 1rem;
   font-weight: 600;
   margin: 0 0 12px;
-  color: var(--text);
+  color: var(--ink);
 }
 .account-empty {
   color: var(--text-muted);
@@ -39,9 +38,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  background: var(--field-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: var(--rf);
 }
 .account-row-info {
   display: flex;
@@ -55,7 +54,7 @@
   gap: 8px;
   font-size: 0.92rem;
   font-weight: 500;
-  color: var(--text);
+  color: var(--ink);
 }
 .account-row-subtitle {
   font-size: 0.8rem;
@@ -64,8 +63,8 @@
 .account-badge {
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--accent);
-  background: rgba(21, 94, 117, 0.1);
+  color: var(--focus);
+  background: color-mix(in oklab, var(--brand) 10%, transparent);
   border-radius: 999px;
   padding: 2px 8px;
 }
@@ -76,10 +75,11 @@
 }
 .account-row-action {
   width: auto;
-  padding: 8px 14px;
+  height: 40px;
+  padding: 0 14px;
   font-size: 0.85rem;
+  /* A button is one line: when the row is short the details beside it give way (they may wrap), not the label. */
   white-space: nowrap;
-  flex-shrink: 0;
 }
 .account-rename {
   flex: 1;
@@ -99,14 +99,20 @@
 .account-password-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
-.account-password-form .input-field {
-  padding: 9px 14px;
-  font-size: 0.9rem;
+.account-password-form .btn {
+  align-self: flex-start;
+  width: auto;
+  margin-top: 8px;
+}
+.account-password-done {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 .account-go-back {
-  margin-top: 20px;
+  margin-top: 28px;
 }
 
 .confirmation-backdrop {
@@ -123,15 +129,15 @@
   width: min(360px, 100%);
   padding: 28px;
   text-align: left;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--rs);
   box-shadow: 0 20px 48px rgba(16, 24, 40, 0.2);
 }
 .confirmation-dialog h2 {
   margin: 0 0 10px;
   font-size: 1.1rem;
-  color: var(--text);
+  color: var(--ink);
 }
 .confirmation-dialog p {
   margin: 0 0 22px;
@@ -147,18 +153,4 @@
   width: auto;
   padding: 10px 16px;
   font-size: 0.9rem;
-}
-
-.account-password-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* On short viewports the card must not be vertically centred — anchor it
-   near the top so the bottom edge stays in view. */
-body:has(.account-container) {
-  align-items: center;
-  justify-content: flex-start;
-  padding-top: 40px;
 }

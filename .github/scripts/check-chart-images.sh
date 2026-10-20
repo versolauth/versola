@@ -41,8 +41,12 @@ render_chart() {
         --set coordinator.config.existingSecret=ci-check
       ;;
     versola)
+      # The migration Job (#209) mounts each service's env.conf, so it needs the config names too.
       helm template check "$chart" \
-        --set secrets.existingSecret=ci-check
+        --set secrets.existingSecret=ci-check \
+        --set services.auth.config.existingSecret=ci-check \
+        --set services.central.config.existingSecret=ci-check \
+        --set services.edge.config.existingSecret=ci-check
       ;;
     *)
       helm template check "$chart"

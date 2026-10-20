@@ -12,15 +12,14 @@ const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 /** Fired on `window` whenever the painted theme changes (a new choice, or the
   * OS switching while the choice is `auto`), with the resolved ThemeName as
-  * detail, so components that can't rely on CSS alone (e.g. versola-logo,
-  * which picks between two SVG markups rather than swapping colours via
-  * custom properties) can re-render. Most components just consume the CSS
-  * custom properties this module keeps up to date. */
+  * detail, so components that can't rely on CSS alone can re-render. Most
+  * components just consume the CSS custom properties this module keeps up to
+  * date. */
 export const THEME_CHANGE_EVENT = 'versola-theme-change';
 
 const FAVICON_PATHS: Record<ThemeName, string> = {
-  dark: 'logo-shield.svg',
-  light: 'logo-shield-light.svg',
+  dark: 'favicon-dark.svg',
+  light: 'favicon-light.svg',
 };
 
 /** Auto is the default: a first visit follows the device, like the login

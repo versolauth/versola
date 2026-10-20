@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { cardStyles, chipStyles, iconButtonStyles } from '../styles/components';
+import { cardStyles, chipStyles, iconButtonStyles, methodBadgeStyles, tagStyles } from '../styles/components';
 import { statusIcon } from './status-icon';
 
 export type DataTableColumn<T> = {
@@ -20,6 +20,8 @@ export type RowMenuItem = {
   danger?: boolean;
   /** When the visible label is not specific enough on its own (`Delete client alpha-web`). */
   ariaLabel?: string;
+  /** Shown but inert, with the reason as its title (`Pick another default first`). */
+  disabledReason?: string;
 };
 
 /**
@@ -51,12 +53,16 @@ export class VersolaDataTable<T = unknown> extends LitElement {
   /** A click anywhere on a row (outside its menu) fires `row-select` with the row; the row's
    *  `.row-link` button stays the keyboard way in. */
   @property({ type: Boolean }) selectable = false;
+  /** Inside a record card: no outline of its own, the card's edge is the table's. */
+  @property({ type: Boolean, reflect: true }) flush = false;
   @state() private openMenuKey: string | null = null;
 
   static styles = [
     theme,
     cardStyles,
     chipStyles,
+    tagStyles,
+    methodBadgeStyles,
     iconButtonStyles,
     css`
       :host {
@@ -66,6 +72,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
       .table-card {
         padding: 0;
         overflow: visible;
+        /* The card mode below answers to the room the table has, not the window: a side panel
+           takes part of it. */
+        container: table / inline-size;
+      }
+
+      :host([flush]) .table-card {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
       }
 
       table {
@@ -73,10 +88,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         border-collapse: collapse;
       }
 
+      /* The header is a kicker: uppercase, bold, spaced; no fill. */
       th {
         text-align: left;
         font-size: var(--text-xs);
-        font-weight: 500;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
         color: var(--text-secondary);
         padding: 0.75rem var(--spacing-md);
         border-bottom: 1px solid var(--border-default);
@@ -159,7 +177,69 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         font-family: var(--font-mono);
         font-size: var(--text-base);
         color: var(--accent);
-        word-break: break-all;
+        /* An ID is never broken inside: it is cut with an ellipsis, the full value in its title. */
+        display: block;
+        max-width: 9.5rem;
+        min-width: 8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* A record named by an ID (a resource): the ID is the title, in mono and the accent, never
+         broken inside; a muted line under it (.row-host) carries the host, which breaks only
+         where a <wbr> allows it (after a dot). */
+      .row-title.mono {
+        font-family: var(--font-mono);
+        font-size: var(--text-base);
+        color: var(--accent);
+        overflow-wrap: normal;
+        word-break: normal;
+      }
+
+      .row-host {
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        font-weight: 400;
+        color: var(--text-secondary);
+        overflow-wrap: normal;
+        word-break: normal;
+      }
+
+      /* A cell that holds a few short lines (a resource's endpoints, its clients). */
+      .cell-lines {
+        display: grid;
+        gap: 0.375rem;
+        justify-items: start;
+      }
+
+      .cell-flow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.375rem 0.75rem;
+        align-items: center;
+      }
+
+      .cell-line {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 0.125rem 0.5rem;
+        align-items: center;
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+      }
+
+      /* A column whose ID is what the operator came for (a user): shown whole, never cut. */
+      td.full-id .row-id {
+        max-width: none;
+      }
+
+      /* In a card there is no room beside the menu: the ID wraps at its hyphens, never inside a group. */
+      @container table (max-width: 640px) {
+        td.full-id .row-id {
+          white-space: normal;
+          overflow-wrap: normal;
+        }
       }
 
       .muted {
@@ -190,10 +270,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       .menu-button {
         color: var(--text-primary);
-        border: 1px solid var(--border-input);
+        border: 1.5px solid var(--border-input);
         min-width: 2rem;
         min-height: 2rem;
         border-radius: var(--radius-md);
+      }
+
+      .menu-button:hover {
+        border-color: var(--text-primary);
+        color: var(--text-primary);
       }
 
       .menu {
@@ -204,11 +289,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         min-width: 11rem;
         display: flex;
         flex-direction: column;
-        padding: 0.25rem;
+        padding: 0.375rem;
         border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
+        border-radius: var(--radius-inner);
         background: var(--surface-raised);
-        box-shadow: var(--shadow-lg);
+        box-shadow: var(--shadow-card);
         text-align: left;
       }
 
@@ -225,6 +310,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: pointer;
       }
 
+      .menu button:has(.why) {
+        padding-block: 0.375rem;
+        max-width: 16rem;
+      }
+
       .menu button:hover {
         background: var(--surface-inset);
       }
@@ -238,12 +328,34 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         color: var(--danger);
       }
 
+      .menu button[aria-disabled='true'] {
+        color: var(--text-muted);
+        cursor: default;
+      }
+
+      .menu .why {
+        display: block;
+        margin-top: 0.125rem;
+        font-size: var(--text-xs);
+        font-weight: 400;
+        color: var(--text-secondary);
+        white-space: normal;
+      }
+
+      .menu button[aria-disabled='true']:hover {
+        background: none;
+      }
+
       /* ── card mode ──
          The table keeps its semantics: every element carries its ARIA table role explicitly (see
          render), so changing display here does not strip them (Safari/VoiceOver drop implicit
          roles on a display: block table), and the header row stays in the accessibility tree off
          screen. Each cell shows its column label through data-label. */
-      @media (max-width: 720px) {
+      @container table (max-width: 640px) {
+        .row-id {
+          max-width: 100%;
+        }
+
         thead {
           position: absolute;
           left: -9999px;
@@ -353,6 +465,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
     if (returnFocus && key !== null) this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
   }
 
+  /** An ID cut by its ellipsis still reads in full from its title. */
+  protected updated() {
+    for (const id of this.shadowRoot?.querySelectorAll<HTMLElement>('.row-id') ?? []) {
+      if (!id.title) id.title = id.textContent?.trim() ?? '';
+    }
+  }
+
   /** Moves focus to a row's `.row-link`: where the side panel returns focus on Escape. */
   focusRow(key: string) {
     this.shadowRoot?.querySelector<HTMLElement>(`tr[data-key="${CSS.escape(key)}"] .row-link`)?.focus();
@@ -413,9 +532,9 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           <div class="menu" role="menu" aria-label=${label}>
             ${items.map((item, index) => html`
               <button type="button" role="menuitem" tabindex="-1" class=${item.danger ? 'danger' : ''}
-                aria-label=${item.ariaLabel ?? nothing}
+                aria-label=${item.ariaLabel ?? nothing} aria-disabled=${item.disabledReason ? 'true' : nothing} title=${item.disabledReason || nothing}
                 @keydown=${(e: KeyboardEvent) => this.handleMenuKey(e, index)}
-                @click=${() => { this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
+                @click=${() => { if (item.disabledReason) return; this.closeMenu(false); item.onSelect(); }}>${item.label}${item.disabledReason ? html`<span class="why">${item.disabledReason}</span>` : nothing}</button>
             `)}
           </div>` : ''}
       </td>

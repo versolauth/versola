@@ -48,7 +48,7 @@ function clientCard(page: any, _clientId: string) {
 }
 
 async function openClient(page: any, clientId: string) {
-  await page.getByRole('button', { name: `Open client ${clientId}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${clientId}$`) }).click();
 }
 
 test('loads presets when client is expanded', async ({ page }) => {

@@ -105,6 +105,8 @@ object ConversationRenderService:
         phoneRegions: Option[List[PhoneRegion]],
         passwordRegex: Option[String],
         registration: Boolean,
+        /** Only a passkey of the identified user is asked for; the form starts it by itself. */
+        passkeyOnly: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -179,6 +181,7 @@ object ConversationRenderService:
         sessions: List[AccountSession],
         passkeys: List[AccountPasskey],
         hasPassword: Boolean,
+        passwordRegex: String,
     ) extends StepView
 
     @jsonHint("access-denied")
@@ -712,10 +715,10 @@ object ConversationRenderService:
         responseMode: ResponseMode,
     ): Task[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
           for
             phoneRegions <-
-              if primaryCredentials.contains(PrimaryCredential.phone) then
+              if primaryCredentials.contains(PrimaryCredential.phone) && !passkeyOnly then
                 configuration.getPhoneRegions(clientId).map(Some(_))
               else
                 ZIO.none
@@ -729,6 +732,7 @@ object ConversationRenderService:
             phoneRegions,
             passwordRegex,
             registration,
+            passkeyOnly,
           )
 
         case _: ConversationStep.Password =>
@@ -911,8 +915,6 @@ object ConversationRenderService:
       * chrome, which is the device's scheme, not the page's (the visitor's toggle does not reach a tab strip). */
     private def faviconLink(logo: Option[TenantLogo]): String =
       logo match
-        case Some(TenantLogo(light, dark)) if light == dark =>
-          s"""<link rel="icon" href="${escapeAttribute(light)}">"""
         case Some(TenantLogo(light, dark)) =>
           s"""<link rel="icon" href="${escapeAttribute(light)}" media="(prefers-color-scheme: light)">""" +
             s"""<link rel="icon" href="${escapeAttribute(dark)}" media="(prefers-color-scheme: dark)">"""

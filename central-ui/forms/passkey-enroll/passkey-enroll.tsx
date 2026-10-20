@@ -68,7 +68,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
       <p class="passkey-enroll-description">{t().description}</p>
 
       <div class="name-field field">
-        <label class="field-label" for="passkey-name">{t().name_placeholder}</label>
+        <label class="field-label" for="passkey-name">{t().name_label}</label>
         <input
           id="passkey-name"
           class={`input-field${nameError() ? ' input-error' : ''}`}
@@ -76,7 +76,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
           value={name()}
           onInput={(e) => { setName(e.currentTarget.value); setNameError(false); }}
           disabled={busy()}
-          placeholder=" "
+          placeholder={t().name_placeholder}
           autocomplete="off"
           aria-invalid={nameError() ? 'true' : undefined}
           aria-describedby={nameError() ? 'passkey-name-error' : undefined}

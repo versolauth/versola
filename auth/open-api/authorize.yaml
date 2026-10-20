@@ -117,7 +117,9 @@ components:
       required: false
       description: |
         `code` for the plain authorization code flow, `code id_token` to additionally receive an
-        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used.
+        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used. A client of
+        a `fapi2` tenant may use `code` only; `code id_token` is answered with
+        `unsupported_response_type`.
       schema:
         type: string
         enum: [code, code id_token]

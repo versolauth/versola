@@ -37,14 +37,14 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           padding: 1.5rem;
           background: var(--backdrop);
           backdrop-filter: blur(4px);
-          font-family: Inter, system-ui, sans-serif;
+          font-family: var(--font-family, system-ui, sans-serif);
         }
         .dialog {
           width: min(100%, 28rem);
           background: var(--surface);
           border: 1px solid var(--border-default);
-          border-radius: var(--radius-lg, 1rem);
-          box-shadow: var(--shadow-lg);
+          border-radius: var(--radius-lg, 1.25rem);
+          box-shadow: var(--shadow-card);
           color: var(--text-primary);
           padding: 1.25rem;
         }
@@ -70,7 +70,7 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           flex: 1 1 0;
           min-width: 0;
           border-radius: var(--radius-md, 0.75rem);
-          border: 1px solid var(--border-input);
+          border: 1.5px solid var(--border-input);
           padding: 0.625rem 1rem;
           font: inherit;
           font-size: 0.875rem;
@@ -85,13 +85,12 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           outline-offset: 2px;
         }
         .cancel {
-          background: var(--surface);
-          border-color: var(--border-default);
+          background: transparent;
+          border-color: var(--border-input);
           color: var(--text-primary);
         }
         .cancel:hover {
-          border-color: var(--accent);
-          color: var(--accent);
+          border-color: var(--text-primary);
         }
         .confirm {
           background: var(--danger-subtle);
