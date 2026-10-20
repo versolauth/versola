@@ -164,6 +164,9 @@ object ConversationRouter:
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
             .tap(observePasskeyAssertion)
 
+        case (_: PasskeyUnavailableSubmission, ConversationRecord.PasskeyOnly(_)) =>
+          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("passkey"))
+
         case (submitted: PasskeyEnrollSubmission, ConversationRecord.PasskeyEnroll(enroll)) =>
           conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
             .tap(observePasskeyEnrollment)
@@ -323,6 +326,15 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterAuthenticationCredentialFactors(authId, conversation, credential)
+
+    private def afterAuthenticationCredentialFactors(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+    ): Task[ConversationResult.Render] =
       nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
           conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx)
@@ -344,6 +356,25 @@ object ConversationRouter:
       * Factors whose type appears in that map are skipped.
       */
     private def afterFactor(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        nextFactorIndex: Int,
+    ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterFactorSteps(authId, conversation, nextFactorIndex)
+
+    /** Whether the ACR this conversation pursues needs a passkey that has not been passed yet. A passkey is
+      * not one of `primary.factors`, so nothing else would ask for it: the conversation goes straight to a
+      * passkey-only step, ahead of any other factor, because the passkey (user-verifying) is the one that
+      * proves the device and a one-time code must not stand in for it.
+      */
+    private def passkeyPending(conversation: ConversationRecord): Task[Boolean] =
+      configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
+        conversation.targetAcr.flatMap(vocabulary.get).exists(_.exists(_ == PassedAuthFactor.passkey)) &&
+          !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.passkey, conversation.authFlow.equivalents))
+
+    private def afterFactorSteps(
         authId: AuthId,
         conversation: ConversationRecord,
         nextFactorIndex: Int,

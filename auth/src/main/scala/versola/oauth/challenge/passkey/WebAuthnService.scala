@@ -74,6 +74,11 @@ trait WebAuthnService:
   /** Begin a passwordless (discoverable) assertion ceremony. */
   def startAssertion(settings: PasskeySettings): IO[WebAuthnError, PasskeyCeremony]
 
+  /** Begin an assertion restricted to the passkeys of one known user (`allowCredentials`), for a
+    * step-up where the conversation has already identified who must confirm.
+    */
+  def startUserAssertion(settings: PasskeySettings, userId: UserId): IO[WebAuthnError, PasskeyCeremony]
+
   /** Extract the credential id from a raw assertion-response JSON string.
     * Returns `None` if the response cannot be parsed or contains an empty id.
     * Used for pre-flight throttle checks before the full ceremony verification.
@@ -265,6 +270,23 @@ object WebAuthnService:
         // configurable setting (which only relaxes UV for the post-auth enrollment ceremony).
         val assertionRequest = buildRp(settings).startAssertion(
           StartAssertionOptions.builder()
+            .userVerification(UserVerificationRequirement.REQUIRED)
+            .build(),
+        )
+        PasskeyCeremony(
+          request = mapper.writeValueAsString(assertionRequest),
+          publicKeyOptions = assertionRequest.toCredentialsGetJson,
+        )
+      .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
+
+    override def startUserAssertion(settings: PasskeySettings, userId: UserId): IO[WebAuthnError, PasskeyCeremony] =
+      ZIO.attemptBlocking:
+        // The user is known, so the allowed credentials are listed and finishAssertion binds the
+        // ceremony to that user. User verification is required for the same reason as in
+        // startAssertion: the passkey stands in for every other factor.
+        val assertionRequest = buildRp(settings).startAssertion(
+          StartAssertionOptions.builder()
+            .username(userId.toString)
             .userVerification(UserVerificationRequirement.REQUIRED)
             .build(),
         )

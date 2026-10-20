@@ -3,6 +3,7 @@ package versola.oauth.conversation
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
+  Acr,
   AuthFactor,
   AuthFactorType,
   AuthFlow,
@@ -30,6 +31,7 @@ import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
+import zio.prelude.NonEmptyList
 import zio.test.*
 import zio.{Exit, ZIO}
 
@@ -729,6 +731,49 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
     ),
     suite("advance")(
+      test("asks for the passkey straight away, before any other factor, when the target ACR needs one") {
+        val env = Env()
+        val acr = Acr("passkey-level")
+        val passkeyFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+        val record = otpRecord.copy(authFlow = passkeyFlow, targetAcr = Some(acr), userId = Some(testUserId))
+        val passkeyResult = ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, true, passkeyOnly = true))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.passkey)))
+          _ <- env.otpConversationService.promptPasskey.succeedsWith(passkeyResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 1, otpTimes == 0)
+      },
+      test("does not ask for the passkey again once one was passed") {
+        val env = Env()
+        val now = Instant.now()
+        val acr = Acr("passkey-level")
+        val passkeyFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+        val record = otpRecord.copy(
+          authFlow = passkeyFlow,
+          targetAcr = Some(acr),
+          amr = Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk))),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.passkey)))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+        yield assertTrue(promptTimes == 0)
+      },
+      test("asks for an OTP, not a passkey, when the target ACR needs only an OTP") {
+        val env = Env()
+        val acr = Acr("otp-level")
+        val record = otpRecord.copy(targetAcr = Some(acr), userPhone = Some(phone))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.otp)))
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 0, otpTimes == 1)
+      },
       test("routes to OTP step from the configured flow when factor is not yet satisfied") {
         val env = Env()
         val recordWithoutCredential = otpRecord.copy(credential = None, userPhone = Some(phone))

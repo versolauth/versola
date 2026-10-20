@@ -1,5 +1,5 @@
 import { render } from 'solid-js/web';
-import { createSignal, Show } from 'solid-js';
+import { createSignal, onMount, Show } from 'solid-js';
 import { PhoneField, type PhoneFieldApi } from './phone-field';
 import type { PhoneRegion } from './phone';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
@@ -14,6 +14,8 @@ type CredentialStep = {
   primaryCredentials: PrimaryCredential[];
   inlinePassword: boolean;
   passkey: boolean;
+  // Only a passkey of the already identified user is asked for (a step-up); the form starts it by itself.
+  passkeyOnly?: boolean;
   phoneRegions?: PhoneRegion[];
   passwordRegex?: string;
 };
@@ -89,6 +91,11 @@ function CredentialForm(props: { config: FormConfig }) {
       const response = await getAssertionResponse(optionsJson);
       submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
     } catch (error) {
+      // A passkey-only step has no other way in: a missing or dismissed passkey ends in the access page.
+      if (step.passkeyOnly) {
+        denyPasskeyOnly();
+        return;
+      }
       if (isPasskeyCancellation(error)) {
         setPasskeyBusy(false);
         return;
@@ -97,6 +104,17 @@ function CredentialForm(props: { config: FormConfig }) {
       setPasskeyBusy(false);
     }
   };
+
+  const denyPasskeyOnly = () =>
+    submitViaForm(`/challenge/passkey/unavailable?ui_locale=${currentLocale()}`, { csrf: props.config.csrf ?? '' });
+
+  // A step-up that needs a passkey has nothing to type and no button: the browser's own prompt opens at once.
+  // If this device has no passkey for the user, or the prompt is dismissed, the access page follows.
+  onMount(() => {
+    if (!step.passkeyOnly) return;
+    if (passkeysSupported()) void handlePasskey();
+    else denyPasskeyOnly();
+  });
 
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
@@ -121,86 +139,93 @@ function CredentialForm(props: { config: FormConfig }) {
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
       <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
-      <h1>{t().title}</h1>
+      <h1>{step.passkeyOnly ? t().passkey_only_title : t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>
         <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
 
-      <form method="post" onSubmit={handleSubmit}>
-        <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-        <Show when={single === 'email'}>
-          <div class="field">
-            <label class="field-label" for="credential-email">{t().email_placeholder}</label>
-            <input id="credential-email" type="email" name="email" class="input-field" placeholder=" " autocomplete="email" required />
-          </div>
-        </Show>
-        <Show when={single === 'phone'}>
-          <div class="field">
-            <label class="field-label" for="credential-phone">{t().phone_placeholder}</label>
-            <Show
-              when={phoneRegions.length > 0}
-              fallback={
-                <>
-                  <input
-                    id="credential-phone"
-                    type="tel"
-                    name="phone"
-                    class="input-field"
-                    placeholder=" "
-                    autocomplete="tel"
-                    pattern="^\+[1-9]\d{6,14}$"
-                    required
-                    aria-describedby="credential-phone-hint"
-                  />
-                  <div id="credential-phone-hint" class="field-hint">{t().phone_hint}</div>
-                </>
-              }
-            >
-              <PhoneField id="credential-phone" regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
-            </Show>
-          </div>
-        </Show>
-        <Show when={single === 'login'}>
-          <div class="field">
-            <label class="field-label" for="credential-login">{t().login_placeholder}</label>
-            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
-          </div>
-        </Show>
-        <Show when={single === null && primaries.length > 0}>
-          <div class="field">
-            <label class="field-label" for="credential-login">{combinedPlaceholder()}</label>
-            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
-          </div>
-        </Show>
+      <Show
+        when={step.passkeyOnly}
+        fallback={
+        <form method="post" onSubmit={handleSubmit}>
+          <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
+          <Show when={single === 'email'}>
+            <div class="field">
+              <label class="field-label" for="credential-email">{t().email_placeholder}</label>
+              <input id="credential-email" type="email" name="email" class="input-field" placeholder=" " autocomplete="email" required />
+            </div>
+          </Show>
+          <Show when={single === 'phone'}>
+            <div class="field">
+              <label class="field-label" for="credential-phone">{t().phone_placeholder}</label>
+              <Show
+                when={phoneRegions.length > 0}
+                fallback={
+                  <>
+                    <input
+                      id="credential-phone"
+                      type="tel"
+                      name="phone"
+                      class="input-field"
+                      placeholder=" "
+                      autocomplete="tel"
+                      pattern="^\+[1-9]\d{6,14}$"
+                      required
+                      aria-describedby="credential-phone-hint"
+                    />
+                    <div id="credential-phone-hint" class="field-hint">{t().phone_hint}</div>
+                  </>
+                }
+              >
+                <PhoneField id="credential-phone" regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
+              </Show>
+            </div>
+          </Show>
+          <Show when={single === 'login'}>
+            <div class="field">
+              <label class="field-label" for="credential-login">{t().login_placeholder}</label>
+              <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+            </div>
+          </Show>
+          <Show when={single === null && primaries.length > 0}>
+            <div class="field">
+              <label class="field-label" for="credential-login">{combinedPlaceholder()}</label>
+              <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+            </div>
+          </Show>
 
-        <Show when={showPassword()}>
-          <PasswordInput
-            id="credential-password"
-            name="password"
-            label={t().password_placeholder}
-            autocomplete="current-password"
-            error={passwordNotAllowed() ? t().password_not_allowed : undefined}
-            showLabel={t().show_password}
-            hideLabel={t().hide_password}
-            onInput={(value) => checkPassword(value)}
-          />
-        </Show>
+          <Show when={showPassword()}>
+            <PasswordInput
+              id="credential-password"
+              name="password"
+              label={t().password_placeholder}
+              autocomplete="current-password"
+              error={passwordNotAllowed() ? t().password_not_allowed : undefined}
+              showLabel={t().show_password}
+              hideLabel={t().hide_password}
+              onInput={(value) => checkPassword(value)}
+            />
+          </Show>
 
-        <button type="submit" formAction={formAction()} class="btn btn-primary">
-          {t().continue}
-        </button>
+          <button type="submit" formAction={formAction()} class="btn btn-primary">
+            {t().continue}
+          </button>
 
-        <Show when={showPasskey()}>
-          <div class="credential-option" data-credential="passkey">
-            <div class="divider"><span>{t().divider}</span></div>
-            <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
-              <span class="passkey-icon" aria-hidden="true" />
-              <span>{t().passkey_button}</span>
-            </button>
-          </div>
-        </Show>
-      </form>
+          <Show when={showPasskey()}>
+            <div class="credential-option" data-credential="passkey">
+              <div class="divider"><span>{t().divider}</span></div>
+              <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
+                <span class="passkey-icon" aria-hidden="true" />
+                <span>{t().passkey_button}</span>
+              </button>
+            </div>
+          </Show>
+        </form>
+        }
+      >
+        <p class="passkey-only-hint" role="status">{t().passkey_only_hint}</p>
+      </Show>
 
       <Show when={passkeyErrorKey()}>
         <div class="passkey-dialog-overlay" onClick={() => setPasskeyErrorKey(null)}>

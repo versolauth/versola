@@ -133,6 +133,12 @@ trait ConversationService:
       settings: PasskeySettings,
   ): Task[String]
 
+  /** Positions the conversation on a passkey-only credential step: the user is already identified and
+    * the ACR being pursued needs a passkey, so nothing else is offered. A user with no passkey the
+    * client's flow can use cannot be given the step and is denied.
+    */
+  def promptPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+
   /** Verify the authenticator's assertion response.
     * On success: updates the conversation with the resolved user and advances to enrollment-offer or finish.
     * On failure: clears the passkeyRequest and re-renders the Credential step.
@@ -625,6 +631,17 @@ object ConversationService:
         case Some(userId) =>
           issueCode(authId, conversation, userId)
 
+    /** Whether the factors the conversation passed cover its target ACR; a conversation with no target
+      * has nothing to cover. */
+    private def acrCovered(
+        conversation: ConversationRecord,
+        vocabulary: Map[Acr, NonEmptyList[PassedAuthFactor]],
+    ): Boolean =
+      conversation.targetAcr.forall: acr =>
+        vocabulary.get(acr).exists(_.forall(required =>
+          conversation.amr.keySet.exists(_.satisfies(required, conversation.authFlow.equivalents)),
+        ))
+
     /** Renders the Consent step when a grant is still needed, otherwise records the reused grant
       * on the conversation and completes it.
       */
@@ -671,6 +688,17 @@ object ConversationService:
                   issueCode(authId, conversation.copy(grantedScope = Some(grantedScope)), userId)
 
     private def issueCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        userId: UserId,
+    ): Task[ConversationResult.Render] =
+      configService.getAcrVocabulary(conversation.clientId).flatMap: vocabulary =>
+        if acrCovered(conversation, vocabulary) then issueCodeUnchecked(authId, conversation, userId)
+        // The ACR this conversation pursued is not backed by the factors it passed, so it must not be
+        // claimed in the tokens.
+        else Observability.setError("acr_unsatisfied") *> accessDenied(authId, conversation)
+
+    private def issueCodeUnchecked(
         authId: AuthId,
         conversation: ConversationRecord,
         userId: UserId,
@@ -782,7 +810,13 @@ object ConversationService:
         step: ConversationStep.Credential,
         settings: PasskeySettings,
     ): Task[String] =
-      webAuthnService.startAssertion(settings).foldZIO(
+      val ceremony = (step.passkeyOnly, conversation.userId) match
+        case (true, Some(userId)) => webAuthnService.startUserAssertion(settings, userId)
+        // A passkey-only step without a user cannot be told apart from a discoverable assertion
+        // that would accept anyone, so it never starts one.
+        case (true, None) => ZIO.fail(WebAuthnError.CeremonyFailed("passkey-only step without a user"))
+        case (false, _) => webAuthnService.startAssertion(settings)
+      ceremony.foldZIO(
         ZIO.fail(_),
         ceremony =>
           val updatedStep = step.copy(
@@ -792,6 +826,33 @@ object ConversationService:
           conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
             .as(ceremony.publicKeyOptions),
       )
+
+    /** A failed assertion offers another try on the ordinary credential card; a passkey-only step has nothing
+      * else to offer and would only start the same prompt again, so it denies. */
+    private def passkeyAssertionFailed(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        cred: ConversationStep.Credential,
+    ): Task[ConversationResult.Render] =
+      if cred.passkeyOnly then accessDenied(authId, conversation)
+      else renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+
+    override def promptPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      conversation.userId match
+        case Some(_) if conversation.authFlow.passkey.isDefined =>
+          renderStep(
+            authId,
+            conversation,
+            ConversationStep.Credential(
+              primaryCredentials = conversation.authFlow.primary.credentials,
+              inlinePassword = false,
+              passkey = true,
+              passkeyOnly = true,
+            ),
+          )
+        case _ =>
+          Observability.setError("illegal_state", Some("passkey step without a user or a passkey flow")) *>
+            accessDenied(authId, conversation)
 
     override def finishPasskeyAssertion(
         authId: AuthId,
@@ -824,14 +885,14 @@ object ConversationService:
                   // clear the stale request; if there is no IP we just re-render without recording.
                   val malformedSubjects = ipSubjectOpt.toList
                   if malformedSubjects.isEmpty then
-                    renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                    passkeyAssertionFailed(authId, conversation, cred)
                   else
                     submissionLimiter.statusForSubjects(conversation.clientId, malformedSubjects, ChallengeType.PasskeyAssertion).flatMap:
                       case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
                         accessDenied(authId, conversation)
                       case LimitStatus.Allowed =>
                         recordIp *>
-                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                          passkeyAssertionFailed(authId, conversation, cred)
                 case Some(credSubject) =>
                   val banSubjects = ipSubjectOpt.toList :+ credSubject
                   submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
@@ -848,7 +909,7 @@ object ConversationService:
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
                               (recordIp.zipPar(submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
-                                renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                                passkeyAssertionFailed(authId, conversation, cred)
                             },
                             outcome =>
                               Observability.setUserId(outcome.userId.toString) *>

@@ -157,12 +157,67 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.head._2.step == credentialStep.copy(passkeyRequest = Some("req-state")),
         )
       },
+      test("restrict a passkey-only step to the passkeys of the identified user") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true)
+        val record = baseRecord.copy(userId = Some(userId), step = step)
+        for
+          _ <- env.webAuthnService.startUserAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.startPasskeyAssertion(authId, record, step, passkeySettings)
+        yield assertTrue(
+          result == "{}",
+          env.webAuthnService.startUserAssertion.calls.head == (passkeySettings, userId),
+          env.webAuthnService.startAssertion.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.head._2.step == step.copy(passkeyRequest = Some("req-state")),
+        )
+      },
+      test("never start a discoverable assertion for a passkey-only step without a user") {
+        val env = Env()
+        val step = credentialStep.copy(passkeyOnly = true)
+        for
+          exit <- env.service.startPasskeyAssertion(authId, baseRecord.copy(step = step), step, passkeySettings).exit
+        yield assertTrue(
+          exit.isFailure,
+          env.webAuthnService.startAssertion.calls.isEmpty,
+          env.webAuthnService.startUserAssertion.calls.isEmpty,
+        )
+      },
       test("propagate a failure from the WebAuthn service") {
         val env = Env()
         for
           _ <- env.webAuthnService.startAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.PasskeysNotEnabled)
           exit <- env.service.startPasskeyAssertion(authId, baseRecord, credentialStep, passkeySettings).exit
         yield assertTrue(exit.isFailure, env.conversationRepository.overwrite.calls.isEmpty)
+      },
+    ),
+    suite("promptPasskey")(
+      test("render the passkey-only credential step for an identified user whose flow offers passkeys") {
+        val env = Env()
+        val record = baseRecord.copy(userId = Some(userId))
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, record)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            ConversationStep.Credential(record.authFlow.primary.credentials, false, true, passkeyOnly = true),
+          ),
+        )
+      },
+      test("deny when the conversation has no user") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, baseRecord)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("deny when the flow offers no passkey") {
+        val env = Env()
+        val record = baseRecord.copy(userId = Some(userId), authFlow = baseRecord.authFlow.copy(passkey = None))
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.promptPasskey(authId, record)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),
     suite("finishPasskeyAssertion")(
@@ -524,6 +579,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -553,6 +609,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -598,6 +655,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -654,6 +712,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
@@ -693,6 +752,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
