@@ -4,7 +4,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZIO, ZLayer}
+import zio.{Schedule, Scope, Semaphore, Task, ZIO, ZLayer}
 
 trait FormService:
   def getAllForms: Task[Vector[FormRecord]]
@@ -31,14 +31,23 @@ object FormService:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[FormRecord]](config.configurationCacheRefreshInterval),
       )
-    )
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+    ) ++ ZLayer.fromZIO(Semaphore.make(1))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[FormRecord]],
       repository: FormRepository,
       localeService: LocaleService,
+      writes: Semaphore,
   ) extends FormService:
+
+    /** A write stores, re-reads every form and replaces the cache with what it read. Two of them at once
+      * interleave as store A, read, store B, read, set B's read, set A's read: the cache ends without B until
+      * the next reload, and a form that was stored successfully is not listed. The three steps therefore run
+      * one write at a time.
+      */
+    private def storeAndReload(store: Task[Unit]): Task[Unit] =
+      writes.withPermit(store *> repository.getAll.flatMap(cache.set))
 
     override def getAllForms: Task[Vector[FormRecord]] =
       cache.get.map(_.sortBy(_.id))
@@ -61,17 +70,11 @@ object FormService:
     ): Task[Unit] =
       for
         _ <- ZIO.fromEither(FormLocalizations.validate(localizations)).mapError(IllegalArgumentException(_))
-        _ <- repository.upsertForm(id, style, jsSource, jsCompiled, localizations, properties, activate)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
+        _ <- storeAndReload(repository.upsertForm(id, style, jsSource, jsCompiled, localizations, properties, activate))
       yield ()
 
     override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
-      for
-        _ <- repository.setActiveVersion(id, version)
-        forms <- repository.getAll
-        _ <- cache.set(forms)
-      yield ()
+      storeAndReload(repository.setActiveVersion(id, version))
 
     override def sync(event: SyncEvent.FormsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
