@@ -257,6 +257,10 @@ export interface ChallengeSettingsRecord {
   logoDark?: string | null;
 }
 
+/** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`
+ * clears an optional member. The tenant is named beside them and the profile cannot be patched. */
+export type ChallengeSettingsChanges = Partial<Omit<ChallengeSettingsRecord, 'tenantId' | 'securityProfile'>>;
+
 // One row of the JWKS key list: what a key is published as, and whether central holds the
 // private half needed to sign with it. Never carries the key material itself.
 export interface JwksKeySummary {

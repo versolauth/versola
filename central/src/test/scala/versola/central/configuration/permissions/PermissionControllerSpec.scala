@@ -146,6 +146,44 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.createPermission.calls == List(createRequest))),
     ),
     controllerTestCase(
+      description = "create permission with a multi-segment colon ID",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "permissions",
+        body = Body.fromString(createRequest.copy(permission = Permission("billing:invoice:read_all")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Created,
+      setup = service =>
+        service.createPermission.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.createPermission.calls.map(_.permission) == List(Permission("billing:invoice:read_all")))),
+    ),
+    controllerTestCase(
+      description = "refuse to create a permission whose ID uses a dot, naming the colon-only rule",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "permissions",
+        body = Body.fromString(createRequest.toJson.replace("users:read", "users.read")),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(service.createPermission.calls.isEmpty, body.contains("separated by ':'")),
+    ),
+    controllerTestCase(
+      description = "still accept an update of an existing permission whose ID uses a dot",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "permissions",
+        body = Body.fromString(updateRequest.copy(permission = Permission("legacy.read")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updatePermission.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.updatePermission.calls.map(_.permission) == List(Permission("legacy.read")))),
+    ),
+    controllerTestCase(
       description = "update permission",
       request = Request(
         method = Method.PUT,

@@ -167,7 +167,23 @@ case class CreatePermissionRequest(
     permission: Permission,
     description: Map[String, String],
     endpointIds: Set[ResourceEndpointId],
-) derives Schema, JsonCodec
+) derives Schema
+
+object CreatePermissionRequest:
+  /** New permission IDs are colon-separated only; the ID is decoded as a string first so the 400 names that rule. */
+  private case class Wire(
+      tenantId: TenantId,
+      permission: String,
+      description: Map[String, String],
+      endpointIds: Set[ResourceEndpointId],
+  ) derives JsonDecoder
+
+  given JsonCodec[CreatePermissionRequest] = JsonCodec(
+    DeriveJsonEncoder.gen[CreatePermissionRequest],
+    JsonDecoder[Wire].mapOrFail(wire =>
+      Permission.fromNew(wire.permission).map(CreatePermissionRequest(wire.tenantId, _, wire.description, wire.endpointIds)),
+    ),
+  )
 
 case class UpdatePermissionRequest(
     tenantId: TenantId,
