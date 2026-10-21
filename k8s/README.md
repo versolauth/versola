@@ -701,7 +701,7 @@ configured (`values.schema.json`), but it cannot apply every kind:
   by the services; no layer in front can see it.
 
 **The enrollment host serves one route.** `central.<domain>` leads to central's enrollment listener
-(`services.central.enrollmentPort`, `EPORT`, `8094`), which is bound — and the Service port added — only
+(`services.central.enrollmentPort`, `APORT`, `8094`), which is bound — and the Service port added — only
 while `exposure.central.host` is set. The Ingress carries the single path `/edge/enroll`, `Exact`, as
 well; the rest of central is not reachable through the host.
 

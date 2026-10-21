@@ -111,7 +111,7 @@ spec:
             {{- if and (eq $name "central") $.Values.exposure.central.host }}
             # The enrollment listener (design-edge-network.md, F5): plain TLS-terminated, one route.
             # Bound only while `exposure.central.host` is set; the Ingress for that host leads here.
-            - name: EPORT
+            - name: APORT
               value: {{ $svc.enrollmentPort | quote }}
             {{- end }}
             # See VersolaApp.scala's bindHost comment and #207: prod's VPS

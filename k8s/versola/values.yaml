@@ -302,7 +302,7 @@ services:
     # `exposure.mtls.central` (below), a passthrough that leaves the handshake and the edge's
     # certificate untouched -- k8s/README.md.
     mutualTlsPort: 8093
-    # EPORT -- central's enrollment listener, plain TLS-terminated (never mutual TLS): the one route
+    # APORT -- central's enrollment listener, plain TLS-terminated (never mutual TLS): the one route
     # `POST /edge/enroll`, which a new edge calls with a one-time token and a CSR before it has any
     # certificate (design-edge-network.md, F5). Bound, and its Service port added, only when
     # `exposure.central.host` is set; the Ingress for that host leads here and to nothing else.

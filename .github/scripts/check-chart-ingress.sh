@@ -111,13 +111,16 @@ MTLS_BOTH=("${MTLS_AUTH[@]}" --set exposure.mtls.central.host=central-mtls.examp
 MTLS_PASSTHROUGH=(--set exposure.mtls.className=nginx --set 'exposure.mtls.limits.enforcedBy=NLB security group sg-0abc')
 ENROLL=(--set exposure.central.host=central.example.com --set exposure.central.className=nginx --set exposure.central.limits.connectionsPerIP=10)
 
+# Central's Deployment only: auth has an APORT of its own (additionalPort).
+central_doc() { awk 'BEGIN{RS="---\n"} /kind: Deployment/ && /component: central/' <<<"$1"; }
+
 exposure_is_off_by_default() {
   local out
   out="$(render)" || { fail "default render failed: $(cat /tmp/chart-ingress-err.txt)"; return; }
   if grep -q 'ssl-passthrough' <<<"$out"; then fail "a passthrough Ingress rendered by default"; fi
   if grep -q '^kind: TLSRoute$' <<<"$out"; then fail "a TLSRoute rendered by default"; fi
   if grep -q 'type: LoadBalancer' <<<"$out"; then fail "a LoadBalancer Service rendered by default"; fi
-  if grep -q 'name: EPORT' <<<"$out"; then fail "central binds the enrollment listener by default"; fi
+  if central_doc "$out" | grep -q 'name: APORT'; then fail "central binds the enrollment listener by default"; fi
   if grep -q '/edge/enroll' <<<"$out"; then fail "the enrollment route is exposed by default"; fi
   return 0
 }
@@ -229,7 +232,7 @@ enrollment_ingress_terminates_and_serves_one_route() {
   grep -q 'number: 8094' <<<"$doc" || fail "the enrollment Ingress does not lead to the enrollment port"
   grep -q 'limit-connections: "10"' <<<"$doc" || fail "limit-connections did not reach the enrollment Ingress"
   # The pod binds and the Service carries the port only because a host asked.
-  grep -q 'name: EPORT' <<<"$out" || fail "central is not told EPORT"
+  central_doc "$out" | grep -q 'name: APORT' || fail "central is not told APORT"
   return 0
 }
 
