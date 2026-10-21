@@ -628,6 +628,28 @@ test.describe('endpoints editor', () => {
     await expect(endpointRow(page, 'GET /orders').locator('.marker.fix')).toHaveText('Fix');
   });
 
+  test('the built-in sensitive class can be chosen without being in the vocabulary, and is saved as chosen', async ({ page }) => {
+    const api = await open(page);
+    await endpointRow(page, 'GET /orders').click();
+    const sensitive = page.getByRole('checkbox', { name: /sensitive/ });
+    await expect(sensitive).not.toBeChecked();
+    await expect(page.getByText('(built in)')).toBeVisible();
+    await expect(page.getByText('(not registered)')).toHaveCount(0);
+    await sensitive.check();
+    await page.getByRole('textbox', { name: 'Step-up condition' }).fill('true');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toMatchObject({
+      createEndpoints: [expect.objectContaining({ stepUpCondition: 'true', stepUpAcr: 'sensitive' })],
+    });
+  });
+
+  test('a tenant that defines sensitive itself sees it as its own, not as built in', async ({ page }) => {
+    await open(page, { ...shopState, challengeSettings: { [shopTenant]: { ...shopState.challengeSettings?.[shopTenant], acrVocabulary: { sensitive: ['otp'] } } } } as typeof shopState);
+    await endpointRow(page, 'GET /orders').click();
+    await expect(page.getByRole('checkbox', { name: /sensitive/ })).toBeVisible();
+    await expect(page.getByText('(built in)')).toHaveCount(0);
+  });
+
   test('a rule is removed with its X, and a stored ACR the vocabulary lacks stays visible', async ({ page }) => {
     const api = await open(page, { ...shopState, resources: { [shopTenant]: [{
       ...ordersApi,
