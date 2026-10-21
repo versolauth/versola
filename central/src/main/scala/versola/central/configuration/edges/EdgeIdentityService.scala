@@ -3,7 +3,7 @@ package versola.central.configuration.edges
 import versola.central.CentralConfig
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
 import versola.util.http.Observability
-import versola.util.{Base64Url, CertificateSubject, SecureRandom}
+import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
 
 import java.io.ByteArrayInputStream
@@ -11,7 +11,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.time.Instant
-import javax.security.auth.x500.X500Principal
 
 /** What an edge is recognised by, on central's mutual-TLS listener and at auth: a certificate that names it
   * (`urn:versola:edge:<id>`) and the group it belongs to (`urn:versola:edge-group:<group>`).
@@ -51,14 +50,7 @@ object EdgeIdentityService:
 
   /** What the certificate of `edge` must say. */
   def subjectFor(edge: EdgeRecord): CertificateSubject =
-    CertificateSubject(
-      distinguishedName = X500Principal(s"CN=${edge.id}").getName(X500Principal.RFC2253),
-      commonName = edge.id,
-      dnsNames = Nil,
-      uris = List(EdgeCertificate.uriFor(edge.id), EdgeCertificate.groupUriFor(edge.groupId)),
-      emailAddresses = Nil,
-      ipAddresses = Nil,
-    )
+    EdgeIdentityNames.subject(edgeId = edge.id, groupId = edge.groupId)
 
   val live: URLayer[
     EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & ClientCertificateIssuer & SecureRandom &

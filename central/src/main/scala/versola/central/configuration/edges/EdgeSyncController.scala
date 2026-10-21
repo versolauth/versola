@@ -25,9 +25,9 @@ import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
 import zio.http.*
-import zio.schema.*
-import zio.json.{EncoderOps, JsonCodec}
 import zio.json.ast.Json
+import zio.json.{EncoderOps, JsonCodec}
+import zio.schema.*
 
 /** The surface central serves to edges and to nobody else (#554): `GET /edge/sync/<resource>`
   * for what an edge reads, and the certificate signing an edge enrols through. Every route

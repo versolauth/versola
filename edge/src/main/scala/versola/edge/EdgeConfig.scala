@@ -195,10 +195,28 @@ object EdgeConfig:
       case Some(mtls) =>
         ZIO.fail(IllegalArgumentException(s"central.url must be https, got '${config.central.url.encode}'"))
           .unless(config.central.url.scheme.contains(Scheme.HTTPS)) *>
+          refuseCertificateSource(config.central, mtls) *>
           refuseEmptyPins("central.mutual-tls.trusted-certificates", mtls.trustedCertificates) *>
           ZIO.foreachDiscard(mtls.trustedCertificates)(
             refuseCertificateAuthority("central.mutual-tls.trusted-certificates", _),
           )
+
+  /** The certificate this edge presents to central comes from exactly one place: the files whatever deployed the
+    * edge provides (`mutual-tls.certificate` and `private-key`, together), or central itself (`identity`). Both, or
+    * neither, is a configuration in which it is unclear which certificate is presented. */
+  private def refuseCertificateSource(central: CentralConfig, mtls: CentralMutualTls): Task[Unit] =
+    val static = mtls.certificate.isDefined || mtls.privateKey.isDefined
+    def invalid(message: String) = ZIO.fail(IllegalArgumentException(message))
+    if mtls.certificate.isDefined != mtls.privateKey.isDefined then
+      invalid("central.mutual-tls.certificate and central.mutual-tls.private-key are given together or not at all")
+    else if static && central.identity.isDefined then
+      invalid("central.identity and central.mutual-tls.certificate both name this edge's certificate: give one")
+    else if !static && central.identity.isEmpty then
+      invalid("the certificate this edge presents to central is not named: set central.mutual-tls.certificate and private-key, or central.identity")
+    else
+      ZIO.foreachDiscard(central.identity.flatMap(_.enrollment)): enrollment =>
+        invalid("central.identity.enrollment.url must be https")
+          .unless(enrollment.url.scheme.contains(Scheme.HTTPS))
 
   private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
     ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
@@ -265,23 +283,51 @@ object EdgeConfig:
     * @param mutualTls the certificate this edge presents there and the pin it holds central's
     *   own certificate to. Absent is refused at startup by [[validated]]: central would turn
     *   this edge away in the handshake, so every sync would fail one request at a time instead.
+    * @param identity set when central issues this edge's certificate (see [[CentralIdentity]])
+    *   instead of whatever deployed the edge providing one in `mutualTls.certificate`.
     */
   case class CentralConfig(
       url: URL,
       mutualTls: Option[CentralMutualTls] = None,
+      identity: Option[CentralIdentity] = None,
   )
 
-  /** @param certificate PEM path to the client certificate registered for this edge in central
-    *   (`PUT /configuration/edges/certificate`).
-    * @param privateKey PEM path to its key, unencrypted PKCS#8.
+  /** @param certificate PEM path to the client certificate this edge presents to central: the one
+    *   cert-manager or `mtls-init` issued. Absent when central issues it ([[CentralIdentity]]).
+    * @param privateKey PEM path to its key, unencrypted PKCS#8. Present with `certificate`, or neither.
     * @param trustedCertificates PEM paths of central's own leaf certificate(s), a pin and not a
     *   CA for the reasons given on `versolaInternalTrustedCertificates`; several so the pin can
     *   be rotated.
     */
   case class CentralMutualTls(
-      certificate: String,
-      privateKey: String,
+      certificate: Option[String] = None,
+      privateKey: Option[String] = None,
       trustedCertificates: Set[String],
+  )
+
+  /** The certificate of this edge when central issues it, and keeps it renewed.
+    *
+    * @param directory where the key and the certificate chain are kept between restarts (`edge.key`,
+    *   `edge.crt`, owner-only). Without it an edge would need a new enrollment token on every restart.
+    * @param group the group of edges this edge was registered in. The request for the certificate must name
+    *   it, and central refuses one that names another, so this is a statement the operator makes when
+    *   deploying the edge and central checks; it is not what makes the edge a member.
+    * @param enrollment how the very first certificate is had; absent on an edge that already has one in
+    *   `directory`.
+    */
+  case class CentralIdentity(
+      directory: String,
+      group: String = "default",
+      enrollment: Option[CentralEnrollment] = None,
+  )
+
+  /** @param url central's public name for enrollment (plain TLS, no client certificate), `https`.
+    * @param tokenFile the one-time token an operator created for this edge, in a file so that it is not
+    *   in the environment or the config. Read once, when there is no certificate yet.
+    */
+  case class CentralEnrollment(
+      url: URL,
+      tokenFile: String,
   )
 
   /** @param reloadInterval how often the in-memory revocation list is reconciled with the

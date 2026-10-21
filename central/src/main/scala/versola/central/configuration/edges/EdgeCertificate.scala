@@ -1,5 +1,7 @@
 package versola.central.configuration.edges
 
+import versola.util.EdgeIdentityNames
+
 import java.security.cert.{Certificate, X509Certificate}
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
@@ -18,11 +20,11 @@ import scala.util.Try
   */
 object EdgeCertificate:
   private val UriNameType = 6
-  val NamePrefix: String = "urn:versola:edge:"
+  val NamePrefix: String = EdgeIdentityNames.EdgePrefix
 
   /** The name of the group an edge belongs to, `urn:versola:edge-group:<id>`. A client served by edge is
     * registered by this name (`san_uri`), so any edge of the group authenticates it to auth. */
-  val GroupNamePrefix: String = "urn:versola:edge-group:"
+  val GroupNamePrefix: String = EdgeIdentityNames.GroupPrefix
 
   def uriFor(edgeId: EdgeId): String = s"$NamePrefix$edgeId"
 
@@ -31,7 +33,7 @@ object EdgeCertificate:
   /** Whether `uri` is in a namespace that means "an edge" or "a group of edges" to central or auth. Such a name
     * is only ever issued to an edge, by [[versola.central.configuration.edges.EdgeIdentityService]]; a client is
     * never issued one. */
-  def isReserved(uri: String): Boolean = uri.startsWith(NamePrefix) || uri.startsWith(GroupNamePrefix)
+  def isReserved(uri: String): Boolean = EdgeIdentityNames.isReserved(uri)
 
   /** The URI names `certificate` carries. Unreadable alternative names read as none. */
   def uriNames(certificate: Certificate): List[String] =

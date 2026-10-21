@@ -1,6 +1,6 @@
 package versola.central.configuration.edges
 
-import versola.central.configuration.{SignEdgeCertificateResponse}
+import versola.central.configuration.SignEdgeCertificateResponse
 import versola.util.http.{Controller, Observability}
 import zio.ZIO
 import zio.http.*

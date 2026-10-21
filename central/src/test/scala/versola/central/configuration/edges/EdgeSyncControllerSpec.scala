@@ -324,7 +324,8 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
-  private val syncResources = List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "auth-request-presets", "server-metadata")
+  private val syncResources =
+    List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "auth-request-presets", "server-metadata")
 
   private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString

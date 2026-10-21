@@ -14,7 +14,8 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
   given DbCodec[OverloadPolicy] = jsonCodec[OverloadPolicy]
   given DbCodec[EdgeGroupId] = DbCodec.StringCodec.biMap(EdgeGroupId(_), identity[String])
-  given DbCodec[EdgeGroupKind] = DbCodec.StringCodec.biMap(code => EdgeGroupKind.from(code).fold(message => throw IllegalStateException(message), identity), _.code)
+  given DbCodec[EdgeGroupKind] =
+    DbCodec.StringCodec.biMap(code => EdgeGroupKind.from(code).fold(message => throw IllegalStateException(message), identity), _.code)
   given DbCodec[EdgeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[EdgeRecord]] =
