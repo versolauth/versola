@@ -410,7 +410,8 @@ passkey and finishing an enrollment ask for nothing more.
 
 A deployment that already has the `auth` resource is **not** changed: bootstrap keeps the step-up an
 operator has set (none, until now), so an upgrade alters nothing for it. To switch it on, update the
-resource with `PUT /configuration/resources` (`central/open-api/central.yaml`) and give the three endpoints
+resource in the console (**Resources** → `auth` → endpoints → **Step-up**) or with `PUT /configuration/resources`
+(`central/open-api/central.yaml`), and give the three endpoints
 `stepUpCondition: "true"`, `stepUpAcr: "sensitive"` and `maxAge: 300`:
 
 | Method | Path |
@@ -419,8 +420,8 @@ resource with `PUT /configuration/resources` (`central/open-api/central.yaml`) a
 | `DELETE` | `/settings/passkeys` |
 | `POST` | `/settings/passkeys/register/start` |
 
-The console's resource editor offers only the ACRs of the tenant's vocabulary, so it cannot pick
-`sensitive` yet. A user whose flow can ask for none of their factors (a passkey the flow cannot ask for,
+The console's resource editor lists `sensitive` as a built-in choice next to the tenant's own ACRs, so the
+same change can be made there. A user whose flow can ask for none of their factors (a passkey the flow cannot ask for,
 or no password and no one-time-code destination) is refused with `unmet_authentication_requirements`
 rather than let through.
 
