@@ -481,8 +481,12 @@ test.describe('preview', () => {
     const password = { ...ftForms().find(form => form.id === 'password')!, jsCompiled: await formBundle('password'), localizations: await translations('password') };
     await loadAdminApp(page, { path: recordPath('password'), state: { ...ftState(), forms: [password], locales: ftLocales.slice(0, 2) } });
 
-    await page.frameLocator('iframe.preview-iframe').locator('.locale-trigger').click();
-    await page.frameLocator('iframe.preview-iframe').getByRole('option', { name: 'Русский' }).click();
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const frame = page.frameLocator('iframe.preview-iframe');
+    await expect(frame.locator('.locale-trigger')).toBeVisible();
+    await frame.locator('.locale-trigger').click();
+    await expect(frame.getByRole('listbox').first()).toBeVisible();
+    await frame.getByRole('option', { name: 'Русский' }).click();
     await expect(page.getByLabel('Language', { exact: true })).toHaveValue('ru');
   });
 
