@@ -1,0 +1,13 @@
+apiVersion: v2
+name: versola-edge
+description: >-
+  Helm chart for one Versola edge that runs outside the cluster of the rest of the deployment: it
+  reaches central and auth over their public mutual-TLS names, enrolls itself with a one-time token
+  and keeps its own identity on a volume. A first-party edge in the same cluster as central and
+  auth is part of the `versola` chart instead.
+type: application
+version: 0.1.0
+appVersion: "0.7.1"
+home: https://github.com/versolauth/versola
+sources:
+  - https://github.com/versolauth/versola

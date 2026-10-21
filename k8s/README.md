@@ -1,10 +1,11 @@
 # Deploying Versola to Kubernetes
 
-Two charts live here:
+Three charts live here:
 
 | Chart | What it deploys |
 |---|---|
 | [`versola/`](versola) | `auth`, `central`, `edge` and the admin console — the system itself |
+| [`versola-edge/`](versola-edge) | one `edge` that runs outside that cluster, enrolled through central ([section 10](#10-a-remote-edge)) |
 | [`loadgen/`](loadgen) | the load emulator: coordinator, driver fleet and `mockapi` — never the system under test |
 
 > **Scope.** This is not how the shared production host runs today. That is a Docker Compose
@@ -526,16 +527,40 @@ for the three certificate relationships described in
 cert-manager (and, optionally, trust-manager); it installs neither. Opt out with
 `pki.enabled: false`.
 
-Out of the box you get: auth's mutual-TLS listener on `8083` (container and Service port), the
-Versola Client CA (a `ClusterIssuer`, its Secret in cert-manager's namespace so trust-manager can
-read it), auth's listener certificate, a trust-manager `Bundle` that auth mounts as its trust
-anchors, Reloader annotations on auth and edge, and a service account for central that may create
-cert-manager `CertificateRequest`s in the release namespace — nothing else. Central uses it to
-issue and renew edge-fronted clients' certificates itself: register the client with
-`issueEdgeClientCertificate: true` and an `mtlsAuth`, and it asks the issuer named by
+Out of the box you get: auth's mutual-TLS listener on `8083` (container and Service port), a CA
+hierarchy (below), auth's and central's listener certificates, trust-manager `Bundle`s that auth and
+central mount as their trust anchors, Reloader annotations on auth, central and edge, and a service
+account for central that may create cert-manager `CertificateRequest`s in the release namespace —
+nothing else. Central uses it to issue and renew edge-fronted clients' certificates itself: register
+the client with `issueEdgeClientCertificate: true` and an `mtlsAuth`, and it asks the issuer named by
 `CLIENT_CERT_ISSUER_NAME` (set by the chart; `scripts/gen-env.scala`'s `k8s` target writes the
 `client-certificates` block that reads it) for a 14-day certificate, renewed at 4 days left.
 `scripts/gen-env.scala` also writes the `mutual-tls` and `native` blocks with the paths below.
+
+**One root, three CAs, one per role.** `pki` bootstraps a root (`<release>-versola-root-ca`) and below
+it three intermediate CAs, each a `ClusterIssuer`: `server` signs the listener certificates of auth and
+central, `edge` signs edge identities (`urn:versola:edge:<id>` and `urn:versola:edge-group:<group>`),
+`client` signs client certificates. A certificate is then good only where its role says, because what
+a listener trusts is the *intermediate* — never the root, which would admit every role everywhere:
+
+| Listener | Trusts | ConfigMap (trust-manager `Bundle`) |
+|---|---|---|
+| auth's handshake | client CA + edge CA (an edge presents its identity to auth too) | `<release>-versola-client-ca` |
+| auth's check of an edge's name | edge CA alone: a certificate may carry `urn:versola:edge:*` only if it chains to it | `<release>-versola-edge-ca` |
+| central's handshake | edge CA alone, so a client certificate fails the handshake, not just an application check | `<release>-versola-edge-ca` |
+
+Edges pin the *leaf* of auth's and central's listener certificates, as before. Without trust-manager
+(`pki.trustBundle.enabled: false`) the chart mounts each leaf Secret's `ca.crt` instead, which is the
+root: everything still connects, but nothing is split. Chains were checked against a cert-manager
+and trust-manager on kind: the edge identity verifies against the edge bundle and the client bundle, the
+server leaf against neither, and an intermediate's Secret holds that one certificate in `tls.crt`.
+
+**Upgrading from a chart with the single `<release>-versola-client-ca` root.** The client CA keeps its
+name, its key and its subject (`Versola Client CA`), now as an intermediate under a new root, so the
+client certificates it signed still chain to it and need no reissue. Auth's trust bundle now holds that
+intermediate and the edge CA instead of the old root; pods restart through Reloader. The *edge identity*
+and the listener leaves are reissued from the new `edge` and `server` CAs on the first sync (the
+certificates' issuer changed), so edges that pin a leaf need the new pin, as at any leaf rotation.
 
 `pki.clients` and `pki.certSync` are for certificates issued *outside* central (a cert-manager
 `Certificate` per client, copied into central by `cert-sync`), and are off by default.
@@ -553,30 +578,38 @@ pki:
   reloader: true             # Stakater Reloader restarts auth/edge on renewal
 ```
 
-What that renders: a self-signed root and a CA `ClusterIssuer` (the "Versola Client CA" -- or point
-`pki.issuerRef` at an issuer you already run), a leaf `Certificate` for auth's listener
-(`<release>-versola-auth-mtls`, PKCS#8), the trust-manager `Bundle`, and central's service account,
-`Role` and `RoleBinding`.
+What that renders: a self-signed root, the three CA `ClusterIssuer`s (or point `pki.issuerRef` at an
+issuer you already run, for all roles, or `pki.issuerRefs.{server,edge,client}` for one — a role with an
+issuer of your own bootstraps no CA, and `trustBundle.sources` / `edgeSources` must then name its CA), a
+leaf `Certificate` each for auth's and central's listener (`<release>-versola-auth-mtls`, PKCS#8) with
+the public hosts of [section 9a](#9a-public-names-limits-and-network-policies) among their names, the
+identity certificate of this release's own edge (both URIs), the two `Bundle`s, and central's service
+account, `Role` and `RoleBinding`. Leaves and intermediates are cert-manager's to renew: leaves
+`duration: 2160h`, `renewBefore: 720h`.
 
 The chart generates no `env.conf`, so point yours at the files it mounts:
 
 | Service | Mounted at | Use as |
 |---|---|---|
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
-| `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the trust-manager bundle if enabled, else the issuing CA) |
+| `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (client + edge CA bundle; without trust-manager the issuing root) |
+| `auth` | `/app/mtls/edge-trust/ca.crt` | `mutual-tls.edge-trusted-certificates` (the edge CA alone) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
 | `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
-| `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the issuing CA) |
-| `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` |
+| `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the edge CA alone; without trust-manager the issuing root) |
+| `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` (the in-cluster edge's identity, from the edge CA, with both URIs) |
 | `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
 
-Both auth and edge read these once at startup, so a renewal needs a restart: set
+Auth, central and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A
 renewal restarts auth and edge together, so for zero-downtime rotation of auth's listener
 certificate use the two-pin procedure (publish the next leaf on every edge before auth switches)
-instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add the incoming CA's
-Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
-clients, then remove the outgoing source.
+instead of relying on automatic renewal. Reloader is what the chart gives for hot replacement until
+the services reload certificates themselves; each Deployment also keeps its `preStop` sleep
+(`preStopSleepSeconds`) for connection draining, and a `PodDisruptionBudget` while it runs more than
+one replica (section 6). **CA rotation** with `trustBundle`: add the incoming CA's Secret (in
+trust-manager's trust namespace) to `sources` (or `edgeSources`) next to the bootstrapped one, reissue
+what that CA signed, then remove the outgoing source.
 
 **The edge surface on central (#554).** Central serves what an edge reads (`/edge/*`) on its own
 mutual-TLS listener, `services.central.mutualTlsPort` (`8093`, MPORT), and nowhere else; edge's
@@ -586,21 +619,10 @@ handshake's certificate chains to the issuing CA, and carries the URI name
 `env.conf` -- for the same edge the signed token names. cert-manager issues both certificates
 (`pki.centralServer`, `pki.edgeCentral`) and renews them; nothing is registered in central when it
 does, so a renewal needs only the restart Reloader gives edge and central. The chart's Service is
-a ClusterIP by default. To let edges outside the cluster in, set
-`services.central.mutualTlsExposure.type`: `loadBalancer` (a LoadBalancer Service on port 443, with
-`sourceRanges` to restrict who may connect), `ingressPassthrough` (an Ingress for `host` with
-`ssl-passthrough`; the controller must support it, e.g. ingress-nginx started with
-`--enable-ssl-passthrough`) or `gatewayTLSRoute` (a Gateway API `TLSRoute` on a listener in
-`Passthrough` mode). All of them carry the handshake through untouched -- a terminating route would
-swallow the certificate, so the chart renders none. Put the public name in
-`pki.centralServer.dnsNames` and point DNS at the entry point. A deployment is therefore addressed by
-two hostnames: `id.<domain>` for auth (the ingress) and `central.<domain>` routed (TLS passthrough, by
-SNI) to central's mutual-TLS port, which edges outside the cluster use as
-`central.url = https://central.<domain>`; inside the cluster edge uses
-`https://<release>-versola-central:8093` (`scripts/gen-env.scala`'s default for `k8s`). With
-`pki.issuerRef` left empty the issuing CA also signs edge-fronted clients' certificates; central
-refuses to issue one carrying an edge's URI name, but a CA used for nothing else is the cleaner setup
-(`pki.issuerRef`).
+a ClusterIP by default, which is all an edge in the same cluster needs: it reaches central's and
+auth's mutual-TLS ports by Service name (or loopback), never by a public domain. Edges outside the
+cluster, partner edges' clients and external mutual-TLS clients need public names; see
+[section 9a](#9a-public-names-limits-and-network-policies).
 
 A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs
 the same listener, and edge uses it by itself: with `versola-internal-url` plaintext (the chart's `http://versola-auth:8080`)
@@ -616,7 +638,118 @@ renews only the certificates it issued.
 
 ---
 
-## 10. Known rough edges
+## 9a. Public names, limits and network policies
+
+Nothing here is reachable from outside the cluster by default, and none of it is needed for an edge
+that runs next to central and auth. Turn a name on only for the case that needs it:
+
+| Name | Set | For |
+|---|---|---|
+| `id.<domain>` | `ingress.hosts` (section 7) | browsers and OAuth clients; ordinary TLS at the Ingress |
+| `id-mtls.<domain>` | `exposure.mtls.auth.host` | a **remote** edge (or any edge outside the cluster) calling auth, a partner edge's `tls_client_auth` client, external FAPI clients |
+| `central-mtls.<domain>` | `exposure.mtls.central.host` | a **remote first-party** edge reading its configuration from central |
+| `central.<domain>` | `exposure.central.host` | a new edge enrolling: it has no certificate yet, so this one is plain TLS |
+
+A **partner** edge needs no name for central at all: it never reaches central, and the `central`
+listener refuses its certificate. At most it uses `id.<domain>`, and `id-mtls.<domain>` for a client that
+authenticates with a certificate.
+
+```yaml
+exposure:
+  mtls:
+    type: ingressPassthrough        # or gatewayTLSRoute, loadBalancer
+    className: nginx                # ingress-nginx started with --enable-ssl-passthrough
+    limits:
+      enforcedBy: "NLB security group sg-0abc allows 198.51.100.0/24; per-source connection cap on the NLB"
+    auth:    {host: id-mtls.example.com}
+    central: {host: central-mtls.example.com}
+  central:
+    host: central.example.com
+    className: nginx
+    annotations: {cert-manager.io/cluster-issuer: letsencrypt}
+    tls: [{hosts: [central.example.com], secretName: versola-central-tls}]
+    limits: {connectionsPerIP: 10, requestsPerSecondPerIP: 5}
+```
+
+**The mutual-TLS hosts pass the TLS handshake through; they are never terminated.** The pod demands
+the client certificate in that handshake. `ingressPassthrough` renders an Ingress per host with
+ingress-nginx's `ssl-passthrough` (and, since the controller routes by SNI, a name per host);
+`gatewayTLSRoute` a Gateway API `TLSRoute` on a listener in `Passthrough` mode; `loadBalancer` a
+LoadBalancer Service per host. The public name is added to the matching listener certificate, so it
+is in the names a client checks and a remote edge pins.
+
+**Where a limit can and cannot be applied.** The chart refuses a public host unless a limit is
+configured (`values.schema.json`), but it cannot apply every kind:
+
+- A passthrough is TCP carrying a handshake the proxy does not read. ingress-nginx's
+  `limit-connections`, `limit-rps` and `whitelist-source-range` annotations act in nginx's HTTP stage,
+  which that traffic never reaches, so **they do not apply to `ingressPassthrough` and the chart does not
+  render them** — doing so would claim a limit nothing enforces. For `ingressPassthrough` and
+  `gatewayTLSRoute` the limit lives in front of the cluster: per-source connection and rate limits on
+  the load balancer, a cloud firewall or security group, or the Gateway implementation's own policy
+  resource. Write what you enforce and where into `exposure.mtls.limits.enforcedBy`; the chart cannot
+  verify it, it is you saying the limit exists. (Also: behind a TCP load balancer without PROXY protocol
+  the controller sees the balancer's address, not the client's.)
+- The one limit the chart applies itself is a LoadBalancer Service's `loadBalancerSourceRanges`
+  (`exposure.mtls.limits.sourceRanges`, `type: loadBalancer` only). With another type it is refused,
+  since nothing would enforce it.
+- `central.<domain>` is HTTP behind a terminating Ingress, so on ingress-nginx `connectionsPerIP`
+  (`limit-connections`) and `requestsPerSecondPerIP` (`limit-rps`) apply and are rendered. Another
+  controller ignores those annotations; use `enforcedBy`. `type: gatewayAPI` has no per-IP knob here and
+  needs `enforcedBy`. Attempt limits per IP and per token belong to central itself (design F5), not the chart.
+- A limit by certificate subject (per `client_id`, per `edge_id`) is applied only after authentication,
+  by the services; no layer in front can see it.
+
+**The enrollment host serves one route.** `central.<domain>` leads to central's enrollment listener
+(`services.central.enrollmentPort`, `EPORT`, `8094`), which is bound — and the Service port added — only
+while `exposure.central.host` is set. The Ingress carries the single path `/edge/enroll`, `Exact`, as
+well; the rest of central is not reachable through the host.
+
+**`NetworkPolicy`** (`networkPolicy.enabled`, off by default: it needs a CNI that enforces it, and
+`networkPolicy.ingressControllerSelector` must match your controller — the render refuses to guess).
+Auth and central then accept traffic from the release's own pods, from the controller on the ports a
+route leads to (auth's HTTP port when `ingress.enabled`, the published mutual-TLS port, the enrollment
+port), from anyone on a LoadBalancer's mutual-TLS port (the balancer or firewall limits who), on the
+diagnostics port from `metricsFrom` (empty: any pod), and from `extraIngress`. Egress is untouched.
+
+## 10. A remote edge
+
+[`versola-edge/`](versola-edge) is a minimal chart for **one edge outside this cluster** — another
+region, another cloud, an operator's own site. Everything about the rest of the system is reached by
+public name, so install the main chart's `exposure` first (section 9a).
+
+1. In central, create the edge (`POST /configuration/edges`, with a `groupId`) and an enrollment token
+   (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
+   hour and works once. Put it in a Secret: `kubectl create secret generic edge-enrollment --from-literal=token=...`.
+2. Copy the leaf certificate of central's listener (the Secret `<release>-versola-central-mtls`, `tls.crt`)
+   to `central.pins`; do the same for auth's if the edge calls it (`auth.pins`). Pins are a *set*: put the
+   next leaf beside the current one before the listener switches, so a rotation does not cut the edge off.
+3. Generate the edge's `env.conf` (`scripts/gen-env.scala`) into a Secret and its secret vars into
+   `secrets.existingSecret`, as for the main chart, and add one line to the `env.conf`:
+   `include file("/app/remote-edge/central.conf")`.
+
+```bash
+helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
+  --set central.mtlsUrl=https://central-mtls.example.com \
+  --set central.enrollment.url=https://central.example.com \
+  --set central.enrollment.existingSecret=edge-enrollment \
+  --set-file 'central.pins[0]=central-leaf.pem' \
+  --set config.existingSecret=edge-config \
+  --set secrets.existingSecret=edge-secrets
+```
+
+What it renders: a StatefulSet (one replica), a Service, an optional Ingress, a ConfigMap with
+`central.conf` (the `central { url, mutual-tls { trusted-certificates }, enrollment { url, token-file } }`
+and `identity { directory }` blocks of the v1 contract, plus the pins as files) and, if you pass `central.enrollment.token`
+instead of `existingSecret`, the token Secret. The edge generates its key locally, enrolls once, keeps the key and
+certificate chain on a PVC (`persistence`, on by default) and renews at a third of the certificate's life
+left. **Without the PVC** the identity is gone with the pod: the edge enrolls again at every restart, which
+needs a new token each time, so turn persistence off only for a throwaway. One replica, because a token enrolls
+one identity; a second edge in the same place is a second release with its own edge id.
+
+---
+
+## 11. Known rough edges
 
 All of these have open issues; none of them has a fix in the chart yet.
 

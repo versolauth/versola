@@ -22,7 +22,7 @@
 # race them. See the `helm-images` job in ci-cd.yml.
 #
 # Usage: .github/scripts/check-chart-images.sh [chart-dir ...]
-#        defaults to k8s/loadgen and k8s/versola
+#        defaults to k8s/loadgen, k8s/versola and k8s/versola-edge
 
 set -euo pipefail
 
@@ -47,6 +47,17 @@ render_chart() {
         --set services.auth.config.existingSecret=ci-check \
         --set services.central.config.existingSecret=ci-check \
         --set services.edge.config.existingSecret=ci-check
+      ;;
+    versola-edge)
+      # Needs its central block, the enrollment token and the edge's config; none is deployed. The pin is
+      # only checked for being a certificate.
+      helm template check "$chart" \
+        --set central.mtlsUrl=https://central-mtls.ci.invalid \
+        --set central.enrollment.url=https://central.ci.invalid \
+        --set central.enrollment.token=ci-check \
+        --set 'central.pins[0]=-----BEGIN CERTIFICATE-----' \
+        --set config.existingSecret=ci-check \
+        --set secrets.existingSecret=ci-check
       ;;
     *)
       helm template check "$chart"
@@ -75,7 +86,7 @@ image_exists() {
 
 charts=("$@")
 if [ ${#charts[@]} -eq 0 ]; then
-  charts=(k8s/loadgen k8s/versola)
+  charts=(k8s/loadgen k8s/versola k8s/versola-edge)
 fi
 
 failed=0

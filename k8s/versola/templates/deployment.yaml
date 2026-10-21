@@ -80,6 +80,10 @@ spec:
             - name: mtls
               containerPort: {{ $svc.mutualTlsPort }}
             {{- end }}
+            {{- if and (eq $name "central") $.Values.exposure.central.host }}
+            - name: enroll
+              containerPort: {{ $svc.enrollmentPort }}
+            {{- end }}
           env:
             - name: PORT
               value: {{ $svc.port | quote }}
@@ -103,6 +107,12 @@ spec:
             # values.yaml's `pki` block for the files this chart mounts for it.
             - name: MPORT
               value: {{ $svc.mutualTlsPort | quote }}
+            {{- end }}
+            {{- if and (eq $name "central") $.Values.exposure.central.host }}
+            # The enrollment listener (design-edge-network.md, F5): plain TLS-terminated, one route.
+            # Bound only while `exposure.central.host` is set; the Ingress for that host leads here.
+            - name: EPORT
+              value: {{ $svc.enrollmentPort | quote }}
             {{- end }}
             # See VersolaApp.scala's bindHost comment and #207: prod's VPS
             # sets this to 127.0.0.1 because of network_mode: host, which
