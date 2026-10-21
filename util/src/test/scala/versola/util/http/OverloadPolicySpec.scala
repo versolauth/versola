@@ -22,7 +22,7 @@ object OverloadPolicySpec extends ZIOSpecDefault:
         inbound = Some(InboundPolicy(
           mode = Some("enforce"),
           maxInFlight = Some(100),
-          adaptive = Some(AdaptivePolicy(enabled = Some(true), maxLimit = Some(300))),
+          adaptive = Some(AdaptivePolicy(maxLimit = Some(300))),
         )),
         outbound =
           Some(OutboundPolicy(requestTimeoutMillis = Some(2500), breaker = Some(BreakerPolicy(enabled = Some(true), openSeconds = Some(20))))),
@@ -33,7 +33,6 @@ object OverloadPolicySpec extends ZIOSpecDefault:
         in.mode == GuardMode.Enforce,
         in.maxInFlight == 100,
         in.continuationShare == 0.85,
-        in.adaptive.enabled,
         in.adaptive.maxLimit == 300,
         in.adaptive.tolerance == AdaptiveSettings.default.tolerance,
         out.mode == GuardMode.Shadow,
@@ -59,6 +58,11 @@ object OverloadPolicySpec extends ZIOSpecDefault:
         parsed.map(_.toJson.fromJson[OverloadPolicy]) == Right(parsed),
         "{}".fromJson[OverloadPolicy] == Right(OverloadPolicy.empty),
       )
+    },
+    test("a leftover adaptive.enabled is ignored, not an error") {
+      val json = """{"inbound":{"mode":"enforce","adaptive":{"enabled":true,"minLimit":8}}}"""
+      val decoded = json.fromJson[OverloadPolicy]
+      assertTrue(decoded == Right(OverloadPolicy(Some(InboundPolicy(mode = Some("enforce"), adaptive = Some(AdaptivePolicy(minLimit = Some(8))))))))
     },
     suite("validate")(
       test("rejects each kind of nonsense, naming the field") {
@@ -87,7 +91,7 @@ object OverloadPolicySpec extends ZIOSpecDefault:
             Some(1.0),
             Some(0.01),
             Some(60),
-            Some(AdaptivePolicy(Some(true), Some(1), Some(100000), Some(5.0), Some(1.0), Some(5))),
+            Some(AdaptivePolicy(Some(1), Some(100000), Some(5.0), Some(1.0), Some(5))),
           )),
           Some(OutboundPolicy(
             Some("shadow"),

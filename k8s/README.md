@@ -375,7 +375,7 @@ service under `services.<name>` (or `global` for the spread).
 
 **Do not scale these services on memory, and be careful with CPU.** The JVMs run a fixed heap
 (`-Xms512m -Xmx512m`), so memory use is flat in load and says nothing about demand. CPU is a weak signal
-too: RSA signing and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
+too: token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
 under load CPU saturates at what those admit instead of rising with demand, and a utilisation target can
 sit below its threshold while requests queue. The default metric is CPU utilisation of the request
 (`targetCPUUtilizationPercentage: 70`, which needs `resources.requests.cpu`); `autoscaling.metrics`

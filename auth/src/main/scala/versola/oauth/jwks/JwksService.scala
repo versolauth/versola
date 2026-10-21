@@ -1,13 +1,14 @@
 package versola.oauth.jwks
 
-import com.nimbusds.jose.jwk.RSAKey as JwkRsaKey
+import com.nimbusds.jose.jwk.{ECKey as JwkEcKey, RSAKey as JwkRsaKey}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.TenantId
 import versola.util.{CacheSource, CoreConfig, JWT, ReloadingCache}
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
-import java.security.PrivateKey
-import java.security.interfaces.RSAKey as JavaRsaKey
+import java.security.interfaces.{ECPrivateKey, RSAKey as JavaRsaKey}
+import java.security.{PrivateKey, Signature}
+import scala.util.Try
 import scala.jdk.CollectionConverters.*
 
 /** Provides the JWKS synced from central, plus the key this instance signs a given tenant's
@@ -19,7 +20,8 @@ import scala.jdk.CollectionConverters.*
   *
   * Where a tenant has selected nothing, or central has no private half for what it selected,
   * signing falls back to the pre-selection behaviour: the one entry in the synced set whose
-  * public modulus matches this instance's configured `jwt.private-key`. That is all a
+  * public key matches this instance's configured `jwt.private-key` (RSA modulus, or proof of
+  * possession for an EC key). That is all a
   * deployment seeded from `bootstrap.jwks` can do -- central was never given those private
   * halves -- and it must not use whichever entry central reports as
   * [[JWT.PublicKeys.active]], which is just the first element of an unordered list and can
@@ -63,10 +65,16 @@ object JwksService:
         algorithm <- JWT.PublicKey(jwk).algorithm
       yield JWT.Signature.Asymmetric(algorithm, kid, privateKey)
 
-  /** The JWKS entry whose modulus matches `privateKey`'s, i.e. the one this instance can sign
-    * with using its configured key. During a rotation window central's JWKS holds both the
-    * outgoing and incoming key; this always resolves to the one whose private half this
-    * instance actually has, never to whichever one happens to be listed first.
+  /** The JWKS entry that belongs to `privateKey`, i.e. the one this instance can sign with using
+    * its configured key. During a rotation window central's JWKS holds both the outgoing and
+    * incoming key; this always resolves to the one whose private half this instance actually
+    * has, never to whichever one happens to be listed first.
+    *
+    * An RSA key is matched by modulus. An EC key has no such public number to read off the
+    * private half through the JCA, so it is matched by proof of possession: a fixed challenge is
+    * signed with the private key and verified with each `ES256` entry's public key, under the
+    * entry's own algorithm. Only the key's owner passes, and a P-256 key cannot match an entry
+    * on another curve (the verification fails). This runs once per cache refresh, not per token.
     *
     * An entry without a usable `alg` is skipped rather than defaulted: the algorithm a key is
     * published under is the operator's statement about it, and guessing one would mean signing
@@ -76,17 +84,41 @@ object JwksService:
       privateKey: PrivateKey,
       publicKeys: JWT.PublicKeys,
   ): Option[JWT.Signature.Asymmetric] =
-    privateKey match
+    val entries = publicKeys.keys.getKeys.asScala
+    val matched = privateKey match
       case rsaPrivateKey: JavaRsaKey =>
-        publicKeys.keys.getKeys.asScala.collectFirst {
+        entries.collectFirst {
           case key: JwkRsaKey if key.toRSAPublicKey.getModulus == rsaPrivateKey.getModulus =>
             JWT.PublicKey(key)
-        }.flatMap { publicKey =>
-          publicKey.algorithm.map { algorithm =>
-            JWT.Signature.Asymmetric(algorithm, publicKey.id, privateKey)
-          }
+        }
+      case ecPrivateKey: ECPrivateKey =>
+        entries.collectFirst {
+          case key: JwkEcKey if possesses(ecPrivateKey, key) => JWT.PublicKey(key)
         }
       case _ => None
+    matched.flatMap { publicKey =>
+      publicKey.algorithm.map { algorithm =>
+        JWT.Signature.Asymmetric(algorithm, publicKey.id, privateKey)
+      }
+    }
+
+  private val challenge = "versola-jwks-key-possession".getBytes("UTF-8")
+
+  /** Only an entry published as `ES256` qualifies: an EC entry under any other `alg` is not one
+    * this instance would sign with anyway.
+    */
+  private def possesses(privateKey: ECPrivateKey, entry: JwkEcKey): Boolean =
+    Option(entry.getAlgorithm).flatMap(alg => JWT.Algorithm.fromName(alg.getName)).contains(JWT.Algorithm.ES256) &&
+      Try {
+        val signer = Signature.getInstance("SHA256withECDSA")
+        signer.initSign(privateKey)
+        signer.update(challenge)
+        val signature = signer.sign()
+        val verifier = Signature.getInstance("SHA256withECDSA")
+        verifier.initVerify(entry.toECPublicKey)
+        verifier.update(challenge)
+        verifier.verify(signature)
+      }.getOrElse(false)
 
   /** Wraps the raw sync with the derived fallback signature, so the match against this
     * instance's configured private key is computed once per cache refresh instead of once per

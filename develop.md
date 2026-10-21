@@ -285,8 +285,30 @@ the URI name is the only link, which is why it is a name and not a pinned finger
 
 `local` writes `central/dev/mtls/{ca,server,edge-client}.{crt,key}` (a CA of its own, central's
 leaf, and `edge-default`'s certificate) for both services and e2e's `EdgeSyncSurfaceSpec`.
-`MPORT=9011` there. docker-local/vps: `mtls-init` issues `central-server.*` and `edge-client.*`
+`MPORT=9011` there. docker-local: `mtls-init` issues `central-server.*` and `edge-client.*`
 into the shared `/app/mtls` volume; k8s: the chart's `pki` block (cert-manager).
+
+vps (the compose bundle that `versola-cli` deploys) splits the roles across three intermediates of one
+step-ca root, so the rule above is enforced by the handshake and not only by the name: `central`
+trusts `/app/mtls/edge-ca.crt`, which holds the **edge** intermediate and nothing else, so a client
+certificate (from the **client** intermediate) does not complete the handshake, and `auth` trusts
+`/app/mtls/auth-trust.crt` (client + edge; auth accepts no edge certificate for anything yet, so
+the name check on that side comes with the step that does). The listener
+leaves come from the **server** intermediate (365 days), the edge identity of the local edge from the edge
+intermediate (365 days; `versola configure vps --cert-lifetime-days N`, 0 = unlimited). **`central` signs edge identities itself** (`/edge/enroll`,
+`/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that
+intermediate, accepts them: `mtls-init` puts `edge-ca.crt` and `edge-ca.key` (unencrypted PKCS#8, 0600)
+into `versola-central-ca-*` -- the volume only central mounts, `/app/ca`, never the shared
+`/app/mtls` -- and `central.conf` gets `edge-certificate-authority { certificate, private-key }`. That
+is acceptable because central already decides which edges exist (registering one and enrolling it are
+both its admin API). Clients' certificates are still signed by the client intermediate through
+step-ca's `central` provisioner (`client-certificates`). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
+central's `APORT` (8094, not auth's 8082) is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
+an external client reaches them only through public names that are opt-in
+(`versola configure vps --mtls-domain`, `--central-mtls-domain`, `--central-domain`), which
+`versola-cli`'s proxy forwards; the first two are added to the leaf's SAN by `mtls-init` through
+`MTLS_DOMAIN` / `CENTRAL_MTLS_DOMAIN` of `versola-tools`. The local edge keeps using
+`https://127.0.0.1:8083` and `:8093`, never the public names.
 
 ### Certificate storage and rotation (#440)
 
@@ -296,7 +318,7 @@ Three certificate relationships exist in the mTLS work, with different rotation 
 |---|---|---|---|
 | 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
 | 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
-| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the same CA and restarts the edge -- no registration in central; a CA change follows (1) |
+| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the edge CA (vps: `mtls-init`, 365 days by default, `MTLS_INIT_PHASE=identity`) and restarts the edge -- no registration in central; a CA change follows (1) |
 | 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
 
 **(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
@@ -320,6 +342,28 @@ and the TLS client accepts a server certificate matching *any* entry. Roll it ou
 it; (c) once every edge has the new set, drop the old entry. Edge reads the files at startup, so
 a changed file needs a restart. A single-element list is the previous behaviour; the previous
 bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
+
+In the vps bundle the overlap is built in. Edge's pins are always the pairs
+`/app/mtls/server.crt` + `server.next.crt` (auth) and `central-server.crt` + `central-server.next.crt`
+(central); `<name>.next.crt` is a copy of the current leaf until a replacement is staged. `mtls-init`
+(`docker/versola-tools/mtls-init.sh`, whose header is the contract) does the steps of (a)-(c)
+as phases of `MTLS_INIT_PHASE`, run with
+`docker compose run --rm -e MTLS_INIT_PHASE=<phase> mtls-init` and driven by `versola certs renew`
+and `rollout`:
+
+1. `prepare`: for each server leaf that is due, write the replacement as `<name>.next.crt` and
+   `<name>.next.key`; the current pair is untouched. Printing `mtls-init: staged <name>` and
+   `mtls-init: changed`. Repeating it keeps what is staged, so a renewal cut off here goes on to 3.
+2. Restart `edge`: it now pins old and new.
+3. `commit`: the staged pair becomes the current pair (`mtls-init: committed <name>`); `<name>.next.crt`
+   stays as a copy of it. With nothing staged it prints nothing.
+4. Restart the service whose leaf changed (`auth` or `central`).
+
+`all` (the default, what `up` runs) skips the choreography and replaces what is due in place, with
+the short gap described in [deploy.md](deploy.md#mutual-tls-certificates); `identity` renews only
+`edge-client`, which nobody pins; `report` changes nothing and prints one line per certificate,
+`mtls-init: cert <file> notBefore=<UTC> notAfter=<UTC> subject=<CN or URN>`, for `doctor` and `status`.
+`docker/versola-tools/test/mtls-init.test.sh` runs every phase against a throwaway step-ca in Docker.
 
 **(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
@@ -470,13 +514,13 @@ real, in-use counterparts, and each mismatch fails differently.
 | Secret | What depends on it, and the failure with a fresh value |
 |---|---|
 | `POSTGRES_PASSWORD` | the existing Postgres role's real password; wrong → connection refused at startup |
-| `JWT_PRIVATE_KEY` | `central` is the source of truth for signing keys (`JwksRepository`; auth caches a synced copy). Bootstrap seeding adds a key by `kid` instead of replacing, so a fresh one sits *beside* the real one, publishing a key nobody holds; auth matches its private key to a JWKS entry by RSA modulus (the entry needs a usable `alg`). Seed the real key so only one `kid` is in play |
+| `JWT_PRIVATE_KEY` | `central` is the source of truth for signing keys (`JwksRepository`; auth caches a synced copy). Bootstrap seeding adds a key by `kid` instead of replacing, so a fresh one sits *beside* the real one, publishing a key nobody holds; auth matches its private key to a JWKS entry (an RSA key by modulus, an EC key by proof of possession: a challenge signed with the key must verify under the entry's public key) and the entry needs a usable `alg`, which is also the algorithm tokens are signed under. `gen-env` generates an EC P-256 key (`jwt-es256-<date>`, ES256) and publishes only its public half; a pre-existing RSA key is still accepted. Seed the real key so only one `kid` is in play |
 | `CLIENT_SECRETS_SECRET` | encrypts existing OAuth client secrets in `central`; a fresh one cannot decrypt them |
 | `PASSWORDS_SECRET` | the key of every stored password hash (`PasswordService`); a fresh one fails every user's login |
 | `REFRESH_TOKENS_SECRET` | the MAC key of every stored refresh token; a fresh one turns each, including on-device `offline_access` tokens, into `invalid_grant` |
 | `EDGE_TOKEN_ENC_KEY` | the AES key (exactly 32 bytes, base64url) of the refresh tokens in edge's session table; with a fresh one every session fails to decrypt in `refreshSession`, a server error rather than a re-login |
 | `CENTRAL_RESOURCE_SECRET` | `central` keeps its copy from first boot (create-only, AES-encrypted); `cert-sync` and operator tools present the store's value, so a fresh one is a 401 for them. Edge gets it by sync. A rotation through the admin API changes central's copy, not the store's |
-| `EDGE_PRIVATE_KEY`, `EDGE_KEY_ID`, `EDGE_PUBLIC_JWK`, `JWKS_JSON` | `central` already trusts the real edge's public key (its `kid` must equal `EDGE_KEY_ID`, and it must be RSA); a fresh pair makes every edge → central sync 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}` with the public key of `JWT_PRIVATE_KEY` (same modulus) and an `alg` |
+| `EDGE_PRIVATE_KEY`, `EDGE_KEY_ID`, `EDGE_PUBLIC_JWK`, `JWKS_JSON` | `central` already trusts the real edge's public key (its `kid` must equal `EDGE_KEY_ID`, and it must be RSA); a fresh pair makes every edge → central sync 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}` with the public key of `JWT_PRIVATE_KEY` (the same pair: same modulus for RSA, same point for EC) and an `alg`; the edge key is the one that must stay RSA, `JWT_PRIVATE_KEY` need not be |
 | `UTILITY_CLIENT_PUBLIC_JWK`, `UTILS_PRIVATE_KEY_JWK` | `central` re-applies the utility client's public key on every boot, so a fresh pair silently replaces the key loadgen and `versola-cli` authenticate with. Reuse the existing pair: the public half goes into central's path below; the private half is not in OpenBao at all, it stays wherever loadgen or the operator keeps it (the `utils.private-key.jwk` a fresh `configure` writes is a new, unrelated key — ignore it). `gen-env`'s reuse path takes an EC P-256 private JWK; `k8s/README.md` covers a client seeded with a `client_secret` |
 
 `ADMIN_BOOTSTRAP_PASSWORD` is deliberately absent: nothing outside `gen-env` owns it, so the generated
@@ -579,7 +623,7 @@ Each entry has:
 | Field | Meaning |
 |---|---|
 | `name`, `services` | what the secret is called and which services receive it. A value shared by several services is listed once; the same name in several entries is *separate* values (`k8s` has a `POSTGRES_PASSWORD` entry per service), so key a secret by `(name, service)`, never by name alone. `utils` is the holder of the `utils` client's private key, stored under `secret/versola/<target>/utils` |
-| `type`, `size` | the shape, a promise about every value the store may hold, made only where the services enforce it. `base64url`: URL-safe base64 of exactly `size` bytes, as the `Secret.Bytes16`/`Bytes32` decoders require (written without padding, accepted with `=` padding — validate the decoded length, not the characters). `rsa-private-key`: PKCS#8 in standard base64, any modulus size. `opaque`: no shape or size, for values an operator can set (`POSTGRES_PASSWORD`, `ADMIN_BOOTSTRAP_PASSWORD`) and values decoded as a plain `Secret` of any length (`ACCOUNT_RESOURCE_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_INTERNAL_SECRET`) |
+| `type`, `size` | the shape, a promise about every value the store may hold, made only where the services enforce it. `base64url`: URL-safe base64 of exactly `size` bytes, as the `Secret.Bytes16`/`Bytes32` decoders require (written without padding, accepted with `=` padding — validate the decoded length, not the characters). `rsa-private-key`: PKCS#8 in standard base64, any modulus size. `signing-private-key`: PKCS#8 in standard base64, RSA (any modulus size) or EC (what `gen-env` generates), for `JWT_PRIVATE_KEY`. `opaque`: no shape or size, for values an operator can set (`POSTGRES_PASSWORD`, `ADMIN_BOOTSTRAP_PASSWORD`) and values decoded as a plain `Secret` of any length (`ACCOUNT_RESOURCE_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_INTERNAL_SECRET`) |
 | `group` | secrets that only work as a set (e.g. a signing key and the public JWKS carrying it); one `onMissing` for all members: take all or none |
 | `onMissing` | what to do when the store lacks it. `generate`; `generate-on-first-install-only`, for a value something already depends on, so missing it on an upgrade is an error — either something outside the store holds it (`POSTGRES_PASSWORD`; the `utils` key pair, whose private half loadgen and `versola-cli` hold) or it protects stored data (`PASSWORDS_SECRET`, `REFRESH_TOKENS_SECRET`, `CLIENT_SECRETS_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_TOKEN_ENC_KEY`, the JWT and edge key pairs); or `external`, supplied by the operator |
 | `file` | where a value is written when it is not in a `*.generated-secrets.env` |

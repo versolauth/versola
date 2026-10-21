@@ -225,6 +225,12 @@ Escape and Close return focus to the row (`versola-data-table.focusRow`). The UR
 state so a reload restores it: `?view=scopes&id=profile`, `&edit=claims`, `&new=1`; `Open page`
 adds `&layout=page` and renders the same groups under a `versola-record-header` for sharing and
 docs. Reference: `scopes-list.ts`; the pattern's mockups are the approved UX proposal.
+An editor with many fields still opens in the panel, `wide`: Edges' *Overload protection* (`edges-list.ts`,
+`overload-policy-editor.ts`, rules and messages in `utils/overload-policy.ts`) is a patch over the
+deployment, so every field is optional, empty means "inherit", and the built-in default and its
+environment variable are written under the field; rare fields sit under a native `<details>` "Advanced";
+a mode is a segmented control (`segmentedStyles`) with one line on the chosen value; the footer's
+`Reset to deployment defaults` (left) sends `{}` after a confirmation.
 
 **Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
 kind chip, status chips, created) → a status banner when the page can say something about the

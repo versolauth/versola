@@ -25,7 +25,22 @@
     "name_required": "Enter a passkey name",
     "add_passkey_button": "Add a passkey",
     "enroll_failed": "Could not add the passkey. Please try again",
-    "go_back_button": "Go back"
+    "go_back_button": "Go back",
+    "password_title": "Password",
+    "current_password_label": "Current password",
+    "new_password_label": "New password",
+    "confirm_password_label": "Repeat the new password",
+    "show_password": "Show password",
+    "hide_password": "Hide password",
+    "change_password_button": "Change password",
+    "password_changed": "Password changed",
+    "password_mismatch": "Passwords do not match",
+    "password_not_allowed": "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, and a number",
+    "password_reused": "This password was used recently. Please choose a different one.",
+    "current_password_incorrect": "The current password is incorrect",
+    "too_many_attempts": "Too many failed attempts. Please try again later",
+    "too_many_attempts_retry": "Too many failed attempts. Please try again in {seconds} s",
+    "password_change_failed": "Could not change the password. Please try again"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -53,6 +68,21 @@
     "name_required": "Укажите название ключа доступа",
     "add_passkey_button": "Добавить ключ доступа",
     "enroll_failed": "Не удалось добавить ключ доступа. Попробуйте ещё раз",
-    "go_back_button": "Назад"
+    "go_back_button": "Назад",
+    "password_title": "Пароль",
+    "current_password_label": "Текущий пароль",
+    "new_password_label": "Новый пароль",
+    "confirm_password_label": "Повторите новый пароль",
+    "show_password": "Показать пароль",
+    "hide_password": "Скрыть пароль",
+    "change_password_button": "Сменить пароль",
+    "password_changed": "Пароль изменён",
+    "password_mismatch": "Пароли не совпадают",
+    "password_not_allowed": "Пароль должен содержать не менее 8 символов, включая заглавную букву, строчную букву и цифру",
+    "password_reused": "Этот пароль использовался недавно. Пожалуйста, выберите другой.",
+    "current_password_incorrect": "Текущий пароль неверный",
+    "too_many_attempts": "Слишком много неудачных попыток. Попробуйте позже",
+    "too_many_attempts_retry": "Слишком много неудачных попыток. Повторите через {seconds} с",
+    "password_change_failed": "Не удалось сменить пароль. Попробуйте ещё раз"
   }
 }

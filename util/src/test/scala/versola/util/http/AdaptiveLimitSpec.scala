@@ -5,7 +5,7 @@ import zio.test.*
 
 object AdaptiveLimitSpec extends ZIOSpecDefault:
 
-  private val settings = AdaptiveSettings(enabled = true, minLimit = 8, maxLimit = 400, tolerance = 1.5, smoothing = 0.2, lagTarget = 50.millis)
+  private val settings = AdaptiveSettings(minLimit = 8, maxLimit = 400, tolerance = 1.5, smoothing = 0.2, lagTarget = 50.millis)
   private val ms = 1_000_000.0
 
   /** `n` windows of the same kind of traffic, three classes, only the first used. */

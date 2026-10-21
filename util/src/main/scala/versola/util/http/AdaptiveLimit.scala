@@ -17,7 +17,6 @@ import zio.*
   *   the completed calls looked like (a stalled pod completes no calls to measure)
   */
 final case class AdaptiveSettings(
-    enabled: Boolean,
     minLimit: Int,
     maxLimit: Int,
     tolerance: Double,
@@ -27,7 +26,7 @@ final case class AdaptiveSettings(
 
 object AdaptiveSettings:
   val default: AdaptiveSettings =
-    AdaptiveSettings(enabled = false, minLimit = 16, maxLimit = 1024, tolerance = 1.5, smoothing = 0.2, lagTarget = 50.millis)
+    AdaptiveSettings(minLimit = 16, maxLimit = 1024, tolerance = 1.5, smoothing = 0.2, lagTarget = 50.millis)
 
 /** What one window (a second) of traffic looked like, for one class of request.
   *
