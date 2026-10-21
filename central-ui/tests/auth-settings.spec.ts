@@ -20,6 +20,10 @@ const formConfig = {
     delete_button: 'Delete', delete_passkey_confirm: 'Remove this passkey?', save_button: 'Save', cancel_button: 'Cancel',
     confirm_button: 'Confirm', name_placeholder: 'Passkey name', name_required: 'Enter a passkey name',
     add_passkey_button: 'Add a passkey', enroll_failed: 'Could not add the passkey',
+    resume_title: 'You signed in again', resume_session: 'Continue signing out the session?',
+    resume_passkey: 'Continue removing the passkey?', resume_enroll: 'Continue adding the passkey “{name}”?',
+    resume_continue: 'Continue', step_up_unavailable: 'This action is not available for your account right now',
+    step_up_failed: 'We could not confirm your sign-in',
   },
   locales: ['en'],
 };
@@ -39,13 +43,13 @@ async function accountFormScript(): Promise<string> {
   return formScript;
 }
 
-async function loadAccountForm(page: Page) {
+async function loadAccountForm(page: Page, url = accountUrl) {
   const [commonCss, formCss, script] = await Promise.all([
     readFile(new URL('../forms/common.css', import.meta.url), 'utf8'),
     readFile(new URL('../forms/auth-settings/auth-settings.css', import.meta.url), 'utf8'),
     accountFormScript(),
   ]);
-  await page.goto(accountUrl);
+  await page.goto(url);
   await page.setContent(`
     <style>${commonCss}${formCss}</style>
     <script>window.__VERSOLA_FORM__ = ${JSON.stringify(formConfig)};</script>
@@ -121,7 +125,69 @@ test('goes to the login an action was answered with when it needs a stronger sig
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
 
-  await page.waitForURL('**/login/console?acr_values=sensitive&max_age=300');
+  // The login is asked to send the browser back to this very page, and the action is kept for it.
+  await page.waitForURL('**/login/console?acr_values=sensitive&max_age=300&return_to=%2Fresources%2Fauth%2Fsettings');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('versola.account.pending') ?? 'null'))).toMatchObject({
+    kind: 'passkey',
+    id: 'passkey-1',
+  });
+});
+
+async function rememberPending(page: Page, pending: Record<string, unknown>, at = Date.now()) {
+  await page.addInitScript(([value]) => sessionStorage.setItem('versola.account.pending', value), [JSON.stringify({ ...pending, at })]);
+}
+
+test('offers to continue the action the sign-in interrupted, and carries it out on the click', async ({ page }) => {
+  const requests: Array<{ method: string; body: string }> = [];
+  await page.route('**/resources/auth/settings/**', async route => {
+    requests.push({ method: route.request().method(), body: route.request().postData() ?? '' });
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await rememberPending(page, { kind: 'passkey', id: 'passkey-1' });
+  await loadAccountForm(page);
+
+  await expect(page.getByRole('status')).toContainText('Continue removing the passkey?');
+  expect(requests).toEqual([]);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+
+  await expect(page.getByText('Old name', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(requests).toEqual([{ method: 'DELETE', body: JSON.stringify({ credentialId: 'passkey-1' }) }]);
+  expect(await page.evaluate(() => sessionStorage.getItem('versola.account.pending'))).toBeNull();
+});
+
+test('drops the interrupted action on cancel, and ignores one that is too old or not ours', async ({ page }) => {
+  const requests: string[] = [];
+  await page.route('**/resources/auth/settings/**', async route => {
+    requests.push(route.request().method());
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await rememberPending(page, { kind: 'session', id: 'other-session' });
+  await loadAccountForm(page);
+  await expect(page.getByRole('status')).toContainText('Continue signing out the session?');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).first().click();
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(requests).toEqual([]);
+
+  const stale = await page.context().newPage();
+  await rememberPending(stale, { kind: 'session', id: 'other-session' }, Date.now() - 11 * 60 * 1000);
+  await loadAccountForm(stale);
+  await expect(stale.getByRole('status')).toHaveCount(0);
+
+  const foreign = await page.context().newPage();
+  await foreign.addInitScript(() => sessionStorage.setItem('versola.account.pending', '{"kind":"transfer","id":"x","at":' + Date.now() + '}'));
+  await loadAccountForm(foreign);
+  await expect(foreign.getByRole('status')).toHaveCount(0);
+});
+
+test('says so when the sign-in ended with an error, forgets the action and takes the error off the address', async ({ page }) => {
+  await rememberPending(page, { kind: 'passkey', id: 'passkey-1' });
+  await loadAccountForm(page, `${accountUrl}?error=unmet_authentication_requirements`);
+
+  await expect(page.getByRole('alert')).toHaveText('This action is not available for your account right now');
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(new URL(page.url()).search).toBe('');
+  expect(await page.evaluate(() => sessionStorage.getItem('versola.account.pending'))).toBeNull();
 });
 
 test('does not follow a login URL that leaves this origin', async ({ page }) => {

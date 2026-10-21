@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.dpop.DpopVerifier
-import versola.edge.login.{LoginRecord, LoginRepository}
+import versola.edge.login.{LoginRecord, LoginRepository, ReturnTo}
 import versola.edge.model.{
   AccessToken,
   AccessTokenClaims,
@@ -47,9 +47,12 @@ import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.{MapHasAsJava, SeqHasAsJava}
 
 trait EdgeService:
+  /** The URL to send the browser to for a login with `presetId`. `returnTo`, a path of the preset's origin, is
+    * where it goes afterwards instead of the preset's own post-login page; anything else is ignored. */
   def authorize(
       presetId: PresetId,
       overrideParams: Map[String, String] = Map.empty,
+      returnTo: Option[String] = None,
   ): IO[Throwable | PresetNotFound, URL]
 
   def complete(
@@ -105,9 +108,12 @@ object EdgeService:
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
+      returnTo: Option[String] = None,
       cookieDomain: Option[String],
       cookiePath: Option[String],
-  )
+  ):
+    /** Where the browser goes: the page that asked for the login when there is one, else the preset's. */
+    def redirectUrl: URL = ReturnTo.onto(postLoginRedirectUri.toUrl, returnTo)
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
@@ -231,10 +237,16 @@ object EdgeService:
     override def authorize(
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
+        returnTo: Option[String] = None,
     ): IO[Throwable | PresetNotFound, URL] =
-      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl(_, overrideParams))
+      clientService.findPreset(presetId).someOrFail(PresetNotFound())
+        .flatMap(prepareAuthorizeUrl(_, overrideParams, returnTo.flatMap(ReturnTo.parse)))
 
-    private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
+    private def prepareAuthorizeUrl(
+        preset: AuthorizationPreset,
+        overrideParams: Map[String, String],
+        returnTo: Option[String],
+    ): zio.Task[URL] =
       for
         // The client, not just the preset: what the authorization request may look like is
         // the client's registration (RFC 9101 §10.5, RFC 9126 §6.2), and the credential that
@@ -254,6 +266,7 @@ object EdgeService:
             codeVerifier = codeVerifier,
             presetId = preset.id,
             state = state,
+            returnTo = returnTo,
           ),
           ttl = loginTtl,
         )
@@ -284,6 +297,7 @@ object EdgeService:
         accessToken = tokens.accessToken,
         cookieTtl = cookieTtl,
         postLoginRedirectUri = preset.postLoginRedirectUri,
+        returnTo = record.returnTo,
         cookieDomain = preset.cookieDomain,
         cookiePath = preset.cookiePath,
       )
@@ -298,7 +312,7 @@ object EdgeService:
         record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
         preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
         _ <- loginRepository.deleteByState(state)
-      yield preset.postLoginRedirectUri.toUrl.addQueryParams(
+      yield ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
         List("error" -> error) ++
           errorDescription.map("error_description" -> _) ++
           errorUri.map("error_uri" -> _),

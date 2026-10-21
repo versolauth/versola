@@ -402,8 +402,11 @@ out require the built-in `sensitive` ACR with a sign-in no older than 300 second
 strongest factor the user has: a passkey if they have one, else their password, else a one-time code, so
 a session that only passed a one-time code cannot change who can sign in to an account that has a passkey.
 Edge answers such a call with `401`, the RFC 9470 challenge and, for a browser session, a `Location` header
-with the login that asks for what is missing; the page goes there, and the user repeats the action after
-signing in. Reading the page, renaming a passkey and finishing an enrollment ask for nothing more.
+with the login that asks for what is missing; the page goes there, asking to be sent back to itself (`return_to`,
+a path of the preset's own origin; edge keeps it in `pending_logins.return_to`, migration `V2007`). Back on the
+page the user is offered to continue the action the sign-in interrupted, and a sign-in that ends in an error
+(for example `unmet_authentication_requirements`) is reported on the page. Reading the page, renaming a
+passkey and finishing an enrollment ask for nothing more.
 
 A deployment that already has the `auth` resource is **not** changed: bootstrap keeps the step-up an
 operator has set (none, until now), so an upgrade alters nothing for it. To switch it on, update the

@@ -139,3 +139,11 @@
   padding: 10px 16px;
   font-size: 0.9rem;
 }
+.account-notice {
+  margin-bottom: 16px;
+}
+.account-resume p {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

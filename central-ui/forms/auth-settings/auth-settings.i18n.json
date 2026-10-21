@@ -25,7 +25,14 @@
     "name_required": "Enter a passkey name",
     "add_passkey_button": "Add a passkey",
     "enroll_failed": "Could not add the passkey. Please try again",
-    "go_back_button": "Go back"
+    "go_back_button": "Go back",
+    "resume_title": "You signed in again",
+    "resume_session": "Continue signing out the session?",
+    "resume_passkey": "Continue removing the passkey?",
+    "resume_enroll": "Continue adding the passkey “{name}”?",
+    "resume_continue": "Continue",
+    "step_up_unavailable": "This action is not available for your account right now: there is no sign-in method we can use to confirm it. Contact an administrator",
+    "step_up_failed": "We could not confirm your sign-in. Please try again"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -53,6 +60,13 @@
     "name_required": "Укажите название ключа доступа",
     "add_passkey_button": "Добавить ключ доступа",
     "enroll_failed": "Не удалось добавить ключ доступа. Попробуйте ещё раз",
-    "go_back_button": "Назад"
+    "go_back_button": "Назад",
+    "resume_title": "Вы снова вошли",
+    "resume_session": "Продолжить завершение сессии?",
+    "resume_passkey": "Продолжить удаление ключа доступа?",
+    "resume_enroll": "Продолжить добавление ключа доступа «{name}»?",
+    "resume_continue": "Продолжить",
+    "step_up_unavailable": "Сейчас это действие недоступно для вашего аккаунта: нет способа входа, которым мы могли бы его подтвердить. Обратитесь к администратору",
+    "step_up_failed": "Не удалось подтвердить вход. Попробуйте ещё раз"
   }
 }
