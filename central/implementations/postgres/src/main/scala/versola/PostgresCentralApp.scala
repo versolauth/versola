@@ -90,6 +90,7 @@ import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.lang.System as JavaSystem
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -179,9 +180,13 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
     * (`APORT`), which is plain HTTP meant to sit behind the TLS terminator of the public name for central. Nothing
-    * else is served there. */
+    * else is served there.
+    *
+    * Only where `APORT` is set: the listener is a new port, and one that nothing asked for must not be bound -- the
+    * default (8082) is another service's on a host where central and auth share the network (vps), and an edge
+    * that is not remote has no use for enrollment at all. */
   override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    Some(EdgeEnrollController.routes)
+    Option.when(Option(JavaSystem.getenv("APORT")).exists(_.nonEmpty))(EdgeEnrollController.routes)
 
   /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
     * authenticated by the certificate it presents in the handshake as well as by its token. */
