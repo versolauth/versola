@@ -157,24 +157,29 @@ object SSOClient:
       * there: a certificate is only presented in a TLS handshake, so such a call cannot take
       * `internalUrl` when that is plaintext.
       *
-      * `internalUrl` stays the answer wherever it is `https` -- a TLS terminator in front of
-      * auth, which reads the certificate off the handshake and forwards it, and which accepts
-      * the calls that carry none just as well. Where it is plaintext and this edge has the
-      * `native` back channel, the certificate goes to auth's own mutual-TLS listener instead,
-      * pinned to the certificate that listener presents. That listener serves exactly the
-      * endpoints edge calls for a client (`/token`, `/par`, `/userinfo`) and refuses any
-      * connection without a certificate, which is why only these calls move and the ones
-      * that carry none (a key-bound `/userinfo`) stay on `internalUrl`.
+      * Two places can receive it. A TLS terminator in front of auth reads the certificate off the
+      * handshake and forwards it; it is what `internalUrl` names where that is `https`, and an
+      * operator says so by pinning it (`versola-internal-trusted-certificates`). Auth's own
+      * mutual-TLS listener (the `native` back channel) takes the certificate itself, pinned to
+      * the certificate it presents; it serves exactly the endpoints edge calls for a client
+      * (`/token`, `/par`, `/userinfo`) and refuses any connection without a certificate, which is
+      * why only these calls move and the ones that carry none (a key-bound `/userinfo`) stay on
+      * `internalUrl`.
+      *
+      * The terminator is kept where it was set up: `internalUrl` is `https` and pinned. Everywhere
+      * else an edge with the `native` back channel uses the listener. An `https` `internalUrl`
+      * with no pins is not a terminator, it is the public name of auth (what `versola configure
+      * vps` writes), and a certificate sent there is refused by the missing pins -- which is how
+      * `central-admin` could not sign in on such a deployment.
       *
       * With neither, the route is `internalUrl` again and the call is refused as before
-      * (`CredentialNeedsTls`), not made unauthenticated.
+      * (`CredentialNeedsTls`, `CredentialNeedsTrustedServer`), not made unauthenticated.
       */
     private val certificateRoute: CertificateRoute =
-      if config.internalUrl.scheme.contains(Scheme.HTTPS) then
-        CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
-      else
-        config.native.fold(CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))): native =>
-          CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates))
+      val terminator = CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
+      val pinnedTerminator = config.internalUrl.scheme.contains(Scheme.HTTPS) && config.versolaInternalTrustedCertificates.nonEmpty
+      if pinnedTerminator then terminator
+      else config.native.fold(terminator)(native => CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates)))
 
     private def internalTrustOf(pins: Set[String]): Option[ClientSSLConfig] =
       Option.when(pins.nonEmpty)(EdgeConfig.pinnedTrust(pins))
