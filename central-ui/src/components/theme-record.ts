@@ -9,7 +9,7 @@ import { confirmDiscardDraft } from '../utils/draft-guard';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
 import { joinNames, overrideKeys, presetHint, tokenLongName, unsavedNames, type ThemeEditState } from '../utils/theme-summary';
-import { PAGE_BG_VARIABLE, THEME_VARIABLES, isHexColour, pixels, valueProblem, variableByName } from '../utils/theme-variables';
+import { PAGE_BG_VARIABLE, describe, groupTitle, isHexColour, pixels, trimmed, valueProblem, variableByName, type ThemeVariable, type ThemeVariableCatalog, type VariableValue } from '../utils/theme-variables';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { statusIcon } from './status-icon';
 import './code-editor';
@@ -20,11 +20,12 @@ import './record-header';
 import './theme-token-controls';
 import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
-/** What a rule may target on `:root`: the theming API of the login forms' common.css. */
-const CSS_TOKENS: Array<[string, string]> = [...THEME_VARIABLES.map((variable): [string, string] => [variable.name, variable.description]), [PAGE_BG_VARIABLE.name, PAGE_BG_VARIABLE.description]];
+/** One row of token overrides; `key` identifies it while the name or the value is edited. A pair token is `split` when it
+ *  has its own light and dark values; otherwise `value` is written for both schemes. */
+type VariableRow = { key: number; name: string; value: string; light: string; dark: string; split: boolean };
 
-/** One row of token overrides; `key` identifies it while the name or the value is edited. */
-type VariableRow = { key: number; name: string; value: string };
+/** Which of a row's values an input edits. */
+type RowField = 'value' | 'light' | 'dark';
 
 export type ThemeSaved = { theme: ThemeRecord; created: boolean };
 
@@ -52,6 +53,8 @@ export class VersolaThemeRecord extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   /** The built-in themes; empty from a central that has none. */
   @property({ attribute: false }) presets: ThemePreset[] = [];
+  /** The tokens a theme may set one by one, as central lists them (groups, kinds, descriptions); empty from a central that has none. */
+  @property({ attribute: false }) variableCatalog: ThemeVariableCatalog = { groups: [], variables: [] };
   /** Every stored form version, and the states central lists for the built-in forms: the preview renders them. */
   @property({ attribute: false }) forms: FormRecord[] = [];
   @property({ attribute: false }) previews: FormPreview[] = [];
@@ -290,6 +293,50 @@ export class VersolaThemeRecord extends LitElement {
         gap: var(--spacing-sm);
       }
 
+      .var-edit {
+        margin-top: var(--spacing-sm);
+      }
+
+      .var-split {
+        flex-wrap: wrap;
+      }
+
+      .scheme-pair {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+      }
+
+      .var-split .value-input {
+        width: 7rem;
+        flex: none;
+      }
+
+      .scheme-tag {
+        flex: none;
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+      }
+
+      .same-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--spacing-xs);
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+        cursor: pointer;
+      }
+
+      .var-default code {
+        font-family: var(--font-mono);
+        color: var(--text-primary);
+        overflow-wrap: anywhere;
+      }
+
+      .value-wide {
+        max-width: 24rem;
+      }
+
       .var-name {
         width: 11rem;
       }
@@ -380,7 +427,7 @@ export class VersolaThemeRecord extends LitElement {
       this.scope = this.theme.tenantId ? 'tenant' : 'global';
       this.withoutTokens = !this.isNew && !this.theme.tokens;
       this.cssOpen = this.editCss.trim() !== '';
-      this.variableRows = Object.entries(this.theme.tokens?.variables ?? {}).map(([name, value]) => ({ key: this.rowKey++, name, value }));
+      this.variableRows = Object.entries(this.theme.tokens?.variables ?? {}).map(([name, value]) => this.rowOf(name, value));
       this.base = this.theme.tokens?.base ?? this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
       this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
       this.brandInvalid = false;
@@ -434,20 +481,35 @@ export class VersolaThemeRecord extends LitElement {
     return unsavedNames(this.saved, { base: this.base, overrides: this.overrides, variables: this.variablesMap, css: this.editCss });
   }
 
+  private rowOf(name: string, value: VariableValue): VariableRow {
+    return typeof value === 'string'
+      ? { key: this.rowKey++, name, value, light: value, dark: value, split: false }
+      : { key: this.rowKey++, name, value: value.light, light: value.light, dark: value.dark, split: true };
+  }
+
+  /** What a row writes: one value, or a light and a dark one for a pair token that is split. */
+  private valueOfRow(row: VariableRow): VariableValue {
+    return row.split ? trimmed({ light: row.light, dark: row.dark }) : row.value.trim();
+  }
+
   /** The rows as the map central stores; a row without a name is not one yet. */
-  private get variablesMap(): Record<string, string> {
-    return Object.fromEntries(this.variableRows.filter(row => row.name !== '').map(row => [row.name, row.value.trim()]));
+  private get variablesMap(): Record<string, VariableValue> {
+    return Object.fromEntries(this.variableRows.filter(row => row.name !== '').map(row => [row.name, this.valueOfRow(row)]));
   }
 
   /** What each row's value is refused for, by row key. */
   private get rowProblems(): Map<number, string> {
-    return new Map(this.variableRows.filter(row => row.name !== '').map((row): [number, string] => [row.key, valueProblem(row.value)]).filter(([, problem]) => problem !== ''));
+    const problem = (row: VariableRow) => {
+      const known = variableByName(this.variableCatalog, row.name);
+      return known ? valueProblem(known, this.valueOfRow(row)) : 'This token is not in the list central serves.';
+    };
+    return new Map(this.variableRows.filter(row => row.name !== '').map((row): [number, string] => [row.key, problem(row)]).filter(([, text]) => text !== ''));
   }
 
   /** The rows the preview may send: those central would not refuse. */
-  private get renderableVariables(): Record<string, string> {
+  private get renderableVariables(): Record<string, VariableValue> {
     const problems = this.rowProblems;
-    return Object.fromEntries(this.variableRows.filter(row => row.name !== '' && !problems.has(row.key)).map(row => [row.name, row.value.trim()]));
+    return Object.fromEntries(this.variableRows.filter(row => row.name !== '' && !problems.has(row.key)).map(row => [row.name, this.valueOfRow(row)]));
   }
 
   private get dirty(): boolean {
@@ -681,11 +743,19 @@ export class VersolaThemeRecord extends LitElement {
     this.scheduleRender();
   }
 
+  /** A row for a token with its starting value; a pair token starts split, with the two values the forms paint, so adding it changes nothing yet. */
+  private rowFor(variable: ThemeVariable): VariableRow {
+    const start = variable.start;
+    return typeof start === 'string'
+      ? { key: this.rowKey++, name: variable.name, value: start, light: start, dark: start, split: false }
+      : { key: this.rowKey++, name: variable.name, value: start.light, light: start.light, dark: start.dark, split: variable.pair };
+  }
+
   private addRow() {
     const used = new Set(this.variableRows.map(row => row.name));
-    const next = THEME_VARIABLES.find(variable => !used.has(variable.name));
+    const next = this.variableCatalog.variables.find(variable => !used.has(variable.name));
     if (!next) return;
-    this.variableRows = [...this.variableRows, { key: this.rowKey++, name: next.name, value: next.start }];
+    this.variableRows = [...this.variableRows, this.rowFor(next)];
     this.scheduleRender();
   }
 
@@ -695,62 +765,98 @@ export class VersolaThemeRecord extends LitElement {
   }
 
   private pickName(row: VariableRow, name: string) {
-    const kind = variableByName(name)?.kind;
-    // A value that fits the old token's kind but not the new one's is replaced by the new token's start.
-    const fits = kind === variableByName(row.name)?.kind;
-    this.setRow(row.key, { name, value: fits ? row.value : (variableByName(name)?.start ?? row.value) });
+    const next = variableByName(this.variableCatalog, name);
+    const old = variableByName(this.variableCatalog, row.name);
+    if (!next) return this.setRow(row.key, { name });
+    // A value that fits the old token (same kind, same pair-ness) is kept; otherwise the new token's start replaces it.
+    const fits = old !== undefined && old.kind === next.kind && old.pair === next.pair;
+    const fresh = this.rowFor(next);
+    this.setRow(row.key, fits ? { name } : { name, value: fresh.value, light: fresh.light, dark: fresh.dark, split: fresh.split });
   }
 
-  /** The control a token's value is edited with: a colour picker and its hex, or a length in px; anything else (a value
-   *  stored through the API, such as `color-mix(...)`) is plain text. */
-  private renderValue(row: VariableRow, label: string, problem: string): TemplateResult {
-    const kind = variableByName(row.name)?.kind;
+  /** "Same for both": one value for both schemes, or a light and a dark one that begin as that value. */
+  private setSame(row: VariableRow, same: boolean) {
+    this.setRow(row.key, same ? { split: false, value: row.light } : { split: true, light: row.value, dark: row.value });
+  }
+
+  /** The control a value is edited with: a colour picker and its hex, a length in px, or text (a shadow, a weight, a font list, or
+   *  anything stored through the API such as `color-mix(...)`). */
+  private renderValue(row: VariableRow, field: RowField, label: string, problem: string): TemplateResult {
+    const kind = variableByName(this.variableCatalog, row.name)?.kind;
+    const value = row[field];
     const describedBy = problem ? `row-problem-${row.key}` : nothing;
     const invalid = problem ? 'true' : 'false';
     const disabled = !this.canManage;
-    if (kind === 'colour' && (isHexColour(row.value) || row.value.trim() === '')) {
+    const set = (next: string) => this.setRow(row.key, { [field]: next } as Partial<VariableRow>);
+    if (kind === 'colour' && (isHexColour(value) || value.trim() === '')) {
       return html`
-        <input type="color" class="color-input" aria-label=${`${label} colour picker`} .value=${isHexColour(row.value) ? row.value : '#000000'} ?disabled=${disabled}
-          @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />
-        <input type="text" class="compact-input mono value-input" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${row.value} ?disabled=${disabled}
-          @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />`;
+        <input type="color" class="color-input" aria-label=${`${label} colour picker`} .value=${isHexColour(value) ? value : '#000000'} ?disabled=${disabled}
+          @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />
+        <input type="text" class="compact-input mono value-input" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${value} ?disabled=${disabled}
+          @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />`;
     }
-    const px = pixels(row.value);
+    const px = pixels(value);
     if (kind === 'length' && px !== null) {
       return html`
         <input type="number" min="0" step="1" class="compact-input mono value-input" aria-label=${`${label} value, px`} aria-invalid=${invalid} aria-describedby=${describedBy} .value=${String(px)} ?disabled=${disabled}
-          @input=${(e: Event) => this.setRow(row.key, { value: `${(e.target as HTMLInputElement).value.trim()}px` })} />
+          @input=${(e: Event) => set(`${(e.target as HTMLInputElement).value.trim()}px`)} />
         <span class="unit" aria-hidden="true">px</span>`;
     }
     return html`
-      <input type="text" class="compact-input mono value-input" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${row.value} ?disabled=${disabled}
-        @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />`;
+      <input type="text" class="compact-input mono value-input ${kind === 'shadow' || kind === 'font' ? 'value-wide' : ''}" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${value} ?disabled=${disabled}
+        @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />`;
+  }
+
+  private renderValues(row: VariableRow, known: ThemeVariable | undefined, problem: string): TemplateResult {
+    if (!row.split) {
+      return html`
+        <div class="var-value">${this.renderValue(row, 'value', row.name, problem)}</div>
+        ${known?.pair ? html`
+          <label class="same-toggle"><input type="checkbox" checked ?disabled=${!this.canManage} aria-label=${`${row.name}: same for both schemes`}
+            @change=${(e: Event) => this.setSame(row, (e.target as HTMLInputElement).checked)} />Same for both</label>` : nothing}`;
+    }
+    return html`
+      <div class="var-value var-split">
+        <div class="scheme-pair"><span class="scheme-tag">Light</span>${this.renderValue(row, 'light', `${row.name} light`, problem)}</div>
+        <div class="scheme-pair"><span class="scheme-tag">Dark</span>${this.renderValue(row, 'dark', `${row.name} dark`, problem)}</div>
+      </div>
+      <label class="same-toggle"><input type="checkbox" ?disabled=${!this.canManage} aria-label=${`${row.name}: same for both schemes`}
+        @change=${(e: Event) => this.setSame(row, (e.target as HTMLInputElement).checked)} />Same for both</label>`;
   }
 
   private renderRow(row: VariableRow): TemplateResult {
     const problems = this.rowProblems;
     const problem = problems.get(row.key) ?? '';
     const taken = new Set(this.variableRows.filter(other => other.key !== row.key).map(other => other.name));
-    const known = variableByName(row.name);
+    const catalog = this.variableCatalog;
+    const known = variableByName(catalog, row.name);
     return html`
       <li class="var-row">
         <div class="var-line">
-          <select class="compact-input mono var-name" aria-label=${`Token for row ${this.variableRows.indexOf(row) + 1}`} ?disabled=${!this.canManage}
+          <select class="compact-input mono var-name" aria-label=${`Token for row ${this.variableRows.indexOf(row) + 1}`} aria-describedby=${`var-help-${row.key}`} ?disabled=${!this.canManage}
             @change=${(e: Event) => this.pickName(row, (e.target as HTMLSelectElement).value)}>
             ${known ? nothing : html`<option value=${row.name} selected>${row.name}</option>`}
-            ${THEME_VARIABLES.map(variable => html`<option value=${variable.name} ?selected=${variable.name === row.name} ?disabled=${taken.has(variable.name)}>${variable.name}</option>`)}
+            ${catalog.groups.map(group => html`
+              <optgroup label=${groupTitle(group)}>
+                ${catalog.variables.filter(variable => variable.group === group.id).map(variable => html`<option value=${variable.name} ?selected=${variable.name === row.name} ?disabled=${taken.has(variable.name)}>${variable.name}</option>`)}
+              </optgroup>`)}
           </select>
-          <div class="var-value">${this.renderValue(row, row.name, problem)}</div>
           ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" aria-label=${`Remove ${row.name}`} @click=${() => this.removeRow(row.key)}>Remove</button>` : nothing}
         </div>
-        <div class="var-help">${known?.description ?? 'not in the theming API'}</div>
+        <div class="var-help" id=${`var-help-${row.key}`}>${known ? html`${describe(known)}. <span class="var-default">Default <code>${known.default}</code></span>` : 'not in the theming API'}</div>
+        <div class="var-line var-edit">${this.renderValues(row, known, problem)}</div>
         ${problem ? html`<div class="error-message" id=${`row-problem-${row.key}`} role="alert">${problem}</div>` : nothing}
       </li>`;
   }
 
+  /** What a rule may target on `:root`: the tokens central lists, and the page background. */
+  private get cssTokens(): Array<[string, string]> {
+    return [...this.variableCatalog.variables.map((variable): [string, string] => [variable.name, describe(variable)]), [PAGE_BG_VARIABLE.name, PAGE_BG_VARIABLE.description]];
+  }
+
   private renderAdvanced(): TemplateResult {
     const open = this.cssOpen || this.editCss.trim() !== '';
-    const canAdd = this.canManage && this.variableRows.length < THEME_VARIABLES.length;
+    const canAdd = this.canManage && this.variableRows.length < this.variableCatalog.variables.length;
     return html`
       <section class="card record-card" aria-label="Advanced">
         <div class="record-card-head">
@@ -759,21 +865,21 @@ export class VersolaThemeRecord extends LitElement {
         </div>
         <div class="card-body">
           <h3 class="part-title">Token overrides</h3>
-          <p class="hint">Set a single variable of the sign-in screens without writing CSS.</p>
+          <p class="hint">Restyle buttons, the card, fields, text and lines without writing CSS. Each token says what it paints; a colour that differs between schemes takes a light and a dark value.</p>
           ${this.variableRows.length === 0 ? html`<p class="hint" id="no-tokens">None.</p>` : html`<ul class="var-rows" aria-label="Token overrides">${this.variableRows.map(row => this.renderRow(row))}</ul>`}
           ${canAdd ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.addRow()}>Add token</button>` : nothing}
         </div>
         <div class="card-body part-rule">
           <h3 class="part-title">Custom CSS</h3>
           ${open ? html`
-            <p class="hint" id="custom-css-hint">Applied after the colours, shape and background above, so your rules win. You are responsible for contrast and small screens.</p>
+            <p class="hint" id="custom-css-hint">Most things are tokens above: buttons, the card, fields, text, lines and the logo. Write CSS only for what no token does. It is applied after the colours, shape and background above, so your rules win; you are responsible for contrast and small screens.</p>
             <versola-code-editor id="custom-css" language="css" rows="10" label="Custom CSS" ?disabled=${!this.canManage} .value=${this.editCss}
               @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}></versola-code-editor>
             <p class="hint tokens-title">Variables a rule may set or read</p>
             <ul class="tokens" aria-label="Variables a rule may target">
-              ${CSS_TOKENS.map(([name, text]) => html`<li><code>${name}</code><span>${text}</span></li>`)}
+              ${this.cssTokens.map(([name, text]) => html`<li><code>${name}</code><span>${text}</span></li>`)}
             </ul>` : html`
-            <p class="hint">None. Add your own rules on top of everything above.</p>
+            <p class="hint">None. The last resort: your own rules on top of everything above, for what no token covers.</p>
             ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" aria-expanded="false" @click=${() => { this.cssOpen = true; }}>Add custom CSS</button>` : nothing}`}
         </div>
       </section>`;

@@ -286,8 +286,22 @@ for (const theme of themes) {
     await page.getByRole('combobox', { name: 'Token for row 1' }).selectOption('--rs');
     await clean();
     await page.getByRole('button', { name: 'Add token' }).click();
-    await page.getByRole('textbox', { name: '--brand value' }).fill('url(x)');
+    await page.getByRole('textbox', { name: '--page-light value' }).fill('url(x)');
     await expect(page.getByRole('alert').filter({ hasText: 'Not allowed' })).toBeVisible();
+    await clean();
+    // A pair token: a light and a dark colour, each with a picker and a hex, and the "Same for both" toggle; then a shadow and a weight.
+    await page.getByRole('combobox', { name: 'Token for row 2' }).selectOption('--btn');
+    await expect(page.getByRole('textbox', { name: '--btn light value' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '--btn dark value' })).toBeVisible();
+    await clean();
+    await page.getByRole('checkbox', { name: '--btn: same for both schemes' }).check();
+    await clean();
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await page.getByRole('combobox', { name: 'Token for row 3' }).selectOption('--shadow');
+    await page.getByRole('textbox', { name: '--shadow value' }).fill('0 0');
+    await expect(page.getByRole('alert').filter({ hasText: 'shadow layer' })).toBeVisible();
+    await clean();
+    await page.getByRole('combobox', { name: 'Token for row 3' }).selectOption('--heading-weight');
     await clean();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByRole('button', { name: 'Discard' }).click();

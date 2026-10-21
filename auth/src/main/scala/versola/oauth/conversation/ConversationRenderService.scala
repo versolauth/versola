@@ -13,7 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets}
+import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets, VariableValue}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
@@ -675,7 +675,7 @@ object ConversationRenderService:
           defaultCss.map: default =>
             theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
               case Some(resolved) =>
-                val variables = theme.tokens.flatMap(_.variables).getOrElse(Map.empty[String, String])
+                val variables = theme.tokens.flatMap(_.variables).getOrElse(Map.empty[String, VariableValue])
                 (ThemeCss.compose(default, resolved, variables, theme.css), Some(resolved))
               case None => (Seq(default, theme.css).filter(_.nonEmpty).mkString("\n"), versola)
         case Some(theme) if theme.css.nonEmpty => ZIO.succeed((theme.css, versola))

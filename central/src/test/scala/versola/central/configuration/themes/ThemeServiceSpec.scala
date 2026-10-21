@@ -1,7 +1,8 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
-import versola.util.theme.{Background, BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemePresets, ThemeTokens}
+import versola.util.theme.VariableValue.{Pair, Single}
+import versola.util.theme.{Background, BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemePresets, ThemeTokens, VariableValue}
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -125,7 +126,11 @@ object ThemeServiceSpec extends UnitSpecBase:
           "rounded",
           "",
           None,
-          Some(ThemeTokens(base = "studio", overrides = None, variables = Some(Map("--rs" -> "8px", "--brand" -> "#112233")))),
+          Some(ThemeTokens(
+            base = "studio",
+            overrides = None,
+            variables = Some(Map("--rs" -> Single("8px"), "--brand" -> Single("#112233"), "--btn" -> Pair(light = "#112233", dark = "#ddeeff"))),
+          )),
         )
         for
           _ <- env.repository.create.succeedsWith(())
@@ -134,15 +139,15 @@ object ThemeServiceSpec extends UnitSpecBase:
       },
       test("is refused, with the reason and nothing stored, for a variable outside the theming API or an unsafe value") {
         val env = Env()
-        def themeWith(variables: Map[String, String]) =
+        def themeWith(variables: Map[String, VariableValue]) =
           ThemeRecord("x", "", None, Some(ThemeTokens(base = "studio", overrides = None, variables = Some(variables))))
         for
-          unknown <- env.service.createTheme(themeWith(Map("--page-ink" -> "#000"))).either
-          unsafe <- env.service.createTheme(themeWith(Map("--rs" -> "8px; } body { display: none"))).either
-          url <- env.service.updateTheme(themeWith(Map("--page-bg" -> "url(x)"))).either
-          noExpression <- env.service.updateTheme(themeWith(Map("--brand" -> "expression(alert(1))"))).either
+          unknown <- env.service.createTheme(themeWith(Map("--page-bg" -> Single("#000")))).either
+          unsafe <- env.service.createTheme(themeWith(Map("--rs" -> Single("8px; } body { display: none")))).either
+          url <- env.service.updateTheme(themeWith(Map("--page-bg" -> Single("url(x)")))).either
+          noExpression <- env.service.updateTheme(themeWith(Map("--brand" -> Single("expression(alert(1))")))).either
         yield assertTrue(
-          unknown.left.exists(e => e.isInstanceOf[IllegalArgumentException] && e.getMessage.contains("--page-ink")),
+          unknown.left.exists(e => e.isInstanceOf[IllegalArgumentException] && e.getMessage.contains("--page-bg")),
           unsafe.left.exists(e => e.isInstanceOf[IllegalArgumentException] && e.getMessage.startsWith("--rs ")),
           url.left.exists(_.getMessage.contains("--page-bg")),
           noExpression.left.exists(_.getMessage.startsWith("--brand ")),
@@ -169,7 +174,11 @@ object ThemeServiceSpec extends UnitSpecBase:
     suite("render")(
       test("lays the token overrides after the five values and before the theme's own CSS") {
         val env = Env()
-        val tokens = ThemeTokens(base = "studio", overrides = None, variables = Some(Map("--rs" -> "8px")))
+        val tokens = ThemeTokens(
+          base = "studio",
+          overrides = None,
+          variables = Some(Map("--rs" -> Single("8px"), "--btn" -> Pair(light = "#112233", dark = "#ddeeff"))),
+        )
         for rendered <- env.service.render(RenderThemeRequest(Some(tokens), css = Some("CUSTOM-CSS"), overrides = None))
         yield
           val after = ThemeCss.baseStylesheet.length
@@ -180,12 +189,13 @@ object ThemeServiceSpec extends UnitSpecBase:
             values < own,
             own < rendered.css.indexOf("CUSTOM-CSS"),
             rendered.generated.contains("--rs:8px;"),
+            rendered.generated.contains("--btn:light-dark(#112233,#ddeeff);"),
             rendered.css.contains(rendered.generated),
           )
       },
       test("refuses an unsafe token override instead of rendering it") {
         val env = Env()
-        val tokens = ThemeTokens(base = "studio", overrides = None, variables = Some(Map("--rs" -> "8px;}")))
+        val tokens = ThemeTokens(base = "studio", overrides = None, variables = Some(Map("--rs" -> Single("8px;}"))))
         for result <- env.service.render(RenderThemeRequest(Some(tokens), css = None, overrides = None)).either
         yield assertTrue(result.left.exists(e => e.isInstanceOf[IllegalArgumentException] && e.getMessage.startsWith("--rs ")))
       },

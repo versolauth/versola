@@ -222,12 +222,12 @@ object ThemeCssSpec extends ZIOSpecDefault:
     ),
     suite("compose")(
       test("puts the default first, then the tokens, then the theme's own CSS") {
-        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, String], "CUSTOM")
+        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, VariableValue], "CUSTOM")
         assertTrue(css.indexOf("DEFAULT") < css.indexOf("--brand"), css.indexOf("--brand") < css.indexOf("CUSTOM"))
       },
       test("a custom rule for a variable the tokens set comes after the generated one, so it wins the cascade") {
         val tokens = resolved("#155e75")
-        val css = ThemeCss.compose(ThemeCss.baseStylesheet, tokens, Map.empty[String, String], ":root { --brand: #ff0000; --rs: 8px; }")
+        val css = ThemeCss.compose(ThemeCss.baseStylesheet, tokens, Map.empty[String, VariableValue], ":root { --brand: #ff0000; --rs: 8px; }")
         val generated = ThemeCss.generate(tokens)
         val custom = css.indexOf(":root { --brand: #ff0000;")
         assertTrue(
@@ -238,7 +238,7 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
       test("the cascade is the default, the five values, the token overrides, then the custom CSS") {
-        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map("--rs" -> "8px"), "CUSTOM")
+        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map("--rs" -> VariableValue.Single("8px")), "CUSTOM")
         val values = css.indexOf("--brand:#155e75")
         val overrides = css.indexOf("--rs:8px;")
         assertTrue(
@@ -250,10 +250,10 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
       test("writes no block when no token is overridden") {
-        assertTrue(ThemeCss.compose("D", resolved("#155e75"), Map.empty[String, String], "").indexOf("token overrides") == -1)
+        assertTrue(ThemeCss.compose("D", resolved("#155e75"), Map.empty[String, VariableValue], "").indexOf("token overrides") == -1)
       },
       test("leaves out an empty custom CSS") {
-        assertTrue(!ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, String], "").endsWith("\n"))
+        assertTrue(!ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, VariableValue], "").endsWith("\n"))
       },
     ),
     suite("ThemePresets")(

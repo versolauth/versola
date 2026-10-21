@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, tagStyles } from '../styles/components';
 import type { FormPreview, FormRecord, Locale, OAuthClient, ThemePreset, ThemeRecord } from '../types';
-import { fetchAllClients, fetchFormPreviews, fetchForms, fetchLocales, fetchThemePresets, fetchThemes } from '../utils/central-api';
+import { fetchAllClients, fetchFormPreviews, fetchForms, fetchLocales, fetchThemePresets, fetchThemeVariables, fetchThemes } from '../utils/central-api';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { clientsUsingTheme, joinNames, resolveTokens, themeDetailText } from '../utils/theme-summary';
@@ -12,6 +12,7 @@ import type { ThemeSaved } from './theme-record';
 import type { DataTableColumn, RowMenuItem } from './data-table';
 import './content-header';
 import './data-table';
+import type { ThemeVariableCatalog } from '../utils/theme-variables';
 import './empty-state';
 import './error-card';
 import './filter-bar';
@@ -36,6 +37,7 @@ export class VersolaThemesList extends LitElement {
   @state() private themes: ThemeRecord[] = [];
   /** The built-in themes a theme can be based on; empty from a central that has none. */
   @state() private presets: ThemePreset[] = [];
+  @state() private variableCatalog: ThemeVariableCatalog = { groups: [], variables: [] };
   @state() private clients: OAuthClient[] = [];
   /** What the editor's preview renders: the stored forms, the states central lists for them, the languages. */
   @state() private forms: FormRecord[] = [];
@@ -100,9 +102,10 @@ export class VersolaThemesList extends LitElement {
     this.error = '';
     try {
       const tenantId = this.tenantId;
-      const [themes, presets, forms, previews, locales, clients] = await Promise.all([
+      const [themes, presets, variableCatalog, forms, previews, locales, clients] = await Promise.all([
         tenantId ? fetchThemes(tenantId) : Promise.resolve([]),
         fetchThemePresets(),
+        fetchThemeVariables(),
         fetchForms(),
         fetchFormPreviews(),
         fetchLocales(),
@@ -111,6 +114,7 @@ export class VersolaThemesList extends LitElement {
       if (seq !== this.loadSeq) return;
       this.themes = themes;
       this.presets = presets;
+      this.variableCatalog = variableCatalog;
       this.forms = forms;
       this.previews = previews;
       this.locales = locales;
@@ -256,6 +260,7 @@ export class VersolaThemesList extends LitElement {
         .canManage=${this.canManage}
         .tenantId=${this.tenantId}
         .presets=${this.presets}
+        .variableCatalog=${this.variableCatalog}
         .forms=${this.forms}
         .previews=${this.previews}
         .locales=${this.locales}

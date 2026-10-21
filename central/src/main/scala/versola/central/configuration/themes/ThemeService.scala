@@ -3,7 +3,7 @@ package versola.central.configuration.themes
 import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
-import versola.util.theme.{ThemeCss, ThemePresets, ThemeVariables}
+import versola.util.theme.{ThemeCss, ThemePresets, ThemeVariables, VariableValue}
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 import java.sql.SQLException
@@ -63,7 +63,7 @@ object ThemeService:
       for
         themed <- request.tokens match
           case Some(tokens) =>
-            val variables = tokens.variables.getOrElse(Map.empty[String, String])
+            val variables = tokens.variables.getOrElse(Map.empty[String, VariableValue])
             for
               resolved <- ZIO.fromEither(ThemePresets.resolve(tokens)).mapError(IllegalArgumentException(_))
               _ <- ZIO.fromEither(ThemeVariables.validate(variables)).mapError(IllegalArgumentException(_))
@@ -88,7 +88,10 @@ object ThemeService:
         case None => ZIO.unit
         case Some(tokens) =>
           ZIO.fromEither(ThemePresets.resolve(tokens)).mapError(IllegalArgumentException(_)).unit *>
-            ZIO.fromEither(ThemeVariables.validate(tokens.variables.getOrElse(Map.empty[String, String]))).mapError(IllegalArgumentException(_))
+            ZIO.fromEither(ThemeVariables.validate(tokens.variables.getOrElse(Map.empty[
+              String,
+              VariableValue,
+            ]))).mapError(IllegalArgumentException(_))
 
     override def deleteTheme(id: String): Task[Unit] =
       if id == DefaultThemeId then

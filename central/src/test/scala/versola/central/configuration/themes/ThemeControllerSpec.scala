@@ -9,7 +9,8 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth}
 import versola.util.JWT
 import versola.util.http.Observability
-import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemePresets, ThemeTokens}
+import versola.util.theme.VariableValue.Single
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemePresets, ThemeTokens, ThemeVariableCatalog, ThemeVariables}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -207,7 +208,7 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.body.asString.map(body =>
           assertTrue(
             body.contains("--rs contains"),
-            service.createTheme.calls.flatMap(_.tokens).flatMap(_.variables) == List(Map("--rs" -> "8px; }")),
+            service.createTheme.calls.flatMap(_.tokens).flatMap(_.variables) == List(Map("--rs" -> Single("8px; }"))),
           ),
         ),
     ),
@@ -218,6 +219,17 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, _) =>
         for body <- response.body.asString
         yield assertTrue(body.fromJson[GetThemePresetsResponse] == Right(GetThemePresetsResponse(ThemePresets.all))),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/themes/variables lists the tokens a theme may set, grouped and described in each language",
+      request = Request.get(URL.root / "configuration" / "themes" / "variables"),
+      expectedStatus = Status.Ok,
+      verify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          body.fromJson[ThemeVariableCatalog] == Right(ThemeVariables.catalog),
+          ThemeVariables.catalog.variables.exists(_.name == "--btn"),
+        ),
     ),
     controllerTestCase(
       description = "POST /configuration/themes/css returns the stylesheet of the tokens",

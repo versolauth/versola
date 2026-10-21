@@ -1,4 +1,5 @@
 import type { OAuthClient, ResolvedThemeTokens, ThemeOverrides, ThemePreset, ThemeRecord } from '../types';
+import { sameValue, type VariableValue } from './theme-variables';
 
 const ORDER: Array<keyof ThemeOverrides> = ['brand', 'surface', 'background', 'shape', 'mode'];
 const SHORT: Record<keyof ThemeOverrides, string> = { brand: 'brand', surface: 'page', background: 'background', shape: 'shape', mode: 'scheme' };
@@ -48,14 +49,14 @@ export function joinNames(names: string[]): string {
 export interface ThemeEditState {
   base: string;
   overrides: ThemeOverrides;
-  variables: Record<string, string>;
+  variables: Record<string, VariableValue>;
   css: string;
 }
 
-const sameVariables = (a: Record<string, string>, b: Record<string, string>) => {
+const sameVariables = (a: Record<string, VariableValue>, b: Record<string, VariableValue>) => {
   const left = Object.entries(a).sort(([x], [y]) => x.localeCompare(y));
   const right = Object.entries(b).sort(([x], [y]) => x.localeCompare(y));
-  return left.length === right.length && left.every(([name, value], index) => name === right[index][0] && value.trim() === right[index][1].trim());
+  return left.length === right.length && left.every(([name, value], index) => name === right[index][0] && sameValue(value, right[index][1]));
 };
 
 /** What differs between the stored theme and the editor, named for the bar: `brand colour, shape, token overrides, custom CSS`. */

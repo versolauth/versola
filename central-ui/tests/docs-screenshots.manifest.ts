@@ -425,9 +425,9 @@ const formsDocsState = async (): Promise<MockState> => {
 // The preview's stylesheet is what central would build for the tokens (the mock returns a stub).
 export const realThemeCss: Act = async page => {
   await page.route('**/configuration/themes/css', async route => {
-    const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens>; variables?: Record<string, string> }; css?: string };
+    const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens>; variables?: Record<string, string | { light: string; dark: string }> }; css?: string };
     const variables = Object.entries(tokens.variables ?? {});
-    const own = variables.length > 0 ? `/* token overrides */\n:root{${variables.map(([name, value]) => `${name}:${value};`).join('')}}` : '';
+    const own = variables.length > 0 ? `/* token overrides */\n:root{${variables.map(([name, value]) => `${name}:${typeof value === 'string' ? value : `light-dark(${value.light},${value.dark})`};`).join('')}}` : '';
     const generated = [generate(resolve(tokens)), own].filter(Boolean).join('\n');
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ css: [read('../forms/common.css'), generated, css ?? ''].filter(Boolean).join('\n'), generated }) });
   });
@@ -1052,14 +1052,14 @@ const consoleShots: DocsShot[] = [
     name: 'console/theme-custom-css', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}&id=storefront-rules`,
     state: async () => {
       const state = await brandingState();
-      return { ...state, themes: [...themes, { id: 'storefront-rules', css: '.container { box-shadow: none; }\n.container { border: 2px solid var(--brand); }', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' }, variables: { '--rs': '8px' } } }] };
+      return { ...state, themes: [...themes, { id: 'storefront-rules', css: '.container { box-shadow: none; }\n.container { border: 2px solid var(--brand); }', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' }, variables: { '--btn': '#c2410c', '--on-btn': '#ffffff' } } }] };
     },
     before: async page => {
       await realThemeCss(page);
       await page.reload();
       await page.locator('#preview-form').selectOption('consent');
       await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
-      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--rs:8px;');
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--btn:#c2410c;');
     },
   },
 

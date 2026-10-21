@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
 import { ftClients, ftPath, ftState, ftThemes } from './forms-themes-fixtures';
 import { baseStylesheetMock, setupConfigApiMocks, type MockConfigState } from './mocks';
+import tokenCatalog from '../src/utils/theme-variables.json' with { type: 'json' };
 
 const listPath = ftPath('themes');
 const recordPath = (id: string) => ftPath('themes', `&id=${id}`);
@@ -402,10 +403,13 @@ test.describe('editing', () => {
     await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toHaveCount(0);
     await customCard.getByRole('button', { name: 'Add custom CSS' }).click();
     await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
-    await expect(customCard).toContainText('Applied after the colours, shape and background above, so your rules win. You are responsible for contrast and small screens.');
-    for (const name of ['--brand', '--on-brand', '--focus', '--on-focus', '--rf', '--rb', '--rs', '--page-light', '--page-dark', '--glow-light', '--glow-dark', '--control-h', '--page-bg']) {
+    // The last resort: its hint now says most things are tokens, and the list of variables is the one central serves.
+    await expect(customCard).toContainText('Most things are tokens above: buttons, the card, fields, text, lines and the logo.');
+    await expect(customCard).toContainText('so your rules win; you are responsible for contrast and small screens.');
+    for (const name of [...tokenCatalog.variables.map(variable => variable.name), '--page-bg']) {
       await expect(customCard.locator('.tokens code').filter({ hasText: new RegExp(`^${name}$`) })).toHaveCount(1);
     }
+    expect(tokenCatalog.variables.length).toBeGreaterThanOrEqual(40);
     await expect(bar(page)).toHaveText('No unsaved changes');
 
     await page.getByRole('textbox', { name: 'Custom CSS' }).fill('.container { box-shadow: none; }');
@@ -432,13 +436,14 @@ test.describe('editing', () => {
     const rows = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
     await expect(rows).toHaveCount(1);
     await expect(bar(page)).toHaveText('Unsaved: token overrides');
-    // The first token not taken: --brand, a colour, with a picker and its hex.
-    await expect(rows.first().getByRole('combobox')).toHaveValue('--brand');
+    // The first token not taken: --page-light, a colour, with a picker and its hex.
+    await expect(rows.first().getByRole('combobox')).toHaveValue('--page-light');
     await expect(rows.first().locator('input[type="color"]')).toHaveCount(1);
-    await expect(rows.first()).toContainText('accent colour');
+    await expect(rows.first()).toContainText('Page colour in the light scheme');
 
     await rows.first().getByRole('combobox').selectOption('--rs');
-    await expect(rows.first()).toContainText('card corner radius');
+    await expect(rows.first()).toContainText('Corner radius of the card');
+    await expect(rows.first()).toContainText('Default 24px');
     const length = rows.first().getByRole('spinbutton');
     await expect(length).toHaveValue('24');
     await length.fill('8');
@@ -469,20 +474,21 @@ test.describe('editing', () => {
   test('a token already used is not offered twice, and the last token cannot be added past the list', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('default'), state });
     const advanced = card(page, 'Advanced');
-    for (let i = 0; i < 12; i++) await advanced.getByRole('button', { name: 'Add token' }).click();
+    const total = tokenCatalog.variables.length;
+    for (let i = 0; i < total; i++) await advanced.getByRole('button', { name: 'Add token' }).click();
 
     await expect(advanced.getByRole('button', { name: 'Add token' })).toHaveCount(0);
     const names = await advanced.getByRole('combobox').evaluateAll((selects: Element[]) => selects.map(select => (select as HTMLSelectElement).value));
-    expect(new Set(names).size).toBe(12);
-    await expect(advanced.getByRole('combobox').first().locator('option:checked')).toHaveText('--brand');
-    await expect(advanced.getByRole('combobox').nth(1).locator('option[value="--brand"]')).toBeDisabled();
+    expect(new Set(names).size).toBe(total);
+    await expect(advanced.getByRole('combobox').first().locator('option:checked')).toHaveText('--page-light');
+    await expect(advanced.getByRole('combobox').nth(1).locator('option[value="--page-light"]')).toBeDisabled();
   });
 
   test('a value central would refuse is explained under the row and blocks Save, and the preview leaves it out', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('default'), state });
     const advanced = card(page, 'Advanced');
     await advanced.getByRole('button', { name: 'Add token' }).click();
-    const value = advanced.getByRole('textbox', { name: '--brand value' });
+    const value = advanced.getByRole('textbox', { name: '--page-light value' });
 
     await value.fill('red; } body { display: none');
     await expect(advanced.getByRole('alert')).toContainText('Not allowed');
@@ -493,7 +499,143 @@ test.describe('editing', () => {
     await value.fill('#ff6b4a');
     await expect(advanced.getByRole('alert')).toHaveCount(0);
     await expect(save(page)).toBeEnabled();
-    await expect.poll(() => srcdoc(page)).toContain('--brand:#ff6b4a;');
+    await expect.poll(() => srcdoc(page)).toContain('--page-light:#ff6b4a;');
+  });
+
+  test('the token select is grouped as central lists the tokens, with the description and the default under it', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const select = advanced.getByRole('combobox', { name: 'Token for row 1' });
+
+    const labels = await select.locator('optgroup').evaluateAll((groups: Element[]) => groups.map(group => (group as HTMLOptGroupElement).label));
+    expect(labels).toEqual(['Page', 'Brand and logo', 'Card', 'Text', 'Fields', 'Buttons', 'Links and focus', 'Lines', 'Status and overlays']);
+    for (const group of tokenCatalog.groups) {
+      const inScala = tokenCatalog.variables.filter(variable => variable.group === group.id).map(variable => variable.name);
+      const inSelect = await select.locator(`optgroup[label="${group.title.en}"] option`).evaluateAll((options: Element[]) => options.map(option => (option as HTMLOptionElement).value));
+      expect(inSelect, group.id).toEqual(inScala);
+    }
+
+    await select.selectOption('--btn-hover');
+    await expect(advanced.locator('.var-help')).toContainText('Fill of the main button under the pointer');
+    await expect(advanced.locator('.var-help')).toContainText('Default color-mix(in srgb, var(--btn) 88%, var(--sheet))');
+    // The description is what the select is described by, so a screen reader reads it with the token.
+    await expect(select).toHaveAccessibleDescription(/Fill of the main button under the pointer/);
+  });
+
+  test('a pair token has a light and a dark input and a "Same for both" toggle; a token that is not a pair has neither', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    const row = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem').first();
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+
+    await row.getByRole('combobox').selectOption('--brand');
+    await expect(row.getByRole('checkbox')).toHaveCount(0);
+    await expect(row.getByRole('textbox', { name: '--brand value' })).toBeVisible();
+
+    await row.getByRole('combobox').selectOption('--btn');
+    // A pair token starts with the two values the forms paint, so adding it changes nothing yet.
+    await expect(row.getByRole('textbox', { name: '--btn light value' })).toHaveValue('#1c1b19');
+    await expect(row.getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#f3f2f0');
+    await expect(row.locator('input[type="color"]')).toHaveCount(2);
+    const same = row.getByRole('checkbox', { name: '--btn: same for both schemes' });
+    await expect(same).not.toBeChecked();
+
+    await row.getByRole('textbox', { name: '--btn light value' }).fill('#d9480f');
+    await row.getByRole('textbox', { name: '--btn dark value' }).fill('#ff922b');
+    await expect.poll(() => srcdoc(page)).toContain('--btn:light-dark(#d9480f,#ff922b);');
+
+    // One value for both schemes: written as it is, without light-dark().
+    await same.check();
+    await expect(row.getByRole('textbox', { name: '--btn light value' })).toHaveCount(0);
+    await expect(row.getByRole('textbox', { name: '--btn value' })).toHaveValue('#d9480f');
+    await expect.poll(() => srcdoc(page)).toContain('--btn:#d9480f;');
+    await expect.poll(async () => (await srcdoc(page)).includes('--btn:light-dark(')).toBe(false);
+
+    // And back: the two begin as that value.
+    await row.getByRole('checkbox', { name: '--btn: same for both schemes' }).uncheck();
+    await expect(row.getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#d9480f');
+    await row.getByRole('textbox', { name: '--btn dark value' }).fill('#ff922b');
+    await save(page).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'default',
+      css: '',
+      tokens: { base: 'versola', variables: { '--btn': { light: '#d9480f', dark: '#ff922b' } } },
+    });
+  });
+
+  test('a stored pair comes back as a light and a dark input, and a single value as one', async ({ page }) => {
+    const themes = [{ id: 'with-pair', css: '', tenantId: null, tokens: { base: 'versola', variables: { '--btn': { light: '#112233', dark: '#ddeeff' }, '--ink': '#222222' } } }];
+    await loadAdminApp(page, { path: listPath, state: { ...state, themes } });
+    await themeRow(page, 'with-pair').click();
+    const rows = card(page, 'Advanced').getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+
+    await expect(rows.nth(0).getByRole('textbox', { name: '--btn light value' })).toHaveValue('#112233');
+    await expect(rows.nth(0).getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#ddeeff');
+    await expect(rows.nth(1).getByRole('textbox', { name: '--ink value' })).toHaveValue('#222222');
+    await expect(rows.nth(1).getByRole('checkbox', { name: '--ink: same for both schemes' })).toBeChecked();
+    await expect(bar(page)).toHaveText('No unsaved changes');
+    await rows.nth(0).getByRole('textbox', { name: '--btn dark value' }).fill('#eeeeee');
+    await expect(bar(page)).toHaveText('Unsaved: token overrides');
+  });
+
+  test('each kind is edited with its own control and refused with its own reason', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    const add = async (token: string) => {
+      await advanced.getByRole('button', { name: 'Add token' }).click();
+      const rows = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+      const row = rows.last();
+      await row.getByRole('combobox').selectOption(token);
+      return row;
+    };
+
+    const length = await add('--rs');
+    await expect(length.getByRole('spinbutton')).toHaveValue('24');
+    const shadow = await add('--shadow');
+    await expect(shadow.getByRole('textbox', { name: '--shadow value' })).toHaveValue('0 30px 60px -24px var(--shadow-color)');
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('0 0');
+    await expect(shadow.getByRole('alert')).toContainText('A shadow layer is [inset] x y [blur [spread]] colour.');
+    await expect(save(page)).toBeDisabled();
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('0 8px 24px rgba(0, 0, 0, 0.2)');
+    await expect(shadow.getByRole('alert')).toHaveCount(0);
+    await expect.poll(() => srcdoc(page)).toContain('--shadow:0 8px 24px rgba(0, 0, 0, 0.2);');
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('none');
+    await expect(shadow.getByRole('alert')).toHaveCount(0);
+
+    const weight = await add('--heading-weight');
+    await expect(weight.getByRole('textbox', { name: '--heading-weight value' })).toHaveValue('750');
+    await weight.getByRole('textbox', { name: '--heading-weight value' }).fill('1000');
+    await expect(weight.getByRole('alert')).toContainText('Use a whole number from 100 to 900.');
+    await weight.getByRole('textbox', { name: '--heading-weight value' }).fill('600');
+    await expect(weight.getByRole('alert')).toHaveCount(0);
+
+    const font = await add('--font');
+    await font.getByRole('textbox', { name: '--font value' }).fill("'Georgia'");
+    await expect(font.getByRole('alert')).toContainText('Use only letters, digits, spaces');
+    await font.getByRole('textbox', { name: '--font value' }).fill('Georgia, serif');
+    await expect(font.getByRole('alert')).toHaveCount(0);
+
+    const colour = await add('--ink');
+    await colour.getByRole('textbox', { name: '--ink light value' }).fill('12px');
+    await expect(colour.getByRole('alert')).toContainText('Light: Not a colour');
+    await colour.getByRole('textbox', { name: '--ink light value' }).fill('#222222');
+    await colour.getByRole('textbox', { name: '--ink dark value' }).fill('rgb(1,2,3');
+    await expect(colour.getByRole('alert')).toContainText('Dark: Close every parenthesis.');
+  });
+
+  test('a button colour override is carried to the preview: the stylesheet it renders has it, after the five values', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const row = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem').first();
+    await row.getByRole('combobox').selectOption('--btn');
+    await row.getByRole('checkbox', { name: '--btn: same for both schemes' }).check();
+    await row.getByRole('textbox', { name: '--btn value' }).fill('#d9480f');
+
+    await expect.poll(() => srcdoc(page)).toContain('--btn:#d9480f;');
+    const doc = await srcdoc(page);
+    expect(doc.indexOf('--brand:#155e75')).toBeLessThan(doc.indexOf('--btn:#d9480f;'));
   });
 
   test('stored token overrides come back as rows, a value the controls cannot show is plain text, and the list and header say so', async ({ page }) => {

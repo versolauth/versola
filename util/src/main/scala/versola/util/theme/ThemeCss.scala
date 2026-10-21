@@ -239,5 +239,5 @@ object ThemeCss:
     * variables the theme sets one by one, then the theme's own CSS, which may be empty. Each later part wins over the
     * earlier ones where it sets the same thing.
     */
-  def compose(defaultCss: String, tokens: ResolvedTokens, variables: Map[String, String], customCss: String): String =
+  def compose(defaultCss: String, tokens: ResolvedTokens, variables: Map[String, VariableValue], customCss: String): String =
     Seq(defaultCss, generate(tokens), ThemeVariables.render(variables), customCss).filter(_.nonEmpty).mkString("\n")

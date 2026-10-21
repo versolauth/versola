@@ -4,6 +4,9 @@
  * three small interfaces below, which Playwright's `Page`, `Route` and `Request` satisfy as they are,
  * so nothing in here depends on a browser-automation library.
  */
+import themeVariableCatalog from '../utils/theme-variables.json' with { type: 'json' };
+import type { ThemeVariableCatalog } from '../utils/theme-variables';
+
 export interface MockRequest {
   url(): string;
   method(): string;
@@ -99,7 +102,7 @@ type FormPreviewDto = {
 };
 type FormLocaleDto = { code: string; name: string };
 type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string; background?: string };
-type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto; variables?: Record<string, string> };
+type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto; variables?: Record<string, string | { light: string; dark: string }> };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
@@ -392,6 +395,8 @@ export type MockConfigState = {
   themes: ThemeDto[];
   // The built-in themes; null stands for a central that has none.
   themePresets: ThemePresetDto[] | null;
+  // The tokens a theme may set one by one (central's list); null stands for a central that has none.
+  themeVariables: ThemeVariableCatalog | null;
   // When set, central refuses to render a stylesheet with this message (a 500), to see how a preview shows it.
   themeRenderError: string | null;
   systemSettings: SystemSettingsDto;
@@ -465,6 +470,7 @@ const defaultState: MockConfigState = {
   formLocales: [],
   themes: [],
   themePresets: [],
+  themeVariables: themeVariableCatalog as ThemeVariableCatalog,
   themeRenderError: null,
   systemSettings: {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
@@ -503,6 +509,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
     themePresets: clone(overrides.themePresets === undefined ? defaultState.themePresets : overrides.themePresets),
+    themeVariables: clone(overrides.themeVariables === undefined ? defaultState.themeVariables : overrides.themeVariables),
     themeRenderError: overrides.themeRenderError ?? null,
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
@@ -1388,6 +1395,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
+    if (pathname === '/configuration/themes/variables' && method === 'GET') {
+      if (state.themeVariables === null) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      await route.fulfill(json(state.themeVariables));
+      return;
+    }
+
     // What central renders: for a theme with tokens the base stylesheet, a line naming the tokens, then the theme's custom CSS; for a
     // theme stored with CSS only (no tokens) its CSS alone; then, when the request carries a client's overrides, a line naming them.
     if (pathname === '/configuration/themes/css' && method === 'POST') {
@@ -1411,7 +1427,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
       const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode};--background:${resolved.background}}`;
       const variables = Object.entries(payload.tokens.variables ?? {});
-      const own = variables.length > 0 ? `/* token overrides */:root{${variables.map(([name, value]) => `${name}:${value};`).join('')}}` : '';
+      const own = variables.length > 0 ? `/* token overrides */:root{${variables.map(([name, value]) => `${name}:${typeof value === 'string' ? value : `light-dark(${value.light},${value.dark})`};`).join('')}}` : '';
       await route.fulfill(json({ css: [baseStylesheetMock, generated, own, payload.css ?? '', overridden].filter(Boolean).join('\n'), generated: [generated, own].filter(Boolean).join('\n') }));
       return;
     }

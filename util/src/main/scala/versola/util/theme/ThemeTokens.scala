@@ -56,7 +56,7 @@ object ThemeOverrides:
 case class ThemeTokens(
     base: String,
     overrides: Option[ThemeOverrides],
-    variables: Option[Map[String, String]],
+    variables: Option[Map[String, VariableValue]],
 ) derives JsonCodec, Schema
 
 /** Every token with a value: a preset's, or a preset's with a theme's overrides laid over it. */

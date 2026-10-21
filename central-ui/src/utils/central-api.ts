@@ -1,4 +1,5 @@
 import { clientKindOf, type ClientKind } from './client-presets';
+import type { ThemeVariableCatalog } from './theme-variables';
 import type {
   AuthFlow,
   AuthMethod,
@@ -1510,6 +1511,16 @@ export async function updateTheme(theme: ThemeRecord): Promise<void> {
 export async function fetchThemePresets(): Promise<ThemePreset[]> {
   const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
   return response.presets;
+}
+
+// The tokens a theme may set one by one: groups, kinds, descriptions and defaults, defined in central. An older central
+// that has no such endpoint answers 404; the editor then has no tokens to offer and says so.
+export async function fetchThemeVariables(): Promise<ThemeVariableCatalog> {
+  try {
+    return await request<ThemeVariableCatalog>('/configuration/themes/variables');
+  } catch {
+    return { groups: [], variables: [] };
+  }
 }
 
 // The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows

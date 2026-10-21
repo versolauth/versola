@@ -1768,7 +1768,8 @@ paths:
               $ref: '#/components/schemas/UpdateThemeRequest'
       responses:
         '204':
-          description: Theme updated. Sending no `tokens` stores the theme with CSS only: its `css` is then the whole stylesheet.
+          description: >-
+            Theme updated. Sending no `tokens` stores the theme with CSS only, so its `css` is then the whole stylesheet.
         '400':
           description: Refused, with nothing stored, for the reasons given for creating a theme.
           content:
@@ -1818,6 +1819,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetThemePresetsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/themes/variables:
+    get:
+      tags: [Themes]
+      summary: List the tokens a theme may set one by one
+      description: |
+        The forms' theming API: every token a theme may override in `tokens.variables`, grouped as the console lists them,
+        with its kind, whether it takes a light and a dark value, a one-line description in each language and its default.
+        The list is fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getThemeVariables
+      responses:
+        '200':
+          description: The groups and the tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetThemeVariablesResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5443,13 +5463,14 @@ components:
             Token overrides: CSS variables of the forms' theming API, each with its value. Written as one `:root` block
             after the CSS the five values generate and before the theme's `css`, so the order is base theme, five values,
             token overrides, custom CSS, and a later one wins over an earlier one that sets the same variable. Absent
-            means none. Only these names are accepted: `--brand`, `--on-brand`, `--focus`, `--on-focus`, `--rf`, `--rb`,
-            `--rs`, `--page-light`, `--page-dark`, `--glow-light`, `--glow-dark`, `--control-h`. A value is a colour, a length
-            or another plain CSS value of at most 120 characters, made of letters, digits and `# % . , ( ) - + _ /` and
-            spaces, balanced in parentheses, without `;`, `{`, `}`, `!`, `@`, `\`, a comment, `url(` or `expression(`. An
-            unknown name or a refused value answers 400 with the reason and stores nothing.
+            means none. Only the names listed by `GET /configuration/themes/variables` are accepted. A value is a string
+            of the token's kind (a colour, a length, a shadow, a weight or a font list) of at most 120 characters, made of
+            letters, digits and `# % . , ( ) - + _ /` and spaces, balanced in parentheses, without `;`, `{`, `}`, `!`, `@`,
+            `\`, a comment, `url(` or `expression(`. A token that is a pair (`pair: true` in the list) also takes
+            `{ "light": "...", "dark": "..." }`, written as `light-dark(light, dark)`; any other token refuses it. An unknown
+            name or a refused value answers 400 with the reason and stores nothing.
           additionalProperties:
-            type: string
+            $ref: '#/components/schemas/ThemeVariableValue'
       required: [base]
     ThemeOverrides:
       type: object
@@ -5510,6 +5531,78 @@ components:
           type: string
           enum: [glow, linear, horizon, flat]
       required: [brand, shape, surface, mode, background]
+    ThemeVariableValue:
+      description: One value for both colour schemes, or, for a token that is a pair, one value per scheme.
+      oneOf:
+        - type: string
+          maxLength: 120
+          example: '#d9480f'
+        - type: object
+          properties:
+            light:
+              type: string
+              maxLength: 120
+            dark:
+              type: string
+              maxLength: 120
+          required: [light, dark]
+          additionalProperties: false
+          example: { light: '#d9480f', dark: '#ff922b' }
+    ThemeVariableGroup:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: object
+          description: The group's name by language (`en`, `ru`).
+          additionalProperties:
+            type: string
+      required: [id, title]
+    ThemeVariable:
+      type: object
+      properties:
+        name:
+          type: string
+          example: '--btn'
+        group:
+          type: string
+          description: The `id` of the group the token is listed in.
+        kind:
+          type: string
+          enum: [colour, length, shadow, weight, font]
+          description: |
+            What a value is, which decides the rule it must pass. `colour`: hex, a colour name, or a colour function
+            (`rgb()`, `hsl()`, `oklch()`, `color-mix()`, `var(--name)`). `length`: a non-negative number with `px`, `rem`, `em`,
+            `vw`, `vh` or `%`, or `0`. `shadow`: `none` or one to four `[inset] x y [blur [spread]] colour` layers. `weight`: a
+            whole number from 100 to 900. `font`: a comma-separated list of font names, without quotes.
+        pair:
+          type: boolean
+          description: Whether the token takes `{ light, dark }` as well as one value. Only colours can.
+        description:
+          type: object
+          description: One line saying what the token paints, by language (`en`, `ru`).
+          additionalProperties:
+            type: string
+        default:
+          type: string
+          description: What `forms/common.css` declares for it, as written there.
+        start:
+          $ref: '#/components/schemas/ThemeVariableValue'
+      required: [name, group, kind, pair, description, default, start]
+    GetThemeVariablesResponse:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemeVariableGroup'
+        variables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemeVariable'
+          description: In the order they are written and listed.
+      required: [groups, variables]
     GetThemePresetsResponse:
       type: object
       properties:
@@ -5530,7 +5623,8 @@ components:
           $ref: '#/components/schemas/ThemeTokens'
         css:
           type: string
-          description: The theme's custom CSS, laid after the generated one (with no `tokens`: the whole stylesheet); absent means none.
+          description: >-
+            The theme's custom CSS, laid after the generated one (with no `tokens` it is the whole stylesheet); absent means none.
         overrides:
           $ref: '#/components/schemas/ThemeOverrides'
     RenderThemeResponse:
