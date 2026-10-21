@@ -12,7 +12,15 @@ object InboundAdmissionSpec extends ZIOSpecDefault:
       max: Int = 10,
       continuation: Double = 0.8,
       start: Double = 0.5,
-  ) = InboundAdmissionSettings(mode, max, continuation, start, retryAfterSeconds = 2)
+  ) = InboundAdmissionSettings(
+    mode,
+    max,
+    continuation,
+    start,
+    retryAfterSeconds = 2,
+    // wide bounds, so the starting value (`max`) is the limit until a test makes it learn something
+    adaptive = AdaptiveSettings.default.copy(minLimit = 1, maxLimit = 1000),
+  )
 
   private def tierOf(method: Method, pattern: String): Tier = pattern match
     case "/never" => Tier.Never
@@ -150,8 +158,8 @@ object InboundAdmissionSpec extends ZIOSpecDefault:
       },
     ),
     suite("adaptive limit")(
-      test("the limit is the learned one while adaptation is on, and call times that worsen shrink it") {
-        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
+      test("the limit is learned whenever the mode is not off, and call times that worsen shrink it") {
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
         for
           adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
           initial = adm.limit
@@ -161,14 +169,14 @@ object InboundAdmissionSpec extends ZIOSpecDefault:
         yield assertTrue(initial == 5, warm == 5, adm.limit < 5, adm.limit >= 2)
       },
       test("a stalled executor shrinks it even with no call completing") {
-        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 0.5, lagTarget = 50.millis)
         for
           adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
           _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(3_000_000_000L)) *> adm.adapt)
         yield assertTrue(adm.limit < 5, adm.limit >= 2)
       },
       test("what the limit has shrunk to is what requests are held to") {
-        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
         for
           adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
           _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(10_000_000_000L)) *> adm.adapt)
@@ -182,20 +190,41 @@ object InboundAdmissionSpec extends ZIOSpecDefault:
           _ <- ZIO.foreachDiscard(held)(_.join)
         yield assertTrue(limit >= 2, limit <= 5, over.status == Status.ServiceUnavailable)
       },
-      test("with adaptation off the limit is maxInFlight, and turning it on starts from it, inside the bounds") {
-        val on = settings(max = 5).copy(adaptive = AdaptiveSettings.default.copy(enabled = true, minLimit = 2, maxLimit = 12))
-        val tight = settings(max = 50).copy(adaptive = AdaptiveSettings.default.copy(enabled = true, minLimit = 2, maxLimit = 12))
+      test("the limit starts at maxInFlight inside the bounds, and a new maxInFlight restarts it") {
+        val bounds = AdaptiveSettings.default.copy(minLimit = 2, maxLimit = 12)
+        val tight = settings(max = 50).copy(adaptive = bounds)
         for
-          adm <- InboundAdmission.make(settings(max = 5))
-          off = adm.limit
-          _ <- adm.update(on)
+          adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = bounds))
           started = adm.limit
           other <- InboundAdmission.make(settings(max = 5))
           _ <- other.update(tight)
-        yield assertTrue(off == 5, started == 5, other.limit == 12)
+        yield assertTrue(started == 5, other.limit == 12)
+      },
+      test("with the mode off nothing is learned, and switching on starts from maxInFlight") {
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(mode = GuardMode.Off, max = 5).copy(adaptive = adaptive))
+          _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(10_000_000_000L)) *> adm.adapt)
+          whileOff = adm.limit
+          _ <- adm.update(settings(mode = GuardMode.Shadow, max = 5).copy(adaptive = adaptive))
+        yield assertTrue(whileOff == 5, adm.limit == 5)
+      },
+      test("shadow learns the limit and refuses nothing") {
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        for
+          adm <- InboundAdmission.make(settings(mode = GuardMode.Shadow, max = 5).copy(adaptive = adaptive))
+          _ <- ZIO.foreachDiscard(1 to 30)(_ => ZIO.succeed(adm.recordLag(10_000_000_000L)) *> adm.adapt)
+          limit = adm.limit
+          entered <- Ref.make(0)
+          gate <- Promise.make[Nothing, Unit]
+          app = routes(entered, gate) @@ adm.middleware(tierOf)
+          held <- occupy(app, "/critical", limit + 1, entered)
+          _ <- gate.succeed(())
+          rs <- ZIO.foreach(held)(_.join)
+        yield assertTrue(limit < 5, rs.forall(_.status == Status.Ok))
       },
       test("the limit that was learned stays through a settings update that keeps it inside the bounds") {
-        val adaptive = AdaptiveSettings(enabled = true, minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
+        val adaptive = AdaptiveSettings(minLimit = 2, maxLimit = 20, tolerance = 1.5, smoothing = 1.0, lagTarget = 50.millis)
         for
           adm <- InboundAdmission.make(settings(max = 5).copy(adaptive = adaptive))
           _ <- ZIO.foreachDiscard(1 to 10)(_ => ZIO.succeed(adm.recordLag(1_000_000_000L)) *> adm.adapt)

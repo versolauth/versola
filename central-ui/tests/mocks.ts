@@ -40,7 +40,7 @@ type ResourceEndpointDto = {
 type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -355,6 +355,10 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
+  /** Makes `PUT /configuration/edges/overload` answer 400 with this message, as central does for a policy that fails validation. */
+  overloadRejection?: string;
+  /** Holds `PUT /configuration/edges/overload` for this long, to look at the saving state. */
+  overloadDelayMs?: number;
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
@@ -466,6 +470,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     permissions: clone({ ...defaultState.permissions, ...overrides.permissions }),
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
+    overloadRejection: overrides.overloadRejection,
+    overloadDelayMs: overrides.overloadDelayMs,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
@@ -1235,6 +1241,25 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       edge.requireDpopNonce = (body as { requireDpopNonce: boolean }).requireDpopNonce;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/edges/overload' && method === 'PUT') {
+      const edgeId = url.searchParams.get('edgeId');
+      const edge = state.edges.find(e => e.id === edgeId);
+      if (!edge) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      if (state.overloadDelayMs) await new Promise(resolve => setTimeout(resolve, state.overloadDelayMs));
+      if (state.overloadRejection) {
+        await route.fulfill(json({ error: state.overloadRejection }, 400));
+        return;
+      }
+      const policy = body as Record<string, unknown>;
+      if (Object.keys(policy).length === 0) delete edge.overloadPolicy;
+      else edge.overloadPolicy = policy;
       await route.fulfill({ status: 204, body: '' });
       return;
     }

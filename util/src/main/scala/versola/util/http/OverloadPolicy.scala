@@ -87,8 +87,10 @@ final case class InboundPolicy(
       adaptive = adaptive.fold(base.adaptive)(_.applyTo(base.adaptive)),
     )
 
+/** Bounds and gains of the learned limit. The limit is always learned while the inbound mode is not `off`; there is no switch.
+  * A leftover `enabled` field from an earlier draft of the wire form is ignored (unknown fields are).
+  */
 final case class AdaptivePolicy(
-    enabled: Option[Boolean] = None,
     minLimit: Option[Int] = None,
     maxLimit: Option[Int] = None,
     tolerance: Option[Double] = None,
@@ -115,7 +117,6 @@ final case class AdaptivePolicy(
   def applyTo(base: AdaptiveSettings): AdaptiveSettings =
     val min = minLimit.getOrElse(base.minLimit)
     AdaptiveSettings(
-      enabled = enabled.getOrElse(base.enabled),
       minLimit = min,
       maxLimit = math.max(min, maxLimit.getOrElse(base.maxLimit)),
       tolerance = tolerance.getOrElse(base.tolerance),

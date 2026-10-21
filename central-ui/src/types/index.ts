@@ -386,10 +386,13 @@ export interface PaginatedResponse<T> {
 }
 
 // Edge
+export type { OverloadPolicy } from '../utils/overload-policy';
+import type { OverloadPolicy } from '../utils/overload-policy';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
   requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
+  overloadPolicy?: OverloadPolicy;  // absent when none is set: the edge uses its deployment's values
 }
 
 export interface ServiceKey {
