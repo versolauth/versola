@@ -114,9 +114,12 @@ Renders the `env:` entries pulling one service's required secret values
 from values.yaml's `secrets.existingSecret` via secretKeyRef. Expects a
 dict: {root: $, service: "auth"|"central"|"edge"}. Fails at template time
 (not a confusing "secret \"\" not found" at Pod-start) if
-secrets.existingSecret is unset.
+secrets.existingSecret is unset. A variable listed in $optional is rendered
+with `optional: true`: a release whose own Secret predates the key keeps
+starting (its config does not reference the variable either).
 */}}
 {{- define "versola.secretEnv" -}}
+{{- $optional := list "ANTIFRAUD_SUBJECT_SECRET" -}}
 {{- $svc := .service -}}
 {{- $root := .root -}}
 {{- $secretName := $root.Values.secrets.existingSecret -}}
@@ -129,6 +132,9 @@ secrets.existingSecret is unset.
     secretKeyRef:
       name: {{ $secretName }}
       key: {{ include "versola.secretKeyFor" (dict "service" $svc "var" $var) }}
+{{- if has $var $optional }}
+      optional: true
+{{- end }}
 {{ end -}}
 {{- end -}}
 

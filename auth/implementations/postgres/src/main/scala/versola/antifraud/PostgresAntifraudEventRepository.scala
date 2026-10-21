@@ -37,6 +37,9 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO) extends AntifraudEvent
     xa.transactMeasured("maintain-antifraud-partitions"):
       // Several instances run this at start-up; creating the same partition twice at once can fail in the
       // catalog, so they take turns.
+      // Creating or dropping a partition takes an exclusive lock on `af_event`; behind a long read it would hold up
+      // every insert of the writer. Better to give up (the next run tries again soon) than to queue them.
+      sql"SET LOCAL lock_timeout = '5s'".update.run()
       sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
       (0 until days).map(from.plusDays(_)).foreach: day =>
         val partition = SqlLiteral(partitionName(day))

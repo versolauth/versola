@@ -111,6 +111,46 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(1.second)
           yield assertTrue(e.repository.insertBatch.calls == List(List(lost), List(kept)))
       },
+      test("refused requests give way once the queue is half full, and the others still get in") {
+        val e = env
+        ZIO.scoped:
+          for
+            started <- Promise.make[Nothing, Unit]
+            release <- Promise.make[Nothing, Unit]
+            _ <- e.repository.insertBatch.returnsZIO(_ => started.succeed(()) *> release.await)
+            events <- build(e, small)
+            _ <- events.record(event())
+            _ <- started.await
+            // capacity 3: two are queued, so a refused request would make the queue more than half full.
+            early = List(event(AntifraudOutcome.throttled), event(AntifraudOutcome.sent))
+            _ <- ZIO.foreachDiscard(early)(events.record)
+            shed = event(AntifraudOutcome.throttled)
+            kept = event(AntifraudOutcome.verified)
+            _ <- events.record(shed)
+            _ <- events.record(kept)
+            _ <- release.succeed(())
+            _ <- TestClock.adjust(1.second)
+            all = e.repository.insertBatch.calls.flatten
+          yield assertTrue(!all.contains(shed), all.contains(kept), all.containsSlice(early))
+      },
+      test("a backlog is written batch after batch without resting in between") {
+        val e = env
+        ZIO.scoped:
+          for
+            started <- Promise.make[Nothing, Unit]
+            release <- Promise.make[Nothing, Unit]
+            _ <- e.repository.insertBatch.returnsZIO:
+              case List(_) => started.succeed(()) *> release.await
+              case _ => ZIO.unit
+            events <- build(e, small.copy(queueCapacity = 10, batchSize = 2))
+            _ <- events.record(event())
+            _ <- started.await
+            _ <- ZIO.foreachDiscard(List.fill(4)(event()))(events.record)
+            _ <- release.succeed(())
+            // One rest after the first (short) batch, then both full ones in the same instant.
+            _ <- TestClock.adjust(1.second)
+          yield assertTrue(e.repository.insertBatch.calls.map(_.size) == List(1, 2, 2))
+      },
       test("writes what is still queued when it stops") {
         val e = env
         for
@@ -141,6 +181,30 @@ object AntifraudEventsSpec extends UnitSpecBase:
             first.take(1) == List((LocalDate.of(2026, 10, 21), 4, LocalDate.of(2026, 10, 7))),
             second.size >= 2,
           )
+      },
+      test("a failed run is tried again after a minute, not six hours later") {
+        val e = env
+        ZIO.scoped:
+          for
+            attempts <- Ref.make(0)
+            _ <- e.repository.maintainPartitions.returnsZIO: _ =>
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- AntifraudEvents.live.build.provideSome[Scope](
+              ZLayer.succeed[AntifraudEventRepository](e.repository),
+              ZLayer.succeed(small),
+              ZLayer.succeed(TestEnvConfig.coreConfig),
+              ZLayer.succeed[OAuthConfigurationService](e.configService),
+              SecureRandom.live,
+              SecureRandom.live >>> SecurityService.live,
+            )
+            _ <- TestClock.adjust(0.seconds)
+            beforeRetry <- attempts.get
+            _ <- TestClock.adjust(1.minute)
+            afterRetry <- attempts.get
+            _ <- TestClock.adjust(5.minutes)
+            later <- attempts.get
+          yield assertTrue(beforeRetry == 1, afterRetry == 2, later == 2)
       },
       test("a failing run is logged and does not stop the writer") {
         val e = env

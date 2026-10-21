@@ -229,6 +229,17 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           steps = env.antifraud.steps
         yield assertTrue(steps.isEmpty)
       },
+      test("a correct code whose step could not be stored records nothing, so a retry cannot count a second verification") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
+          result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          steps = env.antifraud.steps
+        yield assertTrue(result == ConversationResult.WriteConflict, steps.isEmpty)
+      },
       test("a correct code is recorded as verified, a wrong one as wrong_code, and a locked destination as locked") {
         for
           verified <- {

@@ -42,8 +42,8 @@ object AntifraudEvents:
 
   /** @param queueCapacity  events held while the writer catches up; one more is dropped and counted
     * @param batchSize      the most events written in one round trip
-    * @param flushInterval  the writer rests this long between batches, which bounds the writes per second at
-    *                       `1 / flushInterval` whatever the traffic, and lets a burst gather into one batch
+    * @param flushInterval  the writer rests this long after a batch that did not fill, which lets a trickle gather
+    *                       into one batch; a full batch is followed at once by the next
     * @param retention      how long a day's partition is kept
     * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
     *                       leave the writer without a partition
@@ -99,24 +99,31 @@ object AntifraudEvents:
         // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
-        subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).orDie
-        events = Impl(queue, securityService, secureRandom, configService, subjectKey)
+        subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
+        events = Impl(queue, settings.queueCapacity, securityService, secureRandom, configService, subjectKey)
         _ <- Maintenance(repository, settings).run
         _ <- Writer(queue, repository, settings).run
       yield events
 
   class Impl(
       queue: Queue[AntifraudEvent],
+      queueCapacity: Int,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       configService: OAuthConfigurationService,
-      subjectKey: Array[Byte],
+      subjectKey: Secret,
   ) extends AntifraudEvents:
 
     override def record(event: AntifraudEvent): UIO[Unit] =
-      queue.offer(event).flatMap:
-        case true => AntifraudMetrics.enqueued
-        case false => AntifraudMetrics.dropped("queue_full")
+      // A refused request is logged at the pace its sender sets, so once the queue is half full they give way: what
+      // is left is for the requests that were let through, which the statistics are made of.
+      val shed = event.outcome == AntifraudOutcome.throttled
+      queue.size.flatMap: size =>
+        if shed && size > queueCapacity / 2 then AntifraudMetrics.dropped("throttled_shed")
+        else
+          queue.offer(event).flatMap:
+            case true => AntifraudMetrics.enqueued
+            case false => AntifraudMetrics.dropped("queue_full")
 
     override def otpRequested(
         authId: AuthId,
@@ -185,7 +192,9 @@ object AntifraudEvents:
         batch = (first +: rest).toList
         _ <- AntifraudMetrics.queueSize(queue)
         _ <- write(batch)
-        _ <- ZIO.sleep(settings.flushInterval)
+        // Rest only when the queue was not full to the brim: a backlog (which is what an attack makes) is
+        // written back to back, so the write rate is not capped at one batch per interval when it matters.
+        _ <- ZIO.sleep(settings.flushInterval).when(batch.size < settings.batchSize)
       yield ()).forever
 
     private def write(batch: List[AntifraudEvent]): UIO[Unit] =
@@ -198,37 +207,52 @@ object AntifraudEvents:
 
     /** The final write is bounded: a database that is down must not hold the shutdown up. */
     private val drain: UIO[Unit] =
-      queue.takeAll.flatMap(events => ZIO.when(events.nonEmpty)(write(events.toList)).unit).timeout(5.seconds).unit
+      queue.takeAll.flatMap: events =>
+        ZIO.when(events.nonEmpty)(
+          write(events.toList).timeout(5.seconds).flatMap:
+            case None => AntifraudMetrics.dropped("shutdown", events.size)
+            case Some(_) => ZIO.unit,
+        ).unit
 
     val run: URIO[Scope, Unit] =
       loop.forkScoped.unit *> ZIO.addFinalizer(drain).unit
 
   private class Maintenance(repository: AntifraudEventRepository, settings: Settings):
 
-    private val once: UIO[Unit] =
+    private val once: IO[Unit, Unit] =
       Clock.instant.flatMap: now =>
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
         repository.maintainPartitions(today, settings.partitionsAhead + 1, keepFrom).foldCauseZIO(
-          cause => ZIO.logWarningCause("could not maintain the antifraud event partitions", cause),
+          cause =>
+            AntifraudMetrics.partitionMaintenanceFailed *>
+              ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
+              ZIO.fail(()),
           _ => ZIO.unit,
         )
 
-    /** Once before the writer starts, so its first batch finds a partition, then every six hours. */
+    /** Once before the writer starts, so its first batch finds a partition, then every six hours. A run that failed
+      * (a lock that could not be had in time, a database that was down) is tried again after a minute, not six
+      * hours later, since the writer has nowhere to write once the days ahead are used up. */
     val run: URIO[Scope, Unit] =
-      once *> (ZIO.sleep(6.hours) *> once).forever.forkScoped.unit
+      val untilDone = once.retry(Schedule.spaced(1.minute)).ignore
+      once.either.flatMap: first =>
+        (ZIO.when(first.isLeft)(ZIO.sleep(1.minute) *> untilDone) *> (ZIO.sleep(6.hours) *> untilDone).forever).forkScoped.unit
 
 object AntifraudMetrics:
   private val enqueuedTotal = Metric.counter("antifraud_events_enqueued_total")
   private val writtenTotal = Metric.counter("antifraud_events_written_total")
   private val droppedTotal = Metric.counter("antifraud_events_dropped_total")
+  private val partitionMaintenanceFailedTotal = Metric.counter("antifraud_partition_maintenance_failed_total")
   private val queueSizeGauge = Metric.gauge("antifraud_event_queue_size")
 
   val enqueued: UIO[Unit] = enqueuedTotal.increment
 
+  val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
+
   def written(count: Int): UIO[Unit] = writtenTotal.incrementBy(count.toLong)
 
-  /** `reason` is one of `queue_full`, `write_failed`, `build_failed`: a closed set, since it is a label. */
+  /** `reason` is one of `queue_full`, `throttled_shed`, `write_failed`, `build_failed`, `shutdown`: a closed set, since it is a label. */
   def dropped(reason: String, count: Int = 1): UIO[Unit] =
     droppedTotal.tagged(Set(MetricLabel("reason", reason))).incrementBy(count.toLong)
 

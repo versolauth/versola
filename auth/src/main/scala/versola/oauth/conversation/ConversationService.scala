@@ -414,8 +414,7 @@ object ConversationService:
                   )
 
             case SubmitOtpResult.Success =>
-              otpChecked(authId, conversation, AntifraudOutcome.verified) *>
-                Clock.instant.flatMap: now =>
+              Clock.instant.flatMap: now =>
                   val otpType = conversation.authFlow.otpType
                   val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
                   for
@@ -428,8 +427,12 @@ object ConversationService:
                       userClaims = fresh.flatten.orElse(conversation.userClaims),
                     )
                     written <- conversationRepository.overwrite(authId, updated)
+                    // Recorded once the step is stored: a retry after a lost write race submits the same code
+                    // again, and a second `verified` for one conversation would count a conversion twice.
                     result <-
-                      if written then ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                      if written then
+                        otpChecked(authId, conversation, AntifraudOutcome.verified)
+                          .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
                       else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
                   yield result
 
