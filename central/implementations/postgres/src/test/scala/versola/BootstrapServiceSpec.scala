@@ -288,6 +288,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           endpointId("DELETE", "/settings/passkeys"),
           endpointId("POST", "/settings/passkeys/register/start"),
           endpointId("POST", "/settings/passkeys/register/finish"),
+          endpointId("PATCH", "/settings/password"),
         ),
       )
     },
@@ -338,13 +339,14 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val merged = BootstrapService.mergeAccountEndpoints(seeded, withoutDelete.map(endpoint => endpoint.id -> endpoint).toMap)
       assertTrue(merged == seeded)
     },
-    test("reading the page, renaming a passkey and finishing an enrollment ask for nothing more") {
+    test("reading the page, renaming a passkey, finishing an enrollment and changing the password ask for nothing more") {
       val quiet = BootstrapService.accountEndpointRecords.filter(_.stepUpAcr.isEmpty)
       assertTrue(
         quiet.map(endpoint => endpoint.method -> endpoint.path).toSet == Set(
           "GET" -> "/settings",
           "PATCH" -> "/settings/passkeys",
           "POST" -> "/settings/passkeys/register/finish",
+          "PATCH" -> "/settings/password",
         ),
         quiet.forall(_.stepUpCondition.isEmpty),
         quiet.forall(_.maxAge.isEmpty),

@@ -2,7 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.configuration.*
 import versola.central.configuration.clients.certificates.ClientCertificateService
-import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
@@ -27,7 +27,6 @@ object ClientController extends Controller:
     updateNativeClientEndpoint,
     updateServiceClientEndpoint,
     renewEdgeCertificateEndpoint,
-    signEdgeCertificateEndpoint,
     rotateSecretEndpoint,
     deletePreviousSecretEndpoint,
     deleteClientEndpoint,
@@ -86,78 +85,90 @@ object ClientController extends Controller:
   val getAllClientsSyncEndpoint =
     Method.GET / "configuration" / "clients" / "sync" -> handler { (request: Request) =>
       for
-        clientService <- ZIO.service[OAuthClientService]
-        centralConfig <- ZIO.service[CentralConfig]
-        securityService <- ZIO.service[SecurityService]
-        edgeService <- ZIO.service[EdgeService]
         edgeId <- authorizeInternal(request)
-        transportEncrypt <- edgeId match
-          case Some(id) =>
-            edgeService.find(id).someOrFail(Unauthorized).map {
-              edge =>
-                // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
-                // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
-                // the one transport both go through.
-                (secret: Secret) =>
-                  securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
-            }
-          case None =>
-            ZIO.succeed: (secret: Secret) =>
-              securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
-        certificateService <- ZIO.service[ClientCertificateService]
-        clients <- clientService.getClientsForSync(edgeId)
-        // Only an edge enrols (#463), so only an edge is told what its certificates must say.
-        enrollmentSubjects <- certificateService.enrollmentSubjects(clients).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
-        encryptedClients <- ZIO.foreach(clients) { client =>
-          for
-            secret <- ZIO.foreach(client.secret)(transportEncrypt)
-            previousSecret <- ZIO.foreach(client.previousSecret)(transportEncrypt)
-            // Only an edge can decrypt this, and only an edge has any use for it: the key is
-            // how it authenticates as this client. A caller that is not one gets the field
-            // absent rather than encrypted to a key it does not hold.
-            edgeSigningKey <- ZIO.foreach(client.edgeSigningKey.filter(_ => edgeId.isDefined))(transportEncrypt)
-            edgeClientCertificate <- ZIO.foreach(
-              client.edgeClientCertificate.filter(_ => edgeId.isDefined),
-            )(transportEncrypt)
-          yield SyncOAuthClientRecord(
-            id = client.id,
-            tenantId = client.tenantId,
-            clientName = client.clientName,
-            redirectUris = client.redirectUris,
-            scope = client.scope,
-            secret = secret,
-            previousSecret = previousSecret,
-            accessTokenTtl = client.accessTokenTtl,
-            refreshTokenTtl = client.refreshTokenTtl,
-            permissions = client.permissions,
-            theme = client.theme,
-            authFlow = client.authFlow,
-            otpTemplateId = client.otpTemplateId,
-            frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
-            frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
-            backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
-            logoUri = client.logoUri,
-            policyUri = client.policyUri,
-            tosUri = client.tosUri,
-            consentFlow = client.consentFlow,
-            dpopBoundAccessTokens = client.dpopBoundAccessTokens,
-            dpopSigningAlgs = client.dpopSigningAlgs,
-            dpopMinRsaKeySize = client.dpopMinRsaKeySize,
-            authMethod = client.authMethod,
-            mtlsAuth = client.mtlsAuth,
-            certificateBoundAccessTokens = client.certificateBoundAccessTokens,
-            jwks = client.jwks,
-            requireSignedRequestObject = client.requireSignedRequestObject,
-            requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
-            edgeSigningKey = edgeSigningKey,
-            edgeClientCertificate = edgeClientCertificate,
-            applicationType = client.applicationType,
-            edgeCertificateSubject = enrollmentSubjects.get(client.id),
-            themeOverrides = client.themeOverrides,
-          )
-        }
-      yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
+        response <- clientsSyncResponse(edgeId)
+      yield Response.json(response.toJson)
     }
+
+  /** The clients a sync caller is served, with every secret encrypted to that caller alone: to
+    * auth under the shared transport secret, to an edge under its registered RSA key. Shared
+    * with `EdgeSyncController`, which is the only route an edge reaches it through (#554); here
+    * `edgeId` is what `authorizeInternal` proved, so an edge is never served another's tenants.
+    */
+  def clientsSyncResponse(
+      edgeId: Option[EdgeId],
+  ): RIO[OAuthClientService & CentralConfig & SecurityService & EdgeService & ClientCertificateService, GetOAuthClientsSyncResponse] =
+    for
+      clientService <- ZIO.service[OAuthClientService]
+      centralConfig <- ZIO.service[CentralConfig]
+      securityService <- ZIO.service[SecurityService]
+      edgeService <- ZIO.service[EdgeService]
+      transportEncrypt <- edgeId match
+        case Some(id) =>
+          edgeService.find(id).someOrFail(Unauthorized).map {
+            edge =>
+              // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
+              // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
+              // the one transport both go through.
+              (secret: Secret) =>
+                securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
+          }
+        case None =>
+          ZIO.succeed: (secret: Secret) =>
+            securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
+      certificateService <- ZIO.service[ClientCertificateService]
+      clients <- clientService.getClientsForSync(edgeId)
+      // Only an edge enrols (#463), so only an edge is told what its certificates must say.
+      enrollmentSubjects <- certificateService.enrollmentSubjects(clients).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
+      encryptedClients <- ZIO.foreach(clients) { client =>
+        for
+          secret <- ZIO.foreach(client.secret)(transportEncrypt)
+          previousSecret <- ZIO.foreach(client.previousSecret)(transportEncrypt)
+          // Only an edge can decrypt this, and only an edge has any use for it: the key is
+          // how it authenticates as this client. A caller that is not one gets the field
+          // absent rather than encrypted to a key it does not hold.
+          edgeSigningKey <- ZIO.foreach(client.edgeSigningKey.filter(_ => edgeId.isDefined))(transportEncrypt)
+          edgeClientCertificate <- ZIO.foreach(
+            client.edgeClientCertificate.filter(_ => edgeId.isDefined),
+          )(transportEncrypt)
+        yield SyncOAuthClientRecord(
+          id = client.id,
+          tenantId = client.tenantId,
+          clientName = client.clientName,
+          redirectUris = client.redirectUris,
+          scope = client.scope,
+          secret = secret,
+          previousSecret = previousSecret,
+          accessTokenTtl = client.accessTokenTtl,
+          refreshTokenTtl = client.refreshTokenTtl,
+          permissions = client.permissions,
+          theme = client.theme,
+          authFlow = client.authFlow,
+          otpTemplateId = client.otpTemplateId,
+          frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
+          frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
+          backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+          logoUri = client.logoUri,
+          policyUri = client.policyUri,
+          tosUri = client.tosUri,
+          consentFlow = client.consentFlow,
+          dpopBoundAccessTokens = client.dpopBoundAccessTokens,
+          dpopSigningAlgs = client.dpopSigningAlgs,
+          dpopMinRsaKeySize = client.dpopMinRsaKeySize,
+          authMethod = client.authMethod,
+          mtlsAuth = client.mtlsAuth,
+          certificateBoundAccessTokens = client.certificateBoundAccessTokens,
+          jwks = client.jwks,
+          requireSignedRequestObject = client.requireSignedRequestObject,
+          requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+          edgeSigningKey = edgeSigningKey,
+          edgeClientCertificate = edgeClientCertificate,
+          applicationType = client.applicationType,
+          edgeCertificateSubject = enrollmentSubjects.get(client.id),
+          themeOverrides = client.themeOverrides,
+        )
+      }
+    yield GetOAuthClientsSyncResponse(clients = encryptedClients)
 
   // ── One registration and one update per kind of client ─────────────────────────────────────
   //
@@ -297,25 +308,6 @@ object ClientController extends Controller:
         .catchAll {
           case error: InvalidRegistrationConfiguration =>
             ZIO.succeed(Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest))
-          case error: Throwable => ZIO.fail(error)
-        }
-    }
-
-  /** #463: an edge's request for a certificate for a client it generated the key of. Authenticated
-    * as the edge itself (the signed token it syncs with), never as an admin: it is not on the admin
-    * API's permission catalog, and central answers it only for a registered edge. */
-  val signEdgeCertificateEndpoint =
-    Method.POST / "configuration" / "clients" / "edge-certificate" / "sign" -> handler { (request: Request) =>
-      (for
-        edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
-        service <- ZIO.service[ClientCertificateService]
-        body <- request.bodyAs[SignEdgeCertificateRequest]
-        chain <- service.sign(edgeId, body.clientId, body.csr)
-      yield Response.json(SignEdgeCertificateResponse(chain).toJson))
-        .catchAll {
-          case error: ClientCertificateService.SigningRefused =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
-          case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
           case error: Throwable => ZIO.fail(error)
         }
     }

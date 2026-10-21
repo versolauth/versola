@@ -53,6 +53,16 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
+  /** The main surface as it is served: [[routes]], resolved against the built dependencies.
+    *
+    * An effect over `Dependencies` for the same reason [[mutualTlsServerConfig]] is: what a
+    * service mounts can be configuration rather than code -- edge serves its internal surface
+    * only in first-party mode (`InternalSurface`, #555) -- and configuration is known only
+    * once `dependencies` has built and parsed it. Defaults to [[routes]] unchanged.
+    */
+  def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    ZIO.succeed(routes)
+
   /** Optional second application surface, typically reachable only by internal proxies. */
   def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
 
@@ -117,6 +127,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // not by connecting to auth's port directly from outside.
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
+
+  /** Where the mutual-TLS listener binds, `MBIND_HOST`; [[bindHost]] unless set. Separate because the
+    * listener is the one surface a deployment may need reachable from outside the host or
+    * cluster (central's edge surface, #554) while everything else on this process stays internal:
+    * its handshake demands a client certificate, which the other listeners do not.
+    */
+  def mutualTlsBindHost: String =
+    Option(java.lang.System.getenv("MBIND_HOST")).getOrElse(bindHost)
 
   /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
     * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
@@ -235,6 +253,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       _ <- scope.addFinalizer(fibers.interrupt.unit)
 
       appDependencies <- dependencies.build
+      mainRoutes <- mountedRoutes.provideEnvironment(appDependencies)
 
       guard <- ZIO.service[OutboundGuard]
       _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
@@ -317,7 +336,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               )
             yield (admission, tiers)
           port <- Server.install {
-            val served = Observability.handleErrors(routes) @@
+            val served = Observability.handleErrors(mainRoutes) @@
               Observability.middleware @@
               SecurityHeaders.middleware
             // outermost: a refused request costs no span and no log line

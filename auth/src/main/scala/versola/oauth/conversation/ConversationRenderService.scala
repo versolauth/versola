@@ -180,6 +180,8 @@ object ConversationRenderService:
     case class AccountSettings(
         sessions: List[AccountSession],
         passkeys: List[AccountPasskey],
+        hasPassword: Boolean,
+        passwordRegex: String,
     ) extends StepView
 
     @jsonHint("access-denied")

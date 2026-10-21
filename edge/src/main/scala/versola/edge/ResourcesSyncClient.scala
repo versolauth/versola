@@ -23,7 +23,7 @@ object ResourcesSyncClient:
       centralSyncTokenService: CentralSyncTokenService,
       celEvaluator: CelEvaluator,
   ) extends ResourcesSyncClient:
-    private val ResourcesURL = config.central.url / "configuration" / "resources" / "sync"
+    private val ResourcesURL = config.central.url / "edge" / "sync" / "resources"
 
     override def getAll: Task[Map[ResourceId, Resource]] =
       for

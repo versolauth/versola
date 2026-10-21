@@ -35,7 +35,7 @@ stop_sbt_project "central/dev/env.conf" "central-postgres-impl"
 stop_sbt_project "auth/dev/env.conf" "auth-postgres-impl"
 stop_sbt_project "edge/dev/env.conf" "edge-postgres-impl"
 
-for port in 9001 9002 9003 9004 9005 9006; do
+for port in 9001 9002 9003 9004 9005 9006 9011; do
   stop_backend_port "$port"
 done
 
@@ -54,7 +54,7 @@ on run argv
   set uiRoot to quoted form of (projectRoot & "/central-ui")
 
   tell application "Terminal"
-    do script "echo '[start-local] Starting Central'; cd " & root & " && PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt --no-server -Denv.path=central/dev/env.conf 'project central-postgres-impl; run'"
+    do script "echo '[start-local] Starting Central'; cd " & root & " && PORT=9001 DPORT=9002 MPORT=9011 RUN_MIGRATIONS=true sbt --no-server -Denv.path=central/dev/env.conf 'project central-postgres-impl; run'"
   end tell
 
   do shell script "i=0; while [ \"$i\" -lt 180 ]; do /usr/bin/curl -s -o /dev/null --connect-timeout 1 --max-time 2 http://localhost:9001 && exit 0; i=$((i + 1)); sleep 1; done; exit 1"

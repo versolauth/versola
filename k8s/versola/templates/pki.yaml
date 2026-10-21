@@ -113,6 +113,58 @@ spec:
     rotationPolicy: Always
   issuerRef:
     {{- $issuerRef | nindent 4 }}
+# (4) central's mutual-TLS listener certificate (#554), a leaf like auth's because edge pins it, and
+# the certificate an edge presents there. The URI name is what central checks against the edge the
+# token names; its subject is for people reading it.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $full }}-central-mtls
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "central" "context" $) | nindent 4 }}
+spec:
+  secretName: {{ include "versola.pki.centralServerSecret" . }}
+  commonName: {{ $full }}-central
+  dnsNames:
+    - {{ $full }}-central
+    - {{ $full }}-central.{{ .Release.Namespace }}.svc
+    - {{ $full }}-central.{{ .Release.Namespace }}.svc.cluster.local
+    {{- range .Values.pki.centralServer.dnsNames }}
+    - {{ . }}
+    {{- end }}
+  usages: [digital signature, key encipherment, server auth]
+  duration: {{ .Values.pki.centralServer.duration }}
+  renewBefore: {{ .Values.pki.centralServer.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.pki.centralServer.privateKey.algorithm }}
+    size: {{ .Values.pki.centralServer.privateKey.size }}
+    encoding: PKCS8
+    rotationPolicy: Always
+  issuerRef:
+    {{- $issuerRef | nindent 4 }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $full }}-edge-central-client
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "edge" "context" $) | nindent 4 }}
+spec:
+  secretName: {{ include "versola.pki.edgeCentralSecret" . }}
+  commonName: {{ .Values.pki.edgeCentral.edgeId | quote }}
+  uris:
+    - {{ printf "urn:versola:edge:%s" .Values.pki.edgeCentral.edgeId | quote }}
+  usages: [digital signature, key encipherment, client auth]
+  duration: {{ .Values.pki.edgeCentral.duration }}
+  renewBefore: {{ .Values.pki.edgeCentral.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.pki.edgeCentral.privateKey.algorithm }}
+    size: {{ .Values.pki.edgeCentral.privateKey.size }}
+    encoding: PKCS8
+    rotationPolicy: Always
+  issuerRef:
+    {{- $issuerRef | nindent 4 }}
 # (3) one certificate per edge-fronted client, for `pki.certSync` to carry into central.
 {{- range .Values.pki.clients }}
 ---

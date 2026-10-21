@@ -62,6 +62,9 @@ object TestCertificates:
       ca: Boolean = false,
       issuer: Option[Generated] = None,
       keyUsage: Option[Int] = None,
+      validity: Option[(Date, Date)] = None,
+      uri: Option[String] = None,
+      uris: List[String] = Nil,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -69,8 +72,8 @@ object TestCertificates:
     generator.setSerialNumber(BigInteger.valueOf(System.nanoTime()))
     generator.setIssuerDN(issuer.fold(principal)(_.certificate.getSubjectX500Principal.nn))
     generator.setSubjectDN(principal)
-    generator.setNotBefore(Date(System.currentTimeMillis() - 3600_000))
-    generator.setNotAfter(Date(System.currentTimeMillis() + 86_400_000))
+    generator.setNotBefore(validity.fold(Date(System.currentTimeMillis() - 3600_000))(_._1))
+    generator.setNotAfter(validity.fold(Date(System.currentTimeMillis() + 86_400_000))(_._2))
     generator.setPublicKey(keyPair.getPublic.nn)
     // The signature is made with the issuer's key, so it is the issuer's algorithm that names
     // it -- a CA of one kind may perfectly well issue to a leaf of another.
@@ -78,12 +81,11 @@ object TestCertificates:
     generator.setSignatureAlgorithm(
       if signingKey.getAlgorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA",
     )
-    dnsName.foreach: name =>
-      generator.addExtension(
-        Extension.subjectAlternativeName.nn,
-        false,
-        GeneralNames(GeneralName(GeneralName.dNSName, name)),
-      )
+    val names =
+      dnsName.toList.map(GeneralName(GeneralName.dNSName, _)) ++
+        (uri.toList ++ uris).map(GeneralName(GeneralName.uniformResourceIdentifier, _))
+    if names.nonEmpty then
+      generator.addExtension(Extension.subjectAlternativeName.nn, false, GeneralNames(names.toArray))
     if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
     keyUsage.foreach(bits => generator.addExtension(Extension.keyUsage.nn, true, KeyUsage(bits)))
     Generated(generator.generate(signingKey).nn, keyPair.getPrivate.nn)

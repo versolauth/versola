@@ -2,8 +2,9 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
-import zio.http.{ClientSSLConfig, URL}
-import zio.{Duration, Task, ZIO, ZLayer}
+import zio.config.magnolia.DeriveConfig
+import zio.http.{ClientSSLConfig, Scheme, URL}
+import zio.{Config, Duration, Task, ZIO, ZLayer}
 
 import java.io.FileInputStream
 import java.nio.charset.StandardCharsets
@@ -73,8 +74,51 @@ case class EdgeConfig(
     // The `/native/*` back channel for mobile apps under FAPI 2.0 (#420). Absent leaves those
     // endpoints answering 404 for every client -- nothing else about this edge changes.
     native: Option[EdgeConfig.Native] = None,
+    // What this edge is to the operator's installation (#555): see [[EdgeMode]]. Defaults to
+    // the only mode that existed before the key did, so every configuration written without
+    // it keeps running as the first-party edge it always was.
+    mode: EdgeMode = EdgeMode.FirstParty,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
+
+/** How this edge relates to the operator's installation, and so where it gets its
+  * configuration from and how it proves itself to auth (#555). The mode selects an
+  * implementation at each of three boundaries -- [[ConfigurationSource]], [[EdgeIdentity]]
+  * and [[InternalSurface]] -- and nothing that consumes configuration, calls auth or serves a
+  * route looks at it otherwise.
+  */
+enum EdgeMode(
+    /** The spelling the `mode` key takes, kebab-case like every other key and value in the file. */
+    val name: String,
+):
+  /** The operator's own edge, an internal component of the installation: configuration synced
+    * from central, authenticated to auth by [[versola.util.EdgeAssertion]] under the key
+    * central registered for it, and an internal surface reachable from inside the cell. */
+  case FirstParty extends EdgeMode("first-party")
+
+  /** An edge run by a partner on infrastructure the operator does not control (#564): an
+    * ordinary OAuth client of the operator's tenant, configured from a local file and the
+    * operator issuer's public discovery, with no central sync, no `EdgeAssertion` and no
+    * internal surface. Not implemented yet: refused at startup by [[EdgeConfig.validated]]. */
+  case Partner extends EdgeMode("partner")
+
+object EdgeMode:
+  given DeriveConfig[EdgeMode] = DeriveConfig[String].mapOrFail: value =>
+    values.find(_.name == value)
+      .toRight(Config.Error.InvalidData(message = s"mode must be one of ${values.map(_.name).mkString(", ")}, not '$value'"))
+
+  /** What startup fails with for a mode this version does not implement. One error for the
+    * three boundaries, so a wiring that somehow bypasses [[EdgeConfig.validated]] still fails
+    * naming the same cause.
+    */
+  case class NotImplemented(mode: EdgeMode)
+    extends IllegalArgumentException(
+      s"mode = ${mode.name} is not implemented yet (#564): " +
+        "a partner edge reads its configuration from a local file and the operator issuer's discovery " +
+        "document and authenticates to auth as an ordinary client, none of which this version provides. " +
+        "Leave `mode` out, or set it to first-party, to run the edge as an internal component of the " +
+        "installation.",
+    )
 
 object EdgeConfig:
 
@@ -98,8 +142,25 @@ object EdgeConfig:
             ),
         )
         _ <- refuseNativeWithoutDpop(config)
+        _ <- refuseUnimplementedMode(config)
+        _ <- refuseCentralWithoutMutualTls(config)
       yield config,
     )
+
+  /** `Partner` is a mode in name only until #564: it names a configuration source, an auth
+    * identity and an internal surface none of which exists yet. Refused here, at the one
+    * place every mode is read, rather than wherever the first boundary happens to be built.
+    *
+    * This is also, for now, the whole of #564's "startup fails if partner mode is combined
+    * with central sync settings": `central` is a required block, so there is no partner
+    * configuration that is not also a central-sync configuration, and refusing the mode
+    * refuses the combination. The finer check -- partner with a `central` block, partner with
+    * a `security.internal-secret` -- belongs with the change that makes those blocks optional.
+    */
+  private def refuseUnimplementedMode(config: EdgeConfig): Task[Unit] =
+    config.mode match
+      case EdgeMode.FirstParty => ZIO.unit
+      case EdgeMode.Partner => ZIO.fail(EdgeMode.NotImplemented(config.mode))
 
   /** The native flow is DPoP end to end -- every client it serves is registered
     * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,
@@ -118,6 +179,44 @@ object EdgeConfig:
         ),
       ),
     ).unit
+
+  /** Central serves the edge surface only on its mutual-TLS listener, over HTTPS, to an edge
+    * that presents its registered certificate; and zio-http authenticates a server only by a
+    * pin (see `versolaInternalTrustedCertificates`). Anything less is a configuration central
+    * cannot be reached with, refused here rather than at the first sync.
+    */
+  private def refuseCentralWithoutMutualTls(config: EdgeConfig): Task[Unit] =
+    config.central.mutualTls match
+      case None =>
+        ZIO.fail(IllegalArgumentException(
+          "central.mutual-tls is required: central serves the edge surface only over mutual TLS, " +
+            "to an edge that presents the certificate registered for it",
+        ))
+      case Some(mtls) =>
+        ZIO.fail(IllegalArgumentException(s"central.url must be https, got '${config.central.url.encode}'"))
+          .unless(config.central.url.scheme.contains(Scheme.HTTPS)) *>
+          refuseCertificateSource(config.central, mtls) *>
+          refuseEmptyPins("central.mutual-tls.trusted-certificates", mtls.trustedCertificates) *>
+          ZIO.foreachDiscard(mtls.trustedCertificates)(
+            refuseCertificateAuthority("central.mutual-tls.trusted-certificates", _),
+          )
+
+  /** The certificate this edge presents to central comes from exactly one place: the files whatever deployed the
+    * edge provides (`mutual-tls.certificate` and `private-key`, together), or central itself (`identity`). Both, or
+    * neither, is a configuration in which it is unclear which certificate is presented. */
+  private def refuseCertificateSource(central: CentralConfig, mtls: CentralMutualTls): Task[Unit] =
+    val static = mtls.certificate.isDefined || mtls.privateKey.isDefined
+    def invalid(message: String) = ZIO.fail(IllegalArgumentException(message))
+    if mtls.certificate.isDefined != mtls.privateKey.isDefined then
+      invalid("central.mutual-tls.certificate and central.mutual-tls.private-key are given together or not at all")
+    else if static && central.identity.isDefined then
+      invalid("central.identity and central.mutual-tls.certificate both name this edge's certificate: give one")
+    else if !static && central.identity.isEmpty then
+      invalid("the certificate this edge presents to central is not named: set central.mutual-tls.certificate and private-key, or central.identity")
+    else
+      ZIO.foreachDiscard(central.identity.flatMap(_.enrollment)): enrollment =>
+        invalid("central.identity.enrollment.url must be https")
+          .unless(enrollment.url.scheme.contains(Scheme.HTTPS))
 
   private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
     ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
@@ -178,8 +277,57 @@ object EdgeConfig:
         ttl: Duration,
     )
 
+  /** @param url central's mutual-TLS listener (`MPORT`), the only place the edge surface is
+    *   served (#554). It is reachable from outside the cluster, so the connection is
+    *   authenticated both ways.
+    * @param mutualTls the certificate this edge presents there and the pin it holds central's
+    *   own certificate to. Absent is refused at startup by [[validated]]: central would turn
+    *   this edge away in the handshake, so every sync would fail one request at a time instead.
+    * @param identity set when central issues this edge's certificate (see [[CentralIdentity]])
+    *   instead of whatever deployed the edge providing one in `mutualTls.certificate`.
+    */
   case class CentralConfig(
       url: URL,
+      mutualTls: Option[CentralMutualTls] = None,
+      identity: Option[CentralIdentity] = None,
+  )
+
+  /** @param certificate PEM path to the client certificate this edge presents to central: the one
+    *   cert-manager or `mtls-init` issued. Absent when central issues it ([[CentralIdentity]]).
+    * @param privateKey PEM path to its key, unencrypted PKCS#8. Present with `certificate`, or neither.
+    * @param trustedCertificates PEM paths of central's own leaf certificate(s), a pin and not a
+    *   CA for the reasons given on `versolaInternalTrustedCertificates`; several so the pin can
+    *   be rotated.
+    */
+  case class CentralMutualTls(
+      certificate: Option[String] = None,
+      privateKey: Option[String] = None,
+      trustedCertificates: Set[String],
+  )
+
+  /** The certificate of this edge when central issues it, and keeps it renewed.
+    *
+    * @param directory where the key and the certificate chain are kept between restarts (`edge.key`,
+    *   `edge.crt`, owner-only). Without it an edge would need a new enrollment token on every restart.
+    * @param group the group of edges this edge was registered in. The request for the certificate must name
+    *   it, and central refuses one that names another, so this is a statement the operator makes when
+    *   deploying the edge and central checks; it is not what makes the edge a member.
+    * @param enrollment how the very first certificate is had; absent on an edge that already has one in
+    *   `directory`.
+    */
+  case class CentralIdentity(
+      directory: String,
+      group: String = "default",
+      enrollment: Option[CentralEnrollment] = None,
+  )
+
+  /** @param url central's public name for enrollment (plain TLS, no client certificate), `https`.
+    * @param tokenFile the one-time token an operator created for this edge, in a file so that it is not
+    *   in the environment or the config. Read once, when there is no certificate yet.
+    */
+  case class CentralEnrollment(
+      url: URL,
+      tokenFile: String,
   )
 
   /** @param reloadInterval how often the in-memory revocation list is reconciled with the

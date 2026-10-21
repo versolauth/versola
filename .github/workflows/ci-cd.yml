@@ -387,7 +387,7 @@ jobs:
           # service -- see versola-tools' migrate-tool), so this e2e job -- which has no separate
           # migrate step of its own against the fresh Postgres container above -- must opt back in
           # explicitly, the same way any other local/dev setup would.
-          PORT=9001 DPORT=9002 RUN_MIGRATIONS=true \
+          PORT=9001 DPORT=9002 MPORT=9011 RUN_MIGRATIONS=true \
             central/implementations/postgres/target/universal/stage/bin/central-postgres-impl \
             -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
           echo $! > /tmp/central.pid

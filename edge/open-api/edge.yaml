@@ -28,7 +28,9 @@ info:
       for native clients.
     * **Operations** — `/liveness`, `/readiness` and `/metrics`, served on the separate
       diagnostics port (`DPORT`, default 8081) rather than the public one, and, outside
-      production only, `/service/configuration/sync` on the main port.
+      production only, `/service/configuration/sync` on the main port. That endpoint is the
+      edge's internal surface and is mounted only when the edge runs as the operator's own
+      (`mode = "first-party"`, the default); a partner edge has no such surface.
 
     ## Authentication of callers
 

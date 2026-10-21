@@ -60,7 +60,7 @@ object RolesSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/roles/sync"),
+        request.url.path.encode.contains("edge/sync/roles"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         roles == Map(
           (TenantId("tenant-a"), RoleId("admin")) -> Set(PermissionId("oauth:read"), PermissionId("oauth:write")),
