@@ -716,6 +716,9 @@ object SecretSchema:
     base64Url("USER_AGENT_COOKIE_SECRET", List("auth"), 32),
     base64Url("PAR_REQUESTS_SECRET", List("auth"), 32),
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
+    // Keys the hash of a phone number or address in the antifraud event log. A new one does no harm beyond
+    // events before and after it no longer matching, so it stays `generate`.
+    base64Url("ANTIFRAUD_SUBJECT_SECRET", List("auth"), 32),
     // The signing key auth holds and the public JWKS central serves for it: auth matches the
     // key to its JWKS entry (RSA modulus, or proof of possession for EC), and the entry needs a
     // usable `alg`. EC P-256 (ES256) from gen-env; an older deployment may still hold an RSA key.
@@ -1059,6 +1062,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val edgeInternalSecret = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret = rand(rng, 32)  // auth only: keys the stored request_uri references
   val dpopNoncesSecret = rand(rng, 32)   // auth only: authenticates DPoP-Nonce values
+  val antifraudSubjectSecret = rand(rng, 32) // auth only: keys the hash of a destination in the antifraud event log
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
   val edgeDpopNonceSalt = rand(rng, 32)
@@ -1759,6 +1763,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  user-agent-cookie-secret     = ${secretField(useOpenBao, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
        |  par-requests-secret          = ${secretField(useOpenBao, parRequestsSecret, "PAR_REQUESTS_SECRET")}
        |  dpop-nonces-secret           = ${secretField(useOpenBao, dpopNoncesSecret, "DPOP_NONCES_SECRET")}
+       |  antifraud-subject-secret     = ${secretField(useOpenBao, antifraudSubjectSecret, "ANTIFRAUD_SUBJECT_SECRET")}
        |}
        |
        |par {
@@ -2203,6 +2208,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
           "USER_AGENT_COOKIE_SECRET" -> userAgentCookieSecret,
           "PAR_REQUESTS_SECRET" -> parRequestsSecret,
           "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
+          "ANTIFRAUD_SUBJECT_SECRET" -> antifraudSubjectSecret,
           "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
           "CENTRAL_SECRET_KEY" -> centralSecretKey,
         ) ++ authExtras,

@@ -405,8 +405,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `CREATE` and `DROP` on its own tables, which it already has for its migrations. Events are queued in memory
   and written in batches: a full queue or a failed write drops events and counts them
   (`antifraud_events_dropped_total`), never delays a sign-in. A restart loses what was queued and unwritten.
-  Phone numbers and addresses are stored as a keyed hash derived from `security.sessions-secret`: rotating that
-  secret breaks the match between old and new events of the same destination. Rows are not under `cleanup`
+  Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
+  (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
+  the match between events before and after it, nothing else. A config written before the secret existed has no
+  such key and falls back on `security.sessions-secret`, so an upgrade needs no change; `versola configure`
+  generates the secret for a deployment that wants its own, and a Helm release that keeps its own Secret adds the
+  key (the chart lists it among `auth`'s required variables). Rows are not under `cleanup`
   (the table has no `expires_at`). Its keys are the optional `antifraud` block of `auth`'s config.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade

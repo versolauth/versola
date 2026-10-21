@@ -36,14 +36,18 @@ object AntifraudEventsSpec extends UnitSpecBase:
 
   private def env: Env = Env(stub[AntifraudEventRepository], stub[OAuthConfigurationService])
 
-  private def build(e: Env, settings: AntifraudEvents.Settings): ZIO[Scope, Nothing, AntifraudEvents] =
+  private def build(
+      e: Env,
+      settings: AntifraudEvents.Settings,
+      config: versola.util.CoreConfig = TestEnvConfig.coreConfig,
+  ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
       events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents])
     yield events).provideSome[Scope](
       ZLayer.succeed[AntifraudEventRepository](e.repository),
       ZLayer.succeed(settings),
-      ZLayer.succeed(TestEnvConfig.coreConfig),
+      ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -201,6 +205,26 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written(1).action == AntifraudAction.otp_verify,
             written(0).tenantId.isEmpty,
           )
+      },
+      test("a secret of its own keys the hash; without one the sessions secret does, so a config that predates it still works") {
+        val own = TestEnvConfig.coreConfig.copy(
+          security = TestEnvConfig.coreConfig.security.copy(antifraudSubjectSecret = Some(versola.util.Secret.Bytes32(Array.fill(32)(7.toByte)))),
+        )
+        def hashOf(config: versola.util.CoreConfig) =
+          val e = env
+          ZIO.scoped:
+            for
+              _ <- e.configService.find.succeedsWith(None)
+              _ <- e.repository.insertBatch.succeedsWith(())
+              events <- build(e, small, config)
+              _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+              _ <- TestClock.adjust(0.seconds)
+            yield e.repository.insertBatch.calls.flatten.head.subjectHash
+        for
+          fallback <- hashOf(TestEnvConfig.coreConfig)
+          fallbackAgain <- hashOf(TestEnvConfig.coreConfig)
+          withOwn <- hashOf(own)
+        yield assertTrue(fallback == fallbackAgain, fallback != withOwn)
       },
       test("an address has no prefix, is hashed case-insensitively, and the user agent is cut to a length") {
         val e = env

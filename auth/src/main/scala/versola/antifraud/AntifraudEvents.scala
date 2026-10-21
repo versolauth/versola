@@ -95,9 +95,11 @@ object AntifraudEvents:
         config <- ZIO.service[CoreConfig]
         configService <- ZIO.service[OAuthConfigurationService]
         queue <- Queue.dropping[AntifraudEvent](settings.queueCapacity)
-        // A key of its own for the destinations, derived from one the deployment already holds: what an event
-        // stores of a number then cannot be matched against a hash made anywhere else with that secret.
-        subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), config.security.sessionsSecret).orDie
+        // The key of the destinations' hash, run through a fixed label so that what an event stores of a number
+        // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
+        // its own for it (one written before it existed) falls back on the sessions secret.
+        rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
+        subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).orDie
         events = Impl(queue, securityService, secureRandom, configService, subjectKey)
         _ <- Maintenance(repository, settings).run
         _ <- Writer(queue, repository, settings).run
