@@ -1,6 +1,7 @@
 package versola.central.configuration.roles
 
 import versola.central.CentralConfig
+import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -36,21 +37,32 @@ trait RoleService:
   def sync(event: SyncEvent.RolesUpdated): Task[Unit]
 
 object RoleService:
-  def live: ZLayer[RoleRepository & TenantRepository & Scope & CentralConfig, Throwable, RoleService] =
+  /** The role is one of the tenant's `defaultRoles`: deleting it would make every new registration grant
+    * a role that does not exist. */
+  final class RoleInUseError(val roleId: RoleId)
+    extends RuntimeException(s"Role '$roleId' is a default role for new registrations and cannot be deleted")
+
+  def live: ZLayer[RoleRepository & TenantRepository & ChallengeSettingsService & Scope & CentralConfig, Throwable, RoleService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[RoleRecord]](config.configurationCacheRefreshInterval),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[RoleRecord]],
       roleRepository: RoleRepository,
       tenantRepository: TenantRepository,
+      challengeSettingsService: ChallengeSettingsService,
   ) extends RoleService:
 
-    export roleRepository.{deleteRole, markRoleInactive}
+    export roleRepository.markRoleInactive
+
+    override def deleteRole(tenantId: TenantId, id: RoleId): Task[Unit] =
+      challengeSettingsService.getSettings(tenantId).flatMap: settings =>
+        ZIO.fail(RoleInUseError(id)).when(settings.exists(_.defaultRoles.contains(id))) *>
+          roleRepository.deleteRole(tenantId, id)
 
     override def getTenantRoles(
         tenantId: TenantId,
@@ -88,6 +100,7 @@ object RoleService:
         id = request.id,
         description = request.description,
         permissions = request.permissions.toList,
+        active = request.active,
       )
 
     override def updateRole(
@@ -98,6 +111,7 @@ object RoleService:
         id = request.id,
         description = request.description,
         permissions = request.permissions,
+        active = request.active,
       )
 
     override def sync(

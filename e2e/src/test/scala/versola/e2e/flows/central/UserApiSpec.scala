@@ -240,20 +240,22 @@ object UserApiSpec extends CentralApiSpec:
         _ <- create(central, Fixtures.user(email = Some(held)))
         login <- CentralApi.login("probe")
         other <- create(central, Fixtures.user(login = Some(login)))
-        _ <- central.patch(path, Json.Obj("id" -> Json.Str(other), "email" -> Json.Str(held)))
+        rejected <- central.patch(path, Json.Obj("id" -> Json.Str(other), "email" -> Json.Str(held)))
         record <- byId(central, other).delay(1.second)
-      yield assertTrue(record.flatMap(_.str("email")).isEmpty)
-        .label("stealing an indexed email would make one address resolve to two people")
+      yield assertTrue(rejected.status == Status.Conflict) &&
+        assertTrue(record.flatMap(_.str("email")).isEmpty)
+          .label("stealing an indexed email would make one address resolve to two people")
     },
     test("a patch of a user that does not exist does not create one") {
       for
         central <- api
         id <- CentralApi.uuid
         email <- CentralApi.email("probe")
-        _ <- central.patch(path, Json.Obj("id" -> Json.Str(id.toString), "email" -> Json.Str(email)))
+        rejected <- central.patch(path, Json.Obj("id" -> Json.Str(id.toString), "email" -> Json.Str(email)))
         found <- find(central, "email" -> email).delay(1.second)
-      yield assertTrue(found.isEmpty)
-        .label("a patch must not be a back door for creating an unindexed user; central answers 500 here today")
+      yield assertTrue(rejected.status == Status.NotFound) &&
+        assertTrue(found.isEmpty)
+          .label("a patch must not be a back door for creating an unindexed user")
     },
     test("a patch without an id is refused") {
       for
@@ -322,6 +324,70 @@ object UserApiSpec extends CentralApiSpec:
         central <- api
         rejected <- central.patch(s"$path/claims", Json.Obj("claims" -> Json.Obj()))
       yield assertTrue(rejected.status == Status.BadRequest)
+    },
+    test("a deleted user stops resolving by every identifier") {
+      for
+        central <- api
+        email <- CentralApi.email("probe")
+        login <- CentralApi.login("probe")
+        id <- createSynced(central, Fixtures.user(email = Some(email), login = Some(login)))
+        deleted <- central.delete(path, "id" -> id)
+        byId <- byId(central, id)
+        byEmail <- find(central, "email" -> email)
+        byLogin <- find(central, "login" -> login)
+      yield assertTrue(deleted.status == Status.NoContent) &&
+        assertTrue(byId.isEmpty && byEmail.isEmpty && byLogin.isEmpty)
+          .label("an identifier that still resolved would let the deleted person sign in again")
+    },
+    test("a deleted user's identifiers can be claimed by a new user") {
+      for
+        central <- api
+        email <- CentralApi.email("probe")
+        id <- createSynced(central, Fixtures.user(email = Some(email)))
+        _ <- central.delete(path, "id" -> id)
+        again <- central.post(path, Fixtures.user(email = Some(email)))
+      yield assertTrue(again.status == Status.Created)
+        .label("a hard delete frees the identifiers; nothing is kept that could collide")
+    },
+    test("deleting a user that does not exist answers 404") {
+      for
+        central <- api
+        id <- CentralApi.uuid
+        rejected <- central.delete(path, "id" -> id.toString)
+      yield assertTrue(rejected.status == Status.NotFound)
+        .label("unlike a configuration delete, this one is not idempotent: a wrong id must be noticed")
+    },
+    test("deleting without an id is refused") {
+      for
+        central <- api
+        rejected <- central.delete(path)
+      yield assertTrue(rejected.status == Status.BadRequest)
+    },
+    test("an anonymous caller cannot delete a user") {
+      for
+        central <- api
+        login <- CentralApi.login("probe")
+        id <- create(central, Fixtures.user(login = Some(login)))
+        rejected <- central.anonymous.delete(path, "id" -> id)
+        record <- byId(central, id)
+      yield assertTrue(rejected.status == Status.Unauthorized) && assertTrue(record.nonEmpty)
+    },
+    test("revoking a client's offline access for a user with none is not an error") {
+      for
+        central <- api
+        login <- CentralApi.login("probe")
+        id <- createSynced(central, Fixtures.user(login = Some(login)))
+        revoked <- central.delete(s"$path/refresh-tokens", "id" -> id, "clientId" -> "nobody")
+      yield assertTrue(revoked.status == Status.NoContent)
+        .label("the caller's goal, no offline access for that client, is already met")
+    },
+    test("signing out a session the user does not have answers 404") {
+      for
+        central <- api
+        login <- CentralApi.login("probe")
+        id <- createSynced(central, Fixtures.user(login = Some(login)))
+        rejected <- central.delete(s"$path/sessions", "id" -> id, "sessionId" -> "bm90LWEtc2Vzc2lvbg")
+      yield assertTrue(rejected.status == Status.NotFound)
     },
     test("an anonymous caller cannot search for users") {
       for

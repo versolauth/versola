@@ -2,7 +2,17 @@ package versola.oauth.conversation
 
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, PrimaryCredential, RegistrationCredential, RegistrationStep}
+import versola.oauth.client.model.{
+  AuthFactor,
+  AuthFactorType,
+  ClientId,
+  OtpType,
+  PassedAuthFactor,
+  PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationStep,
+}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.user.UserRepository
 import versola.util.http.Observability
@@ -154,6 +164,9 @@ object ConversationRouter:
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
             .tap(observePasskeyAssertion)
 
+        case (_: PasskeyUnavailableSubmission, ConversationRecord.PasskeyOnly(_)) =>
+          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("passkey"))
+
         case (submitted: PasskeyEnrollSubmission, ConversationRecord.PasskeyEnroll(enroll)) =>
           conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
             .tap(observePasskeyEnrollment)
@@ -283,33 +296,41 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
-      userRepository.findByCredential(credential).flatMap: user =>
-        (user, conversation.registrationFlow) match
-          case (Some(user), _) =>
-            val identified = conversation.copy(
-              userId = Some(user.id),
-              credential = Some(credential),
-              userEmail = user.email,
-              userPhone = user.phone,
-              userLogin = user.login,
-              userClaims = Some(user.claims),
-            )
-            afterAuthenticationCredential(authId, identified, credential)
+      userRepository.findByCredential(credential).flatMap:
+        case Some(user) =>
+          val identified = conversation.copy(
+            userId = Some(user.id),
+            credential = Some(credential),
+            userEmail = user.email,
+            userPhone = user.phone,
+            userLogin = user.login,
+            userClaims = Some(user.claims),
+          )
+          afterAuthenticationCredential(authId, identified, credential)
 
-          case (None, Some(flow)) if flow.credential == RegistrationCredential.from(credential) =>
-            conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-              case RegistrationEntry.Registering(updated) =>
-                runRegistrationStep(authId, updated)
-              case ConversationResult.WriteConflict =>
-                ZIO.succeed(ConversationResult.WriteConflict)
-
-          case (None, Some(_)) =>
-            afterAuthenticationCredential(authId, conversation, credential)
-
-          case (None, None) =>
-            afterAuthenticationCredential(authId, conversation, credential)
+        // A new user: the tenant decides whether this address may create an account. When it may
+        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        case None =>
+          configService.registrationFor(conversation.clientId, credential).flatMap:
+            case Some(flow) =>
+              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+                case RegistrationEntry.Registering(updated) =>
+                  runRegistrationStep(authId, updated)
+                case ConversationResult.WriteConflict =>
+                  ZIO.succeed(ConversationResult.WriteConflict)
+            case None =>
+              afterAuthenticationCredential(authId, conversation, credential)
 
     private def afterAuthenticationCredential(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+    ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterAuthenticationCredentialFactors(authId, conversation, credential)
+
+    private def afterAuthenticationCredentialFactors(
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
@@ -335,6 +356,25 @@ object ConversationRouter:
       * Factors whose type appears in that map are skipped.
       */
     private def afterFactor(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        nextFactorIndex: Int,
+    ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterFactorSteps(authId, conversation, nextFactorIndex)
+
+    /** Whether the ACR this conversation pursues needs a passkey that has not been passed yet. A passkey is
+      * not one of `primary.factors`, so nothing else would ask for it: the conversation goes straight to a
+      * passkey-only step, ahead of any other factor, because the passkey (user-verifying) is the one that
+      * proves the device and a one-time code must not stand in for it.
+      */
+    private def passkeyPending(conversation: ConversationRecord): Task[Boolean] =
+      configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
+        conversation.targetAcr.flatMap(vocabulary.get).exists(_.exists(_ == PassedAuthFactor.passkey)) &&
+          !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.passkey, conversation.authFlow.equivalents))
+
+    private def afterFactorSteps(
         authId: AuthId,
         conversation: ConversationRecord,
         nextFactorIndex: Int,

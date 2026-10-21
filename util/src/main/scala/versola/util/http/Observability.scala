@@ -163,7 +163,8 @@ object Observability:
 
   /** Outbound requests in flight per target, queued for a pooled connection included. Where the
     * pool is too small this is what climbs (a request waiting for a connection is in flight from its
-    * caller's side), long before any CPU or latency average moves.
+    * caller's side), long before any CPU or latency average moves. Calls held back by the
+    * [[OutboundGuard]] (in front of the pool) are not in it: they are `http_client_guard_waiting`.
     */
   private val clientActiveRequests =
     Metric.gauge("http_client_active_requests")
@@ -183,6 +184,10 @@ object Observability:
       case Forbidden => ZIO.succeed(Response.forbidden)
       case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
       case ex: HttpCodecError => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
+      // Shed, not broken: the caller may retry shortly. Not logged as an error, a rejected call is meant to be cheap.
+      case ex: OutboundOverloaded =>
+        ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
+      case ex: OutboundTimedOut => ZIO.succeed(Response.status(Status.GatewayTimeout))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
@@ -394,10 +399,21 @@ object Observability:
 
   def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] = pooledClient(ConnectionPoolConfig.Fixed(poolSize))
 
-  val client: ZLayer[Tracing, Throwable, Client] =
+  /** The shared client, with the [[OutboundGuard]] that bounds its calls; the guard is also an output so settings can be
+    * changed while the process runs.
+    */
+  val client: ZLayer[Tracing, Throwable, Client & OutboundGuard] =
     (ZLayer.fromZIO(ZIO.logInfo(s"outbound HTTP client pool: $clientPoolConfig (per target)")) ++
-      pooledClient(clientPoolConfig) ++ ZLayer.service[Tracing]).map: env =>
-      ZEnvironment(env.get[Client] @@ clientMiddleware(env.get[Tracing]))
+      pooledClient(clientPoolConfig) ++ ZLayer.service[Tracing] ++
+      ZLayer.fromZIO(
+        OutboundGuard.make(OutboundGuard.initialSettings(clientPoolSize)).tap(g =>
+          g.current.flatMap(s => ZIO.logInfo(s"outbound HTTP guard: $s")),
+        ),
+      )).map: env =>
+      ZEnvironment(
+        (env.get[Client] @@ clientMiddleware(env.get[Tracing]) @@ env.get[OutboundGuard].aspect): Client,
+        env.get[OutboundGuard],
+      )
 
   def clientMiddleware(tracing: Tracing): ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
     new ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response]:

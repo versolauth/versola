@@ -31,7 +31,6 @@ object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec:
     permissions = Set.empty,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -53,6 +52,7 @@ object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
   private val setup =

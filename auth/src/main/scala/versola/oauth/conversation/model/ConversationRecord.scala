@@ -46,7 +46,9 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
-    /** Snapshot of the client's registration flow, absent when the client has none. */
+    /** The registration this conversation went through, built from the tenant's policy when an unknown
+      * address was entered ([[versola.oauth.client.OAuthConfigurationService.registrationFor]]); absent
+      * until then. */
     registrationFlow: Option[RegistrationFlow],
     /** Index into `registrationFlow.steps` while the user is registering; `None` while logging in. */
     registrationStep: Option[Int],
@@ -154,6 +156,13 @@ object ConversationRecord:
     def unapply(record: ConversationRecord): Option[ConversationStep.PasskeyEnroll] =
       record.step match
         case step: ConversationStep.PasskeyEnroll => Some(step)
+        case _ => None
+
+  /** A credential step that asks for a passkey and nothing else. */
+  object PasskeyOnly:
+    def unapply(record: ConversationRecord): Option[ConversationStep.Credential] =
+      record.step match
+        case step: ConversationStep.Credential if step.passkeyOnly => Some(step)
         case _ => None
 
   object Consent:

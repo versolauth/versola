@@ -1,3 +1,4 @@
+import { clientKindOf, type ClientKind } from './client-presets';
 import type {
   AuthFlow,
   AuthMethod,
@@ -6,23 +7,21 @@ import type {
   BackendProperty,
   Edge,
   Locale,
+  FormPreview,
   FormRecord,
   OtpTemplateRecord,
+  ChallengeSettingsChanges,
   ChallengeSettingsRecord,
   ClientTemplate,
   JwksKeySummary,
-  MtlsCertificateEncoding,
   MutualTlsAuth,
   SystemSettingsRecord,
-  PasskeySettings,
-  SubmissionLimits,
   InjectRule,
   OAuthClaim,
   OAuthClient,
   OAuthScope,
   Permission,
   ConsentFlow,
-  RegistrationFlow,
   Resource,
   ResourceEndpoint,
   ResourceEndpointId,
@@ -30,7 +29,10 @@ import type {
   ServiceKey,
   SecurityProfile,
   Tenant,
+  ThemeOverrides,
+  ThemePreset,
   ThemeRecord,
+  ThemeTokens,
 } from '../types';
 
 export const DEFAULT_PAGE_SIZE = 30;
@@ -73,14 +75,14 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
 };
-type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
-type ResourceEndpointWriteDto = {
+export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
+export type ResourceEndpointWriteDto = {
   id?: string | number;
   method: string;
   path: string;
@@ -108,19 +110,19 @@ type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boo
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
-type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeId?: string | null }> };
+type TenantsResponse = {
+  tenants: Array<{ id: string; description: string; edgeId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
+};
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
-type BackendRegistrationStep = { type: string };
-type BackendRegistrationFlow = { credential: string; steps: BackendRegistrationStep[]; roleIds: string[] };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
   otpType: 'sms' | 'email';
 };
-type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null; requiredScopes?: string[]; offlineAccessOptional?: boolean };
 type ClientsResponse = {
   clients: Array<{
     id: string;
@@ -131,11 +133,11 @@ type ClientsResponse = {
     secretRotation: boolean;
     authMethod?: AuthMethod;
     applicationType?: 'web' | 'native';
+    kind?: 'web' | 'device' | 'service';
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
     authFlow?: BackendAuthFlow | null;
-    registrationFlow?: BackendRegistrationFlow | null;
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
@@ -154,6 +156,7 @@ type ClientsResponse = {
     requirePushedAuthorizationRequests?: boolean;
     template?: ClientTemplate | null;
     createdAt?: string;
+    themeOverrides?: ThemeOverrides | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -165,7 +168,7 @@ type AuthorizationDetailTypesResponse = {
 const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL, consoleMode: 'prefix' };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { accessTokenTtl: number; refreshTokenTtl: number; hasPreviousSecret: boolean }>();
-const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
+const roleSupplementStore = new Map<string, { createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
 
@@ -203,29 +206,13 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
   };
 }
 
-function registrationFlowToBackend(flow: RegistrationFlow | null | undefined): BackendRegistrationFlow | null {
-  if (!flow) return null;
-  return {
-    credential: flow.credential,
-    steps: flow.steps.map(step => ({ type: step.type })),
-    roleIds: unique(flow.roleIds),
-  };
-}
-
-function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | undefined): RegistrationFlow | null {
-  if (!flow) return null;
-  return {
-    credential: flow.credential as RegistrationFlow['credential'],
-    steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
-    roleIds: unique(flow.roleIds),
-  };
-}
-
 function consentFlowToBackend(flow: ConsentFlow | null | undefined): BackendConsentFlow | null {
   if (!flow) return null;
   return {
     allowPartial: flow.allowPartial,
     rememberDuration: flow.rememberDurationDays != null ? flow.rememberDurationDays * 86400 : null,
+    requiredScopes: flow.requiredScopes,
+    offlineAccessOptional: flow.offlineAccessOptional,
   };
 }
 
@@ -234,6 +221,8 @@ function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): Co
   return {
     allowPartial: flow.allowPartial,
     rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
+    requiredScopes: flow.requiredScopes ?? [],
+    offlineAccessOptional: flow.offlineAccessOptional ?? false,
   };
 }
 
@@ -250,10 +239,17 @@ function sameJsonValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
+/** The overrides, or null when there are none: absent, null and `{}` all mean the client changes nothing. */
+function nonEmptyOverrides(overrides: ThemeOverrides | null | undefined): ThemeOverrides | null {
+  return overrides && Object.keys(overrides).length > 0 ? overrides : null;
+}
+
 function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
   if (!a || !b) return !a && !b;
   return a.allowPartial === b.allowPartial
-    && a.rememberDurationDays === b.rememberDurationDays;
+    && a.rememberDurationDays === b.rememberDurationDays
+    && sameStringSet(a.requiredScopes, b.requiredScopes)
+    && a.offlineAccessOptional === b.offlineAccessOptional;
 }
 
 // Client names are displayed on the consent screen and are stored as locale-keyed objects.
@@ -350,6 +346,10 @@ function invalidateAllRefData() {
   rolesStore.clear();
 }
 
+/** What central answered with, when it was JSON: a screen that can show more than the message
+ * (the keys a locale is missing, the lines a JSON Schema fails on) reads it from `error.details`. */
+export type ApiError = Error & { status: number; details?: unknown };
+
 function buildErrorMessage(status: number, bodyText: string): string {
   const trimmed = bodyText.trim();
 
@@ -358,14 +358,25 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[] };
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[]; InvalidSchema?: { errors?: string[] } };
     if (parsed.missing?.length) {
       const prefix = parsed.message || parsed.error || `Locale ${parsed.locale || ''} is incomplete`;
       return `${prefix}. Missing: ${parsed.missing.join(', ')}`;
     }
+    if (parsed.InvalidSchema?.errors?.length) {
+      return `Invalid JSON Schema: ${parsed.InvalidSchema.errors.join('; ')}`;
+    }
     return parsed.message || parsed.error || `Request failed (${status})`;
   } catch {
     return `${trimmed} (${status})`;
+  }
+}
+
+function parseErrorDetails(bodyText: string): unknown {
+  try {
+    return JSON.parse(bodyText) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -453,8 +464,10 @@ async function request<T>(
     }
 
     if (!response.ok) {
-      const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
+      const bodyText = await response.text();
+      const error = new Error(buildErrorMessage(response.status, bodyText)) as ApiError;
       error.status = response.status;
+      error.details = parseErrorDetails(bodyText);
       throw error;
     }
 
@@ -655,6 +668,8 @@ export async function fetchTenants(): Promise<Tenant[]> {
     name: tenant.description || tenant.id,
     description: tenant.description,
     edgeId: tenant.edgeId ?? null,
+    securityProfile: tenant.securityProfile,
+    signingKeyId: tenant.signingKeyId ?? null,
   })));
 }
 
@@ -723,7 +738,12 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        clientType: client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        // Central names the kind; the application type and a missing credential are what a console
+        // that predates it had to guess from.
+        clientType: client.kind
+          ? (client.kind === 'device' ? 'native' : 'web')
+          : client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        kind: client.kind,
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
@@ -735,7 +755,6 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow),
-        registrationFlow: registrationFlowFromBackend(client.registrationFlow),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -753,6 +772,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         requirePushedAuthorizationRequests: client.requirePushedAuthorizationRequests ?? false,
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
+        themeOverrides: nonEmptyOverrides(client.themeOverrides),
         tenantId,
       };
     }),
@@ -768,7 +788,7 @@ export async function fetchRoles(tenantId: string, offset = 0, limit = DEFAULT_P
       return {
         id: role.id,
         description: role.description,
-        active: supplement?.active ?? role.active,
+        active: role.active,
         permissions: role.permissions.map(permissionId => hydratePermission(tenantId, permissionId)),
         createdAt: supplement?.createdAt ?? new Date(0).toISOString(),
         updatedAt: supplement?.updatedAt ?? new Date(0).toISOString(),
@@ -892,23 +912,33 @@ export async function deletePreviousResourceSecret(resourceId: string): Promise<
   resourcesStore.clear();
 }
 
+/**
+ * One PUT for any group of a resource: the URI, the audience (sent as a patch against what the
+ * caller last saw) and the endpoints. Endpoints are a patch too: `deleteEndpoints` leaves the
+ * server's set, `createEndpoints` are added, and one whose id already exists overwrites it, so an
+ * edited endpoint is sent only in `createEndpoints` and keeps its id (and the permissions linked
+ * to it). A group the caller does not touch is left out and is not changed.
+ */
 export async function updateResource(
   resourceId: string,
-  existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
-  resource: string,
-  existingAudience: string[],
-  audience: string[],
-  endpoints?: SaveResourceEndpointPayload[],
+  patch: {
+    resource?: string;
+    audience?: { existing: string[]; next: string[] };
+    deleteEndpoints?: ResourceEndpointId[];
+    createEndpoints?: SaveResourceEndpointPayload[];
+  },
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
-  const createEndpoints = (endpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
-  const nextEndpointIds = new Set(createEndpoints.map(endpoint => endpoint.id));
-  const deleteEndpoints = existingEndpoints
-    .map(endpoint => endpoint.id)
-    .filter(endpointId => !nextEndpointIds.has(endpointId));
+  const createEndpoints = (patch.createEndpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, audience: patchSet(existingAudience, audience), deleteEndpoints, createEndpoints },
+    body: {
+      resourceId,
+      ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
+      audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      deleteEndpoints: patch.deleteEndpoints ?? [],
+      createEndpoints,
+    },
   });
 
   resourcesStore.clear();
@@ -1053,11 +1083,11 @@ export async function createRole(tenantId: string, role: Role): Promise<void> {
       id: role.id,
       description: role.description,
       permissions: unique(role.permissions.map(permission => permission.id)),
+      active: role.active,
     },
   });
 
   roleSupplementStore.set(entityKey(tenantId, role.id), {
-    active: role.active,
     createdAt: role.createdAt,
     updatedAt: role.updatedAt,
   });
@@ -1075,11 +1105,12 @@ export async function updateRole(tenantId: string, existing: Role, role: Role): 
         existing.permissions.map(permission => permission.id),
         role.permissions.map(permission => permission.id),
       ),
+      // Patch semantics: only sent when the switch moved.
+      ...(role.active !== existing.active ? { active: role.active } : {}),
     },
   });
 
   roleSupplementStore.set(entityKey(tenantId, role.id), {
-    active: role.active,
     createdAt: existing.createdAt,
     updatedAt: role.updatedAt,
   });
@@ -1096,11 +1127,64 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
   invalidateRefData(rolesStore, tenantId);
 }
 
+/**
+ * One registration and one update per kind of client (`/configuration/clients/{web,native,service}`).
+ * Each endpoint refuses a member its kind does not have, so the body is cut down to the members
+ * the kind's request declares: what the kind fixes (a device's DPoP binding, a service's lack of
+ * redirect URIs) is not ours to send, and is set by central.
+ */
+const KIND_PATHS: Record<ClientKind, string> = { web: 'web', device: 'native', service: 'service' };
+
+const COMMON_CREATE_FIELDS = [
+  'tenantId', 'id', 'clientName', 'allowedScopes', 'accessTokenTtl', 'authMethod', 'mtlsAuth',
+  'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+] as const;
+
+const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
+  // Permissions are what a token issued to the client itself may call: only a service client has any.
+  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+const COMMON_UPDATE_FIELDS = [
+  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_UPDATE_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'themeOverrides',
+] as const;
+
+const UPDATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS, 'dpopBoundAccessTokens', 'mtlsAuth',
+    'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS],
+  service: [...COMMON_UPDATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+function pickFields(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(body).filter(([name]) => fields.includes(name)));
+}
+
 /** Resolves to the generated secret, or to `null` for a native client, which has none. */
 export async function createClient(tenantId: string, client: OAuthClient): Promise<CreatedClient> {
-  const response = await request<CreateClientResponse>('/configuration/clients', {
+  const kind = clientKindOf(client);
+  const response = await request<CreateClientResponse>(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'POST',
-    body: {
+    body: pickFields({
       tenantId,
       id: client.id,
       clientName: clientNameToBackend(client.clientName),
@@ -1109,9 +1193,8 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
-      otpTemplateId: client.otpTemplateId ?? null,
+      otpTemplateId: client.otpTemplateId ?? undefined,
       authFlow: authFlowToBackend(client.authFlow),
-      registrationFlow: registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -1129,11 +1212,10 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       jwks: client.jwks ?? null,
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
-      template: client.template ?? null,
-      applicationType: client.clientType === 'native' ? 'native' : 'web',
-      issueEdgeClientCertificate: !!client.edgeFronted && client.clientType !== 'native',
-      enrollEdgeClientCertificate: !!client.edgeFronted && client.clientType === 'native',
-    },
+      themeOverrides: nonEmptyOverrides(client.themeOverrides) ?? undefined,
+      issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
+      enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
+    }, CREATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
@@ -1176,9 +1258,11 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 }
 
 export async function updateClient(tenantId: string, existing: OAuthClient, client: OAuthClient): Promise<void> {
-  await requestVoid('/configuration/clients', {
+  // The kind the client was registered as: it is fixed, so it is read off what is stored.
+  const kind = clientKindOf(existing);
+  await requestVoid(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'PUT',
-    body: {
+    body: pickFields({
       clientId: client.id,
       clientName: sameLocalizedDescription(existing.clientName, client.clientName)
         ? undefined
@@ -1191,10 +1275,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
-      // Patch semantics: omitted leaves the stored flow alone, null clears it.
-      registrationFlow: sameRegistrationFlow(existing.registrationFlow, client.registrationFlow)
-        ? undefined
-        : registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
       backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
@@ -1226,7 +1306,11 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       requirePushedAuthorizationRequests: existing.requirePushedAuthorizationRequests !== client.requirePushedAuthorizationRequests
         ? client.requirePushedAuthorizationRequests
         : undefined,
-    },
+      // Patch semantics: omitted leaves the stored overrides alone, an empty object clears them.
+      themeOverrides: sameJsonValue(nonEmptyOverrides(existing.themeOverrides), nonEmptyOverrides(client.themeOverrides))
+        ? undefined
+        : (nonEmptyOverrides(client.themeOverrides) ?? {}),
+    }, UPDATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
@@ -1234,15 +1318,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     refreshTokenTtl: client.refreshTokenTtl ?? existing.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
-}
-
-function sameRegistrationFlow(a: RegistrationFlow | null | undefined, b: RegistrationFlow | null | undefined): boolean {
-  if (!a || !b) return !a && !b;
-  return a.credential === b.credential
-    && a.roleIds.length === b.roleIds.length
-    && a.roleIds.every(roleId => b.roleIds.includes(roleId))
-    && a.steps.length === b.steps.length
-    && a.steps.every((step, index) => step.type === b.steps[index]?.type);
 }
 
 export async function deleteClient(tenantId: string, clientId: string): Promise<void> {
@@ -1287,8 +1362,9 @@ export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
 
-export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
-  return request<Record<string, unknown>>('/configuration/server-metadata');
+/** The stored overrides, or null when none are configured. */
+export async function fetchServerMetadata(): Promise<Record<string, unknown> | null> {
+  return (await request<Record<string, unknown> | null>('/configuration/server-metadata')) ?? null;
 }
 
 export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
@@ -1350,6 +1426,13 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
+// The states of the built-in forms that central previews. A failure here fails the screen's load
+// and is shown as its error; there is no fallback that guesses the states.
+export async function fetchFormPreviews(): Promise<FormPreview[]> {
+  const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
+  return response.previews;
+}
+
 export async function fetchLocales(): Promise<Locale[]> {
   const response = await request<{ locales: Locale[] }>('/configuration/locales');
   return response.locales;
@@ -1400,14 +1483,37 @@ export async function fetchThemes(tenantId: string): Promise<ThemeRecord[]> {
 export async function createTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'POST',
-    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId },
+    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
   });
 }
 
 export async function updateTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'PUT',
-    body: { id: theme.id, css: theme.css },
+    body: { id: theme.id, css: theme.css, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
+  });
+}
+
+// The built-in themes a theme can be based on; a failure fails the screen's load and is shown
+// as its error; there is no reduced editor.
+export async function fetchThemePresets(): Promise<ThemePreset[]> {
+  const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
+  return response.presets;
+}
+
+// The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
+// exactly what users get, because nobody but central builds it. `tokens` null is a stylesheet theme (its CSS alone is
+// the stylesheet); `overrides` are a client's own, laid over the theme as auth does, so the answer is that client's
+// effective stylesheet. Empty overrides are not sent.
+export async function renderTheme(
+  tokens: ThemeTokens | null,
+  css: string,
+  overrides?: ThemeOverrides,
+): Promise<{ css: string; generated: string }> {
+  const own = overrides && Object.keys(overrides).length > 0 ? overrides : undefined;
+  return request<{ css: string; generated: string }>('/configuration/themes/css', {
+    method: 'POST',
+    body: { ...(tokens ? { tokens } : {}), css, ...(own ? { overrides: own } : {}) },
   });
 }
 
@@ -1493,48 +1599,46 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-export async function upsertChallengeSettings(
-  tenantId: string,
-  allowedPrefixes: string[],
-  submissionLimits: SubmissionLimits,
-  otpLength: number,
-  otpResendAfter: number,
-  passkeySettings: PasskeySettings,
-  authConversationTtlSeconds: number,
-  sessionTtlSeconds: number,
-  sessionIdleTtlSeconds: number | null,
-  userAgentTtlSeconds: number,
-  ipHeader: string,
-  acrVocabulary?: Record<string, string[]> | null,
-  postLogoutRedirectUris?: string[],
-  requireDpopNonce?: boolean,
-  mtlsCertificateHeader?: string | null,
-  mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
-  signingKeyId?: string | null,
-  clientAssertionMaxLifetimeSeconds?: number | null,
-): Promise<void> {
+/** Creates the tenant's settings, or replaces the whole record: only the first save of a tenant that has none goes
+ * through here, because a PATCH needs a record to merge into. Optional members go as explicit nulls, which central
+ * reads as "clear", never as "keep". */
+export async function upsertChallengeSettings(settings: ChallengeSettingsRecord): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
     body: {
-      tenantId,
-      allowedPrefixes,
-      submissionLimits,
-      otpLength,
-      otpResendAfter,
-      passkeySettings,
-      authConversationTtlSeconds,
-      sessionTtlSeconds,
-      sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
-      userAgentTtlSeconds,
-      ipHeader,
-      acrVocabulary: acrVocabulary ?? null,
-      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
-      requireDpopNonce: requireDpopNonce ?? null,
-      mtlsCertificateHeader: mtlsCertificateHeader ?? null,
-      mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
-      signingKeyId: signingKeyId ?? null,
-      clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
+      tenantId: settings.tenantId,
+      phoneRegions: settings.phoneRegions,
+      submissionLimits: settings.submissionLimits,
+      otpLength: settings.otpLength,
+      otpResendAfter: settings.otpResendAfter,
+      passkeySettings: settings.passkeySettings ?? null,
+      authConversationTtlSeconds: settings.authConversationTtlSeconds,
+      sessionTtlSeconds: settings.sessionTtlSeconds,
+      sessionIdleTtlSeconds: settings.sessionIdleTtlSeconds ?? null,
+      userAgentTtlSeconds: settings.userAgentTtlSeconds,
+      ipHeader: settings.ipHeader,
+      acrVocabulary: settings.acrVocabulary ?? null,
+      postLogoutRedirectUris: settings.postLogoutRedirectUris,
+      requireDpopNonce: settings.requireDpopNonce,
+      mtlsCertificateHeader: settings.mtlsCertificateHeader ?? null,
+      mtlsCertificateEncoding: settings.mtlsCertificateEncoding ?? null,
+      signingKeyId: settings.signingKeyId ?? null,
+      clientAssertionMaxLifetimeSeconds: settings.clientAssertionMaxLifetimeSeconds ?? null,
+      emailRegistration: settings.emailRegistration ?? { mode: 'closed', domains: [], blockSubaddress: false },
+      defaultRoles: settings.defaultRoles?.length ? settings.defaultRoles : ['user'],
+      logoLight: settings.logoLight ?? null,
+      logoDark: settings.logoDark ?? null,
     },
+  });
+}
+
+/** Merge patch (RFC 7396) of the members named in `changes`: the ones left out keep what is stored, so saving one group
+ * cannot overwrite a change another admin made to a different one. `null` clears an optional member; the body carries
+ * no other nulls. 404 when the tenant has no settings yet: create them with `upsertChallengeSettings`. */
+export async function patchChallengeSettings(tenantId: string, changes: ChallengeSettingsChanges): Promise<void> {
+  await requestVoid('/configuration/challenges/challenge-settings', {
+    method: 'PATCH',
+    body: { tenantId, ...changes },
   });
 }
 

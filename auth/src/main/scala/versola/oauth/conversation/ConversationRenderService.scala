@@ -5,7 +5,7 @@ import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRecord, PhoneRegion, PrimaryCredential, ScopeToken, TenantLogo}
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
@@ -13,6 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
+import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
@@ -27,19 +28,38 @@ import java.time.Instant
 trait ConversationRenderService:
   def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
 
-  def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
+  def renderExpired(
+      clientId: ClientId,
+      redirectUri: String,
+      state: Option[String],
+      responseMode: ResponseMode,
+      uiLocales: Option[List[String]],
+  ): Task[Response]
 
-  def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
+  def renderServiceUnavailable(
+      clientId: ClientId,
+      redirectUri: String,
+      state: Option[String],
+      responseMode: ResponseMode,
+      uiLocales: Option[List[String]],
+  ): Task[Response]
 
+  /** `uiLocale` is the language the form was submitted in; the redirect to the next step carries it
+    * so that step renders in it, since nothing but the URL ties the two requests together.
+    */
   def renderSubmit(
       result: ConversationResult.Render,
       record: ConversationRecord,
+      uiLocale: Option[String],
   ): Task[Response]
 
+  /** `clientId` is the app the session was last used by, when known: its theme and appearance overrides dress the page. */
   def renderLogout(
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
+      uiLocales: Option[List[String]],
+      clientId: Option[ClientId],
   ): Task[Response]
 
   def renderLogoutConfirm(
@@ -59,6 +79,18 @@ trait ConversationRenderService:
   ): Task[Response]
 
 object ConversationRenderService:
+
+  /** Applies the visitor's own Auto / Light / Dark choice (`localStorage`, key `versola.colorScheme`, written by the forms'
+    * `shared/scheme-toggle.tsx`) before the first paint. It sits after the `<style>` block because it reads the computed
+    * `--scheme-locked`: a theme that fixes the scheme sets it to 1, and then the stored choice is not applied (it is left
+    * in storage, since another client's theme may not lock). Constant: no configuration and no user data go into it.
+    * Storage may be blocked, hence the try/catch; the page then simply follows the device.
+    */
+  val SchemeScript: String =
+    "<script>(function(){try{var d=document.documentElement;" +
+      "if(getComputedStyle(d).getPropertyValue('--scheme-locked').trim()==='1')return;" +
+      "var v=localStorage.getItem('versola.colorScheme');" +
+      "if(v==='light'||v==='dark')d.style.colorScheme=v}catch(e){}})()</script>"
   val live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   @jsonDiscriminator("type")
@@ -70,9 +102,11 @@ object ConversationRenderService:
         primaryCredentials: List[PrimaryCredential],
         inlinePassword: Boolean,
         passkey: Boolean,
-        allowedPhonePrefixes: Option[List[String]],
+        phoneRegions: Option[List[PhoneRegion]],
         passwordRegex: Option[String],
         registration: Boolean,
+        /** Only a passkey of the identified user is asked for; the form starts it by itself. */
+        passkeyOnly: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -94,15 +128,27 @@ object ConversationRenderService:
         deselectable: Boolean,
     ) derives JsonCodec
 
+    /** Who is signed in, shown on the consent card so the user sees whose account is being shared. */
+    case class ConsentUser(
+        name: Option[String],
+        /** The email or phone number, masked. */
+        identifier: Option[String],
+        /** An https URL, from the user's `picture` claim. */
+        picture: Option[String],
+    ) derives JsonCodec
+
     @jsonHint("consent")
     case class Consent(
         clientName: Option[String],
+        /** The client's name in every language, see [[ClientBrand]]. */
+        clientNames: Map[String, String],
         logoUri: Option[String],
         policyUri: Option[String],
         tosUri: Option[String],
         scopes: List[ConsentScope],
         allowPartial: Boolean,
         denyUri: String,
+        user: Option[ConsentUser],
     ) extends StepView
 
     /** One active session of the user, as rendered on the account page. `id` is the
@@ -153,7 +199,27 @@ object ConversationRenderService:
       allT: Map[String, Map[String, String]],
       error: Option[String],
       csrf: String,
-      logo: Option[String] = None,
+      logo: Option[TenantLogo],
+      /** The client the user is signing in to; forms show it inside the card for a partner's app. */
+      client: Option[ClientBrand],
+      /** The language each code is shown as in the switcher, as configured under Locales. */
+      localeNames: Map[String, String],
+  ) derives JsonCodec
+
+  /** What a form shows of the client: its name and logo, and whether it is a partner's (third-party) app, which has
+    * a consent flow; the identity provider's own apps are not announced inside the card.
+    *
+    * Contract for the name: `names` is the client's whole `clientName` map (every language, keys as stored, names
+    * cleaned by [[cleanName]]) and `name` is the one the server picked for the first render. A form that lets the user
+    * switch language picks again from `names` with the same rule as the server's `pickLocalized`: the locale matched
+    * case-insensitively, else the same language without the region (`pt-BR` -> `pt`), else the tenant's default locale,
+    * else any entry. The same holds for the consent step's `clientName` / `clientNames`.
+    */
+  case class ClientBrand(
+      name: Option[String],
+      names: Map[String, String],
+      logo: Option[String],
+      partner: Boolean,
   ) derives JsonCodec
 
   case class LogoutConfirm(
@@ -187,8 +253,8 @@ object ConversationRenderService:
       for
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
-        logo <- configuration.getIdentityProviderLogo
+        css <- themeCss(themeId, client.flatMap(_.themeOverrides))
+        logo <- tenantLogo(client)
         maybeInfo <-
           formFor(
             record.step,
@@ -199,6 +265,9 @@ object ConversationRenderService:
             record.state,
             record.csrfToken,
             availableClaims = availableClaimNames(record),
+            consentUser = record.step match
+              case _: ConversationStep.Consent => consentUser(record)
+              case _ => None,
             errorOverride = errorKey,
             responseMode = record.responseMode,
           )
@@ -218,12 +287,19 @@ object ConversationRenderService:
               )
       yield response
 
-    override def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response] =
+    override def renderExpired(
+        clientId: ClientId,
+        redirectUri: String,
+        state: Option[String],
+        responseMode: ResponseMode,
+        uiLocales: Option[List[String]],
+    ): Task[Response] =
       returnUri(clientId, redirectUri, state, "login_required", responseMode).flatMap: uri =>
         renderTerminal(
           clientId,
           "conversation-expired",
           StepView.ConversationExpired(uri),
+          uiLocales,
         )
 
     override def renderServiceUnavailable(
@@ -231,12 +307,14 @@ object ConversationRenderService:
         redirectUri: String,
         state: Option[String],
         responseMode: ResponseMode,
+        uiLocales: Option[List[String]],
     ): Task[Response] =
       returnUri(clientId, redirectUri, state, "temporarily_unavailable", responseMode).flatMap: uri =>
         renderTerminal(
           clientId,
           "service-unavailable",
           StepView.ServiceUnavailable(uri),
+          uiLocales,
         )
 
     /** The link back to the client for an error the user is shown a page about first. It is
@@ -256,19 +334,19 @@ object ConversationRenderService:
           val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           responseService.redirect(clientId, url, responseMode, params).map(uri => Some(uri.encode))
 
-    private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
+    private def renderTerminal(clientId: ClientId, formId: String, step: StepView, uiLocales: Option[List[String]]): Task[Response] =
       for
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
-        logo <- configuration.getIdentityProviderLogo
+        css <- themeCss(themeId, client.flatMap(_.themeOverrides))
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
       yield formOpt match
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
         case Some(form) =>
           val activeCodes = locales.locales.map(_.code).toSet + locales.default
-          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val (chosenLocale, translations) = pickTranslations(form, uiLocales, locales.default, activeCodes)
           val info = FormRenderInfo(
             title = pageTitle(translations),
             style = form.style,
@@ -281,6 +359,9 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -294,8 +375,8 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- configuration.find(clientId)
-        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
-        logo <- configuration.getIdentityProviderLogo
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm("auth-settings")
         locales <- configuration.getLocales
       yield formOpt match
@@ -315,6 +396,9 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -330,16 +414,18 @@ object ConversationRenderService:
     override def renderSubmit(
         result: ConversationResult.Render,
         record: ConversationRecord,
+        uiLocale: Option[String],
     ): Task[Response] =
+      val challenge = Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), uiLocale))
       result match
         case ConversationResult.RenderStep(step) =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.ServiceUnavailable =>
           renderStep(record, ifNoneMatch = None, errorKey = Some("service_unavailable"))
 
         case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = Base64Url.encode(code)
@@ -387,19 +473,22 @@ object ConversationRenderService:
         logoutUris: List[URL],
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
+        uiLocales: Option[List[String]],
+        clientId: Option[ClientId],
     ): Task[Response] =
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
       for
-        css <- themeCss(ThemeDefault)
-        logo <- configuration.getIdentityProviderLogo
+        client <- clientId.fold(ZIO.succeed(None))(configuration.find)
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
+        logo <- tenantLogo(client)
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales
       yield formOpt match
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
         case Some(form) =>
           val activeCodes = locales.locales.map(_.code).toSet + locales.default
-          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val (chosenLocale, translations) = pickTranslations(form, uiLocales, locales.default, activeCodes)
           val info = FormRenderInfo(
             title = pageTitle(translations),
             style = form.style,
@@ -412,6 +501,9 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -431,8 +523,8 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
-        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
-        logo <- configuration.getIdentityProviderLogo
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
+        logo <- tenantLogo(client)
         form <- configuration.getForm("confirm-logout")
         locales <- configuration.getLocales
       yield form match
@@ -452,6 +544,9 @@ object ConversationRenderService:
               value.localizations,
               None,
               csrfToken,
+              localeNames = localeNames(locales, (value.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             value.version,
           )
@@ -480,6 +575,7 @@ object ConversationRenderService:
         state: Option[State],
         csrfToken: String,
         availableClaims: Set[String],
+        consentUser: Option[StepView.ConsentUser] = None,
         errorOverride: Option[String] = None,
         responseMode: ResponseMode = ResponseMode.Query,
     ): Task[Option[FormRenderInfo]] =
@@ -492,7 +588,8 @@ object ConversationRenderService:
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, responseMode)
+        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, consentUser, responseMode)
+        client <- configuration.find(clientId)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
         errorMessage = errorOverride.orElse(stepErrorKey(step))
@@ -514,6 +611,9 @@ object ConversationRenderService:
             allT = form.localizations,
             error = errorMessage,
             csrf = csrfToken,
+            client = clientBrand(client, locale, locales.default),
+            localeNames = localeNames(locales, allLocales),
+            logo = None,
           ),
           version = form.version,
         )
@@ -542,31 +642,64 @@ object ConversationRenderService:
         activeCodes: Set[String],
     ): (String, Map[String, String]) =
       val base = form.localizations.getOrElse(default, Map.empty)
+      // Language tags are case-insensitive (`pt-br` from a browser is `pt-BR` in the tenant's config).
       val chosenLocale = locale.getOrElse(Nil).iterator
-        .find(code => activeCodes.contains(code) && form.localizations.contains(code))
+        .flatMap(requested => activeCodes.find(_.equalsIgnoreCase(requested)))
+        .find(form.localizations.contains)
         .getOrElse(default)
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
-    private def themeCss(themeId: String): UIO[String] =
+    // A theme is a whole stylesheet, except one built from tokens: that is the base stylesheet (a resource of util, not the
+    // stored default theme, which is itself a token theme), what its
+    // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
+    // rather than a broken page (plus the theme's own CSS).
+    //
+    // A client may carry overrides of its own (a partner app with its brand colour): they are one more rule after all
+    // of the above, so they win over the theme. A stylesheet theme has no tokens to read the base from, so the default
+    // preset stands in for it, and the overrides apply on top of the stylesheet; a stylesheet written against the legacy
+    // names (--accent, --bg) that sets them to literals is not moved by --brand, as it would not be by any token.
+    private def themeCss(themeId: String, overrides: Option[ThemeOverrides] = None): UIO[String] =
+      themeBase(themeId).map: (css, resolved) =>
+        val partial = (overrides.filterNot(_.isEmpty), resolved) match
+          case (Some(own), Some(base)) => ThemeCss.generatePartial(base, own)
+          case _ => ""
+        Seq(css, partial).filter(_.nonEmpty).mkString("\n")
+
+    private def themeBase(themeId: String): UIO[(String, Option[ResolvedTokens])] =
+      val versola = ThemePresets.find(ThemePresets.DefaultId).map(_.tokens)
       configuration.getTheme(themeId).flatMap {
-        case Some(theme) if theme.css.nonEmpty => ZIO.succeed(theme.css)
-        case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
+        case Some(theme) if theme.tokens.isDefined =>
+          defaultCss.map: default =>
+            theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
+              case Some(resolved) => (ThemeCss.compose(default, resolved, theme.css), Some(resolved))
+              case None => (Seq(default, theme.css).filter(_.nonEmpty).mkString("\n"), versola)
+        case Some(theme) if theme.css.nonEmpty => ZIO.succeed((theme.css, versola))
+        case _ => defaultCss.map((_, versola))
       }
 
-    /** Resolves one localized configuration string the same way form translations are resolved:
-      * the first requested locale that has a value, then the tenant default. Falls back to `None`
-      * so the form can render the raw token for a scope that has no description yet.
+    private def defaultCss: UIO[String] =
+      ZIO.succeed(ThemeCss.baseStylesheet)
+
+    /** Resolves one localized configuration string: the first requested locale that has a value (matched
+      * case-insensitively, then without its region: `pt-BR` -> `pt`), then the tenant default, then any entry. The
+      * same rule the forms apply to a client's names (see [[ClientBrand]]). `None` only when no entry has text, so
+      * the form can render the raw token for a scope that has no description yet.
       */
     private def pickLocalized(
         values: Map[String, String],
         uiLocales: Option[List[String]],
         default: String,
     ): Option[String] =
+      def lookup(code: String): Option[String] =
+        values.collectFirst { case (key, value) if key.equalsIgnoreCase(code) && value.nonEmpty => value }
+      def withoutRegion(code: String): Option[String] =
+        Some(code.takeWhile(c => c != '-' && c != '_')).filter(_ != code)
       uiLocales.getOrElse(Nil).iterator
-        .flatMap(values.get)
-        .find(_.nonEmpty)
-        .orElse(values.get(default).filter(_.nonEmpty))
+        .flatMap(requested => lookup(requested).orElse(withoutRegion(requested).flatMap(lookup)))
+        .nextOption()
+        .orElse(lookup(default))
+        .orElse(values.toList.sortBy(_._1).collectFirst { case (_, value) if value.nonEmpty => value })
 
     private def stepView(
         step: ConversationStep,
@@ -576,14 +709,15 @@ object ConversationRenderService:
         redirectUri: URL,
         state: Option[State],
         availableClaims: Set[String],
+        consentUser: Option[StepView.ConsentUser],
         responseMode: ResponseMode,
     ): Task[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
           for
-            allowedPhonePrefixes <-
-              if primaryCredentials.contains(PrimaryCredential.phone) then
-                configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
+            phoneRegions <-
+              if primaryCredentials.contains(PrimaryCredential.phone) && !passkeyOnly then
+                configuration.getPhoneRegions(clientId).map(Some(_))
               else
                 ZIO.none
             passwordRegex <-
@@ -593,9 +727,10 @@ object ConversationRenderService:
             primaryCredentials,
             inlinePassword,
             passkey,
-            allowedPhonePrefixes,
+            phoneRegions,
             passwordRegex,
             registration,
+            passkeyOnly,
           )
 
         case _: ConversationStep.Password =>
@@ -628,6 +763,7 @@ object ConversationRenderService:
             locales <- configuration.getLocales
             denyUri <- returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             byToken = scopes.map(record => record.scope -> record).toMap
+            mandatory = ConsentService.mandatoryScopes(client.flatMap(_.consentFlow))
             rows = s.requestedScope.toList.sortBy: token =>
               (if token.toString == "openid" then 0 else 1, token.toString)
             .map: token =>
@@ -645,21 +781,82 @@ object ConversationRenderService:
                 descriptionLocalizations = scopeDescriptionLocalizations,
                 claims = claims.map(_._1),
                 claimLocalizations = claims.map(_._2),
-                deselectable = s.allowPartial && !ConsentService.NonDeselectable.contains(token),
+                deselectable = s.allowPartial && !mandatory.contains(token),
               )
           yield StepView.Consent(
-            clientName = client.flatMap(c => pickLocalized(c.clientName, uiLocales, locales.default)),
+            clientName = client.flatMap(c => pickLocalized(cleanNames(c.clientName), uiLocales, locales.default)),
+            clientNames = client.fold(Map.empty[String, String])(c => cleanNames(c.clientName)),
             logoUri = client.flatMap(_.logoUri),
             policyUri = client.flatMap(_.policyUri),
             tosUri = client.flatMap(_.tosUri),
             scopes = rows,
             allowPartial = s.allowPartial,
             denyUri = denyUri.getOrElse(redirectUri.encode),
+            user = consentUser,
           )
 
         case ConversationStep.AccessDenied =>
           returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             .map(uri => StepView.AccessDenied(redirectUri = uri.getOrElse(redirectUri.encode)))
+
+    /** The client's name in the user's language and its logo, and whether it is a partner's app. */
+    private def clientBrand(
+        client: Option[OAuthClientRecord],
+        uiLocales: Option[List[String]],
+        default: String,
+    ): Option[ClientBrand] =
+      client.map: c =>
+        val names = cleanNames(c.clientName)
+        ClientBrand(
+          name = pickLocalized(names, uiLocales, default),
+          names = names,
+          logo = c.logoUri,
+          partner = c.consentFlow.isDefined,
+        )
+
+    private val MaxClientNameCodePoints = 100
+
+    /** A client name is configuration, but it is drawn on a page the user trusts: control and format characters
+      * (newlines, zero-width and bidi override characters, which could reorder the text around the name) are removed,
+      * and it is cut by code points, so an emoji is never split into half a surrogate pair.
+      */
+    private def cleanName(name: String): String =
+      val kept = name.codePoints().toArray.filter: cp =>
+        val kind = Character.getType(cp)
+        kind != Character.CONTROL && kind != Character.FORMAT && kind != Character.UNASSIGNED
+      new String(kept, 0, math.min(kept.length, MaxClientNameCodePoints)).trim
+
+    private def cleanNames(names: Map[String, String]): Map[String, String] =
+      names.flatMap((code, name) => Some(cleanName(name)).filter(_.nonEmpty).map(code -> _))
+
+    /** The language names an administrator gave the locales, for the languages this form is offered in. */
+    private def localeNames(locales: Locales, offered: List[String]): Map[String, String] =
+      locales.locales.collect { case locale if offered.contains(locale.code) && locale.name.nonEmpty => locale.code -> locale.name }.toMap
+
+    /** Who is signed in, for the consent card: their name, a masked email or phone number, and their picture.
+      * A name and a picture are the user's own `name` / `picture` claims, so they are bounded, and a picture
+      * is used only when it is an https URL: it is loaded by the browser from whatever host the claim names.
+      */
+    private def consentUser(record: ConversationRecord): Option[StepView.ConsentUser] =
+      def text(claim: String, limit: Int): Option[String] =
+        record.userClaims.flatMap(_.get(claim)).collect { case Json.Str(value) if value.trim.nonEmpty => cutCodePoints(value.trim, limit) }
+      val name = text("name", 200).orElse:
+        Some(List(text("given_name", 100), text("family_name", 100)).flatten.mkString(" ")).filter(_.nonEmpty)
+      // Not trimmed like the text claims: a URL with whitespace around it is refused, not repaired.
+      val picture = record.userClaims.flatMap(_.get("picture")).collect { case Json.Str(value) if value.length <= 2048 => value }.filter(isHttpsUrl)
+      val identifier = record.userEmail.map(Email.mask).orElse(record.userPhone.map(Phone.mask))
+      Option.when(name.isDefined || identifier.isDefined)(StepView.ConsentUser(name, identifier, picture))
+
+    private def cutCodePoints(value: String, limit: Int): String =
+      if value.codePointCount(0, value.length) <= limit then value else value.substring(0, value.offsetByCodePoints(0, limit))
+
+    /** Only an https URL with a host and no userinfo (`https://user:pw@host/` is how a link is made to look like
+      * another host); the scheme is matched case-insensitively, as URLs do, and surrounding whitespace is rejected
+      * rather than trimmed. A backslash makes the string no URI at all.
+      */
+    private def isHttpsUrl(value: String): Boolean =
+      value == value.trim && scala.util.Try(new java.net.URI(value)).toOption.exists: uri =>
+        Option(uri.getScheme).exists(_.equalsIgnoreCase("https")) && Option(uri.getHost).exists(_.nonEmpty) && uri.getRawUserInfo == null
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
       val customClaims = record.userClaims.toList
@@ -695,22 +892,31 @@ object ConversationRenderService:
       case _: LogoutConfirm => "confirm-logout"
       case _: SignedOut => "signed-out"
 
-    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[TenantLogo]): String =
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(
           info.title,
         )}</title>${faviconLink(
           logo,
         )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(
           info.style,
-        )}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+        )}</style>$SchemeScript<script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
           "",
         )}</script></body></html>"""
 
-    /** The identity provider logo doubles as the favicon of the login pages. */
-    private def faviconLink(logo: Option[String]): String =
-      val href = logo.filter(_.nonEmpty).map(escapeAttribute).getOrElse(defaultFavicon)
-      s"""<link rel="icon" href="$href">"""
+    /** The logo of the client's tenant. A page that belongs to no known client has no tenant to take one from, and
+      * shows the Versola wordmark. */
+    private def tenantLogo(client: Option[OAuthClientRecord]): UIO[Option[TenantLogo]] =
+      client.fold(ZIO.none)(c => configuration.getTenantLogo(c.tenantId))
+
+    /** The tenant's logo doubles as the favicon of its login pages: the file made for the browser's light or dark
+      * chrome, which is the device's scheme, not the page's (the visitor's toggle does not reach a tab strip). */
+    private def faviconLink(logo: Option[TenantLogo]): String =
+      logo match
+        case Some(TenantLogo(light, dark)) =>
+          s"""<link rel="icon" href="${escapeAttribute(light)}" media="(prefers-color-scheme: light)">""" +
+            s"""<link rel="icon" href="${escapeAttribute(dark)}" media="(prefers-color-scheme: dark)">"""
+        case None => s"""<link rel="icon" href="$defaultFavicon">"""
 
     private val defaultFavicon =
       val svg =
@@ -720,10 +926,6 @@ object ConversationRenderService:
     private def escapeAttribute(value: String): String =
       value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
-    private def formLogo(step: StepView, logo: Option[String]): Option[String] = step match
-      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.ConversationExpired | _: StepView.ServiceUnavailable => None
-      case _ => logo
-
     private def inlineScriptJson(value: String): String =
       value
         .replace("&", "\\u0026")
@@ -732,8 +934,8 @@ object ConversationRenderService:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
 
-    private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+    private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[TenantLogo]): String =
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html>
          |<html lang="en">
          |  <head>
@@ -746,6 +948,7 @@ object ConversationRenderService:
          |      ${escapeCssForStyle(themeCss)}
          |      ${escapeCssForStyle(info.style)}
          |    </style>
+         |    $SchemeScript
          |    <script>
          |      window.__VERSOLA_FORM__ = $config;
          |    </script>
@@ -768,6 +971,7 @@ object ConversationRenderService:
          |    <style>
          |      ${escapeCssForStyle(themeCss)}
          |    </style>
+         |    $SchemeScript
          |  </head>
          |  <body>
          |    <div class="container">

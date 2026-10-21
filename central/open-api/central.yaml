@@ -12,8 +12,13 @@ info:
     traffic — only to the admin console (`central-ui`).
 
     This reference covers the admin console surface. Central also exposes internal
-    replication endpoints (`/sync`, `/registry`) that auth and edge use to pull configuration;
-    those are not part of this document.
+    endpoints that auth and edge call, authenticated with a bearer token those services sign
+    rather than with the HTTP Basic credentials below; they are not part of this document:
+    the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
+    `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
+    who registered themselves so that central can index them), `GET /configuration/edges/overload/sync` (an edge asks for its own overload policy) and `POST
+    /configuration/clients/edge-certificate/sign` (an edge asks for a certificate for a client
+    whose key it generated).
 
     ## Authentication
 
@@ -33,7 +38,7 @@ info:
     * Secrets and private keys are returned exactly once, at creation or rotation time.
       Central stores only encrypted copies and cannot show them again.
   license:
-    name: Apache-2.0
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 externalDocs:
@@ -56,7 +61,7 @@ tags:
   - name: Tenants
     description: Isolation boundaries that own clients, resources, scopes, permissions and roles.
   - name: Clients
-    description: OAuth clients, their secrets and their login/registration flows.
+    description: OAuth clients, their secrets and their sign-in flows.
   - name: Authorization presets
     description: Named, server-side authorization request templates for a client.
   - name: Resources
@@ -168,59 +173,6 @@ paths:
                 $ref: '#/components/schemas/GetAllClientsResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-    post:
-      tags: [Clients]
-      summary: Register a client
-      description: |
-        Returns the generated client secret. This is the only time the plaintext secret is
-        available — central keeps only an encrypted copy.
-      operationId: createClient
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateClientRequest'
-      responses:
-        '201':
-          description: Client registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateClientResponse'
-        '400':
-          description: |
-            The configuration was rejected: both logout URIs set at once, a consent URI that
-            is not an absolute HTTPS URL, or a registration flow auth cannot run.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: A client with this id already exists.
-    put:
-      tags: [Clients]
-      summary: Update a client
-      operationId: updateClient
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateClientRequest'
-      responses:
-        '204':
-          description: Client updated.
-        '400':
-          description: The patch was rejected — see `POST /configuration/clients`.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Clients]
       summary: Delete a client
@@ -232,6 +184,205 @@ paths:
           description: Client deleted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/web:
+    post:
+      tags: [Clients]
+      summary: Register a web client
+      description: |
+        A site with a backend, where users sign in. See `CreateWebClientRequest`.
+        The secret is returned only here, and only for `authMethod: client_secret`.
+      operationId: createWebClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebClientRequest'
+      responses:
+        '201':
+          description: Client registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateClientResponse'
+        '400':
+          description: |
+            The request carries a member this kind does not have, or the registration was
+            rejected: a method or setting the kind does not allow (named in the body), or any
+            consent URI that is not an absolute HTTPS URL.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A client with this id already exists.
+    put:
+      tags: [Clients]
+      summary: Update a web client
+      description: |
+        Only for a client registered as a web client: a client's kind is fixed, and an
+        update sent to another kind's endpoint is refused with `409` naming the right one.
+      operationId: updateWebClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebClientRequest'
+      responses:
+        '204':
+          description: Client updated.
+        '400':
+          description: The patch was rejected, or carries a member this kind does not have.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No such client.
+        '409':
+          description: The client is of another kind.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /configuration/clients/native:
+    post:
+      tags: [Clients]
+      summary: Register a native client
+      description: |
+        An app installed on a device, holding a DPoP key. See `CreateNativeClientRequest`.
+        The secret is returned only here, and only for `authMethod: client_secret`.
+      operationId: createNativeClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNativeClientRequest'
+      responses:
+        '201':
+          description: Client registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateClientResponse'
+        '400':
+          description: |
+            The request carries a member this kind does not have, or the registration was
+            rejected: a method or setting the kind does not allow (named in the body), or any
+            consent URI that is not an absolute HTTPS URL.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A client with this id already exists.
+    put:
+      tags: [Clients]
+      summary: Update a native client
+      description: |
+        Only for a client registered as a native client: a client's kind is fixed, and an
+        update sent to another kind's endpoint is refused with `409` naming the right one.
+      operationId: updateNativeClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNativeClientRequest'
+      responses:
+        '204':
+          description: Client updated.
+        '400':
+          description: The patch was rejected, or carries a member this kind does not have.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No such client.
+        '409':
+          description: The client is of another kind.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /configuration/clients/service:
+    post:
+      tags: [Clients]
+      summary: Register a service client
+      description: |
+        Code calling an API with no user present. See `CreateServiceClientRequest`.
+        The secret is returned only here, and only for `authMethod: client_secret`.
+      operationId: createServiceClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServiceClientRequest'
+      responses:
+        '201':
+          description: Client registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateClientResponse'
+        '400':
+          description: |
+            The request carries a member this kind does not have, or the registration was
+            rejected: a method or setting the kind does not allow (named in the body), or any
+            consent URI that is not an absolute HTTPS URL.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A client with this id already exists.
+    put:
+      tags: [Clients]
+      summary: Update a service client
+      description: |
+        Only for a client registered as a service client: a client's kind is fixed, and an
+        update sent to another kind's endpoint is refused with `409` naming the right one.
+      operationId: updateServiceClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServiceClientRequest'
+      responses:
+        '204':
+          description: Client updated.
+        '400':
+          description: The patch was rejected, or carries a member this kind does not have.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No such client.
+        '409':
+          description: The client is of another kind.
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /configuration/clients/rotate-secret:
     post:
@@ -266,6 +417,39 @@ paths:
           description: Previous secret removed.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/edge-certificate/renew:
+    post:
+      tags: [Clients]
+      summary: Renew a managed edge client certificate
+      description: |
+        Issues a new certificate now for a client whose certificate central manages (one
+        registered with `issueEdgeClientCertificate`), instead of waiting for the scheduled
+        renewal -- after a change of certificate authority, say.
+
+        Answers `404 Not Found` for a client whose certificate central does not manage: one
+        registered with a certificate the operator supplied, one enrolled with
+        `enrollEdgeClientCertificate`, or one that does not exist.
+      operationId: renewEdgeClientCertificate
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: Certificate renewed.
+        '400':
+          description: The client's registration cannot be issued a certificate (for example no certificate authority is configured).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Central does not manage the certificate of this client.
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /configuration/auth-request-presets:
     get:
@@ -520,6 +704,8 @@ paths:
       responses:
         '201':
           description: Permission created.
+        '400':
+          description: The body is malformed, or the permission ID contains `.` (new IDs are colon-separated only).
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -761,8 +947,9 @@ paths:
       tags: [Users]
       summary: Patch a user's identifiers
       description: |
-        Applied asynchronously through the user outbox, so the change is not yet visible to
-        `GET /users` when this returns.
+        The central index is updated in the request transaction, so an unknown `id` or an
+        identifier held by another user is rejected synchronously. Propagation to auth runs
+        asynchronously through the user outbox.
       operationId: patchUser
       requestBody:
         required: true
@@ -775,6 +962,37 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this `id`.
+        '409':
+          description: One of the identifiers is already taken by another user.
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      description: |
+        Hard-deletes the user with everything that references them, synchronously: auth is told
+        first and purges the account's sessions, refresh tokens, authorization codes, in-flight
+        conversations, passkeys, passwords, roles, consents and throttling records (the relying
+        parties of its sessions receive a back-channel logout), and only then does the index row
+        go. A failure in auth leaves the user in place, so the call can be repeated. Access tokens
+        already issued stay valid until they expire; the refresh tokens that would renew them do
+        not. The request log carries the user id and nothing else about the user.
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '204':
+          description: User deleted.
+        '400':
+          description: No `id`, or one that is not a UUID.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this `id`.
 
   /users/claims:
     patch:
@@ -844,7 +1062,10 @@ paths:
             $ref: '#/components/schemas/UserId'
       responses:
         '200':
-          description: Active sessions, each with the clients entered during it.
+          description: |
+            Active sessions, each with the clients entered during it, when it ends (`expiresAt`, and
+            `idleExpiresAt` when an idle timeout applies) and the user agent it runs under. Signed-out
+            devices are not listed here; see `GET /users/user-agents`.
           content:
             application/json:
               schema:
@@ -855,29 +1076,161 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Users]
-      summary: Invalidate a user's sessions
-      description: Logs the user out everywhere; subsequent authorization requires re-authentication.
+      summary: Invalidate a user's sessions, or one of them
+      description: |
+        With `userId` alone: logs the user out everywhere; subsequent authorization requires
+        re-authentication. With `id` and `sessionId` (the `publicId` from `GET /users/sessions`):
+        signs that one user agent out, the way the user's own logout would, relying parties
+        included; the other sessions stay. A `sessionId` that is not this user's is refused
+        with `404` rather than ended, since session ids travel in front-channel logout URLs.
       operationId: invalidateUserSessions
       parameters:
         - name: userId
+          in: query
+          description: Required without `sessionId`.
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: id
+          in: query
+          description: Required with `sessionId`.
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: sessionId
+          in: query
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Sessions invalidated, or the one session ended.
+        '400':
+          description: Neither `userId` nor `id` with `sessionId` was supplied.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `sessionId` is not a live session of this user.
+
+  /users/user-agents:
+    get:
+      tags: [Users]
+      summary: List a user's remembered devices
+      description: |
+        Every user agent (browser or app install) auth still remembers for the user, newest first,
+        with the live SSO session under it. A user agent holds at most one session; once it ended,
+        `session` is `null` and `endedSessionIds` lists the ended sessions auth has not yet swept,
+        which is how a refresh token (it names only its session) is tied back to the device it was
+        issued on. A live session whose user agent row has already expired is listed with
+        `userAgent` absent.
+
+        A user agent is remembered until `userAgent.expiresAt`, which slides forward on every
+        sign-in; auth stores no separate last-seen time. Separate from `GET /users/sessions`,
+        whose items are always live sessions.
+      operationId: getUserDevices
+      parameters:
+        - name: id
           in: query
           required: true
           schema:
             $ref: '#/components/schemas/UserId'
       responses:
-        '204':
-          description: Sessions invalidated.
+        '200':
+          description: The user's devices, signed in and signed out.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceResponse'
+              examples:
+                signedInAndSignedOut:
+                  summary: One signed-in device and one signed out
+                  value:
+                    - userAgent:
+                        id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                        userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-01T09:30:00Z'
+                        expiresAt: '2027-01-15T09:30:00Z'
+                      session:
+                        publicId: c2lkLTAxOThiMmE0
+                        clients:
+                          - clientId: web-portal
+                            enteredAt: '2026-10-15T08:00:00Z'
+                            expiresAt: '2026-10-15T08:10:00Z'
+                        platform: desktop
+                        os: macOS 10.15.7
+                        browser: Chrome
+                        version: '130'
+                        createdAt: '2026-10-15T08:00:00Z'
+                        expiresAt: '2026-10-22T08:00:00Z'
+                        idleExpiresAt: '2026-10-15T09:00:00Z'
+                        userAgent:
+                          id: 0198b2a4-6c1e-7d3a-9f10-4c7a1d2e8b55
+                          userAgent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+                          platform: desktop
+                          os: macOS 10.15.7
+                          browser: Chrome
+                          version: '130'
+                          createdAt: '2026-10-01T09:30:00Z'
+                          expiresAt: '2027-01-15T09:30:00Z'
+                      endedSessionIds: []
+                    - userAgent:
+                        id: 0198b2a4-9e02-7b44-8a61-2f0c5d9e1a07
+                        userAgent: Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1
+                        platform: ios
+                        os: iOS 17.5
+                        browser: Safari
+                        version: '17'
+                        createdAt: '2026-09-20T18:00:00Z'
+                        expiresAt: '2026-12-19T18:00:00Z'
+                      session: null
+                      endedSessionIds: [c2lkLTAxOThiMmEx]
         '401':
           $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Forget a device
+      description: |
+        Removes the user agent from what auth remembers, ends its session the way the user's own
+        logout would (relying parties included) and expires the refresh tokens bound to its
+        sessions. Refresh tokens name only their session, so a token whose session row auth has
+        already swept cannot be reached this way; revoke it with `DELETE /users/refresh-tokens`.
+        A `userAgentId` that is not this user's is refused with `404` rather than removed.
+      operationId: forgetUserAgent
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: userAgentId
+          in: query
+          required: true
+          description: The `userAgent.id` from `GET /users/user-agents`.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The device was forgotten.
+        '400':
+          description: Either `id` or `userAgentId` is missing.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `userAgentId` is not a remembered user agent of this user.
 
   /users/refresh-tokens:
     get:
       tags: [Users]
       summary: List a user's refresh tokens
       description: |
-        Independent of `GET /users/sessions`: a refresh token's expiry is fixed at issuance and
-        independent of a session's, so a token routinely outlives the session it was issued
-        under and would be invisible to an admin working from the session list alone.
+        The offline access clients hold for the user, one entry per live grant. Independent of
+        `GET /users/sessions`: a refresh token's expiry is fixed at issuance and independent of
+        a session's, so a token routinely outlives the session it was issued under and would be
+        invisible to an admin working from the session list alone.
       operationId: getUserRefreshTokens
       parameters:
         - name: id
@@ -894,6 +1247,32 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/RefreshTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Revoke a client's offline access for a user
+      description: |
+        Expires every live refresh token `clientId` holds for the user, so the client cannot renew
+        its access without sending the user through `/authorize` again. Not a logout: the user's
+        sessions stay, and access tokens already issued run out on their own. Idempotent.
+      operationId: revokeUserRefreshTokens
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: clientId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ClientId'
+      responses:
+        '204':
+          description: Offline access revoked (or there was none).
+        '400':
+          description: "`id` or `clientId` missing."
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1096,6 +1475,9 @@ paths:
       description: |
         Omitted TTL members keep their stored value, or fall back to the built-in default when
         the tenant has no settings yet.
+
+        The whole record is written, so a client that edits one member overwrites a concurrent edit of
+        another: change members of existing settings with `PATCH`, and use this call to create them.
       operationId: upsertChallengeSettings
       requestBody:
         required: true
@@ -1114,6 +1496,60 @@ paths:
             a profile other than the one the tenant was created with, which cannot be changed,
             or because `signingKeyId` names an RS256 key for a tenant on the `fapi2` profile
             (FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding; a `standard` tenant may select one).
+
+    patch:
+      tags: [Challenges]
+      summary: Patch a tenant's challenge settings
+      description: |
+        JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members: a member
+        the body names is replaced, one it leaves out keeps its stored value. Two admins patching
+        different members at once both land -- the merge runs on the stored row under a lock, so
+        neither overwrites the other, which a `PUT` of the whole record cannot promise.
+
+        A named member is replaced whole, never merged into: `submissionLimits`, `passkeySettings`,
+        `emailRegistration` and `acrVocabulary` are sent in full, and so are `phoneRegions` and the
+        other lists. `null` clears a member, but only the optional ones --
+        `sessionIdleTtlSeconds`, `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`,
+        `signingKeyId`, `logoLight` and `logoDark`. `null` for any other member is refused with
+        `400` rather than read as absent, and so is a key the record does not have.
+
+        The record that would result is validated exactly as a `PUT` validates its record (the
+        header/encoding pair, the logo pair, the assertion lifetime range, phone regions, email
+        domains, default roles, the signing key), and nothing is stored when it is refused.
+        Unlike `PUT`, this does not create settings: a tenant that has none gets `404`.
+      operationId: patchChallengeSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchChallengeSettingsRequest'
+            examples:
+              onlyTheSessionLifetime:
+                summary: Change one member; every other keeps its value
+                value:
+                  tenantId: acme
+                  sessionTtlSeconds: 43200
+              clearTheSigningKey:
+                summary: Clear an optional member and change a second one
+                value:
+                  tenantId: acme
+                  signingKeyId: null
+                  otpLength: 8
+      responses:
+        '204':
+          description: Settings stored.
+        '400':
+          description: |
+            Refused, with nothing stored: a key the record does not have, `null` for a member that
+            is not optional, a body without `tenantId`, or a resulting record that breaks a rule
+            of `PUT` (see above), among them a `securityProfile` other than the one the tenant
+            was created with.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The tenant has no challenge settings yet; create them with `PUT`.
+
 
   /configuration/forms:
     get:
@@ -1135,6 +1571,15 @@ paths:
       description: |
         Creates a new version without activating it. Activate it separately with
         `PUT /configuration/forms/active`.
+
+        `localizations` is language first, `{ "en": { "<key>": "..." }, "ru": { ... } }`, the shape of a form's
+        `<name>.i18n.json`. The languages must agree: each has exactly the same keys, and a key has the same
+        `{placeholder}` names in every language (their order may differ). A version that breaks this is refused with
+        a `400` and nothing is stored, because the form looks a text up by key and fills its placeholders from the
+        page, so a language that differs breaks the page for its readers only. Central compares the others with
+        `en` (the first language by code when there is no `en`). A language need not be a registered or active
+        locale: central stores texts ahead of a language being switched on, and activating a locale checks it is
+        complete.
       operationId: updateForm
       requestBody:
         required: true
@@ -1145,6 +1590,35 @@ paths:
       responses:
         '204':
           description: Version stored.
+        '400':
+          description: >-
+            Refused, with nothing stored: the languages of `localizations` do not share one set of keys and
+            placeholders. The message names the first few faults (a language lacking a key, a key a language adds,
+            a key whose placeholders differ), for example `Locale 'ru' has no text for 'title', which 'en' has`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/forms/previews:
+    get:
+      tags: [Forms]
+      summary: List the states of the built-in forms the console previews
+      description: |
+        For each built-in form, the states it can be in -- the `step` object `auth` would inject into the page,
+        and the error key shown above it -- with realistic data. The console renders them in the form preview.
+        A form that is not listed (a custom one) is previewed from its backend properties instead. The list is
+        fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getFormPreviews
+      responses:
+        '200':
+          description: The preview scenarios, grouped by form id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetFormPreviewsResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1259,11 +1733,19 @@ paths:
       responses:
         '201':
           description: Theme created.
+        '400':
+          description: |
+            Refused, with nothing stored: `tokens` name a base that is not built in, a brand colour is not `#rrggbb`,
+            a shape, surface or mode is unknown, or the theme is `default`, which is a stylesheet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Themes]
-      summary: Update a theme's CSS
+      summary: Update a theme's CSS or tokens
       operationId: updateTheme
       requestBody:
         required: true
@@ -1273,7 +1755,13 @@ paths:
               $ref: '#/components/schemas/UpdateThemeRequest'
       responses:
         '204':
-          description: Theme updated.
+          description: Theme updated. Sending no `tokens` makes it a plain stylesheet again.
+        '400':
+          description: Refused, with nothing stored, for the reasons given for creating a theme.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -1303,6 +1791,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+
+  /configuration/themes/presets:
+    get:
+      tags: [Themes]
+      summary: List the built-in themes a theme can be based on
+      description: The list is fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getThemePresets
+      responses:
+        '200':
+          description: The built-in themes, each with the value of every token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetThemePresetsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/themes/css:
+    post:
+      tags: [Themes]
+      summary: Render the stylesheet of a theme built from tokens
+      description: |
+        Returns the stylesheet `auth` would serve for a theme with these tokens and this CSS, so the console's
+        preview shows exactly what users get. Nothing is stored.
+      operationId: renderTheme
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenderThemeRequest'
+      responses:
+        '200':
+          description: The stylesheet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenderThemeResponse'
+        '400':
+          description: The tokens name a base that is not built in, or a value (in the tokens or the overrides) is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /configuration/jwks:
     get:
@@ -1375,6 +1909,61 @@ paths:
       responses:
         '204':
           description: Key deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/jwks/keys:
+    get:
+      tags: [JWKS]
+      summary: List the keys with their algorithms
+      description: |
+        Each stored key with the algorithm it is published under and whether central can sign
+        with it, for choosing a tenant's signing key. Carries no key material: `canSign` only
+        says whether a private half exists.
+      operationId: listJwksKeys
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksKeys'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/jwks/generate:
+    post:
+      tags: [JWKS]
+      summary: Generate a signing key
+      description: |
+        Generates a keypair for `alg`, publishes its public half to the key set and keeps the
+        private half, encrypted. Publishing does not put the key into use: a tenant has to
+        select it as its signing key, which is what makes a rotation safe -- every verifier
+        learns the key before anything signs with it.
+      operationId: generateJwk
+      parameters:
+        - name: alg
+          in: query
+          required: true
+          description: |
+            The algorithm the key is generated for and published under. `HS256` is refused: a
+            shared secret is not a JWKS key.
+          schema:
+            type: string
+            enum: [RS256, PS256, ES256]
+      responses:
+        '201':
+          description: Key generated and published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedJwk'
+        '400':
+          description: The algorithm cannot be generated as a key (`HS256`).
+          content:
+            text/plain:
+              schema:
+                type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1521,6 +2110,45 @@ paths:
       responses:
         '204':
           description: Setting recorded.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
+  /configuration/edges/overload:
+    put:
+      tags: [Edges]
+      summary: Set what an edge does when it is asked for more than it can do
+      description: |
+        The overload policy of one edge: its inbound admission limits (with priorities, so a new
+        login is refused before work already begun, and the proxied calls last), an adaptive limit
+        inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
+        its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
+        removes it and returns the edge to the values of its own deployment.
+
+        Every field is optional and means "what the edge starts with" when absent, so a policy is
+        a patch over the deployment. `mode` is `off`, `shadow` (count what `enforce` would
+        refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
+        change up on its next configuration sync and, while central is unreachable, keeps the last
+        policy it received.
+      operationId: setEdgeOverloadPolicy
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverloadPolicy'
+      responses:
+        '204':
+          description: Policy recorded.
+        '400':
+          description: The policy does not validate; the body names the first field that is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverloadPolicyError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1703,8 +2331,18 @@ components:
     Permission:
       type: string
       pattern: '^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$'
-      description: Segments of lowercase letters, digits and underscores, separated by `.` or `:`.
-      examples: ['billing:invoice.read']
+      description: |
+        Segments of lowercase letters, digits and underscores, separated by `:` (or, in IDs created
+        before the colon-only rule, `.`). Existing IDs containing `.` stay valid everywhere they are
+        referenced; only creating a permission refuses them (see `NewPermission`).
+      examples: ['billing:invoice_read']
+    NewPermission:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$'
+      description: |
+        The ID of a permission being created: segments of lowercase letters, digits and underscores,
+        separated by `:`. A `.` is refused with 400.
+      examples: ['billing:invoice_read']
     AuthorizationDetailType:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -1811,6 +2449,41 @@ components:
             $ref: '#/components/schemas/Jwk'
       required: [keys]
 
+    JwksKeys:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwkSummary'
+      required: [keys]
+    JwkSummary:
+      type: object
+      properties:
+        kid:
+          type: string
+        algorithm:
+          type: string
+          description: The `alg` the key is published under. Absent when it has no recognised one.
+        keyType:
+          type: string
+          description: The JWK `kty`, when present.
+        curve:
+          type: string
+          description: The JWK `crv`, for an EC key. Absent otherwise.
+        canSign:
+          type: boolean
+          description: Whether central holds the private half, so a tenant can sign with this key.
+      required: [kid, canSign]
+    GeneratedJwk:
+      type: object
+      properties:
+        kid:
+          type: string
+        alg:
+          type: string
+      required: [kid, alg]
+
     # ───────────────────────────── Patches ─────────────────────────────
     PatchDescription:
       type: object
@@ -1901,7 +2574,22 @@ components:
           oneOf:
             - $ref: '#/components/schemas/EdgeId'
             - type: 'null'
-      required: [id, description]
+        securityProfile:
+          allOf:
+            - $ref: '#/components/schemas/SecurityProfile'
+          description: |
+            Read from the tenant's challenge settings, where it is stored (`ChallengeSettingsRecord`);
+            a tenant whose settings row is missing reads as `fapi2`, the profile it would be
+            created with.
+        signingKeyId:
+          description: |
+            The `kid` of the published JWKS key this tenant's tokens are signed with, also from its
+            challenge settings. `null` when the tenant falls back to auth's configured key, which
+            is what lets a console answer "which tenants use this key" from the listing alone.
+          oneOf:
+            - type: string
+            - type: 'null'
+      required: [id, description, securityProfile]
     GetAllTenantsResponse:
       type: object
       properties:
@@ -1947,13 +2635,10 @@ components:
             - type: 'null'
       required: [id, description]
 
-    # ───────────────────────── Auth & registration flows ─────────────────────────
+    # ───────────────────────── Auth flows ─────────────────────────
     PrimaryCredential:
       type: string
       enum: [email, phone, login]
-    RegistrationCredential:
-      type: string
-      enum: [email, phone]
     OtpType:
       type: string
       enum: [sms, email]
@@ -2017,62 +2702,6 @@ components:
         otpType:
           $ref: '#/components/schemas/OtpType'
       required: [primary, equivalents, otpType]
-    RegistrationStep:
-      type: object
-      description: A step the user passes to create an account.
-      discriminator:
-        propertyName: type
-      oneOf:
-        - $ref: '#/components/schemas/RegistrationStepOtp'
-        - $ref: '#/components/schemas/RegistrationStepSetPassword'
-        - $ref: '#/components/schemas/RegistrationStepPasskeyEnroll'
-    RegistrationStepOtp:
-      type: object
-      title: otp
-      description: Proves ownership of the entry credential with a one-time code.
-      properties:
-        type:
-          type: string
-          const: otp
-      required: [type]
-    RegistrationStepSetPassword:
-      type: object
-      title: setPassword
-      description: Asks the new user to choose a password.
-      properties:
-        type:
-          type: string
-          const: setPassword
-      required: [type]
-    RegistrationStepPasskeyEnroll:
-      type: object
-      title: passkeyEnroll
-      description: Asks the new user to enroll a passkey.
-      properties:
-        type:
-          type: string
-          const: passkeyEnroll
-      required: [type]
-    RegistrationFlow:
-      type: object
-      description: |
-        Self-service account creation. Allowed only alongside an `authFlow` whose primary
-        credentials are phone or email. OTP must be the first step; the account is created
-        once OTP succeeds, before any password or passkey step.
-      properties:
-        credential:
-          $ref: '#/components/schemas/RegistrationCredential'
-        steps:
-          type: array
-          items:
-            $ref: '#/components/schemas/RegistrationStep'
-        roleIds:
-          type: array
-          uniqueItems: true
-          description: Roles granted to the account on creation.
-          items:
-            $ref: '#/components/schemas/RoleId'
-      required: [credential, steps, roleIds]
     ConsentFlowDto:
       type: object
       description: Whether and how the consent screen is shown before a grant is issued.
@@ -2080,8 +2709,29 @@ components:
         allowPartial:
           type: boolean
           description: |
-            Whether the user may deselect optional scopes. `openid` and `offline_access` are
-            never deselectable.
+            Whether the user may deselect optional scopes. `openid` is never deselectable, and
+            neither is `offline_access` unless `offlineAccessOptional` is set.
+        requiredScopes:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+          default: []
+          description: |
+            Scopes the user cannot deselect when the client requests them, on top of `openid`
+            and `offline_access`, which are always required. The consent screen keeps them
+            ticked and the authorization server refuses a grant that drops one; the user can
+            still deny the whole request. A scope the client did not request is ignored.
+            Meaningful only with `allowPartial`: without it the whole requested scope is
+            granted or denied.
+        offlineAccessOptional:
+          type: boolean
+          default: false
+          description: |
+            Lets the user deselect `offline_access` ("long-lived access"). When they do, the
+            client receives no refresh token and must be able to sign the user in again. A
+            client that lists `offline_access` in `requiredScopes` keeps it required.
+            Meaningful only with `allowPartial`.
         rememberDuration:
           description: |
             Seconds a granted consent is reused without re-prompting. `null` remembers it
@@ -2092,6 +2742,13 @@ components:
               minimum: 0
             - type: 'null'
       required: [allowPartial]
+    ClientKind:
+      type: string
+      enum: [web, device, service]
+      description: |
+        `web`: a site with a backend, where users sign in (`/configuration/clients/web`).
+        `device`: an app installed on a device, holding a DPoP key (`/configuration/clients/native`).
+        `service`: code calling an API with no user present (`/configuration/clients/service`).
     ClientTemplate:
       type: object
       description: |
@@ -2148,10 +2805,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: string
@@ -2230,12 +2883,27 @@ components:
             The wizard combination the client was registered from. `null` for a client
             registered without naming one, which is every client registered through this API
             rather than the console.
+        kind:
+          $ref: '#/components/schemas/ClientKind'
+          description: |
+            What kind of client this is, and so which of `/configuration/clients/web`, `/native`
+            and `/service` its update is sent to. Fixed for the client's life. Read from
+            `template` where there is one; otherwise `native` for an `applicationType` of
+            `native`, `web` for a client with redirect URIs or a sign-in flow, `service` for the
+            rest.
         createdAt:
           type: string
           format: date-time
           description: |
             When the registration was accepted. Set once, by the service that accepted it, and
             never patched - an update states what the client is now, not when it appeared.
+        themeOverrides:
+          oneOf:
+            - $ref: '#/components/schemas/ThemeOverrides'
+            - type: 'null'
+          description: |
+            What this client changes in the theme it uses, laid over it on its sign-in pages.
+            `null` (or absent) when it changes nothing.
       required:
         - id
         - clientName
@@ -2254,6 +2922,7 @@ components:
         - certificateBoundAccessTokens
         - requireSignedRequestObject
         - requirePushedAuthorizationRequests
+        - kind
         - createdAt
     GetAllClientsResponse:
       type: object
@@ -2263,11 +2932,20 @@ components:
           items:
             $ref: '#/components/schemas/OAuthClientResponse'
       required: [clients]
-    CreateClientRequest:
+    CreateWebClientRequest:
       type: object
+      additionalProperties: false
       description: |
-        A client may configure `frontChannelLogoutUri` or `backChannelLogoutUri`, never both.
-        `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
+        A site with a backend: users sign in, and tokens stay on the server. Confidential, so
+        `authMethod` is `client_secret`, `private_key_jwt`, `tls_client_auth` or
+        `self_signed_tls_client_auth` -- never `none` -- and at least one redirect URI is required.
+
+        Fronted by edge (`issueEdgeClientCertificate`, `enrollEdgeClientCertificate` or a supplied
+        certificate) it cannot set `requireSignedRequestObject`: edge holds no key to sign one with.
+
+        Recorded as a `web` client. `frontChannelLogoutUri` and `backChannelLogoutUri` are never both
+        set, and `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
+        Members that are not listed here are refused, not ignored.
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
@@ -2285,11 +2963,6 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/ScopeToken'
-        permissions:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/Permission'
         accessTokenTtl:
           type: integer
           description: Seconds.
@@ -2301,10 +2974,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: string
@@ -2350,14 +3019,6 @@ components:
           description: |
             How the client authenticates. Fixed here for the life of the client: an update refuses
             any other value, and a client that has to change method is deleted and registered again.
-        applicationType:
-          oneOf:
-            - $ref: '#/components/schemas/ApplicationType'
-            - type: 'null'
-          description: |
-            Absent or `null` registers a `web` client. Held apart from `authMethod`: a native
-            app is public (`none`) when it calls this server itself, and confidential
-            (`tls_client_auth`) when an edge authenticates as it.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2366,7 +3027,6 @@ components:
             RFC 8705 §2 mutual-TLS client authentication. `null` registers none, which is what
             a client authenticating by secret or by client assertion sends. Held to agree with
             `authMethod`: a credential the method does not read is one nothing would check.
-
             Refused for a tenant whose proxy terminates no mutual TLS (§6.5) - there would be
             no certificate to match it against.
         certificateBoundAccessTokens:
@@ -2392,12 +3052,10 @@ components:
             Generate the `private_key_jwt` key pair here instead of registering one, signing
             with this algorithm. The public half is stored as `jwks`; the private half is
             returned as `CreateClientResponse.privateKey` and is kept nowhere.
-
             For the caller that holds no key and no way to make one. A FAPI 2.0 tenant admits
             no `client_secret`, so without this there is no method left whose credential this
             server issues, and registering a service client there needs a key produced
             outside the product.
-
             Mutually exclusive with `jwks`, and refused for any method other than
             `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
             certificate a generated pair would not come with.
@@ -2420,14 +3078,6 @@ components:
             The private key an edge fronting this client signs and authenticates as it with.
             Must be the private half of a key `jwks` publishes - a pair that cannot verify is
             refused at registration. `null` for a client no edge fronts.
-        template:
-          oneOf:
-            - $ref: '#/components/schemas/ClientTemplate'
-            - type: 'null'
-          description: |
-            The wizard combination this registration came from, recorded as-is and never
-            inferred from the settings sent alongside it. `null` names none, which is what a
-            caller other than the console sends.
         issueEdgeClientCertificate:
           type: boolean
           description: |
@@ -2447,37 +3097,255 @@ components:
             native client fronted by edge. Required, never defaulted: `false` otherwise.
             Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
             certificate.
-      required:
-        - tenantId
-        - id
-        - clientName
-        - redirectUris
-        - allowedScopes
-        - permissions
-        - accessTokenTtl
-        - theme
-        - otpTemplateId
-        - frontChannelLogoutSessionRequired
-        - dpopBoundAccessTokens
-        - dpopSigningAlgs
-        - authMethod
-        - certificateBoundAccessTokens
-        - requireSignedRequestObject
-        - requirePushedAuthorizationRequests
-        - issueEdgeClientCertificate
-        - enrollEdgeClientCertificate
-    UpdateClientRequest:
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            What this client changes in the theme it uses (`theme`), laid over it on the client's
+            sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
+            Each value left out is the theme's own. An empty object, or leaving it out, changes
+            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+    CreateNativeClientRequest:
       type: object
+      additionalProperties: false
+      description: |
+        An app installed on a device, which holds a DPoP key of its own. `authMethod` is `none`
+        (public) or `tls_client_auth` (fronted by edge, which authenticates as the client), and at
+        least one redirect URI is required.
+
+        What the kind fixes is not a member: access tokens are always DPoP-bound and never
+        certificate-bound, a signed request object is not required, no `jwks` is registered, and an
+        edge-fronted client always requires pushed authorization requests. The application type is
+        `native`, and the client is recorded as a `device` client.
+        Members that are not listed here are refused, not ignored.
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          $ref: '#/components/schemas/LocalizedText'
+        redirectUris:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RedirectUri'
+        allowedScopes:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        accessTokenTtl:
+          type: integer
+          description: Seconds.
+        refreshTokenTtl:
+          type: [integer, 'null']
+          description: Seconds. `null` or omitted uses the default of 15552000 (180 days).
+        theme:
+          type: string
+        authFlow:
+          oneOf:
+            - $ref: '#/components/schemas/AuthFlow'
+            - type: 'null'
+        otpTemplateId:
+          type: string
+        frontChannelLogoutUri:
+          type: [string, 'null']
+        frontChannelLogoutSessionRequired:
+          type: boolean
+        backChannelLogoutUri:
+          type: [string, 'null']
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        consentFlow:
+          oneOf:
+            - $ref: '#/components/schemas/ConsentFlowDto'
+            - type: 'null'
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
+        authMethod:
+          $ref: '#/components/schemas/AuthMethod'
+          description: |
+            How the client authenticates. Fixed here for the life of the client: an update refuses
+            any other value, and a client that has to change method is deleted and registered again.
+        mtlsAuth:
+          oneOf:
+            - $ref: '#/components/schemas/MutualTlsAuth'
+            - type: 'null'
+          description: |
+            RFC 8705 §2 mutual-TLS client authentication. `null` registers none, which is what
+            a client authenticating by secret or by client assertion sends. Held to agree with
+            `authMethod`: a credential the method does not read is one nothing would check.
+            Refused for a tenant whose proxy terminates no mutual TLS (§6.5) - there would be
+            no certificate to match it against.
+        issueEdgeClientCertificate:
+          type: boolean
+          description: |
+            Central generates the key pair of the certificate the edge fronting this client
+            presents, has a CA sign it and renews it before it expires (#440). The client is
+            registered `tls_client_auth` by `mtlsAuth` where one is given; without it the subject
+            is `CN=<client>,OU=<tenant>,O=Versola`. Required, never defaulted: `false` for a
+            client no edge fronts or one that supplies its own certificate. Mutually exclusive with
+            `enrollEdgeClientCertificate` and with supplying a certificate.
+        enrollEdgeClientCertificate:
+          type: boolean
+          description: |
+            The edge fronting this client generates its own key and enrols for a certificate
+            (#463): central stores no certificate and no key, only that the client is enrolled,
+            and signs the request an authenticated edge sends for the subject `mtlsAuth`
+            registers (or `CN=<client>,OU=<tenant>,O=Versola` where it names none). Only for a
+            native client fronted by edge. Required, never defaulted: `false` otherwise.
+            Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
+            certificate.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            What this client changes in the theme it uses (`theme`), laid over it on the client's
+            sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
+            Each value left out is the theme's own. An empty object, or leaving it out, changes
+            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+    CreateServiceClientRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Code calling an API on its own behalf, with no user present. `authMethod` is `client_secret`,
+        `private_key_jwt`, `tls_client_auth` or `self_signed_tls_client_auth` -- never `none`.
+
+        It has no redirect URIs, sign-in flow, consent, logout or branding members, no
+        refresh token lifetime, and no pushed or signed authorization request. Recorded as a
+        `service` client.
+        Members that are not listed here are refused, not ignored.
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          $ref: '#/components/schemas/LocalizedText'
+        allowedScopes:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+        accessTokenTtl:
+          type: integer
+          description: Seconds.
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
+        authMethod:
+          $ref: '#/components/schemas/AuthMethod'
+          description: |
+            How the client authenticates. Fixed here for the life of the client: an update refuses
+            any other value, and a client that has to change method is deleted and registered again.
+        mtlsAuth:
+          oneOf:
+            - $ref: '#/components/schemas/MutualTlsAuth'
+            - type: 'null'
+          description: |
+            RFC 8705 §2 mutual-TLS client authentication. `null` registers none, which is what
+            a client authenticating by secret or by client assertion sends. Held to agree with
+            `authMethod`: a credential the method does not read is one nothing would check.
+            Refused for a tenant whose proxy terminates no mutual TLS (§6.5) - there would be
+            no certificate to match it against.
+        certificateBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 8705 §3.4: bind this client's access tokens to the certificate it presents, so
+            a resource request carrying one over another certificate is refused. Opt-in and
+            independent of `mtlsAuth`, which implies binding on its own - a client that
+            authenticates by secret can still ask for it.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method, or that
+            `generateJwks` asks this server for the keys instead.
+        generateJwks:
+          type: string
+          nullable: true
+          enum: [ES256, PS256, RS256]
+          description: |
+            Generate the `private_key_jwt` key pair here instead of registering one, signing
+            with this algorithm. The public half is stored as `jwks`; the private half is
+            returned as `CreateClientResponse.privateKey` and is kept nowhere.
+            For the caller that holds no key and no way to make one. A FAPI 2.0 tenant admits
+            no `client_secret`, so without this there is no method left whose credential this
+            server issues, and registering a service client there needs a key produced
+            outside the product.
+            Mutually exclusive with `jwks`, and refused for any method other than
+            `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
+            certificate a generated pair would not come with.
+      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
+    UpdateWebClientRequest:
+      type: object
+      additionalProperties: false
       description: |
         `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
-        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
-        leaves the value unchanged, `null` clears it, a value sets it.
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
 
-        Every other member is a plain optional overwrite: absent *or* `null` both leave the
-        current value unchanged, and a value sets it. There is no way to clear `clientName`,
-        `accessTokenTtl`, `refreshTokenTtl`, `theme`, `otpTemplateId` or
-        `frontChannelLogoutSessionRequired` through this endpoint.
+        A client's method and kind are fixed when it is registered. `requireSignedRequestObject` cannot
+        be turned on for a client fronted by edge, which holds no key to sign one with. No patch may
+        leave the client without a redirect URI.
+        Members that are not listed here are refused, not ignored.
       properties:
         clientId:
           $ref: '#/components/schemas/ClientId'
@@ -2489,8 +3357,6 @@ components:
           $ref: '#/components/schemas/PatchClientRedirectUris'
         scope:
           $ref: '#/components/schemas/PatchClientScope'
-        permissions:
-          $ref: '#/components/schemas/PatchPermissions'
         accessTokenTtl:
           type: [integer, 'null']
           format: int64
@@ -2504,10 +3370,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: [string, 'null']
@@ -2548,21 +3410,6 @@ components:
             The modulus length, in bits, an RSA DPoP proof key from this client must reach.
             `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
             regardless; a value below it is refused at registration.
-        authMethod:
-          oneOf:
-            - $ref: '#/components/schemas/AuthMethod'
-            - type: 'null'
-          description: |
-            The method the client was registered with, which an update cannot change. Absent,
-            `null`, or the stored method leaves it as it is; any other value is refused with
-            `400`. A client that has to change method is deleted and registered again.
-        applicationType:
-          oneOf:
-            - $ref: '#/components/schemas/ApplicationType'
-            - type: 'null'
-          description: |
-            Absent or `null` leaves the stored value unchanged. A value is validated against
-            the client as the patch leaves it, exactly as a registration is.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2600,7 +3447,177 @@ components:
           description: |
             Merge-patch: absent leaves the stored key unchanged, `null` clears it, a value
             replaces it. Checked against the resulting `jwks` exactly as a registration is.
-      required: [clientId, redirectUris, scope, permissions]
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            Replaces the client's theme overrides: absent leaves them unchanged, an empty object
+            `{}` clears them, any other value replaces them as a whole (a value left out of it is
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
+      required: [clientId]
+    UpdateNativeClientRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
+
+        What the kind fixes is not a member, and central
+        writes it onto the client whatever it was stored as: no certificate binding or signed request
+        object, and -- for an app fronted by edge -- DPoP-bound tokens and pushed authorization
+        requests. A public app's `dpopBoundAccessTokens` stays its own. No patch may leave the client
+        without a redirect URI.
+        Members that are not listed here are refused, not ignored.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        redirectUris:
+          $ref: '#/components/schemas/PatchClientRedirectUris'
+        scope:
+          $ref: '#/components/schemas/PatchClientScope'
+        accessTokenTtl:
+          type: [integer, 'null']
+          format: int64
+          description: Seconds.
+        refreshTokenTtl:
+          type: [integer, 'null']
+          format: int64
+          description: Seconds.
+        theme:
+          type: [string, 'null']
+        authFlow:
+          oneOf:
+            - $ref: '#/components/schemas/AuthFlow'
+            - type: 'null'
+        otpTemplateId:
+          type: [string, 'null']
+        frontChannelLogoutUri:
+          type: [string, 'null']
+        frontChannelLogoutSessionRequired:
+          type: [boolean, 'null']
+        backChannelLogoutUri:
+          type: [string, 'null']
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        consentFlow:
+          oneOf:
+            - $ref: '#/components/schemas/ConsentFlowDto'
+            - type: 'null'
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            Replaces the client's theme overrides: absent leaves them unchanged, an empty object
+            `{}` clears them, any other value replaces them as a whole (a value left out of it is
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
+      required: [clientId]
+    UpdateServiceClientRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
+
+        Limited to what a service client has: no redirect URIs, flows, consent, logout, branding or
+        refresh token.
+        Members that are not listed here are refused, not ignored.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        scope:
+          $ref: '#/components/schemas/PatchClientScope'
+        permissions:
+          $ref: '#/components/schemas/PatchPermissions'
+        accessTokenTtl:
+          type: [integer, 'null']
+          format: int64
+          description: Seconds.
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
+        mtlsAuth:
+          oneOf:
+            - $ref: '#/components/schemas/MutualTlsAuth'
+            - type: 'null'
+          description: |
+            Merge-patch: absent leaves the registered mutual-TLS configuration unchanged,
+            `null` clears it, a value replaces it. Validated against the resulting
+            `authMethod` exactly as a registration is.
+        certificateBoundAccessTokens:
+          type: [boolean, 'null']
+          description: |
+            RFC 8705 §3.4. Absent or `null` leaves the stored value unchanged.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
+      required: [clientId]
     CreateClientResponse:
       type: object
       description: |
@@ -3123,7 +4140,7 @@ components:
         tenantId:
           $ref: '#/components/schemas/TenantId'
         permission:
-          $ref: '#/components/schemas/Permission'
+          $ref: '#/components/schemas/NewPermission'
         description:
           $ref: '#/components/schemas/LocalizedText'
         endpointIds:
@@ -3185,6 +4202,13 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Permission'
+        active:
+          type: boolean
+          default: true
+          description: >-
+            Whether the role grants anything from the start. An inactive role is listed and can
+            be assigned, but `edge` resolves it to no permissions. Omitted means `true`, which
+            is what every role was created with before the field existed.
       required: [tenantId, id, description, permissions]
     UpdateRoleRequest:
       type: object
@@ -3197,6 +4221,9 @@ components:
           $ref: '#/components/schemas/PatchDescription'
         permissions:
           $ref: '#/components/schemas/PatchPermissions'
+        active:
+          type: boolean
+          description: Patch semantics like the other members, omitted or `null` leaves the flag as it is.
       required: [tenantId, id, description, permissions]
     AuthorizationDetailTypeResponse:
       type: object
@@ -3482,7 +4509,70 @@ components:
         createdAt:
           type: string
           format: date-time
-      required: [publicId, clients, createdAt]
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session ends regardless of activity.
+        idleExpiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the session ends if it stays idle, pushed forward by activity. Absent when no idle
+            timeout applies to the session.
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: The user agent the session runs under. Absent only if its row has expired and been swept.
+      required: [publicId, clients, createdAt, expiresAt]
+    UserAgentResponse:
+      type: object
+      description: A user agent (browser or app install) as auth stores it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        userAgent:
+          type: string
+          description: The raw `User-Agent` header as last seen on sign-in. Absent when none was sent.
+        platform:
+          type: string
+          enum: [ios, android, desktop]
+          description: Parsed from the header; absent when it matched none.
+        os:
+          type: string
+        browser:
+          type: string
+        version:
+          type: string
+          description: The browser's major version.
+        createdAt:
+          type: string
+          format: date-time
+          description: When auth first saw this user agent.
+        expiresAt:
+          type: string
+          format: date-time
+          description: The device is remembered until then; it slides forward on every sign-in.
+      required: [id, createdAt, expiresAt]
+    DeviceResponse:
+      type: object
+      properties:
+        userAgent:
+          $ref: '#/components/schemas/UserAgentResponse'
+          description: Absent only for a live session whose user agent row has expired and been swept.
+        session:
+          oneOf:
+            - $ref: '#/components/schemas/SessionResponse'
+            - type: 'null'
+          description: The live session under this user agent; `null` once signed out.
+        endedSessionIds:
+          type: array
+          items:
+            type: string
+          description: |
+            Public ids of this user agent's sessions that ended and are still stored. Empty while
+            signed in. A refresh token's `sessionId` matches one of these when it was issued on this
+            device.
+      required: [session, endedSessionIds]
     RefreshTokenResponse:
       type: object
       properties:
@@ -3590,6 +4680,75 @@ components:
         - passwordSubmit
         - passkeyAssertion
         - banDurationSeconds
+    PhoneRegion:
+      type: object
+      description: |
+        One country a tenant's phone sign-in accepts. Several regions may share a `dialCode` (`KZ` and `RU`
+        both use `+7`); a number is accepted when it fits the `length` and `regex` of at least one of them.
+      properties:
+        region:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: ISO 3166-1 alpha-2 code. Unique within the list.
+        dialCode:
+          type: string
+          pattern: '^\+[1-9][0-9]{0,3}$'
+        length:
+          type: integer
+          minimum: 4
+          maximum: 14
+          description: Number of digits after the dial code. `dialCode` plus `length` digits is at most 15 (E.164).
+        regex:
+          type: string
+          description: Java regular expression the digits after the dial code must match in full.
+        registration:
+          type: boolean
+          description: |
+            Whether a number of this region may create an account on its own. Self-registration by phone is
+            decided by the country, not by the client: a client that signs in by phone registers a new user
+            only when the number's region says `true`. A tenant that lists no regions registers no phone number.
+            Email is decided the same way for the whole tenant by `emailRegistration`.
+      required: [region, dialCode, length, regex, registration]
+    EmailRegistrationMode:
+      type: string
+      enum: [closed, open, allowlist]
+      description: |
+        Who may create an account with an email address.
+        - `closed`: nobody. Existing accounts still sign in with their email.
+        - `open`: any domain, except the ones listed in `domains`.
+        - `allowlist`: only the domains listed in `domains`.
+    EmailRegistration:
+      type: object
+      description: |
+        Whether an email address may create an account, decided by the tenant for every client that
+        signs in by email. The same rules apply when an existing user changes their address. The user
+        always proves ownership of the address with a one-time code before the account is created.
+      properties:
+        mode:
+          $ref: '#/components/schemas/EmailRegistrationMode'
+        domains:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+          description: |
+            A blocklist in `open` mode and an allowlist in `allowlist` mode; stored but ignored when
+            `closed`. An entry is a domain (`example.com`, which matches that domain only) or
+            `*.example.com`, which matches its subdomains and not `example.com` itself. Entries are
+            lower-cased and internationalized labels converted to punycode when stored; an entry that
+            is not a domain, or that appears twice, is refused with `400`.
+        blockSubaddress:
+          type: boolean
+          description: Refuse a local part containing `+`, `=` or `#` (`user+tag@example.com`).
+      required: [mode, domains, blockSubaddress]
+    PhoneRegions:
+      type: array
+      description: |
+        Phone regions the login form offers, in the order the form lists them. Empty means any number in
+        E.164 is accepted and the form shows a single free-form field. When every region shares one
+        `dialCode` the form locks it; otherwise it offers a selector of the distinct dial codes.
+      items:
+        $ref: '#/components/schemas/PhoneRegion'
     PasskeySettings:
       type: object
       properties:
@@ -3611,11 +4770,21 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
           type: array
-          description: Phone country prefixes accepted on the login form, matched against the number in canonical E.164.
+          uniqueItems: true
+          minItems: 1
+          description: |
+            Roles granted to every self-registered account, whichever credential it registers with. At
+            least one. While any credential can register (an email mode other than `closed`, or a phone
+            region with `registration: true`) every role must exist in the tenant, or the request is
+            refused with `400`.
           items:
-            type: string
+            $ref: '#/components/schemas/RoleId'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -3677,9 +4846,20 @@ components:
             retention. Between 30 and 900 seconds.
         securityProfile:
           $ref: '#/components/schemas/SecurityProfile'
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Absolute HTTP(S) URL of the tenant's logo for the light colour scheme (dark
+            artwork), shown bare above its sign-in card. Set together with `logoDark` or not at
+            all. When neither is set the forms show the Versola wordmark.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
+        - emailRegistration
+        - defaultRoles
         - submissionLimits
         - otpLength
         - otpResendAfter
@@ -3707,10 +4887,21 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
           type: array
+          uniqueItems: true
+          minItems: 1
+          description: |
+            Roles granted to every self-registered account, whichever credential it registers with. At
+            least one. While any credential can register (an email mode other than `closed`, or a phone
+            region with `registration: true`) every role must exist in the tenant, or the request is
+            refused with `400`.
           items:
-            type: string
+            $ref: '#/components/schemas/RoleId'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -3775,14 +4966,114 @@ components:
             outside 30..900 -- below that ordinary clock skew starts rejecting honestly minted
             assertions, above it auth could no longer remember a `jti` for the whole life of
             the assertion carrying it.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Keeps the stored value when omitted; null clears it. An absolute HTTP(S) URL of the
+            logo for the light colour scheme (dark artwork). After both are applied `logoLight`
+            and `logoDark` must be set or cleared together, otherwise the request is refused
+            with 400: one file reused for both schemes would vanish on one of them. An SVG must
+            have its text converted to outlines, as fonts are not loaded inside an image.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme (light artwork). See `logoLight`.
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
+        - emailRegistration
+        - defaultRoles
         - submissionLimits
         - otpLength
         - otpResendAfter
         - passkeySettings
         - ipHeader
+
+    PatchChallengeSettingsRequest:
+      type: object
+      description: >-
+        A JSON merge patch (RFC 7396) of the record `PUT` writes, at the level of its members:
+        absent keeps the stored value, a value replaces it whole, `null` clears an optional member.
+        Members that are not listed here are refused. Types are those of
+        `UpsertChallengeSettingsRequest`, except that none of the members but `tenantId` is
+        required and only the ones marked nullable accept `null`.
+      additionalProperties: false
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
+          type: array
+          uniqueItems: true
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoleId'
+        submissionLimits:
+          $ref: '#/components/schemas/SubmissionLimits'
+        otpLength:
+          type: integer
+        otpResendAfter:
+          type: integer
+        passkeySettings:
+          $ref: '#/components/schemas/PasskeySettings'
+        authConversationTtlSeconds:
+          type: integer
+        sessionTtlSeconds:
+          type: integer
+        sessionIdleTtlSeconds:
+          type: [integer, 'null']
+          description: Null clears the idle timeout.
+        userAgentTtlSeconds:
+          type: integer
+        ipHeader:
+          type: string
+        acrVocabulary:
+          type: [object, 'null']
+          description: Replaced whole; null clears the vocabulary.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        postLogoutRedirectUris:
+          type: array
+          items:
+            type: string
+        requireDpopNonce:
+          type: boolean
+        mtlsCertificateHeader:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch it and mtlsCertificateEncoding must both be set or both
+            be absent.
+        mtlsCertificateEncoding:
+          oneOf:
+            - $ref: '#/components/schemas/MtlsCertificateEncoding'
+            - type: 'null'
+        signingKeyId:
+          type: [string, 'null']
+          description: >-
+            Null clears the selection, falling back to auth's configured private key. Validated as
+            in `UpsertChallengeSettingsRequest`.
+        clientAssertionMaxLifetimeSeconds:
+          type: integer
+          description: Refused outside 30..900.
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
+          description: >-
+            Fixed when the tenant is created: naming the stored profile changes nothing, any other
+            is refused with `400`.
+        logoLight:
+          type: [string, 'null']
+          description: >-
+            Null clears it. After the patch `logoLight` and `logoDark` must both be set or both be
+            absent.
+        logoDark:
+          type: [string, 'null']
+          description: The same for the dark colour scheme.
+      required:
+        - tenantId
 
     # ────────────────────────────── Forms ──────────────────────────────
     BackendProperty:
@@ -3870,6 +5161,46 @@ components:
           items:
             $ref: '#/components/schemas/FormRecord'
       required: [forms]
+    GetFormPreviewsResponse:
+      type: object
+      properties:
+        previews:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormPreview'
+      required: [previews]
+    FormPreview:
+      type: object
+      properties:
+        formId:
+          type: string
+          description: The id of a built-in form, for example `consent`.
+        scenarios:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewScenario'
+      required: [formId, scenarios]
+    PreviewScenario:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique within the form.
+        title:
+          type: object
+          additionalProperties:
+            type: string
+          description: A short name for the state, by language code (`en`, `ru`).
+        step:
+          type: object
+          additionalProperties: true
+          description: |
+            The `step` the form receives, shaped like the step `auth` serialises for that form (its `type` is the
+            form id).
+        error:
+          type: string
+          description: The error key shown above the form in this state, when there is one.
+      required: [id, title, step]
     UpdateFormRequest:
       type: object
       properties:
@@ -3963,7 +5294,115 @@ components:
           oneOf:
             - $ref: '#/components/schemas/TenantId'
             - type: 'null'
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
       required: [id, css]
+      description: |
+        A theme is a stylesheet or, when `tokens` is set, a built-in base theme with overrides. For a token theme
+        `css` holds only the theme's own additions and may be empty: `auth` lays the current default stylesheet and
+        the CSS generated from the tokens before it. A theme without `tokens` is a whole stylesheet, as before.
+    ThemeTokens:
+      type: object
+      description: A built-in base theme and the values a theme sets over it.
+      properties:
+        base:
+          type: string
+          description: The id of a built-in theme, from `GET /configuration/themes/presets`.
+        overrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+      required: [base]
+    ThemeOverrides:
+      type: object
+      description: Each value that is absent is the base theme's.
+      properties:
+        brand:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+          description: The accent colour, as `#rrggbb`. Nothing else is accepted, because it is written into a stylesheet.
+        shape:
+          type: string
+          enum: [round, soft, sharp]
+          description: How round the corners of fields, buttons and the card are.
+        surface:
+          type: string
+          enum: [bold, soft, neutral]
+          description: What fills the page behind the card.
+        mode:
+          type: string
+          enum: [auto, light, dark]
+          description: The colour scheme; `auto` follows the visitor's device.
+        background:
+          type: string
+          enum: [glow, linear, horizon, flat]
+          description: >-
+            What is drawn over the page colour behind the card. `glow` is the brand glowing from behind the card (dark
+            scheme only; the look before this token existed), `linear` a soft diagonal wash, `horizon` a light rising from
+            the bottom edge, `flat` the plain page colour. Single-hue: each is a tint of the brand. The strength of the
+            tint follows the surface and the scheme and keeps the text above the card readable.
+    ThemePreset:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: object
+          additionalProperties:
+            type: string
+        tokens:
+          $ref: '#/components/schemas/ResolvedThemeTokens'
+      required: [id, title, tokens]
+    ResolvedThemeTokens:
+      type: object
+      description: Every token, with its value.
+      properties:
+        brand:
+          type: string
+        shape:
+          type: string
+          enum: [round, soft, sharp]
+        surface:
+          type: string
+          enum: [bold, soft, neutral]
+        mode:
+          type: string
+          enum: [auto, light, dark]
+        background:
+          type: string
+          enum: [glow, linear, horizon, flat]
+      required: [brand, shape, surface, mode, background]
+    GetThemePresetsResponse:
+      type: object
+      properties:
+        presets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemePreset'
+      required: [presets]
+    RenderThemeRequest:
+      type: object
+      description: |
+        What to render: a token theme (`tokens` present: the foundation stylesheet, what the tokens set, then `css`) or a
+        stylesheet theme (`tokens` absent: `css` alone is the stylesheet, as it replaces the foundation; with no `css` either,
+        the foundation). `overrides` are a client's own, laid after all of that exactly as the authorization server does for
+        that client, so the result is the client's effective stylesheet.
+      properties:
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
+        css:
+          type: string
+          description: The theme's own CSS, laid after the generated one (a stylesheet theme - the whole stylesheet); absent means none.
+        overrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+    RenderThemeResponse:
+      type: object
+      properties:
+        css:
+          type: string
+          description: The whole stylesheet - the current default, what the tokens set, the theme's own CSS, then the client's overrides.
+        generated:
+          type: string
+          description: Only what the theme's tokens set; empty for a stylesheet theme (the client's overrides are in `css` only).
+      required: [css, generated]
     GetAllThemesResponse:
       type: object
       properties:
@@ -3981,6 +5420,8 @@ components:
           type: string
         css:
           type: string
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
       required: [id, css]
 
     # ─────────────────────────── System settings ───────────────────────────
@@ -3999,8 +5440,6 @@ components:
         passwordNumDifferent:
           type: integer
           description: How many characters a new password must differ by.
-        identityProviderLogo:
-          type: [string, 'null']
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────────── Edges ───────────────────────────────
@@ -4024,7 +5463,153 @@ components:
             RFC 9449 §9: whether every DPoP proof this edge checks on a proxied call must
             carry a nonce it issued. Governs that edge only, and only the calls it proxies —
             auth's own endpoints follow the tenant setting of the same name.
+        overloadPolicy:
+          $ref: '#/components/schemas/OverloadPolicy'
+          description: The edge's overload policy; absent when none is set.
       required: [id, hasOldKey, requireDpopNonce]
+    OverloadPolicy:
+      type: object
+      description: |
+        A patch over the settings an edge starts with; every field is optional.
+      properties:
+        inbound:
+          $ref: '#/components/schemas/InboundOverloadPolicy'
+        outbound:
+          $ref: '#/components/schemas/OutboundOverloadPolicy'
+    OverloadMode:
+      type: string
+      enum: [off, shadow, enforce]
+      description: |
+        `off` does nothing; `shadow` counts what `enforce` would refuse and refuses nothing;
+        `enforce` refuses.
+    InboundOverloadPolicy:
+      type: object
+      description: Admission control at the edge's entry; a refusal is `503` with `Retry-After`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxInFlight:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: Requests in flight at once; ignored while the adaptive limit is on.
+        continuationShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: |
+            The share of the limit work already begun (code exchange, logout) may use; above it
+            such requests are refused. New logins use `startShare`, proxied calls the whole limit.
+        startShare:
+          type: number
+          minimum: 0.01
+          maximum: 1
+          description: The share of the limit a new login may use; must not exceed `continuationShare`.
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+        adaptive:
+          type: object
+          description: |
+            A limit that follows the pod: it shrinks when call times rise or the executor stalls,
+            and grows back while calls are fast, inside `[minLimit, maxLimit]`.
+          properties:
+            enabled:
+              type: boolean
+            minLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            maxLimit:
+              type: integer
+              minimum: 1
+              maximum: 100000
+            tolerance:
+              type: number
+              minimum: 1
+              maximum: 5
+              description: How much slower than usual a call may get before the limit shrinks.
+            smoothing:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            lagTargetMillis:
+              type: integer
+              minimum: 5
+              maximum: 10000
+              description: How late the executor may run a timer before it counts as stalled.
+    OutboundOverloadPolicy:
+      type: object
+      description: |
+        Bounds on the edge's calls to auth and to resource backends, per peer. A refusal is `503`
+        with `Retry-After`, a call that took too long is `504`.
+      properties:
+        mode:
+          $ref: '#/components/schemas/OverloadMode'
+        maxConcurrent:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        maxQueue:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        queueTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        requestTimeoutMillis:
+          type: integer
+          minimum: 1
+          maximum: 600000
+        breaker:
+          type: object
+          description: |
+            Opens when `failureRatio` of the calls in the window fail (a transport error, a
+            timeout, or a `502`/`503`/`504`), refuses at once while open, then lets `probeCalls`
+            probes through.
+          properties:
+            enabled:
+              type: boolean
+            failureRatio:
+              type: number
+              minimum: 0.01
+              maximum: 1
+            minCalls:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            windowSeconds:
+              type: integer
+              minimum: 1
+              maximum: 300
+            openSeconds:
+              type: integer
+              minimum: 1
+              maximum: 600
+            probeCalls:
+              type: integer
+              minimum: 1
+              maximum: 100
+        retryBudget:
+          type: object
+          description: What retries may add to the load on a peer, as a share of its calls.
+          properties:
+            ratio:
+              type: number
+              minimum: 0
+              maximum: 1
+            minPerSecond:
+              type: number
+              minimum: 0
+              maximum: 1000
+    OverloadPolicyError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     SetEdgeDpopRequest:
       type: object
       properties:

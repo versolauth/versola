@@ -104,3 +104,14 @@ test('uses styled deletion confirmation and submits account actions', async ({ p
     },
   ]);
 });
+test('a row action stays on one line when the details beside it are long', async ({ page }) => {
+  await page.setViewportSize({ width: 560, height: 900 });
+  await loadAccountForm(page);
+
+  const lines = await page.getByRole('button', { name: 'Sign out', exact: true }).evaluate(button => {
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    return new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size;
+  });
+  expect(lines).toBe(1);
+});

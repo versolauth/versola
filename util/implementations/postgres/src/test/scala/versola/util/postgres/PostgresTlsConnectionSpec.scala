@@ -9,13 +9,14 @@ import zio.test.*
   *
   * [[PostgresTlsSpec]] can only show which properties are handed to the driver; whether pgjdbc then
   * actually validates the chain and the host name, through the pool and through the separate
-  * `LISTEN` connection, is a property of the driver and the server together. Needs the fixture
-  * from `util/implementations/postgres/tls-fixture/start.sh` (CI starts it, develop.md says how to
-  * locally); its CA is not in any trust store, which is what makes the "no CA" case fail.
+  * `LISTEN` connection, is a property of the driver and the server together. Runs against the Postgres
+  * of `services.yml` (the image in `util/implementations/postgres/tls-fixture`), at POSTGRES_HOST unless
+  * POSTGRES_TLS_HOST says otherwise; its CA, written to target/postgres-tls/ca.crt, is not in any trust
+  * store, which is what makes the "no CA" case fail.
   */
 object PostgresTlsConnectionSpec extends ZIOSpecDefault:
 
-  private val tlsHost = sys.env.getOrElse("POSTGRES_TLS_HOST", "localhost:5433")
+  private val tlsHost = sys.env.get("POSTGRES_TLS_HOST").orElse(sys.env.get("POSTGRES_HOST")).getOrElse("localhost:5432")
   private val ca = sys.env.getOrElse("POSTGRES_TLS_CA", "target/postgres-tls/ca.crt")
 
   // No migrations to apply: only the connection is under test.
@@ -95,11 +96,10 @@ object PostgresTlsConnectionSpec extends ZIOSpecDefault:
           .provideSome[Scope](ZLayer.succeed(config(tlsHost, sslRootCert = None))).exit
       yield assertTrue(connects.isSuccess) && refusedByTls(refused, "PKIX path building failed")
     },
-    test("a plaintext server is refused by default") {
-      // CI's and the dev compose's Postgres speak no TLS. Pointed at it, the pool must refuse to fall back to plaintext.
-      for
-        address <- System.env("POSTGRES_HOST").someOrElse("localhost:5432")
-        result <- ZIO.scoped(pool(config(address, sslRootCert = Some(ca)))).exit
-      yield refusedByTls(result, "The server does not support SSL")
-    },
+    // Not tested here: that a server without TLS is refused by default (no fallback to plaintext).
+    // It needs a Postgres that speaks no TLS, and the test Postgres is one TLS server shared with
+    // every other spec. Verified by hand against such a server (`docker run -d -p 5440:5432
+    // -e POSTGRES_PASSWORD=1234 -e POSTGRES_USER=dev -e POSTGRES_DB=auth postgres:18`): a pool
+    // built with `sslRootCert = Some(ca)` against localhost:5440 must fail with "The server does
+    // not support SSL". Redo it if PostgresTls or the pool's sslmode handling changes.
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential

@@ -885,6 +885,39 @@ object SecretSchema:
       "",
     ).mkString("\n")
 
+// The authorization-server metadata central is seeded with. Top level so a spec can read it.
+// subject_types_supported is ["public"] only: `sub` is always the user id, and nothing
+// implements pairwise identifiers (OIDC Core §8.1), so advertising it would be wrong.
+def defaultServerMetadata(authUrl: String): String =
+  s"""{
+     |  "issuer": "$authUrl",
+     |  "authorization_endpoint": "$authUrl/authorize",
+     |  "token_endpoint": "$authUrl/token",
+     |  "userinfo_endpoint": "$authUrl/userinfo",
+     |  "jwks_uri": "$authUrl/.well-known/jwks.json",
+     |  "introspection_endpoint": "$authUrl/introspect",
+     |  "revocation_endpoint": "$authUrl/revoke",
+     |  "pushed_authorization_request_endpoint": "$authUrl/par",
+     |  "end_session_endpoint": "$authUrl/logout",
+     |  "scopes_supported": ["openid", "profile", "email", "address", "phone", "offline_access"],
+     |  "response_types_supported": ["code", "code id_token"],
+     |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
+     |  "code_challenge_methods_supported": ["S256"],
+     |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
+     |  "subject_types_supported": ["public"],
+     |  "id_token_signing_alg_values_supported": ["PS256"],
+     |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+     |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "request_object_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
+     |  "frontchannel_logout_supported": true,
+     |  "frontchannel_logout_session_supported": true,
+     |  "backchannel_logout_supported": true,
+     |  "backchannel_logout_session_supported": true,
+     |  "authorization_response_iss_parameter_supported": true
+     |}""".stripMargin
+
 @main def genEnv(args: String*): Unit =
   cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
@@ -1072,7 +1105,7 @@ object SecretSchema:
   // over this freshly generated one. So this value only becomes the real
   // password on the first `configure` against an empty OpenBao: versola-cli
   // then stores it and prints the CREATE ROLE / ALTER ROLE statement that
-  // gives the `versola_app` role this password (see deploy.md, 3.3), and
+  // gives the `versola_app` role this password (see deploy.md, "Database, role and schemas"), and
   // every later run reuses the stored one. A server whose role already has
   // a password of its own gets that one written into OpenBao instead (see
   // develop.md, "Onboarding a deployment that already has secrets").
@@ -1208,14 +1241,24 @@ object SecretSchema:
   val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
   val edgeInternalTrustPath: Option[String] =
     if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
-  // #353: `central-admin` is authenticated by edge with `tls_client_auth` through that same
-  // terminator, which is the only credential the default tenant's FAPI 2.0 profile admits for
-  // it. isLocal alone, for the same reason: docker-local/vps/interactive have no terminator in
-  // front of auth, so central-admin stays on its client_secret there (bootstrap seeds it
-  // outside the profile, with a warning -- see BootstrapService). The CA has to exist before
-  // central's config is rendered, because the certificate it signs goes into that config; it
-  // is generated here, once, and not again when the files are written below -- a second CA
-  // would leave this certificate signed by an issuer nginx no longer advertises.
+  // #353: `central-admin` is authenticated by edge with `tls_client_auth`, which is the only
+  // credential the default tenant's FAPI 2.0 profile admits for it.
+  //
+  // isLocal: through that same terminator, with a certificate generated here. The CA has to
+  // exist before central's config is rendered, because the certificate it signs goes into that
+  // config; it is generated here, once, and not again when the files are written below -- a
+  // second CA would leave this certificate signed by an issuer nginx no longer advertises.
+  //
+  // docker-local/vps: no terminator, and no certificate in the config at all -- central issues
+  // it, through the step-ca it already issues edge-fronted clients' certificates from
+  // (`client-certificates`), and renews it. Edge presents it to auth's own mutual-TLS listener
+  // (edge.conf's `native`), which trusts that same CA. The header names are only what the
+  // default tenant records so that central will register an `mtlsAuth` at all (see
+  // `validateMtlsTermination`): the listener's handshake is what auth reads, and the proxy in
+  // front of auth clears that header (`proxy_params.conf.template`), so nothing outside can
+  // assert a certificate through it. k8s stays on its client_secret until the chart is wired
+  // for the same (bootstrap seeds it outside the profile, with a warning -- see
+  // BootstrapService).
   val centralAdminMtlsLines =
     if isLocal then
       genInternalTlsCertificate(edgeInternalTlsDir)
@@ -1223,6 +1266,11 @@ object SecretSchema:
       val tripleQuote = "\"" * 3
       "  central-admin-mtls {\n" +
         s"    certificate = $tripleQuote$pem$tripleQuote\n" +
+        "    certificate-header = \"ssl-client-cert\"\n" +
+        "    certificate-encoding = \"urlEncodedPem\"\n" +
+        "  }\n"
+    else if isDockerLocal || isVps then
+      "  central-admin-mtls {\n" +
         "    certificate-header = \"ssl-client-cert\"\n" +
         "    certificate-encoding = \"urlEncodedPem\"\n" +
         "  }\n"
@@ -1367,11 +1415,21 @@ object SecretSchema:
   // speaks no TLS, so those targets say `sslmode=disable` explicitly; a remote vps database
   // gets the verified default, with its CA bundle set through `postgres.ssl-root-cert` if the
   // JVM does not already trust it (see deploy.md).
+  // The database's name: `auth` unless the deployment says otherwise (vps only -- docker-local's
+  // bundled Postgres creates `auth`). One value for all three services, like the host.
+  val pgDatabase = sys.env.get("POSTGRES_DB").filter(_.nonEmpty).filter(_ => isVps).getOrElse("auth")
+  if !pgDatabase.matches("[A-Za-z0-9_-]{1,63}") then
+    throw RuntimeException(s"POSTGRES_DB '$pgDatabase' is not a plain database name (letters, digits, '_' and '-', up to 63)")
+  // Path, inside the service containers, of the CA bundle `versola-tools`' entrypoint put in the
+  // bundle (POSTGRES_CA_FILE): written as `postgres.ssl-root-cert` so `verify-full` can validate a
+  // database whose CA the JVM does not trust. Absent unless a CA was given.
+  val pgSslRootCert = sys.env.get("POSTGRES_SSL_ROOT_CERT").filter(_.nonEmpty).filter(_ => isVps)
+  val pgSslRootCertLine = pgSslRootCert.fold("")(path => s"\n       |  ssl-root-cert = \"$path\"")
   val pgPlaintext = !isVps || Set("127.0.0.1", "localhost", "[::1]").contains(pgHostDefault.replaceAll(":\\d+$", ""))
   val pgTlsParam = if pgPlaintext then "sslmode=disable" else ""
   def pgUrl(host: String, schema: Option[String]): String =
     val query = (schema.map("currentSchema=" + _).toList ++ Option.when(pgTlsParam.nonEmpty)(pgTlsParam).toList).mkString("&")
-    s"jdbc:postgresql://$host/auth" + (if query.isEmpty then "" else "?" + query)
+    s"jdbc:postgresql://$host/$pgDatabase" + (if query.isEmpty then "" else "?" + query)
   val authPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("auth"))
   else if isVps then pgUrl(pgHostDefault, Some("auth")) else pgUrl("localhost:5432", None)
   val authPgUrl = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
@@ -1424,35 +1482,7 @@ object SecretSchema:
   // and then silently replaced -- never served, never even wrong on its own terms. What a
   // JARM response is signed with is a fact about the tenant's own signing key, not something
   // this document could state independently of the JWKS without risking the two disagreeing.
-  val metadata =
-    s"""{
-       |  "issuer": "$authUrl",
-       |  "authorization_endpoint": "$authUrl/authorize",
-       |  "token_endpoint": "$authUrl/token",
-       |  "userinfo_endpoint": "$authUrl/userinfo",
-       |  "jwks_uri": "$authUrl/.well-known/jwks.json",
-       |  "introspection_endpoint": "$authUrl/introspect",
-       |  "revocation_endpoint": "$authUrl/revoke",
-       |  "pushed_authorization_request_endpoint": "$authUrl/par",
-       |  "end_session_endpoint": "$authUrl/logout",
-       |  "scopes_supported": ["openid", "profile", "email", "address", "phone", "offline_access"],
-       |  "response_types_supported": ["code", "code id_token"],
-       |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
-       |  "code_challenge_methods_supported": ["S256"],
-       |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
-       |  "subject_types_supported": ["public", "pairwise"],
-       |  "id_token_signing_alg_values_supported": ["PS256"],
-       |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
-       |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "request_object_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
-       |  "frontchannel_logout_supported": true,
-       |  "frontchannel_logout_session_supported": true,
-       |  "backchannel_logout_supported": true,
-       |  "backchannel_logout_session_supported": true,
-       |  "authorization_response_iss_parameter_supported": true
-       |}""".stripMargin
+  val metadata = defaultServerMetadata(authUrl)
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
   val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge"))
@@ -1590,9 +1620,9 @@ object SecretSchema:
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
-       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for auth's 512m
-       |# mem_limit. Raise it only together with the container's memory limit, or logins
-       |# will OOM the pod. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
+       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for the 512m heap
+       |# (-Xmx512m) of the image's JAVA_OPTS; no compose or chart memory limit is derived
+       |# from it here. Raise it only together with the heap, or logins will OOM the JVM. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
        |argon2 {
        |  max-concurrent = 12
        |  max-concurrent = $${?ARGON2_MAX_CONCURRENCY}
@@ -1610,7 +1640,7 @@ object SecretSchema:
        |$otpBlock$smtpBlock
        |postgres {
        |  url = "$authPgUrl"
-       |  user = "$authPgUser"
+       |  user = "$authPgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), authPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
@@ -1670,6 +1700,12 @@ object SecretSchema:
        |      table-name = "user_agents"
        |      batch-size = 1000
        |      interval   = "10 minutes"
+       |    }
+       |    {
+       |      table-name = "user_consents"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "ctid"
        |    }
        |  ]
        |}
@@ -1777,7 +1813,7 @@ object SecretSchema:
        |
        |postgres {
        |  url = "$centralPgUrl"
-       |  user = "$centralPgUser"
+       |  user = "$centralPgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), centralPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 15
        |  minimum-idle = 15
@@ -1837,7 +1873,7 @@ object SecretSchema:
        |
        |postgres {
        |  url = "$edgePgUrl"
-       |  user = "$edgePgUser"
+       |  user = "$edgePgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), edgePgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
@@ -2047,10 +2083,14 @@ object SecretSchema:
     // whether or not secrets are placeholdered: an interactive prod run registers the public half
     // in central.conf as a literal, and nothing else keeps the private half.
     writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-    java.nio.file.Files.setPosixFilePermissions(
-      File(dir, "utils.private-key.jwk").toPath,
-      java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
-    )
+    // Windows has no POSIX file attributes: the call throws there, and the file is left to the
+    // user's profile ACLs.
+    val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
+    if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
+      java.nio.file.Files.setPosixFilePermissions(
+        utilsKeyPath,
+        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+      )
     println(
       "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
     )

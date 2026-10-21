@@ -6,11 +6,11 @@ import versola.central.configuration.clients.{
   AuthFlow,
   AuthMethod,
   ClientId,
+  ClientKind,
   ClientTemplate,
   ConsentFlow,
   MutualTlsAuth,
   PresetId,
-  RegistrationFlow,
   ResponseType,
 }
 import versola.central.configuration.details.AuthorizationDetailType
@@ -20,10 +20,11 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.CertificateSubject
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
-import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
+import zio.json.{DeriveJsonCodec, DeriveJsonEncoder, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
@@ -166,7 +167,23 @@ case class CreatePermissionRequest(
     permission: Permission,
     description: Map[String, String],
     endpointIds: Set[ResourceEndpointId],
-) derives Schema, JsonCodec
+) derives Schema
+
+object CreatePermissionRequest:
+  /** New permission IDs are colon-separated only; the ID is decoded as a string first so the 400 names that rule. */
+  private case class Wire(
+      tenantId: TenantId,
+      permission: String,
+      description: Map[String, String],
+      endpointIds: Set[ResourceEndpointId],
+  ) derives JsonDecoder
+
+  given JsonCodec[CreatePermissionRequest] = JsonCodec(
+    DeriveJsonEncoder.gen[CreatePermissionRequest],
+    JsonDecoder[Wire].mapOrFail(wire =>
+      Permission.fromNew(wire.permission).map(CreatePermissionRequest(wire.tenantId, _, wire.description, wire.endpointIds)),
+    ),
+  )
 
 case class UpdatePermissionRequest(
     tenantId: TenantId,
@@ -218,13 +235,35 @@ case class CreateRoleRequest(
     id: RoleId,
     description: Map[String, String],
     permissions: Set[Permission],
-) derives Schema, JsonCodec
+    /** Whether the role grants anything from the start. */
+    active: Boolean,
+) derives Schema
+
+object CreateRoleRequest:
+  /** `active` arrived after the endpoint shipped, when every role was created active; a body
+    * that does not name it keeps meaning that, so the callers written before it still work. */
+  private case class Wire(
+      tenantId: TenantId,
+      id: RoleId,
+      description: Map[String, String],
+      permissions: Set[Permission],
+      active: Option[Boolean],
+  ) derives JsonDecoder
+
+  given JsonCodec[CreateRoleRequest] = JsonCodec(
+    DeriveJsonEncoder.gen[CreateRoleRequest],
+    JsonDecoder[Wire].map(wire =>
+      CreateRoleRequest(wire.tenantId, wire.id, wire.description, wire.permissions, wire.active.getOrElse(true)),
+    ),
+  )
 
 case class UpdateRoleRequest(
     tenantId: TenantId,
     id: RoleId,
     description: PatchDescription,
     permissions: PatchPermissions,
+    /** Absent leaves the flag as it is, like the other members' patches. */
+    active: Option[Boolean],
 ) derives Schema, JsonCodec
 
 case class RoleResponse(
@@ -297,6 +336,13 @@ case class TenantResponse(
     id: TenantId,
     description: String,
     edgeId: Option[String],
+    /** From the tenant's challenge settings, where the profile is stored; a tenant whose
+      * settings are missing reads as `ChallengeSettingsRecord.DefaultSecurityProfile`, what
+      * `getSecurityProfile` would answer for it. */
+    securityProfile: SecurityProfile,
+    /** The `kid` the tenant's tokens are signed with, also from its challenge settings; `None`
+      * when the tenant falls back to auth's configured key. */
+    signingKeyId: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetAllTenantsResponse(
@@ -338,7 +384,6 @@ case class OAuthClientResponse(
     refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
@@ -374,16 +419,26 @@ case class OAuthClientResponse(
     createdAt: Instant,
     /** OIDC Registration §2 `application_type`. */
     applicationType: ApplicationType,
+    /** What kind of client this is -- the one `/configuration/clients/{web,native,service}` took
+      * it at, which an update must be sent to. Fixed for the client's life; read off the template
+      * and the settings for a client registered before the kinds had endpoints. */
+    kind: ClientKind,
+    /** What this client changes in the theme it uses; absent when it changes nothing. */
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
     allowPartial: Boolean,
     rememberDuration: Option[Long],
+    requiredScopes: Set[ScopeToken] = Set.empty,
+    offlineAccessOptional: Boolean = false,
 ) derives Schema, JsonCodec:
   def toDomain: ConsentFlow =
     ConsentFlow(
       allowPartial = allowPartial,
       rememberDuration = rememberDuration.map(Duration.fromSeconds),
+      requiredScopes = requiredScopes,
+      offlineAccessOptional = offlineAccessOptional,
     )
 
 object ConsentFlowDto:
@@ -391,6 +446,8 @@ object ConsentFlowDto:
     ConsentFlowDto(
       allowPartial = flow.allowPartial,
       rememberDuration = flow.rememberDuration.map(_.toSeconds),
+      requiredScopes = flow.requiredScopes,
+      offlineAccessOptional = flow.offlineAccessOptional,
     )
 
 case class GetAllClientsResponse(
@@ -408,7 +465,6 @@ case class CreateClientRequest(
     refreshTokenTtl: Option[Int],
     theme: String,
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
@@ -487,6 +543,8 @@ case class CreateClientRequest(
       * `CN=<client>,OU=<tenant>,O=Versola` where it names none). Mutually exclusive with
       * [[issueEdgeClientCertificate]] and with supplying [[edgeClientCertificate]]. */
     enrollEdgeClientCertificate: Boolean,
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -518,7 +576,6 @@ case class UpdateClientRequest(
     refreshTokenTtl: Option[Long],
     theme: Option[String],
     authFlow: Option[Patch[AuthFlow]],
-    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
@@ -542,6 +599,8 @@ case class UpdateClientRequest(
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
     applicationType: Option[ApplicationType],
+    /** Replaces the client's theme overrides; an empty value clears them, absent leaves them. */
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -705,7 +764,6 @@ case class SyncOAuthClientRecord(
     permissions: Set[Permission],
     theme: String,
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
@@ -754,6 +812,8 @@ case class SyncOAuthClientRecord(
       * key. What the certificate the edge asks for must say; the edge builds its request for
       * exactly this, and central refuses a request that says anything else. */
     edgeCertificateSubject: Option[CertificateSubject],
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
+    themeOverrides: Option[ThemeOverrides],
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

@@ -32,13 +32,24 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
     send(Method.GET, path, query, None)
 
   def post(path: String, body: Json, query: (String, String)*): Task[ApiResult] =
-    send(Method.POST, path, query, Some(body.toJson))
+    (path, body) match
+      case (ClientEndpoints.Path, flat: Json.Obj) =>
+        val (kindPath, typed) = ClientEndpoints.registration(flat)
+        send(Method.POST, kindPath, query, Some(typed.toJson))
+      case _ => send(Method.POST, path, query, Some(body.toJson))
 
   def postEmpty(path: String, query: (String, String)*): Task[ApiResult] =
     send(Method.POST, path, query, None)
 
   def put(path: String, body: Json, query: (String, String)*): Task[ApiResult] =
-    send(Method.PUT, path, query, Some(body.toJson))
+    (path, body) match
+      case (ClientEndpoints.Path, flat: Json.Obj) =>
+        // The first kind whose endpoint does not say the client is of another kind.
+        ZIO.foldLeft(ClientEndpoints.updates(flat))(Option.empty[ApiResult]):
+          case (done @ Some(result), _) if result.status != Status.Conflict => ZIO.succeed(done)
+          case (_, (kindPath, typed)) => send(Method.PUT, kindPath, query, Some(typed.toJson)).asSome
+        .map(_.get)
+      case _ => send(Method.PUT, path, query, Some(body.toJson))
 
   def patch(path: String, body: Json, query: (String, String)*): Task[ApiResult] =
     send(Method.PATCH, path, query, Some(body.toJson))
@@ -117,7 +128,7 @@ object CentralApi:
   def token(prefix: String): UIO[String] =
     suffix.map(s => s"${prefix}_$s")
 
-  /** A permission matching `^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$`. */
+  /** A permission matching `^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$`. */
   def permission(prefix: String): UIO[String] =
     suffix.map(s => s"$prefix:p_$s")
 

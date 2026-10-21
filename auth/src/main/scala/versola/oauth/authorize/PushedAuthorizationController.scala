@@ -14,6 +14,9 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 9126: https://datatracker.ietf.org/doc/html/rfc9126
  */
 object PushedAuthorizationController extends Controller:
+  private val DpopHeader = "DPoP"
+  private val DpopNonceHeader = "DPoP-Nonce"
+
   type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -39,7 +42,11 @@ object PushedAuthorizationController extends Controller:
           ).mapError(PushedAuthorizationError.InvalidClientCertificate(_)),
         )
 
-        response <- service.push(AuthorizeRequestParser.paramsFromForm(form), credentials, certificate, request)
+        // RFC 9449 §4.1: a request carries at most one proof, and the service is the one that
+        // tells whether it is acceptable -- it alone knows which client the proof is for.
+        dpopProofs = request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue)
+
+        response <- service.push(AuthorizeRequestParser.paramsFromForm(form), credentials, certificate, request, dpopProofs)
       yield Response.json(response.toJson)
         .status(Status.Created)
         .addHeader(Header.CacheControl.NoStore))
@@ -99,5 +106,8 @@ object PushedAuthorizationController extends Controller:
     error match
       case PushedAuthorizationError.InvalidClient | PushedAuthorizationError.InvalidClientCertificate(_) =>
         response.addHeader(Header.WWWAuthenticate.Basic(realm = None))
+      // RFC 9449 §8: the nonce to retry with travels in a header, not in the body.
+      case PushedAuthorizationError.UseDpopNonce(nonce) =>
+        response.addHeader(Header.Custom(DpopNonceHeader, nonce))
       case _ =>
         response

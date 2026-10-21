@@ -15,7 +15,8 @@
 #   3. a value one entry shares between services (CENTRAL_SECRET_KEY, CLIENT_SECRETS_SECRET,
 #      and vps's POSTGRES_PASSWORD) is the identical value in each service's file. (k8s's
 #      POSTGRES_PASSWORD is an entry per service: separate values, nothing to compare.);
-#   4. a base64url value decodes to the byte count the schema declares;
+#   4. a `base64url` value decodes to the byte count the schema declares (only that type is
+#      measured: other types, e.g. opaque, have no size to check);
 #   5. a secret the schema puts in a file of its own (the `utils` client's private key) is in
 #      that file and in no *.generated-secrets.env;
 #   6. secrets.schema.json holds no secret value.

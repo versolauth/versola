@@ -2,6 +2,7 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
@@ -17,6 +18,7 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
@@ -327,6 +329,75 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.getSessions.calls == List(userId))),
     ),
     controllerTestCase(
+      description = "get user devices returns signed-in and signed-out devices, session null for the latter",
+      request = Request(
+        method = Method.GET,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getDevices.succeedsWith(
+          List(
+            DeviceResponse(
+              userAgent = Some(UserAgentResponse(
+                id = "ua-1",
+                userAgent = Some("raw"),
+                platform = Some("desktop"),
+                os = None,
+                browser = None,
+                version = None,
+                createdAt = Instant.parse("2024-01-01T00:00:00Z"),
+                expiresAt = Instant.parse("2024-06-01T00:00:00Z"),
+              )),
+              session = None,
+              endedSessionIds = List("old-1"),
+            ),
+          ),
+        ),
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          service.getDevices.calls == List(userId),
+          body.contains(""""session":null"""),
+          body.contains(""""endedSessionIds":["old-1"]"""),
+          body.contains(""""expiresAt":"2024-06-01T00:00:00Z""""),
+        ),
+    ),
+    controllerTestCase(
+      description = "get user devices without the user id is refused",
+      request = Request(method = Method.GET, url = URL.empty / "users" / "user-agents"),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.getDevices.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "forget a device returns 204 No Content when auth forgot it",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString).addQueryParam("userAgentId", "ua-1"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.forgetUserAgent.succeedsWith(true),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.forgetUserAgent.calls == List((userId, "ua-1")))),
+    ),
+    controllerTestCase(
+      description = "forget a device returns 404 Not Found when the user agent is not the user's",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString).addQueryParam("userAgentId", "ua-1"),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.forgetUserAgent.succeedsWith(false),
+    ),
+    controllerTestCase(
+      description = "forget a device without a userAgentId is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "user-agents").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.forgetUserAgent.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "invalidate session returns 204 No Content",
       request = Request(
         method = Method.DELETE,
@@ -338,6 +409,100 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.invalidateSession.calls == List(userId))),
     ),
     controllerTestCase(
+      description = "invalidate one session returns 204 No Content when auth ended it",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("id", userId.toString).addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.endSession.succeedsWith(true),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.endSession.calls == List((userId, "c2lk")),
+          service.invalidateSession.calls.isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "invalidate one session returns 404 Not Found when the session is not the user's",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("id", userId.toString).addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.endSession.succeedsWith(false),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.invalidateSession.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "invalidate one session without the user id is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "sessions").addQueryParam("sessionId", "c2lk"),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.endSession.calls.isEmpty, service.invalidateSession.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "revoke a client's refresh tokens returns 204 No Content",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "refresh-tokens").addQueryParam("id", userId.toString).addQueryParam("clientId", "app"),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.revokeRefreshTokens.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.revokeRefreshTokens.calls == List((userId, ClientId("app"))))),
+    ),
+    controllerTestCase(
+      description = "revoke refresh tokens without a clientId is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users" / "refresh-tokens").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.revokeRefreshTokens.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "delete user returns 204 No Content",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.NoContent,
+      setup = service => service.delete.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls == List(userId))),
+    ),
+    controllerTestCase(
+      description = "delete user returns 404 Not Found for an id that is not indexed",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.NotFound,
+      setup = service => service.delete.failsWith(UserNotFound),
+    ),
+    controllerTestCase(
+      description = "delete user without an id is refused",
+      request = Request(method = Method.DELETE, url = URL.empty / "users"),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "delete user with auth's internal token instead of the resource secret is refused",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.Unauthorized,
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.delete.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "patch user returns 202 Accepted",
       request = Request(
         method = Method.PATCH,
@@ -346,6 +511,30 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Accepted,
       setup = service => service.patch.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch user returns 404 Not Found when the user is unknown",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+77000000098"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.patch.failsWith(UserNotFound),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch user returns 409 Conflict when an identifier is taken",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+77000000098"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Conflict,
+      setup = service => service.patch.failsWith(UserConflict),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
     ),

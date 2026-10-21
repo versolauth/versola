@@ -37,8 +37,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   given Tag[Dependencies] = scala.compiletime.deferred
 
+  // Before anything can ask the JCA for an algorithm; accp-required refuses the start here.
+  private val cryptoProvider = versola.util.CryptoProvider.installFromEnv()
+
   override type Environment =
-    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client & OutboundGuard
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
     OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
@@ -62,6 +65,23 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   /** Optional second application surface, typically reachable only by internal proxies. */
   def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
+
+  /** The tier of each route of the application server for [[InboundAdmission]], by method and route pattern; `None` (the
+    * default) puts no admission control in front of the service. Settings come from `HTTP_ADMISSION_*`, see
+    * [[InboundAdmissionSettings]].
+    */
+  protected def admissionTiers: Option[(Method, String) => Tier] = None
+
+  /** The overload policy this service currently holds for itself (from central, for the edge), read about once a second and
+    * applied to the inbound admission and the outbound guard when it changes. `None` (the default): the settings of the
+    * process (`HTTP_ADMISSION_*`, `HTTP_CLIENT_GUARD_*`) stay as they are. A source that yields `None` or a policy that does
+    * not validate leaves the last applied settings in place.
+    */
+  protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
+
+  /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
+    * without and whose configuration it waits for at start-up (central). */
+  protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
 
   /** Optional third application surface, terminating TLS itself and demanding a client
     * certificate on the handshake -- RFC 8705 §5's `mtls_endpoint_aliases`.
@@ -186,6 +206,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       envName <- ZIO.service[EnvName]
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
+      _ <- zio.metrics.Metric.gauge("crypto_provider_native").set(if cryptoProvider.native then 1.0 else 0.0)
       client <- ZIO.service[Client]
 
       // Before `dependencies.build`, deliberately. Building them is what waits on everything
@@ -225,6 +246,10 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       appDependencies <- dependencies.build
       mainRoutes <- mountedRoutes.provideEnvironment(appDependencies)
+
+      guard <- ZIO.service[OutboundGuard]
+      _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
+      baseOutbound <- guard.current
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
         for
@@ -291,10 +316,23 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         for
           _ <- ZIO.logInfo("Starting application server")
 
+          admission <- ZIO.foreach(admissionTiers): tiers =>
+            for
+              admission <- InboundAdmission.make(InboundAdmissionSettings.fromEnv)
+              _ <- ZIO.logInfo(s"inbound admission: ${admission.current}")
+              _ <- admission.sample.forkIn(scope)
+              _ <- ZIO.foreachDiscard(overloadPolicy)(source =>
+                OverloadPolicyApplier
+                  .run(source.provideEnvironment(appDependencies), admission, guard, admission.current, baseOutbound)
+                  .forkIn(scope),
+              )
+            yield (admission, tiers)
           port <- Server.install {
-            Observability.handleErrors(mainRoutes) @@
+            val served = Observability.handleErrors(mainRoutes) @@
               Observability.middleware @@
               SecurityHeaders.middleware
+            // outermost: a refused request costs no span and no log line
+            admission.fold(served)((adm, tiers) => served @@ adm.middleware(tiers))
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
           // Warmup.run's fiber can still be running past its own budget -- that is the point,
@@ -350,7 +388,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * `gracefulShutdownTimeout` guards only the shutdown *hook*, and the JVM would not exit anyway
     * because the diagnostics server forked above holds non-daemon Netty threads. The container
     * would then never exit, `restart: unless-stopped` would never fire, and /readiness would stay
-    * false forever (see deploy.md 9.5).
+    * false forever (see deploy.md 6.5).
     *
     * So: a plain daemon JVM thread that halts once the deadline passes. Not a forked fiber - the
     * shutdown being guarded is precisely what interrupts fibers, so a fiber watchdog would be

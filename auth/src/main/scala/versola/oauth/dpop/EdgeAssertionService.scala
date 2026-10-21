@@ -1,9 +1,9 @@
 package versola.oauth.dpop
 
-import versola.util.SequentialLayers.*
 import versola.oauth.client.model.TenantId
 import versola.oauth.client.{CentralSyncTokenService, EdgeRegistrySyncClient}
-import versola.util.{CacheSource, CoreConfig, EdgeAssertion, ReloadingCache}
+import versola.util.SequentialLayers.*
+import versola.util.{CacheSource, ConfigSnapshot, CoreConfig, EdgeAssertion, ReloadingCache}
 import zio.http.Client
 import zio.metrics.Metric
 import zio.{Scope, UIO, ZIO, ZLayer}
@@ -44,7 +44,7 @@ object EdgeAssertionService:
     */
   private val rejections = Metric.counter("dpop_edge_assertion_rejections_total")
 
-  val live: ZLayer[Scope & CoreConfig & Client & DpopProofRepository, Throwable, EdgeAssertionService] =
+  val live: ZLayer[Scope & CoreConfig & Client & ConfigSnapshot & DpopProofRepository, Throwable, EdgeAssertionService] =
     CentralSyncTokenService.live >++> EdgeRegistrySyncClient.live >++> cacheLayer >>>
       ZLayer.fromFunction(Impl(_, _))
 
@@ -57,6 +57,7 @@ object EdgeAssertionService:
       ZIO.serviceWithZIO[CoreConfig](config =>
         ReloadingCache.make[Map[String, EdgeRegistrySyncClient.EdgeRegistration]](
           config.configurationCacheRefreshInterval,
+          fromSnapshot = true,
         ),
       )
 

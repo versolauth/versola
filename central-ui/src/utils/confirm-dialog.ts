@@ -22,7 +22,7 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
     overlay.tabIndex = -1;
     overlay.style.position = 'fixed';
     overlay.style.inset = '0';
-    overlay.style.zIndex = '9999';
+    overlay.style.zIndex = 'var(--z-modal)';
 
     const shadow = overlay.attachShadow({ mode: 'open' });
     shadow.innerHTML = `
@@ -35,23 +35,23 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           align-items: center;
           justify-content: center;
           padding: 1.5rem;
-          background: rgba(9, 12, 18, 0.72);
+          background: var(--backdrop);
           backdrop-filter: blur(4px);
-          font-family: Inter, system-ui, sans-serif;
+          font-family: var(--font-family, system-ui, sans-serif);
         }
         .dialog {
           width: min(100%, 28rem);
-          background: var(--bg-dark-card, #161b22);
-          border: 1px solid var(--border-dark, #30363d);
-          border-radius: var(--radius-lg, 1rem);
-          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-          color: var(--text-primary, #f0f6fc);
+          background: var(--surface);
+          border: 1px solid var(--border-default);
+          border-radius: var(--radius-lg, 1.25rem);
+          box-shadow: var(--shadow-card);
+          color: var(--text-primary);
           padding: 1.25rem;
         }
         .title { margin: 0 0 0.75rem; font-size: 1.1rem; font-weight: 700; }
-        .message { margin: 0; color: var(--text-secondary, #8b949e); line-height: 1.55; }
+        .message { margin: 0; color: var(--text-secondary); line-height: 1.55; }
         .message-subject {
-          color: var(--accent, #58a6ff);
+          color: var(--accent);
           font-family: var(--font-mono, ui-monospace, monospace);
           font-weight: 600;
           word-break: break-word;
@@ -70,7 +70,7 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           flex: 1 1 0;
           min-width: 0;
           border-radius: var(--radius-md, 0.75rem);
-          border: 1px solid var(--border-dark, #30363d);
+          border: 1.5px solid var(--border-input);
           padding: 0.625rem 1rem;
           font: inherit;
           font-size: 0.875rem;
@@ -81,27 +81,26 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
         }
         button:hover { transform: translateY(-1px); }
         button:focus-visible {
-          outline: none;
-          box-shadow: 0 0 0 3px rgba(var(--accent-tint), 0.22);
+          outline: 2px solid var(--focus-ring);
+          outline-offset: 2px;
         }
         .cancel {
-          background: var(--bg-dark-card, #161b22);
-          border-color: var(--border-dark, #30363d);
-          color: var(--text-primary, #f0f6fc);
+          background: transparent;
+          border-color: var(--border-input);
+          color: var(--text-primary);
         }
         .cancel:hover {
-          border-color: var(--accent, #58a6ff);
-          color: var(--accent, #58a6ff);
+          border-color: var(--text-primary);
         }
         .confirm {
-          background: rgba(var(--danger-tint), 0.12);
-          border-color: rgba(var(--danger-tint), 0.35);
-          color: var(--danger-strong);
+          background: var(--danger-subtle);
+          border-color: var(--danger-border);
+          color: var(--danger-text);
         }
         .confirm:hover {
-          background: rgba(var(--danger-tint), 0.18);
-          border-color: var(--danger, #f85149);
-          color: var(--danger-stronger);
+          background: var(--danger-subtle);
+          border-color: var(--danger);
+          color: var(--danger-text);
         }
         @media (max-width: 520px) {
           .actions {

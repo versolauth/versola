@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, clientWrites, findClientWrite, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -8,7 +8,7 @@ const alphaClient = {
   clientName: { en: 'Alpha Web' },
   redirectUris: ['https://alpha.example/callback'],
   scope: ['openid'],
-  permissions: ['alpha.read'],
+  permissions: ['alpha:read'],
   secretRotation: false,
   // Required and NaN-checked by the Access Token TTL input - omitting it leaves the field's
   // native "required" constraint failing on an empty value, which silently swallows every
@@ -30,7 +30,7 @@ const serviceClient = {
   clientName: { en: 'Service Client' },
   redirectUris: ['https://service.example/callback'],
   scope: ['email'],
-  permissions: ['alpha.write'],
+  permissions: ['alpha:write'],
   secretRotation: false,
 };
 
@@ -91,7 +91,7 @@ const tenantsOn = (profile: Profile) => (profile === 'standard' ? standardTenant
 
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: [],
+  phoneRegions: [],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
@@ -101,8 +101,24 @@ const mtlsTerminatingSettings = {
 };
 
 function clientCard(page: Page, text: string) {
-  return page.locator('.client-card').filter({ hasText: text }).first();
+  return page.locator('versola-clients-list tbody tr').filter({ hasText: text }).first();
 }
+
+/** A client's page: read-only, with an Edit button per group of settings. */
+async function openClientPage(page: Page, id: string) {
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+}
+
+/** What the edit page used to call each group, and what the client page calls it now. */
+const SECTION_TITLES: Record<string, string> = {
+  'Token lifetimes': 'Tokens',
+  'How users sign in': 'Sign-in',
+  'Scopes and permissions': 'Scopes',
+  'Branding and logout': 'Branding and logout',
+  'Client credential and binding': 'Type',
+  'Request integrity': 'Type',
+};
 
 /**
  * Creation opens on step 1, which decides the client's credential and request-integrity
@@ -157,14 +173,12 @@ async function submitCreate(page: Page) {
  * would close it again.
  */
 async function openEditSection(page: Page, title: string) {
-  const head = page.getByRole('button', { name: new RegExp(`^${title}`) });
-  if (await head.getAttribute('aria-expanded') === 'false') {
-    await head.click();
-  }
+  const section = SECTION_TITLES[title] ?? title;
+  await page.getByRole('button', { name: `Edit ${section.toLowerCase()}`, exact: true }).click();
 }
 
 async function saveEdit(page: Page) {
-  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('button', { name: /^Save /, exact: false }).click();
 }
 
 /** Step 2 to the created client, for a test with nothing to say about steps 3 and 4. */
@@ -182,32 +196,49 @@ test('renders client details and filters by client id', async ({ page }) => {
       scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
       permissions: {
         'tenant-alpha': [
-          { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-          { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
         ],
       },
     },
   });
 
-  const alpha = clientCard(page, 'Alpha Web');
-  await alpha.locator('.client-header').click();
-  await expect(alpha).toContainText('https://alpha.example/callback');
-  await expect(alpha).toContainText('openid');
-  await expect(alpha).toContainText('alpha.read');
-  await expect(alpha).toContainText('1h');
-  await expect(alpha.locator('.flow-section')).toBeVisible();
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Forms Theme');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Redirect URIs');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('OTP Settings');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Logout Settings');
-
   const search = page.getByLabel('Search clients');
   await search.fill('service-client');
   await expect(clientCard(page, 'Service Client')).toBeVisible();
-  await expect(page.locator('.client-card').filter({ hasText: 'alpha-web' })).toHaveCount(0);
+  await expect(page.locator('versola-clients-list tbody tr').filter({ hasText: 'alpha-web' })).toHaveCount(0);
 
   await search.fill('missing-client');
-  await expect(page.getByRole('heading', { name: 'No clients match your search', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No clients match', exact: true })).toBeVisible();
+  await search.fill('');
+
+  // A row opens the client's own page, which states everything the list leaves out.
+  await openClientPage(page, 'alpha-web');
+  const alpha = page.locator('versola-clients-list');
+  await expect(alpha).toContainText('https://alpha.example/callback');
+  await expect(alpha).toContainText('openid');
+  // A web client has scopes; permissions are a service client's alone, so the page does not list any.
+  await expect(alpha.getByRole('region', { name: 'Scopes' })).toBeVisible();
+  await expect(alpha.getByRole('region', { name: 'Permissions' })).toHaveCount(0);
+  await expect(alpha).not.toContainText('alpha:read');
+  await expect(alpha).toContainText('1h');
+  await expect(alpha.getByRole('region', { name: 'Sign-in' })).toBeVisible();
+  await expect(alpha.getByRole('region', { name: 'Branding and logout' })).toContainText('Forms theme');
+  await expect(alpha.getByRole('region', { name: 'General' })).toContainText('Redirect URIs');
+});
+
+test('filters the list by client type', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient, serviceClient, edgeNativeClient] } },
+  });
+
+  const filter = page.getByRole('group', { name: 'Filter by type' });
+  await filter.getByRole('button', { name: /^Mobile or desktop app/ }).click();
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(1);
+  await expect(clientCard(page, 'Edge Mobile')).toBeVisible();
+  await filter.getByRole('button', { name: /^All/ }).click();
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(3);
 });
 
 test('shows and updates refresh token TTL in days for offline clients', async ({ page }) => {
@@ -224,18 +255,17 @@ test('shows and updates refresh token TTL in days for offline clients', async ({
     },
   });
 
-  const client = clientCard(page, 'Alpha Web');
-  await client.locator('.client-header').click();
-  await expect(client).toContainText('Refresh Token TTL');
+  await openClientPage(page, 'alpha-web');
+  const client = page.getByRole('region', { name: 'Tokens' });
+  await expect(client).toContainText('Refresh token');
   await expect(client).toContainText('180d');
 
-  await client.getByRole('button', { name: 'Edit client alpha-web' }).click();
   await openEditSection(page, 'Token lifetimes');
   await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('180');
   await page.getByLabel('Refresh Token TTL (days) *').fill('120');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     refreshTokenTtl: 120 * 24 * 60 * 60,
   });
 });
@@ -266,15 +296,14 @@ test('shows refresh token TTL only after selecting offline_access when creating 
     .toContainText('180 days');
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     refreshTokenTtl: 180 * 24 * 60 * 60,
   });
 
-  await clientCard(page, 'Offline Client').getByRole('button', { name: 'Edit client offline-client' }).click();
   await openEditSection(page, 'Token lifetimes');
   await page.getByLabel('Refresh Token TTL (days) *').fill('45');
   await saveEdit(page);
-  await expect(clientCard(page, 'Offline Client')).toContainText('45d');
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('45d');
 });
 
 test('creates a client and shows the generated secret banner', async ({ page }) => {
@@ -291,7 +320,8 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await continueToReview(page);
   await submitCreate(page);
 
-  const created = clientCard(page, 'Dashboard Client');
+  // Creating lands on the new client's own page, where the secret is shown.
+  const created = page.locator('versola-clients-list .view-head');
   const secretBanner = page.locator('.secret-banner').first();
   const secretValue = secretBanner.locator('.secret-value');
   await expect(page.getByRole('heading', { name: 'Client created: Dashboard Client', exact: true })).toBeVisible();
@@ -299,27 +329,15 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await expect(secretValue).toBeVisible();
   expect((await secretValue.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
   await expect(created).toContainText('dashboard-client');
-  await expect(created).toContainText('1h');
+  await expect(page.locator('versola-clients-list')).toContainText('1h');
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toEqual({
+  expect((await findClientWrite(api.requests, 'POST')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'dashboard-client',
     clientName: { en: 'Dashboard Client' },
-    redirectUris: [],
     allowedScopes: [],
     permissions: [],
     accessTokenTtl: 3600,
-    authFlow: null,
-    registrationFlow: null,
-    otpTemplateId: 'default',
-    theme: 'default',
-    frontChannelLogoutUri: null,
-    frontChannelLogoutSessionRequired: false,
-    backChannelLogoutUri: null,
-    logoUri: null,
-    policyUri: null,
-    tosUri: null,
-    consentFlow: null,
     authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
@@ -327,14 +345,10 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     mtlsAuth: null,
     certificateBoundAccessTokens: false,
     jwks: null,
-    requireSignedRequestObject: false,
-    requirePushedAuthorizationRequests: false,
-    // Step 1's kind, stored so the edit page can show the client against it.
-    applicationType: 'web',
-    template: { kind: 'service' },
-    issueEdgeClientCertificate: false,
-    enrollEdgeClientCertificate: false,
   });
+  // A service client is registered at its own endpoint, which has no redirect URIs, flows,
+  // branding, PAR or JAR to send: the endpoint records what kind it is.
+  expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/service');
 });
 
 test('dates a just-created client by the time the registration answered with', async ({ page }) => {
@@ -349,11 +363,9 @@ test('dates a just-created client by the time the registration answered with', a
   await addRedirectUri(page, 'https://dashboard.example/callback');
   await finishCreate(page);
 
-  await clientCard(page, 'Dashboard Client').getByRole('button', { name: 'Edit client dashboard-client' }).click();
-
   // Central settles the registration time; without it coming back in the response the client
   // would read as undated until the list was loaded again.
-  await expect(page.locator('.form-actions-note')).toHaveText('Confidential client · created today');
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Created today');
 });
 
 test('creates a native client authenticated by edge, without a secret or rotation controls', async ({ page }) => {
@@ -367,24 +379,22 @@ test('creates a native client authenticated by edge, without a secret or rotatio
   await addRedirectUri(page, 'https://app.example.com/callback');
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'mobile-app',
     authMethod: 'tls_client_auth',
-    applicationType: 'native',
     enrollEdgeClientCertificate: true,
-    template: { kind: 'device' },
   });
+  expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/native');
 
   // Edge enrols for the certificate, so there is no secret to copy and nothing to register.
   await expect(page.getByRole('heading', { name: 'Client created: Mobile App', exact: true })).toBeVisible();
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Copy secret', exact: true })).toHaveCount(0);
 
-  // The list itself shows the client type, so it's discoverable without opening the edit form.
-  await expect(clientCard(page, 'Mobile App').locator('.badge-native')).toHaveText('Native');
+  // The page says what kind of client it is, in the same words the wizard used.
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Mobile or desktop app');
 
-  await clientCard(page, 'Mobile App').getByRole('button', { name: 'Edit client mobile-app' }).click();
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
 });
 
@@ -407,12 +417,12 @@ test('settles the client type from the kind step, and fixes it once created', as
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await expect(clientCard(page, 'Alpha Web')).toContainText('Web app');
+  await openClientPage(page, 'alpha-web');
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Web app');
   await openEditSection(page, 'How users sign in');
-  await expect(page.getByText('Client type', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
+  await expect(page.getByText('Client type', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'native', exact: true })).toHaveCount(0);
 });
 
 test('gates each step behind its own answer and marks the stepper as the wizard advances', async ({ page }) => {
@@ -512,7 +522,7 @@ test('keeps earlier answers when navigating back through the wizard', async ({ p
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'back-nav-client',
     redirectUris: ['https://backnav.example/callback'],
     allowedScopes: ['openid', 'profile'],
@@ -531,9 +541,9 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await continueToThirdStep(page);
   await continueToReview(page);
 
-  // The Identity group's Change link is step 2's, not some other group's.
-  await page.locator('versola-client-form .review-group').filter({ hasText: 'Identity' })
-    .getByRole('button', { name: 'Change', exact: true }).click();
+  // The General group's Change link is step 2's, not some other group's.
+  await page.locator('versola-client-form .review-group').filter({ hasText: 'Client ID' })
+    .getByRole('button', { name: /^Change/ }).click();
   await expect(page.locator('versola-client-form #client-id')).toHaveValue('change-link-client');
   await page.locator('versola-client-form input#client-name').fill('Renamed Client');
 
@@ -542,8 +552,8 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Client name' }))
     .toContainText('Renamed Client');
 
-  // The kind badge's Change link is step 1's - the kind survives the round trip.
-  await page.locator('versola-client-form .review-tier').getByRole('button', { name: 'Change', exact: true }).click();
+  // The Type group's Change link is step 1's - the kind survives the round trip.
+  await page.getByRole('region', { name: 'Type', exact: true }).getByRole('button', { name: /^Change/ }).click();
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
 
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
@@ -552,7 +562,7 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'change-link-client',
     clientName: { en: 'Renamed Client' },
     redirectUris: ['https://changelink.example/callback'],
@@ -571,7 +581,7 @@ test('cancels out of creation from step 1 without registering a client', async (
 
   await expect(page.getByRole('button', { name: '+ Create Client', exact: true })).toBeVisible();
   await expect(clientCard(page, 'Alpha Web')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 });
 
 test('registers a client that authenticates with an mTLS certificate', async ({ page }) => {
@@ -601,14 +611,13 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     .toContainText('certificate-bound');
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'mtls-client',
     authMethod: 'tls_client_auth',
     mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_dns', subjectValue: 'client.example.com' },
     // tls_client_auth binds the token to the certificate by itself, so no separate flag is sent.
     certificateBoundAccessTokens: false,
     dpopBoundAccessTokens: false,
-    enrollEdgeClientCertificate: false,
     jwks: null,
   });
 });
@@ -635,7 +644,7 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
   await page.getByLabel('Expected value').fill('client.example.com');
   await expect(page.getByText('Subject value is required')).toHaveCount(0);
   await expect(continueButton).toBeDisabled();
-  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+  expect(clientWrites(api.requests, 'POST')).toHaveLength(0);
 });
 
 test('registers a self-signed mTLS client against the key set of its certificate', async ({ page }) => {
@@ -656,13 +665,12 @@ test('registers a self-signed mTLS client against the key set of its certificate
   await page.getByLabel('Key set of the certificate').fill(JSON.stringify(keySet));
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'self-signed-client',
     authMethod: 'self_signed_tls_client_auth',
     mtlsAuth: { type: 'self_signed_tls_client_auth' },
     jwks: keySet,
     certificateBoundAccessTokens: false,
-    requireSignedRequestObject: false,
   });
 
   // No secret is generated for a client whose method is not client_secret, so the banner has
@@ -695,15 +703,15 @@ for (const profile of ['fapi2', 'standard'] as const) {
     // The kind settles these, so review is where they are stated rather than asked for.
     await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
       .toContainText('required');
-    await expect(page.locator('versola-client-form .review-tier')).toContainText('Web app');
+    await expect(page.getByRole('region', { name: 'Type', exact: true })).toContainText('Web app');
     await expect(page.getByText('tls_client_auth · certificate issued by central for edge')).toBeVisible();
-    await expect(page.getByText('This tenant is not FAPI 2.0.')).toHaveCount(profile === 'standard' ? 1 : 0);
+    // Edge's certificate and PAR make it conformant whichever profile the tenant is on, and the review says so.
+    await expect(page.getByText('Meets FAPI 2.0', { exact: true })).toBeVisible();
     await submitCreate(page);
 
-    expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+    expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
       id: 'edge-web',
       authMethod: 'tls_client_auth',
-      applicationType: 'web',
       // Tokens bound to edge's certificate need every replica to present the same one, so
       // central issues it; only a native app's edge enrols for its own.
       issueEdgeClientCertificate: true,
@@ -714,8 +722,8 @@ for (const profile of ['fapi2', 'standard'] as const) {
       requireSignedRequestObject: false,
       certificateBoundAccessTokens: true,
       dpopBoundAccessTokens: false,
-      template: { kind: 'web' },
     });
+    expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/web');
     await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   });
 
@@ -740,19 +748,21 @@ for (const profile of ['fapi2', 'standard'] as const) {
     await expect(page.getByText('tls_client_auth · certificate enrolled by edge')).toBeVisible();
     await submitCreate(page);
 
-    expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+    expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
       id: 'mobile-client',
       authMethod: 'tls_client_auth',
-      applicationType: 'native',
       issueEdgeClientCertificate: false,
       enrollEdgeClientCertificate: true,
       mtlsAuth: null,
-      dpopBoundAccessTokens: true,
-      certificateBoundAccessTokens: false,
-      requirePushedAuthorizationRequests: true,
-      requireSignedRequestObject: false,
-      template: { kind: 'device' },
     });
+    // DPoP, PAR and the rest of what a device fixes are central's to set, not members of its
+    // request: the endpoint refuses a body that names them.
+    const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
+    expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/native');
+    for (const fixed of ['dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'requirePushedAuthorizationRequests',
+      'requireSignedRequestObject', 'applicationType', 'template', 'jwks']) {
+      expect(sent).not.toHaveProperty(fixed);
+    }
   });
 }
 
@@ -790,13 +800,13 @@ test('keeps the registered subject when an edge-fronted client is edited', async
     state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
   });
 
-  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openClientPage(page, 'edge-mobile');
   await openEditSection(page, 'Token lifetimes');
   await page.locator('versola-client-form #ttl').fill('2');
   await saveEdit(page);
 
   // Absent leaves the stored subject alone; null would clear it, which central refuses.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body.mtlsAuth).toBeUndefined();
+  expect((await findClientWrite(api.requests, 'PUT')).body.mtlsAuth).toBeUndefined();
 });
 
 test('does not report an edge-fronted client as drifted from its template', async ({ page }) => {
@@ -806,7 +816,7 @@ test('does not report an edge-fronted client as drifted from its template', asyn
       dpopBoundAccessTokens: false, certificateBoundAccessTokens: true }] } },
   });
 
-  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openClientPage(page, 'edge-mobile');
 
   // The certificate credential binds the token, which is what the web template asks for.
   await expect(page.locator('versola-client-form .template-badge.drift')).toHaveCount(0);
@@ -835,15 +845,14 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
   await continueToReview(page);
   await submitCreate(page);
 
-  const body = (await findRequest(api.requests, 'POST', '/configuration/clients')).body as Record<string, unknown>;
+  const body = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
   expect(body).toMatchObject({
     id: 'batch-service',
     authMethod: 'private_key_jwt',
     dpopBoundAccessTokens: true,
     certificateBoundAccessTokens: false,
-    authFlow: null,
   });
-  expect(body.redirectUris).toEqual([]);
+  expect(body).not.toHaveProperty('redirectUris');
 });
 
 test('offers a service app a key or a certificate on a FAPI 2.0 tenant, and no secret', async ({ page }) => {
@@ -880,11 +889,12 @@ test('offers a service app a secret, a key or a certificate on a standard tenant
   await fillBasics(page, 'secret-service', 'Secret Service');
   await continueToThirdStep(page);
   await continueToReview(page);
-  await expect(page.getByText('This tenant is not FAPI 2.0.')).toBeVisible();
+  // A secret is a bearer credential, so the review says this client would not meet FAPI 2.0.
+  await expect(page.getByText('Standard profile client, not FAPI 2.0')).toBeVisible();
   await submitCreate(page);
 
   // A secret is a bearer credential: nothing binds the token.
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'secret-service',
     authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
@@ -918,25 +928,22 @@ test('registers a private_key_jwt service client with a key set that must be val
   await page.getByLabel('Key set').fill('not json');
   await expect(page.getByText('Must be valid JSON')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue to permissions', exact: true })).toBeDisabled();
-  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+  expect(clientWrites(api.requests, 'POST')).toHaveLength(0);
 
   await page.getByLabel('Key set').fill(SAMPLE_JWKS);
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'assertion-client',
     authMethod: 'private_key_jwt',
     mtlsAuth: null,
     jwks: JSON.parse(SAMPLE_JWKS),
     dpopBoundAccessTokens: true,
-    requireSignedRequestObject: false,
-    requirePushedAuthorizationRequests: false,
   });
 
   // private_key_jwt is a confidential method, but not client_secret - Central issues no
   // secret for it, so there is none to rotate or forget.
-  await clientCard(page, 'Assertion Client').getByRole('button', { name: 'Edit client assertion-client' }).click();
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
 });
 
@@ -960,7 +967,7 @@ test('creates a client with localized consent name', async ({ page }) => {
   await nameEditor.locator('input').fill('Локализованный клиент');
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     clientName: { en: 'Localized Client', ru: 'Локализованный клиент' },
   });
 });
@@ -982,7 +989,7 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
 
   // OTP delivery is not asked for at creation - the credential picks the channel - so this is
   // the edit page, where the template and the channel are both settable.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'How users sign in');
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
   await expect(page.getByLabel('OTP Template')).toBeVisible();
@@ -1011,18 +1018,10 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
 });
 
-test('configures a registration flow and sends it when creating a client', async ({ page }) => {
+test('sends no registration flow: self-registration is a tenant setting, not a client one', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [alphaClient] },
-      roles: {
-        'tenant-alpha': [
-          { id: 'user', description: { en: 'User' }, permissions: [], active: true },
-          { id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true },
-        ],
-      },
-    },
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
   await startCreate(page);
@@ -1031,38 +1030,24 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  // Creation asks only whether users may sign themselves up; the credential they verify follows
-  // from the first screen, and the steps and roles are refined on the edit page.
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveAttribute('aria-pressed', 'false');
-  await checkRow(page, 'Let users sign themselves up').click();
-  await expect(checkRow(page, 'Let users sign themselves up'))
-    .toContainText('The phone is the credential whose ownership is verified');
+  await expect(page.getByText('Let users sign themselves up')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .plan-line').filter({ hasText: 'register' })).toHaveCount(0);
+  await expect(page.locator('versola-client-form .wizard-warn').filter({ hasText: 'register' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
 
   await continueToReview(page);
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Self-service sign-up' }))
-    .toContainText('on');
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'sign-up' })).toHaveCount(0);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
-    registrationFlow: {
-      credential: 'phone',
-      steps: [{ type: 'otp' }],
-      roleIds: ['user'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 
-  await clientCard(page, 'Registering Client').getByRole('button', { name: 'Edit client registering-client' }).click();
-  await openEditSection(page, 'Registration and consent');
-  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
-  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByText('Assigned roles', { exact: false })).toHaveCount(0);
+  await expect(page.getByLabel('Challenge', { exact: true })).toHaveCount(0);
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    registrationFlow: {
-      steps: [{ type: 'otp' }, { type: 'setPassword' }],
-      roleIds: ['user', 'alpha-admin'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('configures a consent flow and sends it when creating a client', async ({ page }) => {
@@ -1082,7 +1067,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await expect(page.getByLabel('Reuse the grant for')).toHaveCount(0);
   await expect(page.getByLabel('Logo URI')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await checkRow(page, 'Let the user grant part of it').click();
   await page.getByLabel('Reuse the grant for').selectOption('30');
 
@@ -1093,13 +1078,13 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await continueToReview(page);
   await submitCreate(page);
 
-  const body = (await findRequest(api.requests, 'POST', '/configuration/clients')).body;
+  const body = (await findClientWrite(api.requests, 'POST')).body;
   expect(body).toMatchObject({
     logoUri: 'https://consenting.example/logo.png',
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
   });
-  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
 });
 
 test('reads and updates a finite consent duration as seconds', async ({ page }) => {
@@ -1115,16 +1100,92 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
     },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
-  await openEditSection(page, 'Registration and consent');
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
 
   await page.getByLabel('Remember duration in days').fill('30');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body.consentFlow)
-    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
+});
+
+test('marks required consent scopes and sends them with the flow', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone', 'profile', 'offline_access'],
+          consentFlow: { allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['phone'] },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+
+  const required = page.getByRole('group', { name: 'Required scopes' });
+  // openid and offline_access are always required, so they are not offered as a choice.
+  await expect(required.getByRole('button')).toHaveText(['phone', 'profile']);
+  await expect(required.getByRole('button', { name: 'phone' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(required.getByRole('button', { name: 'profile' })).toHaveAttribute('aria-pressed', 'false');
+
+  await required.getByRole('button', { name: 'profile' }).click();
+  await required.getByRole('button', { name: 'phone' }).click();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['profile'], offlineAccessOptional: false });
+});
+
+test('lets the administrator allow users to turn off long-lived access', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          consentFlow: { allowPartial: true, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  const toggle = page.getByLabel('Let the user turn off long-lived access');
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: null, requiredScopes: [], offlineAccessOptional: true });
+});
+
+test('offers required scopes only while partial grants are allowed', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone'],
+          consentFlow: { allowPartial: false, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toHaveCount(0);
+  await page.getByLabel('Let the user deselect optional scopes').check();
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toBeVisible();
 });
 
 test('explains consent settings with info buttons', async ({ page }) => {
@@ -1133,14 +1194,13 @@ test('explains consent settings with info buttons', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
-  await openEditSection(page, 'Registration and consent');
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
 
-  await page.getByRole('button', { name: 'Consent settings info' }).click();
-  await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Ownership info' }).click();
+  await expect(page.getByText('A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.', { exact: true })).toBeVisible();
 
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   const explanations = [
     ['Partial grants consent info', 'Allows the user to deselect optional scopes and approve only a subset of the requested access.'],
@@ -1163,10 +1223,12 @@ test('explains which client fields are shown on the consent screen', async ({ pa
   });
 
   // The client name is identity, shown above the collapsed groups; scopes are inside one.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
   await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await openEditSection(page, 'Scopes and permissions');
   await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
   await expect(page.getByText('Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.', { exact: true })).toBeVisible();
@@ -1178,10 +1240,9 @@ test('uses sentence case for consent property labels', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
-  await openEditSection(page, 'Registration and consent');
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   for (const id of ['consent-remember', 'consent-logo-uri', 'consent-policy-uri', 'consent-tos-uri']) {
     const label = page.locator(`label[for="${id}"]`);
@@ -1199,7 +1260,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await startCreate(page);
   await fillBasics(page, 'consenting-web', 'Consenting Web');
   await continueToThirdStep(page);
-  await expect(page.getByText('Consent', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ownership', { exact: true })).toBeVisible();
 
   // Consent is an act by a user, so the kind with none never offers it.
   await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -1208,43 +1269,10 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await continueToThirdStep(page);
 
-  await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Ownership', { exact: true })).toHaveCount(0);
 });
 
-test('hides registration settings when inline password is enabled', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  // Inline password is an edit-page refinement; turning it on leaves sign-up nothing to verify.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
-  await openEditSection(page, 'Registration and consent');
-
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
-
-  await openEditSection(page, 'How users sign in');
-  await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
-  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
-
-  await saveEdit(page);
-
-  // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
-  // the key is omitted rather than sent as an explicit null.
-  const putBody = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
-  expect(putBody).toMatchObject({
-    authFlow: {
-      primary: {
-        inlinePassword: true,
-      },
-    },
-  });
-  expect(putBody.registrationFlow).toBeUndefined();
-});
-
-test('hides registration settings for a login+password flow', async ({ page }) => {
+test('sends no registration flow for a login+password client', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [alphaClient] } },
@@ -1255,19 +1283,13 @@ test('hides registration settings for a login+password flow', async ({ page }) =
   await addRedirectUri(page, 'https://login-password.example/callback');
   await continueToThirdStep(page);
 
-  await checkRow(page, 'Let users sign themselves up').click();
-
-  // A login is not a delivery address, so there is nothing for sign-up to prove ownership of.
   await page.getByRole('button', { name: 'Login + password', exact: true }).click();
-  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toBeVisible();
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveCount(0);
+  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toHaveCount(0);
 
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
-    registrationFlow: null,
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('leaves out everything a sign-in flow owns when the client has none', async ({ page }) => {
@@ -1295,19 +1317,12 @@ test('leaves out everything a sign-in flow owns when the client has none', async
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
-    authFlow: null,
-    theme: 'default',
-    redirectUris: [],
-    otpTemplateId: 'default',
-    frontChannelLogoutUri: null,
-    frontChannelLogoutSessionRequired: false,
-    backChannelLogoutUri: null,
-    logoUri: null,
-    policyUri: null,
-    tosUri: null,
-    consentFlow: null,
-  });
+  // The service endpoint has no member for any of it, so none is sent.
+  const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
+  for (const owned of ['authFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
+    'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow']) {
+    expect(sent).not.toHaveProperty(owned);
+  }
 });
 
 test('shows client form validation before submitting', async ({ page }) => {
@@ -1324,7 +1339,7 @@ test('shows client form validation before submitting', async ({ page }) => {
   await expect(clientIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await expect(page.getByRole('button', { name: 'Continue to sign-in', exact: true })).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 
   await page.getByLabel('Client ID').fill('good-client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://broken.example/callback#fragment');
@@ -1356,7 +1371,7 @@ test('rejects logout notification URIs with a non-http(s) scheme', async ({ page
   await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
   await expect(continueButton).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 });
 
 test('preserves the front-channel URI when switching logout modes', async ({ page }) => {
@@ -1390,61 +1405,85 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
   await expect(redirectUriField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
 });
 
-test('updates a client and sends patch-style changes', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [alphaClient, serviceClient] },
-      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
-      permissions: {
-        'tenant-alpha': [
-          { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-          { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
-        ],
-      },
-    },
-  });
+const patchState = {
+  clients: { 'tenant-alpha': [alphaClient, serviceClient] },
+  scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
+  permissions: {
+    'tenant-alpha': [
+      { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+    ],
+  },
+};
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+// Each group of settings is saved on its own, and sends only what that group changed.
+
+test('sends the name and redirect URIs as a patch when General is saved', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   await page.getByLabel('Client Name').fill('Alpha Console');
-
-  await openEditSection(page, 'How users sign in');
   await page.getByRole('button', { name: 'Remove redirect URI https://alpha.example/callback', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://alpha.example/admin/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await saveEdit(page);
 
+  const body = (await findClientWrite(api.requests, 'PUT')).body;
+  // The client is a web client, so its update goes to the web endpoint; its kind never changes.
+  expect((await findClientWrite(api.requests, 'PUT')).pathname).toBe('/configuration/clients/web');
+  expect(body).toMatchObject({
+    clientId: 'alpha-web',
+    clientName: { en: 'Alpha Console' },
+    redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
+  });
+  expect(body).not.toHaveProperty('accessTokenTtl');
+  expect(body.scope ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+  await expect(page.locator('versola-clients-list .view-title')).toHaveText('Alpha Console');
+});
+
+test('sends scopes as a patch when they are saved, with no permissions for a web client', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
-  await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
-  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
-
-  await openEditSection(page, 'Token lifetimes');
-  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
-
+  await expect(page.locator('.checkbox-item', { hasText: 'alpha:read' })).toHaveCount(0);
   await saveEdit(page);
 
-  // Verify the API request was made correctly
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toEqual({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     clientId: 'alpha-web',
-    clientName: { en: 'Alpha Console' },
-    otpTemplateId: 'default',
-    redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
     scope: { add: ['email'], remove: ['openid'] },
-    permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
-    accessTokenTtl: 7200,
-    authFlow: {
-      primary: {
-        credentials: ['phone'],
-        inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
-      },
-      passkey: null,
-      equivalents: {},
-      otpType: 'sms',
-    },
-    frontChannelLogoutSessionRequired: false,
   });
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('permissions');
+});
+
+test('sends the access token lifetime when Tokens is saved, and nothing else about the client', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
+  await saveEdit(page);
+
+  const body = (await findClientWrite(api.requests, 'PUT')).body;
+  expect(body).toMatchObject({ clientId: 'alpha-web', accessTokenTtl: 7200 });
+  expect(body).not.toHaveProperty('clientName');
+  expect(body.redirectUris ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+  expect(body.scope ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+});
+
+test('goes back to the client page without saving when a section is cancelled', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+  expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
 });
 
 test('does not patch a localized client name after reverting an edit', async ({ page }) => {
@@ -1453,17 +1492,18 @@ test('does not patch a localized client name after reverting an edit', async ({ 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   const clientName = page.getByLabel('Client Name');
   await clientName.fill('Temporary name');
   await clientName.fill('Alpha Web');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).not.toHaveProperty('clientName');
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('clientName');
 });
 
-test('clears the auth flow on an existing client by sending an explicit null', async ({ page }) => {
-  const api = await loadAdminApp(page, {
+test('does not let an existing client switch its sign-in flow, which would change what kind of client it is', async ({ page }) => {
+  await loadAdminApp(page, {
     path: clientsPath,
     state: {
       clients: { 'tenant-alpha': [alphaClient] },
@@ -1471,42 +1511,10 @@ test('clears the auth flow on an existing client by sending an explicit null', a
     },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'How users sign in');
 
-  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
-  await authFlowRow.locator('label.toggle').click();
-
-  await saveEdit(page);
-
-  // An explicit null is required: an omitted key would leave the stored flow in place.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    clientId: 'alpha-web',
-    authFlow: null,
-  });
-});
-
-test('leaves a native client public when its sign-in flow is switched off', async ({ page }) => {
-  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [nativeClient] },
-      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
-    },
-  });
-
-  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
-  await openEditSection(page, 'How users sign in');
-
-  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
-  await authFlowRow.locator('label.toggle').click();
-
-  await saveEdit(page);
-
-  // A native client holds no secret, so moving it onto client_secret would leave it unable
-  // to authenticate at all - the method is the client's own, not one the flow toggle decides.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).not.toHaveProperty('authMethod');
+  await expect(page.getByText('Authorization Flow', { exact: true })).toHaveCount(0);
 });
 
 test('does not carry a stale logout error into a kind that has no logout block', async ({ page }) => {
@@ -1531,8 +1539,8 @@ test('does not carry a stale logout error into a kind that has no logout block',
   await expect(page.getByRole('button', { name: 'Continue to permissions' })).toBeEnabled();
 });
 
-test('hides the credential picker on a native client instead of accepting a credential it drops', async ({ page }) => {
-  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
+test('shows a public native client as having no credential, with nothing to register', async ({ page }) => {
+  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, clientType: 'native' as const, authMethod: 'none' as const };
   await loadAdminApp(page, {
     path: clientsPath,
     state: {
@@ -1541,15 +1549,14 @@ test('hides the credential picker on a native client instead of accepting a cred
     },
   });
 
-  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
-  await openEditSection(page, 'Client credential and binding');
+  await openClientPage(page, 'alpha-native');
 
-  // authMethodFor pins a native client to 'none' no matter which mode is picked, so the picker
-  // that lets an operator fill in a certificate or a key set that the update would then drop
-  // (and Central's validation would then reject) must not be offered at all.
+  // authMethodFor pins a native client to 'none', so a credential an update would drop is never
+  // offered: the page states what the client has and offers no way to pick another.
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('None (public client)');
   await expect(page.getByRole('button', { name: 'mTLS certificate', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveCount(0);
-  await expect(page.getByText('Public client, no secret')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Keys' })).toHaveCount(0);
 });
 
 test('gates the sign-in step on the consent URIs it edits', async ({ page }) => {
@@ -1564,7 +1571,7 @@ test('gates the sign-in step on the consent URIs it edits', async ({ page }) => 
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await page.getByLabel('Logo URI').fill('http://logo.example/logo.png');
 
   // The field lives on this step, so this step is where it has to be answered: submitting
@@ -1579,13 +1586,13 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   const api = await loadAdminApp(page, { path: clientsPath });
 
   // Click Edit on the client
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
 
-  // Click Rotate Secret button
-  await page.getByRole('button', { name: 'Rotate Secret', exact: true }).click();
+  // Click Rotate secret button
+  await page.getByRole('button', { name: 'Rotate secret', exact: true }).click();
 
-  // Wait for the form to close (it should close after rotation)
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).not.toBeVisible();
+  // The old secret stays valid until it is deleted, so Rotate gives way to Delete old secret.
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).not.toBeVisible();
 
   // Verify the rotate secret API was called correctly
   expect((await findRequest(api.requests, 'POST', '/configuration/clients/rotate-secret')).searchParams).toEqual({
@@ -1593,10 +1600,9 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   });
 
   // The client card should show "Secret Rotation" badge
-  await expect(page.getByText('Secret Rotation')).toBeVisible();
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Secret rotation')).toBeVisible();
 
-  // Edit the client again to delete the old secret
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  // Delete the old secret from the same page
   await page.getByRole('button', { name: 'Delete old secret', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
@@ -1609,7 +1615,7 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   });
 
   // After deleting the old secret, the "Secret Rotation" indicator should be gone
-  await expect(clientCard(page, 'Alpha Web')).not.toContainText('Secret Rotation');
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Secret rotation')).toHaveCount(0);
 });
 
 test('deletes a client through the confirm dialog and reaches the empty state', async ({ page }) => {
@@ -1618,13 +1624,14 @@ test('deletes a client through the confirm dialog and reaches the empty state', 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Delete client alpha-web' }).click();
+  await page.getByRole('button', { name: 'Actions for alpha-web' }).click();
+  await page.getByRole('menuitem', { name: 'Delete client alpha-web' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
   expect((await findRequest(api.requests, 'DELETE', '/configuration/clients')).searchParams).toEqual({
     clientId: 'alpha-web',
   });
-  await expect(page.locator('.client-card')).toHaveCount(0);
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No OAuth clients yet', exact: true })).toBeVisible();
 });
 
@@ -1649,30 +1656,27 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await finishCreate(page);
 
-  // Wait for the dialog to appear
-  await page.waitForTimeout(200);
+  // The dialog is raised once the registration is answered, which a slow runner takes longer over
+  // than any fixed pause.
+  await expect.poll(() => dialogShown).toBe(true);
 
-  expect(dialogShown).toBe(true);
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toEqual({
+  expect((await findClientWrite(api.requests, 'POST')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'alpha-web',
     clientName: { en: 'Duplicate Client' },
     redirectUris: ['https://duplicate.example/callback'],
     allowedScopes: ['openid'],
-    permissions: [],
     accessTokenTtl: 3600,
     authFlow: {
       primary: {
         credentials: ['phone'],
         inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
+        factors: [{ type: 'otp', required: true }, { type: 'passkeyEnroll', required: false }],
       },
-      passkey: null,
+      passkey: { factors: [] },
       equivalents: {},
       otpType: 'sms',
     },
-    registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
@@ -1691,84 +1695,61 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     jwks: null,
     requireSignedRequestObject: false,
     requirePushedAuthorizationRequests: true,
-    applicationType: 'web',
-    template: { kind: 'web' },
     issueEdgeClientCertificate: true,
     enrollEdgeClientCertificate: false,
   });
 
   // The client should NOT be added to the list
-  await expect(page.locator('.client-card').filter({ hasText: 'Duplicate Client' })).toHaveCount(0);
+  await expect(page.locator('versola-clients-list tbody tr').filter({ hasText: 'Duplicate Client' })).toHaveCount(0);
 });
 
-test('shows a templated client against the template it was registered from', async ({ page }) => {
+test('says what kind a client is, from the template it was registered from', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [templatedClient] } },
+    state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
   });
 
-  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+  await openClientPage(page, 'edge-mobile');
 
-  await expect(page.getByText('Mobile or desktop app')).toBeVisible();
-  await expect(page.getByText(/settings? differ from the template/)).toHaveCount(0);
-  await expect(page.getByText('Differences from the template')).toHaveCount(0);
-
-  // Every group the template decides says so; the ones it says nothing about stay untagged.
-  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Request integrity, from template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Scopes and permissions/ })).not.toHaveAccessibleName(/from template|changed/);
-
-  // The client ID is shown but cannot be edited - it is the one field creation fixes.
-  await expect(page.getByLabel('Client ID')).toHaveValue('mobile-checkout');
-  await expect(page.getByLabel('Client ID')).toHaveAttribute('readonly', '');
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Mobile or desktop app', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Fixed');
+  await expect(page.getByText(/differ from the template/)).toHaveCount(0);
 });
 
-test('lists the settings that differ from the template and resets them back', async ({ page }) => {
+test('flags settings stored below what the client type requires, and moves them only upwards', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [driftedClient] } },
+    state: { clients: { 'tenant-alpha': [{ ...edgeNativeClient, requirePushedAuthorizationRequests: false }] } },
   });
 
-  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+  await openClientPage(page, 'edge-mobile');
+  await expect(page.getByText('Some of these differ from what this type requires.')).toBeVisible();
+  await page.getByRole('button', { name: 'Review', exact: true }).click();
 
-  await expect(page.getByText('2 settings differ from the template')).toBeVisible();
+  const par = page.locator('versola-client-form .locked-setting', { hasText: 'Pushed authorization requests' });
+  await expect(par.getByText('Stored as off, but this client must have it on.')).toBeVisible();
+  await par.getByRole('button', { name: 'Set to on' }).click();
+  await expect(par.locator('.locked-problem')).toHaveCount(0);
 
-  const panel = page.locator('.drift-panel');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('Access token TTL');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('1 h');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('4 h');
-  await expect(panel.locator('.drift-row').nth(1)).toContainText('Pushed authorization requests');
-
-  // The two groups holding those settings say so; the untouched ones still read as the template's.
-  await expect(page.getByRole('button', { name: /^Token lifetimes, changed from the template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Client credential and binding, from template/ })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Reset all 2 to template', exact: true }).click();
-
-  await expect(page.getByText('2 settings differ from the template')).toHaveCount(0);
-  await expect(page.locator('.drift-panel')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
-
+  // The update goes to the device endpoint, which has no member for PAR: central writes what the
+  // kind fixes onto every update of it, so saving is what moves the stored value up.
   await saveEdit(page);
-
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    accessTokenTtl: 3600,
-    requirePushedAuthorizationRequests: true,
-  });
+  const update = await findClientWrite(api.requests, 'PUT');
+  expect(update.pathname).toBe('/configuration/clients/native');
+  expect(update.body).toMatchObject({ clientId: 'edge-mobile' });
+  expect(update.body).not.toHaveProperty('requirePushedAuthorizationRequests');
 });
 
-test('lists a web client moved onto a secret as differing from its template', async ({ page }) => {
+test('shows a web client on a secret as holding its own credential, not as one fronted by edge', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [secretBackedHighClient] } },
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [secretBackedHighClient] } },
   });
 
-  await clientCard(page, 'Web Downgraded').getByRole('button', { name: 'Edit client web-downgraded' }).click();
+  await openClientPage(page, 'web-downgraded');
 
-  const panel = page.locator('.drift-panel');
-  await expect(panel.locator('.drift-row')).toHaveCount(1);
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('Certificate-bound access tokens');
-  await expect(panel.getByRole('button', { name: 'Reset it to template' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Client secret');
+  await expect(page.getByText('Some of these differ from what this type requires.')).toHaveCount(0);
 });
 
 test('says nothing about a template for a client registered without one', async ({ page }) => {
@@ -1777,9 +1758,639 @@ test('says nothing about a template for a client registered without one', async 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
 
-  await expect(page.locator('.template-badges')).toHaveCount(0);
-  await expect(page.locator('.drift-panel')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Token lifetimes/ })).not.toHaveAccessibleName(/from template|changed/);
+  await expect(page.locator('versola-clients-list').getByText(/template/i)).toHaveCount(0);
+});
+
+// A client's kind is fixed at creation, and what the kind implies is shown rather than offered.
+
+test('says what an existing client is and that it meets FAPI 2.0, at the top of its page', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
+  await openClientPage(page, 'edge-mobile');
+
+  const meta = page.locator('versola-clients-list .view-meta');
+  await expect(meta.getByText('Mobile or desktop app', { exact: true })).toBeVisible();
+  await expect(meta.getByText('FAPI 2.0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Meets FAPI 2.0', { exact: false })).toBeVisible();
+});
+
+test('shows a mobile app\'s DPoP and PAR as fixed by its type, with nothing to switch', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
+  await openClientPage(page, 'edge-mobile');
+
+  const binding = page.getByRole('region', { name: 'Token binding and requests' });
+  await expect(binding).toContainText('Bound to a DPoP key');
+  await expect(binding).toContainText('Pushed through edge (PAR)');
+  await expect(binding.getByText('By type')).toHaveCount(3);
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit token binding and requests', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Fixed');
+});
+
+test('tells a FAPI 2.0 client from a standard one on a standard tenant, in the list and on its page', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [edgeNativeClient, secretBackedHighClient] } },
+  });
+
+  await expect(clientCard(page, 'Edge Mobile')).toContainText('FAPI 2.0');
+  await expect(clientCard(page, 'Web Downgraded')).toContainText('Standard');
+
+  await openClientPage(page, 'web-downgraded');
+  await expect(page.getByText('Standard profile client, not FAPI 2.0')).toBeVisible();
+});
+
+// Refresh tokens are issued to a client with the offline_access scope and to no other.
+
+test('says a client without offline_access is issued no refresh token, and offers no lifetime for one', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, scope: ['openid'] }] } },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('Not issued');
+
+  await openEditSection(page, 'Token lifetimes');
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .locked-setting', { hasText: 'Refresh token' })).toContainText('offline_access');
+});
+
+test('lets the refresh token lifetime be changed once offline_access is in scope', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [offlineClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toBeEnabled();
+  await expect(page.locator('versola-client-form .locked-setting', { hasText: 'Refresh token' })).toHaveCount(0);
+});
+
+test('offers PAR and JAR to a web client that authenticates for itself, since its type leaves them open', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [secretBackedHighClient] } },
+  });
+
+  await openClientPage(page, 'web-downgraded');
+  await expect(page.getByRole('region', { name: 'Token binding and requests' })).not.toContainText('By type');
+  await page.getByRole('button', { name: 'Edit token binding and requests', exact: true }).click();
+  await page.getByRole('checkbox', { name: /Pushed Authorization Requests/ }).uncheck();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
+    clientId: 'web-downgraded',
+    requirePushedAuthorizationRequests: false,
+  });
+});
+
+test('keeps the info button above a field clear of the field', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+
+  const info = await page.getByRole('button', { name: 'Access token TTL info' }).boundingBox();
+  const field = await page.locator('versola-client-form #ttl').boundingBox();
+  expect(info!.height).toBeGreaterThanOrEqual(24);
+  expect(field!.y).toBeGreaterThanOrEqual(info!.y + info!.height);
+});
+
+for (const width of [375, 320]) {
+  test(`keeps every step of creating a client inside the page and its targets usable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+    const measure = () => page.evaluate(() => {
+      const small: string[] = [];
+      const visit = (root: ParentNode) => {
+        for (const element of Array.from(root.querySelectorAll('*'))) {
+          if (element.shadowRoot) visit(element.shadowRoot);
+          const interactive = element.matches('button, a[href], input:not([type="hidden"]), select, textarea, [role="button"]');
+          if (!interactive) continue;
+          const box = element.getBoundingClientRect();
+          if (box.width === 0 || box.height === 0) continue;
+          // WCAG 2.5.8: a target of at least 24x24 CSS px, unless it is an inline link.
+          if (box.width < 24 || box.height < 24) small.push(`${element.tagName.toLowerCase()} ${Math.round(box.width)}x${Math.round(box.height)} ${(element.textContent || '').trim().slice(0, 24)}`);
+        }
+      };
+      visit(document);
+      return { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, small };
+    });
+
+    await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+    await page.getByRole('button', { name: /Web app/ }).click();
+    expect((await measure()).overflow).toBeLessThanOrEqual(0);
+    await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+    await fillBasics(page, 'narrow-client', 'Narrow Client');
+    await addRedirectUri(page, 'https://narrow.example/callback');
+    const basics = await measure();
+    expect(basics.overflow).toBeLessThanOrEqual(0);
+    expect(basics.small).toEqual([]);
+    await continueToThirdStep(page);
+    const signIn = await measure();
+    expect(signIn.overflow).toBeLessThanOrEqual(0);
+    expect(signIn.small).toEqual([]);
+    await continueToReview(page);
+    const review = await measure();
+    expect(review.overflow).toBeLessThanOrEqual(0);
+    expect(review.small).toEqual([]);
+  });
+}
+
+test('lists the permissions of a service client, and sends them when they are saved', async ({ page }) => {
+  const batch = { ...alphaClient, id: 'batch-job', clientName: { en: 'Batch Job' }, redirectUris: [], authFlow: null,
+    scope: [], permissions: ['alpha:read'], template: { kind: 'service' } };
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [batch] },
+      permissions: { 'tenant-alpha': [
+        { permission: 'alpha:read', description: { en: 'Read' }, endpointIds: [101] },
+        { permission: 'alpha:write', description: { en: 'Write' }, endpointIds: [101] },
+      ] },
+    },
+  });
+  await openClientPage(page, 'batch-job');
+  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha:read');
+  await expect(page.getByRole('region', { name: 'Scopes' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Edit permissions', exact: true }).click();
+  await page.locator('.checkbox-item', { hasText: 'alpha:write' }).getByRole('checkbox').check();
+  await saveEdit(page);
+  const update = await findClientWrite(api.requests, 'PUT');
+  expect(update.pathname).toBe('/configuration/clients/service');
+  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha:write'], remove: [] } });
+});
+
+
+test('turns offline_access on for a mobile app to begin with, and only for that kind', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: {
+        'tenant-alpha': [
+          { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+          { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+        ],
+      },
+    },
+  });
+  const chip = page.getByRole('button', { name: 'offline_access', exact: true });
+
+  // Web app: off. Mobile app: on. Back to web before anything was touched: off again.
+  await startCreate(page, 'Web app');
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+
+  // The mobile app asked for a refresh token, so the review says so and creation sends the scope.
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Refresh token' })).toContainText('180 days');
+  await submitCreate(page);
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
+    allowedScopes: expect.arrayContaining(['openid', 'offline_access']),
+  });
+});
+
+test('keeps what the operator chose for offline_access when the kind changes', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: { 'tenant-alpha': [
+        { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+        { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+      ] },
+    },
+  });
+  const chip = page.getByRole('button', { name: 'offline_access', exact: true });
+
+  await startCreate(page, 'Mobile or desktop app');
+  await continueToBasicsDone(page);
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+});
+
+/** Fills what step 2 needs and moves to step 3, for a test that only cares about its scopes. */
+async function continueToBasicsDone(page: Page) {
+  await fillBasics(page, 'scope-client', 'Scope Client');
+  const redirect = page.locator('versola-client-form #redirect-uri');
+  if (await redirect.count()) {
+    await addRedirectUri(page, 'https://scope.example/callback');
+  }
+  await continueToThirdStep(page);
+}
+
+// The seeded central-admin on a local stack: a web client that authenticates with a certificate, over
+// loopback http, with the binding flag never stored. It meets FAPI 2.0, and says so plainly.
+const certificateWebClient = {
+  ...alphaClient,
+  id: 'central-admin',
+  clientName: { en: 'Central Admin' },
+  redirectUris: ['http://localhost:2821/central/admin/'],
+  authMethod: 'tls_client_auth',
+  mtlsAuth: { type: 'tls_client_auth', subjectType: 'subject_dn', subjectValue: 'CN=central-admin,OU=default,O=Versola' },
+  certificateBoundAccessTokens: false,
+  dpopBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  template: { kind: 'web' },
+};
+
+test('calls a certificate client over loopback http FAPI 2.0, with nothing to configure for binding', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [certificateWebClient] } } });
+  await openClientPage(page, 'central-admin');
+
+  await expect(page.locator('versola-clients-list .view-meta').getByText('FAPI 2.0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Some of these differ from what this type requires.')).toHaveCount(0);
+
+  await openEditSection(page, 'Token binding and requests');
+  await expect(page.getByText("Bound to the client's certificate (RFC 8705 §3.1)")).toBeVisible();
+  // Neither a flag the certificate already implies, nor a key to bind the tokens to as well.
+  await expect(page.getByText('Certificate-bound access tokens')).toHaveCount(0);
+  await expect(page.getByText('Stored as off')).toHaveCount(0);
+  await expect(page.getByLabel('Require DPoP-bound access tokens')).toHaveCount(0);
+});
+
+const partnerClient = {
+  ...alphaClient,
+  id: 'acme-app',
+  clientName: { en: 'Acme Wallet' },
+  otpTemplateId: 'partner',
+  consentFlow: { allowPartial: false, rememberDuration: 15552000 },
+};
+
+const smsTemplate = (id: string) => ({
+  id,
+  tenantId: 'tenant-alpha',
+  localizations: { en: id === 'partner' ? 'Your code for {{appName}}: {{code}}' : 'Your code {{code}}' },
+  purpose: 'otp',
+  channel: 'sms' as const,
+});
+
+test('marks a client that asks for consent as a partner and keeps its consent switched on', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [partnerClient, serviceClient] },
+      otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] },
+    },
+  });
+
+  await expect(clientCard(page, 'Acme Wallet').locator('.chip', { hasText: 'Partner' })).toBeVisible();
+  await expect(clientCard(page, 'Service Client').locator('.chip', { hasText: 'Partner' })).toHaveCount(0);
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
+
+  await openEditSection(page, 'Ownership');
+  // Partner is the choice made for good: the other one is there, and cannot be picked.
+  await expect(page.getByRole('button', { name: 'Partner app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toBeDisabled();
+  await expect(page.getByText('it cannot be made a first party app')).toBeVisible();
+});
+
+test('registering a client that asks for consent picks the partner OTP template', async ({ page }) => {
+  const { requests } = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] } },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'new-partner', 'New Partner');
+  await addRedirectUri(page, 'https://partner.example/callback');
+  await continueToThirdStep(page);
+  await page.getByRole('button', { name: 'Partner app' }).click();
+  await continueToReview(page);
+  await submitCreate(page);
+
+  const body = (await findClientWrite(requests, 'POST')).body as { otpTemplateId: string; consentFlow: unknown };
+  expect(body.otpTemplateId).toBe('partner');
+  expect(body.consentFlow).not.toBeNull();
+});
+
+// A partner app's own appearance, laid over the theme it uses.
+const appearancePresets = [
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
+];
+const appearanceThemes = [
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
+  { id: 'money', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { shape: 'sharp' } } },
+  { id: 'legacy', css: 'LEGACY-CSS', tenantId: null },
+];
+const appearanceState = (client: Record<string, unknown>) => ({
+  clients: { 'tenant-alpha': [client] },
+  themes: appearanceThemes,
+  themePresets: appearancePresets,
+});
+const appearanceBlock = (page: Page) => page.getByRole('region', { name: 'Appearance for this app' });
+
+test('offers the appearance of an app only for a client with a consent flow', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { ...appearanceState(alphaClient), clients: { 'tenant-alpha': [alphaClient, partnerClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Branding and logout');
+  await expect(page.getByLabel('Forms Theme')).toBeVisible();
+  await expect(appearanceBlock(page)).toHaveCount(0);
+});
+
+test('shows the appearance of an app for a client with a consent flow', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: appearanceState(partnerClient) });
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.getByRole('region', { name: 'Branding and logout' })).toContainText('Appearance for this app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page)).toBeVisible();
+});
+
+test('shows the values of the theme the app uses as inherited, and sends only what the operator sets', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await expect(block).toBeVisible();
+  // The theme is the fintech preset with sharp corners: those are what is shown, nothing is overridden.
+  await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
+  await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Sharp' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByRole('group', { name: 'Page background' }).getByRole('button', { name: 'Neutral' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#5b5bd6');
+  await expect(block.getByText('Overridden', { exact: false })).toHaveCount(0);
+
+  await block.getByLabel('Brand colour, #rrggbb').fill('112233');
+  await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
+  await expect(block.getByTitle('Overridden · base: #5b5bd6')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: sharp')).toBeVisible();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233', shape: 'round' });
+});
+
+test('the background of an app starts at the theme\'s, is overridden from the preset cards and reset to it', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  const cards = block.getByRole('group', { name: 'Background style' });
+  // The theme is the fintech preset, which is linear.
+  await expect(cards.getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
+
+  await cards.getByRole('button', { name: 'Horizon' }).click();
+  await expect(block.getByTitle('Overridden · base: linear')).toBeVisible();
+  await block.getByRole('button', { name: 'Reset background to the base' }).click();
+  await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
+
+  // The glow is a choice like the others, though it is the default look: it undoes the theme's gradient.
+  await cards.getByRole('button', { name: 'Glow' }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ background: 'glow' });
+  await expect(page.getByText('glow background')).toBeVisible();
+});
+
+test('resets one override, and clears all of them with an empty object', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: appearanceState({ ...partnerClient, themeOverrides: { brand: '#112233', mode: 'dark' } }),
+  });
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.getByText('brand #112233, dark scheme')).toBeVisible();
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await expect(block.getByText('2 values differ from the theme, for this app only.')).toBeVisible();
+
+  await block.getByRole('button', { name: 'Reset mode to the base' }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233' });
+
+  await openEditSection(page, 'Branding and logout');
+  await appearanceBlock(page).getByRole('button', { name: 'Clear overrides' }).click();
+  await saveEdit(page);
+  const writes = (await clientWrites(api.requests, 'PUT')).map(write => write.body.themeOverrides);
+  expect(writes).toEqual([{ brand: '#112233' }, {}]);
+  await expect(page.getByText('Same as the theme')).toBeVisible();
+});
+
+test('says that overrides apply on top of a stylesheet theme, and sends nothing when none was set', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page).getByText('The theme is a stylesheet')).toBeVisible();
+  // Its values are not known, so none is claimed: no preset's values stand in for them.
+  await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
+  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(5);
+  await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"], .bg-card[aria-pressed="true"]')).toHaveCount(0);
+
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');
+});
+
+test('over a stylesheet theme, a choice equal to the default theme is still saved as an override', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  // Soft is the default theme's shape: over a token theme that would be no override, over a stylesheet it is one.
+  await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' }).click();
+  await block.getByLabel('Brand colour, #rrggbb').fill('155e75');
+  await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByText('2 values differ')).toBeVisible();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#155e75', shape: 'soft' });
+});
+
+test('does not save while the brand colour of the appearance is not a #rrggbb colour', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(block.getByText('Use #rrggbb')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await expect(page.getByText('Fix the brand colour')).toBeVisible();
+
+  await block.getByLabel('Brand colour, #rrggbb').fill('112233');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233' });
+});
+
+test('clearing the overrides drops an unparsable brand colour too, and saving is possible again', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, themeOverrides: { shape: 'round' } }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await block.getByRole('button', { name: 'Clear overrides' }).click();
+  await expect(block.getByLabel('Brand colour, #rrggbb')).toHaveValue('');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+});
+
+test('clears the stored overrides of an app that does not ask for consent when it is saved', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { ...appearanceState({ ...alphaClient, themeOverrides: { brand: '#112233' } }), clients: { 'tenant-alpha': [{ ...alphaClient, themeOverrides: { brand: '#112233' } }] } },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page)).toHaveCount(0);
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({});
+});
+
+test('leaves the appearance out when central has no built-in themes to show it against', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { ...appearanceState(partnerClient), themePresets: null } });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(page.getByLabel('Forms Theme')).toBeVisible();
+  await expect(appearanceBlock(page)).toHaveCount(0);
+});
+
+
+async function startWizardAtStep3(page: Page, kind: string, id: string) {
+  await startCreate(page, kind);
+  await fillBasics(page, id, 'Wizard App');
+  await addRedirectUri(page, 'https://wizard.example/callback');
+  await continueToThirdStep(page);
+}
+
+for (const kind of ['Web app', 'Mobile or desktop app']) {
+  test(`${kind}: a partner is offered branding in the wizard and sends it`, async ({ page }) => {
+    const api = await loadAdminApp(page, {
+      path: clientsPath,
+      state: appearanceState(alphaClient),
+    });
+    await startWizardAtStep3(page, kind, 'branded-partner');
+    await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+    await page.getByLabel('Forms Theme').selectOption('money');
+    const appearance = page.getByRole('region', { name: 'Appearance for this app' });
+    await expect(appearance).toBeVisible();
+    await appearance.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
+    await continueToReview(page);
+    await submitCreate(page);
+
+    const body = (await findClientWrite(api.requests, 'POST')).body;
+    expect(body.theme).toBe('money');
+    expect(body.themeOverrides).toEqual({ shape: 'round' });
+    expect(body.consentFlow).not.toBeNull();
+  });
+}
+
+test('a first-party app in the wizard has no branding, and going back to it drops the partner theme', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: appearanceState(alphaClient),
+  });
+  await startWizardAtStep3(page, 'Web app', 'own-app');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await page.getByLabel('Forms Theme').selectOption('money');
+  await page.getByRole('button', { name: 'First party app', exact: true }).click();
+  await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+  await expect(page.getByLabel('Logo URI')).toHaveCount(0);
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'first party' })).toBeVisible();
+  await submitCreate(page);
+
+  const body = (await findClientWrite(api.requests, 'POST')).body;
+  expect(body.theme).toBe('default');
+  expect(body).not.toHaveProperty('themeOverrides');
+  expect(body.consentFlow).toBeNull();
+});
+
+test('a new partner has 90 days preselected, sends it, and the grant-part checkbox follows the duration', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await startWizardAtStep3(page, 'Web app', 'ninety-partner');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('90');
+  await expect(select.locator('option:checked')).toHaveText('90 days');
+
+  const selectBox = await select.boundingBox();
+  const partialBox = await checkRow(page, 'Let the user grant part of it').boundingBox();
+  expect(partialBox!.y).toBeGreaterThan(selectBox!.y + selectBox!.height - 1);
+
+  await continueToReview(page);
+  await submitCreate(page);
+  expect((await findClientWrite(api.requests, 'POST')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('a stored grant duration outside the presets is shown as its own option', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: 180 * 86400 } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
+  await expect(page.getByLabel('Remember duration in days')).toHaveValue('180');
+});
+
+test('the edit page puts the partial-grants row after the remember row', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: null } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  const remember = await page.locator('#consent-remember').boundingBox();
+  const partial = await page.getByLabel('Let the user deselect optional scopes').boundingBox();
+  expect(partial!.y).toBeGreaterThan(remember!.y);
+});
+
+test('an unlocked first-party client can be made a partner from the edit page', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('the wizard select shows a grant duration outside its presets as its own option', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await startWizardAtStep3(page, 'Web app', 'legacy-days');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  // The wizard cannot produce one itself; a value restored from elsewhere (an old client's 180) must not blank the select.
+  await page.locator('versola-client-form').evaluate((el: any) => {
+    el.formData = { ...el.formData, consentFlow: { ...el.formData.consentFlow, rememberDurationDays: 180 } };
+  });
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('180');
+  await expect(select.locator('option:checked')).toHaveText('180 days');
 });

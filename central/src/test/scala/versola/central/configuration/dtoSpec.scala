@@ -1,6 +1,8 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, RegistrationFlow}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow}
+import versola.central.configuration.permissions.Permission
+import versola.central.configuration.scopes.ScopeToken
 import versola.util.Patch
 import zio.json.*
 import zio.test.*
@@ -16,7 +18,35 @@ object dtoSpec extends ZIOSpecDefault:
         """"permissions":{"add":[],"remove":[]}"""
     s"""{$required$field}""".fromJson[UpdateClientRequest]
 
+  private def createPermission(id: String): Either[String, CreatePermissionRequest] =
+    s"""{"tenantId":"t","permission":"$id","description":{},"endpointIds":[]}""".fromJson[CreatePermissionRequest]
+
   def spec = suite("DTO JSON Codecs")(
+    suite("CreatePermissionRequest permission ID")(
+      test("colon-separated IDs are accepted") {
+        assertTrue(
+          createPermission("users:read").map(_.permission) == Right(Permission("users:read")),
+          createPermission("billing:invoice:read_all").isRight,
+          createPermission("admin").isRight,
+        )
+      },
+      test("an ID with a dot is refused with the colon-only reason") {
+        val result = createPermission("orders.read_all")
+        assertTrue(result.isLeft, result.left.exists(_.contains("separated by ':'")))
+      },
+      test("an ID outside the alphabet is refused") {
+        assertTrue(
+          createPermission("Users:read").isLeft,
+          createPermission("users:1read").isLeft,
+          createPermission("users:").isLeft,
+          createPermission("users-read").isLeft,
+        )
+      },
+      test("a stored ID with a dot still decodes where it is referenced, e.g. in an update") {
+        val update = """{"tenantId":"t","permission":"legacy.read","description":{"add":{},"delete":[]},"endpointIds":null}"""
+        assertTrue(update.fromJson[UpdatePermissionRequest].map(_.permission) == Right(Permission("legacy.read")))
+      },
+    ),
     suite("UpdateClientRequest nullable fields distinguish absent from null")(
       test("an absent auth flow means no change, an explicit null clears it") {
         val absent = decodeUpdate("")
@@ -26,16 +56,6 @@ object dtoSpec extends ZIOSpecDefault:
           absent.map(_.authFlow) == Right(None),
           cleared.map(_.authFlow) == Right(Some(Patch.Deleted)),
           set.map(_.authFlow) == Right(Some(Patch.Modified(AuthFlow.default))),
-        )
-      },
-      test("an absent registration flow means no change, an explicit null clears it") {
-        val absent = decodeUpdate("")
-        val cleared = decodeUpdate(""","registrationFlow":null""")
-        val set = decodeUpdate(s""","registrationFlow":${RegistrationFlow.default.toJson}""")
-        assertTrue(
-          absent.map(_.registrationFlow) == Right(None),
-          cleared.map(_.registrationFlow) == Right(Some(Patch.Deleted)),
-          set.map(_.registrationFlow) == Right(Some(Patch.Modified(RegistrationFlow.default))),
         )
       },
       test("a finite consent duration is decoded from seconds") {
@@ -64,6 +84,18 @@ object dtoSpec extends ZIOSpecDefault:
       assertTrue(
         json.contains("\"rememberDuration\":1209600"),
         !json.contains("PT"),
+      )
+    },
+    test("ConsentFlowDto carries required scopes and reads a record stored without them as empty") {
+      val dto = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))
+      val legacy = """{"allowPartial":true,"rememberDuration":1209600}"""
+      assertTrue(
+        dto.toJson.contains("\"requiredScopes\":[\"phone\"]"),
+        dto.toJson.fromJson[ConsentFlowDto] == Right(dto),
+        legacy.fromJson[ConsentFlowDto].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
+        legacy.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(false),
+        dto.copy(offlineAccessOptional = true).toJson.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(true),
+        """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
       )
     },
     test("PatchDescription encodes and decodes correctly") {

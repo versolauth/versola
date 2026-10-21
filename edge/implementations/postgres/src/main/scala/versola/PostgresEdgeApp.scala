@@ -18,6 +18,7 @@ import versola.edge.{
   InternalSurface,
   JwksService,
   OAuthClientService,
+  OverloadPolicyService,
   PermissionService,
   PostgresDpopProofRepository,
   PostgresEdgeSessionRepository,
@@ -31,7 +32,7 @@ import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
@@ -52,6 +53,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       ConfigurationSource &
       EdgeIdentity &
       DpopPolicyService &
+      OverloadPolicyService &
       OAuthClientService &
       ResourceService &
       PermissionService &
@@ -70,6 +72,15 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeService &
       NativeAuthClient &
       NativeService
+
+  override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
+
+  // what an operator sets for this edge in central, applied to the admission and the outbound guard as it changes
+  override protected def overloadPolicy = Some(ZIO.serviceWithZIO[OverloadPolicyService](_.current))
+
+  // central is the one peer the edge cannot work without and waits for at start-up
+  override protected def guardExemptPeers =
+    ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
   /** The surface every mode serves. The internal one is added by [[mountedRoutes]], which is
     * where the mode is known. */
@@ -98,6 +109,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PostgresRevocationNotifications.live >++>
       SecureRandom.live >++>
       SecurityService.live >++>
+      configSnapshot >++>
       CelEvaluator.live >++>
       // The three mode boundaries of #555. `EdgeConfig.validated` above has already refused a
       // mode none of them implements, so each selects by mode without a failure path of its own
@@ -105,6 +117,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       ConfigurationSource.live >++>
       EdgeIdentity.live >++>
       DpopPolicyService.live >++>
+      OverloadPolicyService.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>
       PermissionService.live >++>
@@ -118,31 +131,31 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       NativeAuthClient.live >++>
       NativeService.live
 
+  /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
+    * on one database keep their own. See [[ConfigSnapshot]].
+    */
+  private val configSnapshot: ZLayer[TransactorZIO & EdgeConfig, Nothing, ConfigSnapshot] =
+    (PostgresConfigSnapshotRepository.live("edge_config_snapshots") ++ ZLayer.service[EdgeConfig]) >>>
+      ZLayer.fromZIO:
+        for
+          repository <- ZIO.service[ConfigSnapshot.Repository]
+          config <- ZIO.service[EdgeConfig]
+          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded, keyPrefix = s"${config.id}:")
+        yield snapshot
+
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
 
   given DeriveConfig[Secret] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
+    .mapOrFail(SecretConfig.secret)
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
-    .mapOrFail: str =>
-      PrivateKeyUtil.parse(str, "RSA")
-        .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
-
-  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
-    newType.fromBase64Url(str)
-      .left.map(message => zio.Config.Error.InvalidData(message = message))
-      .filterOrElse(
-        _.length == newType.length,
-        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
-      )
+    .mapOrFail(SecretConfig.rsaPrivateKey)

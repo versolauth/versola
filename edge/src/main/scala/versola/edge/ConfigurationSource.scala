@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.util.SecurityService
+import versola.util.{ConfigSnapshot, SecurityService}
 import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
 import zio.http.Client
@@ -20,10 +20,11 @@ import zio.{Scope, ZLayer}
   */
 type ConfigurationSource =
   AuthorizationPresetsSyncClient & OAuthClientsSyncClient & ClientPermissionsSyncClient & ResourcesSyncClient &
-    RolesSyncClient & PermissionsSyncClient & DpopAlgorithmsSyncClient & DpopPolicySyncClient & JwksSyncClient
+    RolesSyncClient & PermissionsSyncClient & DpopAlgorithmsSyncClient & DpopPolicySyncClient & JwksSyncClient &
+    OverloadPolicySyncClient
 
 object ConfigurationSource:
-  type Requirements = Scope & Client & EdgeConfig & SecurityService & CelEvaluator
+  type Requirements = Scope & Client & EdgeConfig & SecurityService & CelEvaluator & ConfigSnapshot
 
   /** The source `EdgeConfig.mode` names. */
   val live: ZLayer[Requirements, Throwable, ConfigurationSource] =
@@ -51,4 +52,5 @@ object ConfigurationSource:
       PermissionsSyncClient.live >++>
       DpopAlgorithmsSyncClient.live >++>
       DpopPolicySyncClient.live >++>
+      OverloadPolicySyncClient.live >++>
       JwksSyncClient.live

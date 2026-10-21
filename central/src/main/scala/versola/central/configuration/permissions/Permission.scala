@@ -14,6 +14,14 @@ object Permission:
   private val invalidMessage =
     "Permission must be lowercase letters, numbers and underscores, with segments separated by '.' or ':', each starting with a letter"
 
+  private val newPattern = "^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$".r
+  private val newInvalidMessage =
+    "Permission must be lowercase letters, numbers and underscores, with segments separated by ':', each starting with a letter"
+
+  /** The rule for a permission being created. Stored IDs may still contain '.', so every other path decodes with [[from]]. */
+  def fromNew(string: String): Either[String, Permission] =
+    if newPattern.matches(string) then Right(string) else Left(newInvalidMessage)
+
   def from(string: String): Either[String, Permission] =
     if validPattern.matches(string) then Right(string) else Left(invalidMessage)
 

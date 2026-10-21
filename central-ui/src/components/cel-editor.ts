@@ -35,15 +35,17 @@ export class VersolaCelEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
         overflow: hidden;
       }
       .wrapper:focus-within {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
+        background: var(--surface);
+        border-color: var(--text-primary);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
       :host([has-error]) .wrapper { border-color: var(--danger); }
       .error-message {
@@ -78,11 +80,12 @@ export class VersolaCelEditor extends LitElement {
         color: transparent;
         caret-color: var(--accent);
         resize: none;
+        /* The wrapper draws the focus ring (:focus-within above). */
         outline: none;
         overflow: auto;
       }
       textarea::placeholder { color: var(--text-secondary); opacity: 0.7; }
-      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
+      textarea::selection { background: var(--selection-bg); color: transparent; }
       .multiline pre, .multiline textarea {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
@@ -159,6 +162,20 @@ export class VersolaCelEditor extends LitElement {
       bubbles: true,
       composed: true,
     }));
+  }
+
+  /** Replaces the selection (or inserts at the caret) with `text`, keeps the caret after it and tells the host. */
+  insertText(text: string) {
+    const ta = this.textarea;
+    if (!ta || this.disabled) return;
+    const start = ta.selectionStart;
+    const next = ta.value.slice(0, start) + text + ta.value.slice(ta.selectionEnd);
+    this.value = next;
+    this.dispatchEvent(new CustomEvent('cel-input', { detail: { value: next }, bubbles: true, composed: true }));
+    void this.updateComplete.then(() => {
+      ta.focus();
+      ta.setSelectionRange(start + text.length, start + text.length);
+    });
   }
 
   private handleInput(event: Event) {

@@ -1,8 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
+import { badgeStyles, buttonStyles, cardStyles, formStyles, recordStyles } from '../styles/components';
+import {accessSectionTitle} from '../utils/client-presets';
+import {AuthFlow, AuthorizationPreset, FormPreview, FormPreviewScenario, FormRecord, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -10,8 +11,11 @@ import {
   fetchAllClients,
   fetchClientPresets,
   fetchChallengeSettings,
+  fetchFormPreviews,
+  fetchForms,
   fetchLocales,
   fetchOtpTemplates,
+  fetchThemePresets,
   fetchThemes,
   getPermissions,
   getResources,
@@ -22,16 +26,46 @@ import {
   updateClient,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { ClientCredentialKind, clientCredentialKind } from '../utils/validators';
-import { copyToClipboard, formatDuration, getLocalizedDescription } from '../utils/helpers';
+import { ClientCredentialKind, clientCredentialKind, describeJwks } from '../utils/validators';
+import {
+  CLIENT_KINDS,
+  ClientKind,
+  clientKindOf,
+  clientLocks,
+  credentialLabel,
+  fapiConformance,
+  profilePosture,
+} from '../utils/client-presets';
+import type { ClientEditSection } from './client-form';
+import { pickConsentScenario } from '../utils/consent-preview';
+import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
 import './content-header';
+import './danger-card';
+import './data-table';
+import './empty-state';
 import './error-card';
+import './filter-bar';
 import './loading-cards';
 import './preset-form';
+import './record-card';
+import './record-header';
+import type { DataTableColumn, RowMenuItem } from './data-table';
 
 /** What the create banner says instead of offering a secret, for a client whose secret is
  *  not the credential it authenticates with. `null` for one whose secret is. */
+/** What the client changes in its theme, in a line: `brand #112233, sharp corners`; "Same as the theme" when nothing. */
+function themeOverridesSummary(overrides: ThemeOverrides | null | undefined): string {
+  const parts = [
+    overrides?.brand && `brand ${overrides.brand}`,
+    overrides?.surface && `${overrides.surface} page`,
+    overrides?.background && `${overrides.background} background`,
+    overrides?.shape && `${overrides.shape} corners`,
+    overrides?.mode && `${overrides.mode} scheme`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Same as the theme';
+}
+
 function secretlessText(credential: ClientCredentialKind | undefined): string | null {
   switch (credential) {
     case 'public':
@@ -67,12 +101,19 @@ export class VersolaClientsList extends LitElement {
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
+  @state() private availableThemePresets: ThemePreset[] = [];
+  @state() private consentPreviewForm: FormRecord | null = null;
+  @state() private consentPreviewScenario: FormPreviewScenario | null = null;
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
   @state() private securityProfile: SecurityProfile = 'fapi2';
+  /** The client whose page is open, and the group of its settings being edited on it. */
+  @state() private viewingClientId: string | null = null;
+  @state() private editSection: ClientEditSection | null = null;
+  @state() private typeFilter: 'all' | ClientKind = 'all';
   @state() private isPreparingForm = false;
   // `secret` is null whenever the created client does not authenticate with one - a native
   // client is issued none, and a client that registered an mTLS credential or a key set
@@ -92,6 +133,8 @@ export class VersolaClientsList extends LitElement {
   updated(changedProperties: Map<string, unknown>) {
     if (changedProperties.has('tenantId')) {
       this.expandedClients = new Set();
+      this.viewingClientId = null;
+      this.editSection = null;
       this.availableScopes = [];
       this.availablePermissions = [];
       this.availableResources = [];
@@ -127,9 +170,15 @@ export class VersolaClientsList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await fetchAllClients(this.tenantId);
+      const [result, settings] = await Promise.all([
+        fetchAllClients(this.tenantId),
+        // The tenant's profile decides what a row says about security; a tenant whose
+        // settings cannot be read is shown as the default one.
+        fetchChallengeSettings(this.tenantId).catch(() => null),
+      ]);
       if (requestId !== this.loadRequestId) return;
       this.clients = result;
+      this.securityProfile = settings?.securityProfile ?? 'fapi2';
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.clients = [];
@@ -147,77 +196,17 @@ export class VersolaClientsList extends LitElement {
     buttonStyles,
     cardStyles,
     formStyles,
+    recordStyles,
     css`
       :host {
         display: block;
       }
 
-      .search-bar {
-        margin-bottom: var(--spacing-lg);
-        max-width: 28rem;
-      }
-
-      .client-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-lg);
-        margin-bottom: var(--spacing-md);
-        transition: border-color var(--transition-base);
-      }
-
-      .client-card:hover {
-        border-color: var(--accent);
-      }
-
-      .client-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: var(--spacing-lg);
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .client-info {
-        flex: 1;
-      }
-
-      /* Web and native are just the two client-type values, not a
-         status distinction (like the warning badge next to it) — same
-         accent styling for both, distinguished only by their label text. */
-      .badge-native,
-      .badge-web {
-        border: 1px solid rgba(var(--accent-tint), 0.28);
-        background: rgba(var(--accent-tint), 0.12);
-        color: var(--accent);
-      }
-
-      .client-name {
-        font-size: 1.125rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-bottom: 0.25rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-
-      .client-id {
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        color: var(--accent);
-        word-break: break-all;
-      }
-
-      .client-actions {
-        display: flex;
-        gap: 0.5rem;
-        margin-left: var(--spacing-md);
-      }
-
       .icon-action {
         background: none;
         border: none;
+        min-width: 1.5rem;
+        min-height: 1.5rem;
         padding: 0.25rem;
         cursor: pointer;
         color: var(--text-secondary);
@@ -231,41 +220,11 @@ export class VersolaClientsList extends LitElement {
         transform: scale(1.15);
       }
 
-      .icon-action.danger:hover {
-        color: var(--danger);
-      }
 
-      .client-body {
-        border-top: 1px solid var(--border-dark);
-        padding: var(--spacing-lg);
-      }
 
-      .details-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: var(--spacing-lg);
-      }
 
-      .detail-section {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-md);
-        padding: var(--spacing-md);
-      }
 
-      .detail-label {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.5rem;
-      }
 
-      .detail-value {
-        color: var(--text-primary);
-        font-size: 0.875rem;
-      }
 
       .client-link {
         background: none;
@@ -304,7 +263,7 @@ export class VersolaClientsList extends LitElement {
 
       .tag {
         padding: 0.25rem 0.5rem;
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         color: var(--accent);
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
@@ -313,13 +272,13 @@ export class VersolaClientsList extends LitElement {
 
       .flow-section {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
         gap: var(--spacing-lg);
       }
 
       .auth-flow-settings {
         margin-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding-top: var(--spacing-lg);
       }
 
@@ -373,7 +332,7 @@ export class VersolaClientsList extends LitElement {
       .logout-claim-key {
         padding: 0.1rem 0.3rem;
         border-radius: var(--radius-sm);
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -392,11 +351,15 @@ export class VersolaClientsList extends LitElement {
         flex-direction: column;
         gap: 0;
         align-self: start;
+        min-width: 0;
+        max-width: 100%;
       }
 
       .flow-step {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        min-width: 0;
+        overflow-wrap: anywhere;
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
       }
@@ -439,8 +402,8 @@ export class VersolaClientsList extends LitElement {
 
       .secret-banner {
         margin-bottom: var(--spacing-lg);
-        border-color: rgba(63, 185, 80, 0.35);
-        background: linear-gradient(180deg, rgba(63, 185, 80, 0.08), rgba(63, 185, 80, 0.04));
+        border-color: var(--success-border);
+        background: var(--success-subtle);
       }
 
       .secret-banner-header {
@@ -466,8 +429,8 @@ export class VersolaClientsList extends LitElement {
       .secret-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-family: var(--font-mono);
@@ -485,13 +448,13 @@ export class VersolaClientsList extends LitElement {
 
       .copy-feedback {
         font-size: 0.8125rem;
-        color: var(--success, #3fb950);
+        color: var(--success);
       }
 
       .btn-ghost {
         background: transparent;
         color: var(--text-secondary);
-        border-color: var(--border-dark);
+        border-color: var(--border-input);
       }
 
       .btn-ghost:not(:disabled):hover {
@@ -499,21 +462,10 @@ export class VersolaClientsList extends LitElement {
         border-color: var(--text-secondary);
       }
 
-      .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: var(--text-secondary);
-      }
-
-      .empty-state-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-      }
-
       /* Authorization Presets */
       .presets-section {
         margin-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding-top: var(--spacing-lg);
       }
 
@@ -562,7 +514,7 @@ export class VersolaClientsList extends LitElement {
         text-align: center;
         color: var(--text-secondary);
         font-size: 0.875rem;
-        background: var(--bg-dark);
+        background: var(--bg-page);
         border-radius: var(--radius-md);
       }
 
@@ -572,8 +524,8 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
         overflow: hidden;
@@ -594,7 +546,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card-header:hover {
-        background: rgba(var(--accent-tint), 0.05);
+        background: var(--accent-subtle);
       }
 
       .preset-info {
@@ -622,7 +574,7 @@ export class VersolaClientsList extends LitElement {
 
       .preset-body {
         padding: 0 var(--spacing-md) var(--spacing-md);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .preset-details {
@@ -656,29 +608,135 @@ export class VersolaClientsList extends LitElement {
 
       .preset-divider {
         grid-column: 1 / -1;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         margin: var(--spacing-xs) 0;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      .icon {
+        flex: none;
+        vertical-align: -3px;
+      }
+
+      /* ── list ── */
+      .list-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-md);
+        align-items: center;
+        margin-bottom: var(--spacing-lg);
+      }
+      .search-input {
+        flex: 1 1 14rem;
+        max-width: 28rem;
+        min-width: 0;
+      }
+
+      /* ── client page ── */
+      .banner {
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-inner);
+        padding: var(--spacing-md) var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+        background: var(--surface);
+        color: var(--text-primary);
+      }
+      .banner.ok {
+        border-color: var(--success);
+        background: var(--success-subtle);
+      }
+      .banner-title {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        font-weight: 600;
+        margin-bottom: 0.375rem;
+      }
+      .banner.ok .banner-title .icon,
+      .banner.ok li .icon {
+        color: var(--success);
+      }
+      .banner ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.25rem;
+        font-size: 0.875rem;
+      }
+      .banner li {
+        display: flex;
+        gap: 0.5rem;
+        align-items: baseline;
+      }
+      .banner p {
+        margin: 0.625rem 0 0;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+      }
+      /* --info is the accent hue, so a link in a banner is told apart by its underline. */
+      .banner a {
+        text-decoration: underline;
+      }
+      .view-flow {
+        padding: var(--spacing-md) var(--spacing-lg);
+      }
+      .muted {
+        color: var(--text-secondary);
+      }
+      .deviation {
+        display: flex;
+        gap: var(--spacing-md);
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .presets-card {
+        padding: 0;
+        margin-bottom: var(--spacing-md);
+      }
+      .presets-card .presets-section {
+        margin: 0;
+        border: 0;
+        padding: var(--spacing-md) var(--spacing-lg);
       }
     `,
   ];
 
   private get filteredClients(): OAuthClient[] {
     const query = this.searchQuery.trim().toLowerCase();
-    if (!query) return this.clients;
-    return this.clients.filter(client => client.id.toLowerCase().includes(query));
+    return this.clients.filter(client =>
+      (this.typeFilter === 'all' || clientKindOf(client) === this.typeFilter)
+      && (!query
+        || client.id.toLowerCase().includes(query)
+        || getLocalizedDescription(client.clientName).toLowerCase().includes(query)));
   }
 
-  private async toggleExpand(clientId: string) {
-    if (this.expandedClients.has(clientId)) {
-      this.expandedClients.delete(clientId);
-      this.expandedFlows.delete(clientId);
-    } else {
-      this.expandedClients.add(clientId);
-      this.expandedFlows.add(clientId);
-      // Load presets when expanding if not already loaded
-      await this.loadPresetsForClient(clientId);
-    }
-    this.requestUpdate();
+  private async openView(client: OAuthClient) {
+    this.viewingClientId = client.id;
+    this.editSection = null;
+    await this.loadPresetsForClient(client.id);
+    window.scrollTo({ top: 0 });
+  }
+
+  private closeView() {
+    this.viewingClientId = null;
+    this.editSection = null;
+  }
+
+  private openSection(client: OAuthClient, section: ClientEditSection) {
+    this.editSection = section;
+    void this.openForm(client);
+  }
+
+  private async copyClientId(client: OAuthClient) {
+    await copyToClipboard(client.id);
   }
 
   private togglePresetExpand(presetId: string) {
@@ -715,11 +773,9 @@ export class VersolaClientsList extends LitElement {
   }
 
   private handleCreateClick() {
+    this.editSection = null;
+    this.viewingClientId = null;
     void this.openForm(null);
-  }
-
-  private handleEditClick(client: OAuthClient) {
-    void this.openForm(client);
   }
 
   private async ensureFormOptionsLoaded() {
@@ -729,11 +785,17 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
+    const [scopes, permissions, resources, themes, themePresets, forms, previews, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
+      // A central that has no built-in themes answers with an error: the client's own appearance is then not offered.
+      fetchThemePresets().catch(() => [] as ThemePreset[]),
+      // The appearance block draws the consent form. An older central, or an operator who may not read forms, has no
+      // such preview: the block says so and the rest of the form is unaffected.
+      fetchForms().catch(() => [] as FormRecord[]),
+      fetchFormPreviews().catch(() => [] as FormPreview[]),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
       getRoles(tenantId),
@@ -745,6 +807,9 @@ export class VersolaClientsList extends LitElement {
       this.availablePermissions = permissions;
       this.availableResources = resources;
       this.availableThemes = themes;
+      this.availableThemePresets = themePresets;
+      this.consentPreviewForm = forms.find(f => f.id === 'consent' && f.active && f.jsCompiled) ?? null;
+      this.consentPreviewScenario = pickConsentScenario(previews.find(p => p.formId === 'consent')?.scenarios ?? []);
       this.availableOtpTemplates = otpTemplates;
       this.availableRoles = roles;
       this.availableLocales = locales;
@@ -796,6 +861,7 @@ export class VersolaClientsList extends LitElement {
     try {
       await deleteClient(this.tenantId, client.id);
       this.removeClientFromState(client.id);
+      if (this.viewingClientId === client.id) this.closeView();
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to delete client');
     }
@@ -804,6 +870,7 @@ export class VersolaClientsList extends LitElement {
   private handleFormClose() {
     this.showCreateForm = false;
     this.editingClient = null;
+    this.editSection = null;
     this.isPreparingForm = false;
     this.requestUpdate();
   }
@@ -968,7 +1035,7 @@ export class VersolaClientsList extends LitElement {
           credential,
         };
         this.copyFeedback = '';
-        this.expandedClients = new Set([...this.expandedClients, client.id]);
+        this.viewingClientId = client.id;
         this.expandedFlows = new Set([...this.expandedFlows, client.id]);
       }
     } catch (error) {
@@ -998,11 +1065,7 @@ export class VersolaClientsList extends LitElement {
         <content-header
           title="OAuth Clients"
         ></content-header>
-        <div class="card empty-state">
-          <div class="empty-state-icon">⏳</div>
-          <h3>Loading form options…</h3>
-          <p>Fetching scopes and permissions for the selected tenant.</p>
-        </div>
+        <versola-empty-state heading="Loading form options…" text="Fetching scopes and permissions for the selected tenant."></versola-empty-state>
       `;
     }
 
@@ -1051,10 +1114,14 @@ export class VersolaClientsList extends LitElement {
         ` : ''}
         <versola-client-form
           .client=${this.editingClient}
+          .editSection=${this.editSection}
           .availableScopes=${this.availableScopes}
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
           .availableThemes=${this.availableThemes}
+          .availableThemePresets=${this.availableThemePresets}
+          .consentPreviewForm=${this.consentPreviewForm}
+          .consentPreviewScenario=${this.consentPreviewScenario}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
           .locales=${this.availableLocales}
@@ -1067,6 +1134,11 @@ export class VersolaClientsList extends LitElement {
           @submit=${this.handleFormSubmit}
         ></versola-client-form>
       `;
+    }
+
+    const viewing = this.viewingClientId ? this.clients.find(client => client.id === this.viewingClientId) : null;
+    if (viewing) {
+      return this.renderClientView(viewing, secretTitle, secretText);
     }
 
     return html`
@@ -1106,123 +1178,280 @@ export class VersolaClientsList extends LitElement {
       ` : this.errorMessage ? html`
         <versola-error-card heading="Could not load OAuth clients" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.clients.length === 0 ? html`
-        <div class="card">
-          <div class="empty-state">
-            <h3>No OAuth clients yet</h3>
-            <p>Create your first OAuth client to get started</p>
-            ${this.canManage ? html`
-            <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId} style="margin-top: 1rem;">
+        <versola-empty-state heading="No OAuth clients yet" text="Create your first OAuth client to get started">
+          ${this.canManage ? html`
+            <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId}>
               + Create Client
             </button>` : ''}
+        </versola-empty-state>
+      ` : html`
+        ${this.renderListToolbar()}
+        ${this.filteredClients.length === 0 ? html`
+          <versola-empty-state heading="No clients match"></versola-empty-state>
+        ` : this.renderClientTable()}
+      `}
+    `;
+  }
+
+  private createdAgo(createdAt: string): string {
+    const days = Math.floor((Date.now() - new Date(createdAt).getTime()) / 86_400_000);
+    return `Created ${days < 1 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`}`;
+  }
+
+  private kindName(client: OAuthClient): string {
+    return CLIENT_KINDS.find(kind => kind.id === clientKindOf(client))?.name ?? 'Client';
+  }
+
+  private kindIcon(kind: ClientKind) {
+    const paths: Record<ClientKind, string> = {
+      web: 'M3 5h18v14H3zM3 9h18',
+      device: 'M7 3h10v18H7zM11 18h2',
+      service: 'M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01',
+    };
+    return html`<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+      stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${paths[kind]}></path></svg>`;
+  }
+
+  private partnerChip(client: OAuthClient) {
+    return isPartnerClient(client)
+      ? html`<span class="chip" title="Asks users for consent: a partner's app signing in your users">Partner</span>`
+      : '';
+  }
+
+  private securityChip(client: OAuthClient) {
+    const { conformant } = fapiConformance(client);
+    return conformant
+      ? html`<span class="chip ok" title="Meets the FAPI 2.0 security profile">${this.icon('shield')}FAPI 2.0</span>`
+      : html`<span class="chip">Standard</span>`;
+  }
+
+  private icon(name: 'shield' | 'lock' | 'check' | 'x' | 'dots' | 'copy', className = '') {
+    const paths: Record<string, string> = {
+      shield: 'M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6zM8.5 12l2.5 2.5L15.5 10',
+      lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z',
+      check: 'M5 12.5l4.5 4.5L19 7.5',
+      x: 'M6 6l12 12M18 6L6 18',
+      dots: 'M5 12h.01M12 12h.01M19 12h.01',
+      copy: 'M8 8h12v12H8zM16 8V4H4v12h4',
+    };
+    return html`<svg class="icon ${className}" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+      stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${paths[name]}></path></svg>`;
+  }
+
+  private renderListToolbar() {
+    const filters: Array<{ id: 'all' | ClientKind; label: string }> = [
+      { id: 'all', label: 'All' },
+      ...CLIENT_KINDS.map(kind => ({ id: kind.id, label: kind.name })),
+    ];
+    return html`
+      <div class="list-toolbar">
+        <input class="form-input search-input" type="search" aria-label="Search clients" .value=${this.searchQuery}
+          @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value}
+          placeholder="Search by name or client ID" />
+        <versola-filter-bar label="Filter by type"
+          .options=${filters.map(filter => ({ id: filter.id, label: filter.label }))}
+          .value=${this.typeFilter}
+          @change=${(e: CustomEvent<{ id: string }>) => this.typeFilter = e.detail.id as 'all' | ClientKind}
+        ></versola-filter-bar>
+      </div>
+    `;
+  }
+
+  private renderClientTable() {
+    const columns: DataTableColumn<OAuthClient>[] = [
+      { id: 'client', label: 'Client', cell: client => html`
+        <button type="button" class="row-link" @click=${() => this.openView(client)} aria-label=${`Open client ${getLocalizedDescription(client.clientName)} ${client.id}`}>
+          <span class="row-title">${getLocalizedDescription(client.clientName)}</span>
+          <span class="row-id">${client.id}</span>
+        </button>` },
+      { id: 'type', label: 'Type', cell: client => html`<span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span>` },
+      { id: 'credential', label: 'Authenticates with', class: 'muted', cell: client => credentialLabel(client) },
+      { id: 'security', label: 'Security', cell: client => html`
+        <div class="chips">${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
+    ];
+    const menuItems = (client: OAuthClient): RowMenuItem[] => [
+      { label: 'Open', onSelect: () => void this.openView(client) },
+      { label: 'Copy client ID', onSelect: () => void this.copyClientId(client) },
+      ...(this.canManage ? [{ label: 'Delete client', danger: true, ariaLabel: `Delete client ${client.id}`, onSelect: () => void this.handleDeleteClick(client) }] : []),
+    ];
+    return html`
+      <versola-data-table
+        .columns=${columns}
+        .rows=${this.filteredClients}
+        .rowKey=${(client: OAuthClient) => client.id}
+        .menuItems=${menuItems}
+        .menuLabel=${(client: OAuthClient) => `Actions for ${client.id}`}
+      ></versola-data-table>
+    `;
+  }
+
+  private viewRow(label: string, value: unknown, fixed = '') {
+    return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
+  }
+
+  private viewSection(title: string, subtitle: string, section: ClientEditSection | null, client: OAuthClient, body: unknown, fixedLabel = 'Fixed') {
+    return html`
+      <versola-record-card .heading=${title} .subheading=${subtitle}
+        ?editable=${!!section && this.canManage} ?editDisabled=${this.isPreparingForm}
+        .fixedLabel=${section ? '' : fixedLabel}
+        .body=${body}
+        @edit=${() => { if (section) this.openSection(client, section); }}
+      ></versola-record-card>
+    `;
+  }
+
+  private tokenBinding(client: OAuthClient): string {
+    if (client.dpopBoundAccessTokens) return 'Bound to a DPoP key';
+    if (client.certificateBoundAccessTokens || client.authMethod === 'tls_client_auth' || client.authMethod === 'self_signed_tls_client_auth') {
+      return client.clientType === 'native' ? 'Bound to a certificate' : "Bound to the client's certificate";
+    }
+    return 'Bearer tokens, not bound to the client';
+  }
+
+  private renderClientView(client: OAuthClient, secretTitle: string, secretText: string) {
+    const kind = clientKindOf(client);
+    const descriptor = CLIENT_KINDS.find(candidate => candidate.id === kind);
+    const locks = clientLocks(kind, this.securityProfile, client.authMethod === 'private_key_jwt' ? 'private-key-jwt'
+      : client.authMethod === 'client_secret' ? 'secret'
+      : client.authMethod === 'self_signed_tls_client_auth' ? 'mtls-self-signed'
+      : client.authMethod === 'tls_client_auth' && client.clientType !== 'native' && client.mtlsAuth ? 'mtls' : 'edge');
+    const lockedValue = (lock: typeof locks.dpop) => (lock.locked ? lock.value : null);
+    const deviations = [
+      [lockedValue(locks.dpop), !!client.dpopBoundAccessTokens],
+      // A certificate credential binds the tokens whatever the stored flag says, so it is no deviation.
+      [locks.boundByCertificate ? null : lockedValue(locks.certificateBound), !!client.certificateBoundAccessTokens],
+      [lockedValue(locks.par), !!client.requirePushedAuthorizationRequests],
+    ].some(([required, actual]) => required !== null && required !== actual);
+    const conformance = fapiConformance(client);
+    const posture = profilePosture(client, 'fapi2');
+    const hasKeys = client.authMethod === 'private_key_jwt' || client.authMethod === 'self_signed_tls_client_auth';
+    const signsUsersIn = kind !== 'service';
+    const keys = describeJwks(client.jwks ?? undefined);
+    const offline = client.scope.includes('offline_access');
+    const logoutUris = [client.frontChannelLogoutUri, client.backChannelLogoutUri].filter(Boolean) as string[];
+    const par = locks.par.locked && !locks.par.value ? 'Not used' : client.requirePushedAuthorizationRequests ? 'Pushed through edge (PAR)' : 'Not required';
+    const jar = locks.jar.locked && !locks.jar.value ? 'Not used' : client.requireSignedRequestObject ? 'Required' : 'Not required';
+    const why = (lock: typeof locks.dpop) => (lock.locked ? 'By type' : '');
+    const bindingEditable = [locks.dpop, locks.certificateBound, locks.par, locks.jar].some(lock => !lock.locked);
+
+    return html`
+      ${this.createdSecret && this.canManageSecrets ? html`
+        <div class="card secret-banner">
+          <div class="secret-banner-header">
+            <div>
+              <h3 class="secret-banner-title">${secretTitle}</h3>
+              <p class="secret-banner-text">${secretText}</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click=${this.dismissCreatedSecret}>Dismiss</button>
           </div>
+          ${this.createdSecret.secret ? html`
+            <pre class="secret-value">${this.createdSecret.secret}</pre>
+            <div class="secret-banner-actions">
+              <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
+              ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+            </div>
+          ` : ''}
         </div>
-      ` : this.filteredClients.length === 0 ? html`
-        <div class="search-bar">
-          <input class="form-input" type="search" aria-label="Search clients" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search clients by client ID" />
-        </div>
-        <div class="card">
-          <div class="empty-state">
-            <h3>No clients match your search</h3>
-          </div>
+      ` : ''}
+
+      <versola-record-header
+        .crumbs=${[{ label: 'Clients', onSelect: () => this.closeView() }, { label: getLocalizedDescription(client.clientName) }]}
+        .heading=${getLocalizedDescription(client.clientName)}
+        .recordId=${client.id}
+        idLabel="client ID"
+        .meta=${html`
+          <span class="chip">${descriptor ? this.kindIcon(kind) : ''}${descriptor?.name ?? 'Client'}</span>
+          ${this.partnerChip(client)}
+          ${this.securityChip(client)}
+          ${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}
+          ${client.createdAt ? html`<span class="muted created">${this.createdAgo(client.createdAt)}</span>` : ''}
+        `}
+      ></versola-record-header>
+
+      ${conformance.conformant ? html`
+        <div class="banner ok" role="status">
+          <div class="banner-title">${this.icon('shield')}Meets FAPI 2.0</div>
+          <ul>${posture.map(check => html`<li>${this.icon('check')}${check.text}</li>`)}</ul>
         </div>
       ` : html`
-        <div>
-          <div class="search-bar">
-            <input class="form-input" type="search" aria-label="Search clients" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search clients by client ID" />
-          </div>
-          ${this.filteredClients.map(client => {
-            const isExpanded = this.expandedClients.has(client.id);
-            return html`
-              <div class="client-card">
-                <div class="client-header" @click=${() => this.toggleExpand(client.id)}>
-                  <div class="client-info">
-                    <div class="client-name">
-                      ${getLocalizedDescription(client.clientName)}
-                      <span class="badge ${client.clientType === 'native' ? 'badge-native' : 'badge-web'}">${client.clientType === 'native' ? 'Native' : 'Web'}</span>
-                      ${client.hasPreviousSecret ? html`
-                        <span class="badge badge-warning">Secret Rotation</span>
-                      ` : ''}
-                    </div>
-                    <div class="client-id">${client.id}</div>
-                  </div>
-
-                  ${this.canManage ? html`
-                  <div class="client-actions" @click=${(e: Event) => e.stopPropagation()}>
-                    <button
-                      type="button"
-                      class="icon-action"
-                      aria-label=${`Edit client ${client.id}`}
-                      @click=${() => this.handleEditClick(client)}
-                      ?disabled=${this.isPreparingForm}
-                      title="Edit"
-                    >
-                      ✎
-                    </button>
-                    <button
-                      type="button"
-                      class="icon-action danger"
-                      aria-label=${`Delete client ${client.id}`}
-                      @click=${() => this.handleDeleteClick(client)}
-                      title="Delete"
-                    >
-                      ✕
-                    </button>
-                  </div>` : ''}
-                </div>
-
-                ${isExpanded ? html`
-                  <div class="client-body">
-                    <div class="details-grid">
-                      <div class="detail-section">
-                        <div class="detail-label">Redirect URIs</div>
-                        <div class="uri-list">
-                          ${client.redirectUris.map(uri => html`
-                            <div class="uri-item">${uri}</div>
-                          `)}
-                        </div>
-                      </div>
-
-                      <div class="detail-section">
-                        <div class="detail-label">OAuth Scopes</div>
-                        <div class="tag-list">
-                          ${client.scope.map(s => html`
-                            <span class="tag">${s}</span>
-                          `)}
-                        </div>
-                      </div>
-
-                      <div class="detail-section">
-                        <div class="detail-label">Permissions</div>
-                        <div class="tag-list">
-                          ${client.permissions.map(p => html`
-                            <span class="tag">${p}</span>
-                          `)}
-                        </div>
-                      </div>
-
-                      <div class="detail-section">
-                        <div class="detail-label">Access Token TTL</div>
-                        <div class="detail-value">${formatDuration(client.accessTokenTtl)}</div>
-                      </div>
-
-                      ${client.scope.includes('offline_access') ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Refresh Token TTL</div>
-                          <div class="detail-value">${formatDuration(client.refreshTokenTtl ?? 180 * 24 * 60 * 60)}</div>
-                        </div>
-                      ` : ''}
-
-                    </div>
-
-                    ${this.renderAuthFlowSection(client)}
-                    ${this.renderAuthorizationPresets(client)}
-                  </div>
-                ` : ''}
-              </div>
-            `;
-          })}
+        <div class="banner info" role="status">
+          <div class="banner-title">Standard profile client, not FAPI 2.0</div>
+          <ul>${conformance.gaps.map(gap => html`<li>${this.icon('x')}${gap.problem ?? gap.text}</li>`)}</ul>
+          <p>How a client authenticates is fixed when it is created. To meet FAPI 2.0, create a new client of this type and move traffic to it.</p>
         </div>
       `}
+
+      ${this.viewSection('Type', 'Chosen at creation and never changed.', null, client, html`
+        ${this.viewRow('Kind', html`${descriptor?.name}. ${descriptor?.blurb}`)}
+        ${this.viewRow('Authenticates with', credentialLabel(client), 'Fixed at creation')}
+      `)}
+
+      ${this.viewSection('Token binding and requests', bindingEditable ? 'What this client\'s type leaves to you.' : 'Set by the type of client.', bindingEditable || deviations ? 'type' : null, client, html`
+        ${this.viewRow('Token binding', this.tokenBinding(client), why(locks.dpop.locked ? locks.dpop : locks.certificateBound))}
+        ${this.viewRow('Authorization requests', par, why(locks.par))}
+        ${this.viewRow('Request signing (JAR)', html`<span class="muted">${jar}</span>`, why(locks.jar))}
+        ${deviations && this.canManage ? html`
+          <versola-record-row .value=${html`<div class="deviation">Some of these differ from what this type requires.
+              <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSection(client, 'type')}>Review</button></div>`}
+          ></versola-record-row>` : ''}
+      `)}
+
+      ${this.viewSection('General', '', 'general', client, html`
+        ${this.viewRow('Name', getLocalizedDescription(client.clientName))}
+        ${signsUsersIn ? this.viewRow('Redirect URIs', client.redirectUris.length
+          ? html`<div class="uri-list">${client.redirectUris.map(uri => html`<div class="uri-item">${uri}</div>`)}</div>` : '—') : ''}
+      `)}
+
+      ${this.viewSection(accessSectionTitle(kind), '', 'access', client, html`
+        ${signsUsersIn ? this.viewRow('Scopes', client.scope.length ? html`<div class="tag-list">${client.scope.map(scope => html`<span class="tag">${scope}</span>`)}</div>` : '—') : ''}
+        ${signsUsersIn ? '' : this.viewRow('Permissions', client.permissions.length ? html`<div class="tag-list">${client.permissions.map(permission => html`<span class="tag">${permission}</span>`)}</div>` : '—')}
+      `)}
+
+      ${signsUsersIn ? this.viewSection('Sign-in', '', 'signin', client, html`
+        <div class="view-flow">
+          ${client.authFlow ? this.renderAuthFlow(client.authFlow) : html`<div class="muted">No sign-in flow configured.</div>`}
+        </div>
+      `) : ''}
+
+      ${this.viewSection('Tokens', '', 'tokens', client, html`
+        ${this.viewRow('Access token', formatDuration(client.accessTokenTtl))}
+        ${offline && signsUsersIn
+          ? this.viewRow('Refresh token', `${formatDuration(client.refreshTokenTtl ?? 180 * 24 * 60 * 60)}, counted from login`)
+          : this.viewRow('Refresh token', html`<span class="muted">Not issued</span>`,
+              signsUsersIn ? 'Needs offline_access' : 'By type')}
+        ${client.dpopBoundAccessTokens ? this.viewRow('DPoP proof keys', (client.dpopSigningAlgs ?? []).length ? (client.dpopSigningAlgs ?? []).join(', ') : 'Any the server accepts') : ''}
+      `)}
+
+      ${hasKeys ? this.viewSection('Keys', 'Public keys the client signs with', 'keys', client, html`
+        ${keys.length === 0 ? this.viewRow('Key set', '—') : keys.map(key => this.viewRow(
+          key.kind, html`<span class="mono">${key.kid ? `kid ${key.kid}` : 'no kid'}${key.alg ? ` · ${key.alg}` : ''}</span>`))}
+      `) : ''}
+
+      ${client.authMethod === 'client_secret' && this.canManageSecrets ? this.viewSection('Client secret', '', null, client, html`
+        ${this.viewRow('Secret', 'Set. It is shown once, when it is created or rotated.')}
+        <versola-record-row .value=${client.hasPreviousSecret
+              ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleDeletePreviousSecret(new CustomEvent('x', { detail: { clientId: client.id, clientName: getLocalizedDescription(client.clientName) } }))}>Delete old secret</button>`
+              : html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRotateSecret(new CustomEvent('x', { detail: { clientId: client.id, clientName: getLocalizedDescription(client.clientName) } }))}>Rotate secret</button>`}
+        ></versola-record-row>
+      `, '') : ''}
+
+      ${signsUsersIn ? this.viewSection('Ownership', '', 'registration', client, html`
+        ${this.viewRow('Ownership', client.consentFlow ? 'Partner app (users are asked for consent, cannot be turned off)' : 'First party app (no consent prompt)')}
+      `) : ''}
+
+      ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`
+        ${this.viewRow('Forms theme', client.theme ?? 'default')}
+        ${client.consentFlow ? this.viewRow('Appearance for this app', themeOverridesSummary(client.themeOverrides)) : ''}
+        ${this.viewRow('Logout', logoutUris.length
+          ? html`<div class="uri-list">${logoutUris.map(uri => html`<div class="uri-item">${uri}</div>`)}</div>` : 'None')}
+      `) : ''}
+
+      ${signsUsersIn ? html`<section class="card presets-card" aria-label="Authorization presets">${this.renderAuthorizationPresets(client)}</section>` : ''}
+
+      ${this.canManage ? html`
+        <versola-danger-card heading="Delete client" text="Sessions end and tokens stop working. This can't be undone."
+          actionLabel="Delete client" .actionAriaLabel=${`Delete client ${client.id}`}
+          @action=${() => this.handleDeleteClick(client)}></versola-danger-card>` : ''}
     `;
   }
 
@@ -1331,122 +1560,6 @@ export class VersolaClientsList extends LitElement {
           >
             ${this.isSavingPresets ? 'Saving...' : 'Save Presets'}
           </button>
-        </div>
-      </div>
-    `;
-  }
-
-  private toggleFlowsExpand(clientId: string) {
-    const newExpanded = new Set(this.expandedFlows);
-    if (newExpanded.has(clientId)) {
-      newExpanded.delete(clientId);
-    } else {
-      newExpanded.add(clientId);
-    }
-    this.expandedFlows = newExpanded;
-  }
-
-  private renderAuthFlowSection(client: OAuthClient) {
-    const isFlowsExpanded = this.expandedFlows.has(client.id);
-
-    return html`
-      <div class="presets-section">
-        <div class="presets-header" @click=${() => this.toggleFlowsExpand(client.id)}>
-          <div class="presets-title">
-            <span class="expand-icon">${isFlowsExpanded ? '▼' : '▶'}</span>
-            Authorization Flows
-          </div>
-        </div>
-
-        ${isFlowsExpanded ? html`
-          <div class="presets-body auth-flow-body">
-            ${client.authFlow ? this.renderAuthFlow(client.authFlow) : html`
-              <div class="empty-presets">
-                No authorization flow configured. This client cannot be used for interactive authentication.
-              </div>
-            `}
-            ${this.renderAuthFlowSettings(client)}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  private renderAuthFlowSettings(client: OAuthClient) {
-    const flow = client.authFlow;
-    if (!flow) return '';
-
-    const hasOtp = flow.factors.some(factor => factor.type === 'otp')
-      || (flow.passkeyFactors ?? []).some(factor => factor.type === 'otp');
-    const otpChannel = flow.primaryCredentials.includes('email')
-      ? 'email'
-      : flow.primaryCredentials.includes('phone')
-        ? 'sms'
-        : flow.otpType;
-    const logoutMode = client.frontChannelLogoutUri
-      ? 'front-channel'
-      : client.backChannelLogoutUri
-        ? 'back-channel'
-        : 'none';
-
-    return html`
-      <div class="auth-flow-settings">
-        <div class="auth-flow-settings-list">
-          <div class="auth-flow-setting-row">
-            <div class="auth-flow-setting-label">Forms Theme</div>
-            <div class="auth-flow-setting-value">${client.theme ?? 'default'}</div>
-          </div>
-
-          <div class="auth-flow-setting-row">
-            <div class="auth-flow-setting-label">Redirect URIs</div>
-            <div class="auth-flow-setting-value">
-              ${client.redirectUris.length > 0 ? html`
-                <div class="uri-list">
-                  ${client.redirectUris.map(uri => html`<div class="uri-item">${uri}</div>`)}
-                </div>
-              ` : '—'}
-            </div>
-          </div>
-
-          ${hasOtp ? html`
-            <div class="auth-flow-setting-row">
-              <div class="auth-flow-setting-label">OTP Settings</div>
-              <div class="auth-flow-setting-value auth-flow-setting-stack">
-                <div class="auth-flow-setting-detail">
-                  <div class="auth-flow-setting-detail-label">Template</div>
-                  <div>${client.otpTemplateId || 'default'}</div>
-                </div>
-                <div class="auth-flow-setting-detail">
-                  <div class="auth-flow-setting-detail-label">Channel</div>
-                  <div>${otpChannel}</div>
-                </div>
-              </div>
-            </div>
-          ` : ''}
-
-          ${client.dpopBoundAccessTokens ? html`
-            <div class="auth-flow-setting-row">
-              <div class="auth-flow-setting-label">DPoP</div>
-              <div class="auth-flow-setting-value">Access tokens are always key-bound</div>
-            </div>
-          ` : ''}
-
-          <div class="auth-flow-setting-row">
-            <div class="auth-flow-setting-label">Logout Settings</div>
-            <div class="auth-flow-setting-value auth-flow-setting-stack">
-              <div>${logoutMode}</div>
-              ${client.frontChannelLogoutUri ? html`
-                <div class="uri-item">${client.frontChannelLogoutUri}</div>
-                <div class="logout-session-note">
-                  <span class="logout-claim-key">iss</span> and <span class="logout-claim-key">sid</span>
-                  ${client.frontChannelLogoutSessionRequired ? ' included' : ' not included'}
-                </div>
-              ` : ''}
-              ${client.backChannelLogoutUri ? html`
-                <div class="uri-item">${client.backChannelLogoutUri}</div>
-              ` : ''}
-            </div>
-          </div>
         </div>
       </div>
     `;

@@ -17,11 +17,9 @@
 #      host's network with auth/edge like it does in prod.
 #
 # central-ui isn't an upstream at all, here or in prod: it's static files
-# nginx serves directly. Locally that means this nginx IS
-# ghcr.io/versolauth/versola-gateway (see docker/Dockerfile.gateway in the
-# versola repo), which already has central-ui's build baked in at
-# /usr/share/nginx/html/central/admin -- the location block below just
-# needs a matching `root`, no proxy, no separate container.
+# nginx serves directly. (versola-gateway, which used to bake the build into
+# the nginx image at /usr/share/nginx/html/central/admin, is no longer
+# published: the bundle's central-ui/ is mounted there instead.)
 #
 # central itself has no upstream here, same as prod -- the admin console
 # talks to it only through edge's /resources/central/* proxy below.
@@ -50,7 +48,7 @@ server {
     # Everything proxied below carries the same headers from the services themselves (see
     # SecurityHeaders.scala). nginx drops a server-level add_header in any location that sets its
     # own, so the console location repeats them. No HSTS here: this listener is plain http; the
-    # TLS terminator in production sets it (deploy.md 3.7).
+    # TLS terminator in production sets it (deploy.md, "Behind an existing web server").
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer" always;
     add_header X-Frame-Options "DENY" always;
@@ -79,7 +77,7 @@ server {
     # `root` (not `alias`): the request path /central/admin/... is appended
     # as-is to /usr/share/nginx/html, landing on
     # /usr/share/nginx/html/central/admin/... -- exactly where
-    # Dockerfile.gateway copies central-ui's dist/, and exactly what
+    # the bundle's central-ui/ is mounted, and exactly what
     # vite.config.ts bakes into every asset URL in dist/index.html. No
     # rewrite, no separate container.
     location /central/admin/ {

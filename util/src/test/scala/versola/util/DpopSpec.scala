@@ -229,6 +229,27 @@ object DpopSpec extends ZIOSpecDefault:
       for result <- verify(token).either
       yield assertTrue(result.isRight)
     },
+    // RFC 9449 §4.3 step 9 / RFC 3986 §6.2.2-6.2.3.
+    test("accepts an htu whose scheme and host differ from the request's only in case") {
+      val token = proof(htu = "HTTPS://Auth.Example.COM/token")
+      for result <- verify(token).either
+      yield assertTrue(result.isRight)
+    },
+    test("accepts an htu that spells out the default port of its scheme") {
+      val token = proof(htu = "https://auth.example.com:443/token")
+      for result <- verify(token).either
+      yield assertTrue(result.isRight)
+    },
+    test("rejects an htu on another port than the request's") {
+      val token = proof(htu = "https://auth.example.com:8443/token")
+      for result <- verify(token).either
+      yield assertTrue(result == Left(Dpop.Error.UriMismatch))
+    },
+    test("does not fold the case of the path") {
+      val token = proof(htu = "https://auth.example.com/Token")
+      for result <- verify(token).either
+      yield assertTrue(result == Left(Dpop.Error.UriMismatch))
+    },
     test("still rejects a different path once the query string is stripped") {
       val token = proof(htu = "https://auth.example.com/other?foo=bar")
       for result <- verify(token).either

@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.cel.CelEvaluator
-import versola.util.{Secret, SecureRandom, SecurityService}
+import versola.util.{ConfigSnapshot, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, TestClient, URL}
 import zio.test.*
@@ -35,7 +35,7 @@ object ConfigurationSourceSpec extends ZIOSpecDefault:
 
   private def build(config: EdgeConfig): ZIO[Scope & Client, Throwable, ZEnvironment[ConfigurationSource]] =
     ConfigurationSource.live.build.provideSomeLayer[Scope & Client](
-      ZLayer.succeed(config) ++ (SecureRandom.live >>> SecurityService.live) ++ CelEvaluator.live,
+      ZLayer.succeed(config) ++ (SecureRandom.live >>> SecurityService.live) ++ CelEvaluator.live ++ ZLayer.succeed(ConfigSnapshot.disabled),
     )
 
   def spec = suite("ConfigurationSource")(
@@ -50,6 +50,7 @@ object ConfigurationSourceSpec extends ZIOSpecDefault:
         source.get[DpopAlgorithmsSyncClient].isInstanceOf[DpopAlgorithmsSyncClient.Impl],
         source.get[DpopPolicySyncClient].isInstanceOf[DpopPolicySyncClient.Impl],
         source.get[JwksSyncClient].isInstanceOf[JwksSyncClient.Impl],
+        source.get[OverloadPolicySyncClient].isInstanceOf[OverloadPolicySyncClient.Impl],
       )
     },
     test("partner is refused as not implemented, the same way the configuration is") {

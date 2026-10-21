@@ -303,7 +303,6 @@ object ClientCertificateService:
         refreshTokenTtl = None,
         theme = None,
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = None,
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = None,
@@ -324,6 +323,7 @@ object ClientCertificateService:
         edgeSigningKey = None,
         edgeClientCertificate = Some(Patch.Modified(certificate)),
         applicationType = None,
+        themeOverrides = None,
       )
 
   /** Renews on a schedule for as long as the application runs; a no-op where no CA is configured. */

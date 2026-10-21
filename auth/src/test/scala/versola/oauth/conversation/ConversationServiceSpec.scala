@@ -156,7 +156,6 @@ object ConversationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = Some(registrationFlow),
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -174,10 +173,10 @@ object ConversationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val consentingClient = registrationClient.copy(
-    registrationFlow = None,
     consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
   )
 
@@ -188,8 +187,9 @@ object ConversationServiceSpec extends UnitSpecBase:
   private val requestedScope = conversationRecord.scope
 
   /** Everything `issueCode` reaches for, so consent tests can assert on what it was handed. */
-  private def issueCodeStubs(env: Env) =
+  private def issueCodeStubs(env: Env, vocabulary: Map[Acr, NonEmptyList[PassedAuthFactor]] = Map.empty) =
     for
+      _ <- env.configService.getAcrVocabulary.succeedsWith(vocabulary)
       _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode.fromString("code"))
       _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(SessionId.fromString("session"))
       _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(
@@ -207,6 +207,12 @@ object ConversationServiceSpec extends UnitSpecBase:
       _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
       _ <- env.userAgentRepository.create.succeedsWith(())
     yield ()
+
+  private val passkeyAcr = Acr("passkey-level")
+  private val passkeyVocabulary = Map(passkeyAcr -> NonEmptyList(PassedAuthFactor.passkey))
+  private val acrNow = Instant.parse("2026-07-13T10:00:00Z")
+  private def passedFactor(factor: PassedAuthFactor) = factor -> PassedFactorRecord(acrNow, Set(AuthMethodRef.otp))
+  private val pursuingPasskey = consentedRecord.copy(userId = Some(userId), targetAcr = Some(passkeyAcr))
 
   def spec = suite("ConversationService")(
     // Covers ConversationService.live (the ZLayer.fromFunction wiring): every other test builds
@@ -356,7 +362,9 @@ object ConversationServiceSpec extends UnitSpecBase:
           credential = Some(Left(email)),
           registrationStep = Some(1),
         )
-        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
+        val flagged = Json.Obj("email_verified" -> Json.Bool(true))
+        // register returns the account with the claim already set by its own INSERT
+        val newUser = UserRecord(userId, Some(email), None, None, flagged, None)
         for
           _ <- env.configService.get.succeedsWith(registrationClient)
           _ <- env.userService.register.succeedsWith(newUser)
@@ -367,7 +375,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             pending.copy(
               userId = Some(userId),
               userEmail = Some(email),
-              userClaims = Some(Json.Obj()),
+              userClaims = Some(flagged),
               version = pending.version + 1,
             ),
           ),
@@ -441,6 +449,56 @@ object ConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("finish")(
+      suite("target ACR")(
+        test("denies the code when the factors passed do not cover the ACR pursued") {
+          val env = Env()
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, passkeyVocabulary)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            result <- env.service.finish(authId, pursuingPasskey.copy(amr = Map(passedFactor(PassedAuthFactor.otp))))
+          yield assertTrue(
+            result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+            env.authorizationCodeRepository.create.calls.isEmpty,
+            env.sessionRepository.create.calls.isEmpty,
+          )
+        },
+        test("denies the code when the ACR is no longer in the vocabulary") {
+          val env = Env()
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, Map.empty)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            result <- env.service.finish(authId, pursuingPasskey.copy(amr = Map(passedFactor(PassedAuthFactor.passkey))))
+          yield assertTrue(
+            result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+            env.authorizationCodeRepository.create.calls.isEmpty,
+          )
+        },
+        test("issues the code, carrying the ACR, once a passkey was passed") {
+          val env = Env()
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, passkeyVocabulary)
+            result <- env.service.finish(authId, pursuingPasskey.copy(amr = Map(passedFactor(PassedAuthFactor.passkey))))
+          yield assertTrue(
+            result.isInstanceOf[ConversationResult.Complete],
+            env.authorizationCodeRepository.create.calls.head._2.acr == Some(passkeyAcr),
+          )
+        },
+        test("counts a factor the flow lists as equivalent") {
+          val env = Env()
+          val equivalent = AuthFlow.default.copy(equivalents = Map(PassedAuthFactor.password -> Set(PassedAuthFactor.passkey)))
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, passkeyVocabulary)
+            result <- env.service.finish(
+              authId,
+              pursuingPasskey.copy(authFlow = equivalent, amr = Map(passedFactor(PassedAuthFactor.password))),
+            )
+          yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+        },
+      ),
       test("denies access when the conversation never resolved a user") {
         val env = Env()
         for
@@ -540,6 +598,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
@@ -555,6 +614,41 @@ object ConversationServiceSpec extends UnitSpecBase:
             assertTrue(c == code) &&
             assertTrue(s == sessionId)
           case _ => assertTrue(false)
+      },
+      test("the ID token of a hybrid flow reports the claims the conversation carries, verified ones included") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          scope = Set(ScopeToken.OpenId, ScopeToken("email")),
+          grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("email"))),
+          responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+          userClaims = Some(Json.Obj("email_verified" -> Json.Bool(true))),
+        )
+        val mac = MAC(Array.fill(32)(1.toByte))
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode.fromString("code"))
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(SessionId.fromString("session"))
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(versola.oauth.session.model.PublicSessionId("public-session"))
+          _ <- env.securityService.mac.succeedsWith(mac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(AccessToken.fromString("token"))
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
+          _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+          _ <- env.service.finish(authId, record)
+        yield assertTrue(
+          env.userInfoService.getUserInfoForIdToken.calls.map(_._1.claims.fields.toMap.get("email_verified")) == List(Some(Json.Bool(true))),
+        )
       },
       test("creates new session and issues cookie during step-up") {
         val env = Env()
@@ -581,6 +675,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             case 2 => ZIO.succeed(codeMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
@@ -624,6 +719,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             case 2 => ZIO.succeed(codeMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
@@ -668,6 +764,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
@@ -712,6 +809,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
@@ -943,6 +1041,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(None)

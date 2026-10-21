@@ -80,13 +80,13 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           str(body, "tenantId") == tenantId,
           str(body, "id") == webClient.clientId,
           str(body, "authMethod") == "client_secret",
-          str(body, "applicationType") == "web",
+          state.clients(webClient.clientId).kind == "web",
           strings(body, "redirectUris").toSet == webClient.redirectUris,
           strings(body, "allowedScopes").toSet == webClient.allowedScopes,
           num(body, "accessTokenTtl").contains(BigDecimal(900)),
           num(body, "refreshTokenTtl").contains(BigDecimal(15552000)),
           field(body, "authFlow").contains(webClient.authFlow),
-          field(body, "registrationFlow") == webClient.registrationFlow,
+          field(body, "registrationFlow").isEmpty,
           optionalStr(body, "backChannelLogoutUri") == webClient.backChannelLogoutUri,
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-0")),
         )
@@ -100,8 +100,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           _ <- admin.registerClient(webClient)
           state <- fake.snapshot
           create = state.clients(webClient.clientId).spec
-          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
-          posted = parse(state.callsTo(Method.POST, "/configuration/clients").head.body)
+          update = parse(state.clientCalls(Method.PUT).head.body)
+          posted = parse(state.clientCalls(Method.POST).head.body)
         yield assertTrue(
           bool(create, "certificateBoundAccessTokens").contains(false),
           field(create, "dpopSigningAlgs").contains(Json.Arr()),
@@ -111,7 +111,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           // Create-only: the update DTO has no such member, so it is read from the POST itself.
           bool(posted, "issueEdgeClientCertificate").contains(false),
           bool(posted, "enrollEdgeClientCertificate").contains(false),
-          str(create, "applicationType") == "web",
+          state.clients(webClient.clientId).kind == "web",
           // Written on the update too, so a client left bound by a previous configuration is
           // converged rather than left holding a setting the campaign cannot satisfy.
           bool(update, "certificateBoundAccessTokens").contains(false),
@@ -119,7 +119,6 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           bool(update, "dpopBoundAccessTokens").contains(false),
           bool(update, "requireSignedRequestObject").contains(false),
           bool(update, "requirePushedAuthorizationRequests").contains(false),
-          str(update, "applicationType") == "web",
         )
       },
       // #535: what a FAPI 2.0 tenant admits. The mobile client is native, fronted by edge and
@@ -135,25 +134,61 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           mobileCreds <- admin.registerClient(mobile)
           _ <- admin.registerClient(mobile)
           state <- fake.snapshot
-          webBody = parse(state.callsTo(Method.POST, "/configuration/clients").head.body)
-          mobileBody = parse(state.callsTo(Method.POST, "/configuration/clients").last.body)
-          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          webBody = parse(state.clientCalls(Method.POST).head.body)
+          mobileBody = parse(state.clientCalls(Method.POST).last.body)
+          update = parse(state.clientCalls(Method.PUT).head.body)
         yield assertTrue(
           str(webBody, "authMethod") == "tls_client_auth",
           str(mobileBody, "authMethod") == "tls_client_auth",
           bool(webBody, "issueEdgeClientCertificate").contains(true),
           bool(mobileBody, "issueEdgeClientCertificate").contains(true),
           bool(webBody, "requirePushedAuthorizationRequests").contains(true),
-          bool(mobileBody, "requirePushedAuthorizationRequests").contains(true),
-          str(webBody, "applicationType") == "web",
-          str(mobileBody, "applicationType") == "native",
+          state.clients(web.clientId).kind == "web",
+          state.clients(mobile.clientId).kind == "device",
           bool(webBody, "dpopBoundAccessTokens").contains(false),
-          bool(mobileBody, "dpopBoundAccessTokens").contains(true),
+          // Edge's certificate is what a web client's tokens are bound to.
+          bool(webBody, "certificateBoundAccessTokens").contains(true),
+          // What edge's authentication fixes for a device -- its DPoP key, PAR -- is central's to
+          // set: the native endpoint has no member for either, and refuses a body that names one.
+          field(mobileBody, "dpopBoundAccessTokens").isEmpty,
+          field(mobileBody, "requirePushedAuthorizationRequests").isEmpty,
+          field(mobileBody, "certificateBoundAccessTokens").isEmpty,
           webCreds == ClientCreds(web.clientId, None),
           mobileCreds == ClientCreds(mobile.clientId, None),
-          bool(update, "dpopBoundAccessTokens").contains(true),
-          bool(update, "requirePushedAuthorizationRequests").contains(true),
+          field(update, "dpopBoundAccessTokens").isEmpty,
+          field(update, "requirePushedAuthorizationRequests").isEmpty,
           state.callsTo(Method.POST, "/configuration/clients/rotate-secret").isEmpty,
+        )
+      },
+      // A client's kind is fixed when it is registered: one a previous configuration made as
+      // another kind is named, rather than left to answer a conflict on every `provision`.
+      test("refuses to adopt a client registered as another kind, saying which") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerClient(webClient)
+          error <- admin.registerClient(webClient.copy(publicClient = true)).flip
+          state <- fake.snapshot
+        yield assert(error)(
+          isSubtype[AdminCallFailed](
+            hasField[AdminCallFailed, Status]("status", _.status, equalTo(Status.Conflict)) &&
+              hasField[AdminCallFailed, String]("body", _.body, containsString("registered as a web client")),
+          ),
+        ) && assertTrue(state.clientCalls(Method.PUT).isEmpty)
+      },
+      // The stand-in refuses a member the kind's request does not declare, as central does, so a
+      // registration and an update of each kind going through is the proof none was named.
+      test("registers and updates each kind with only the members its request declares") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerClient(passkeyClient)
+          _ <- admin.registerClient(passkeyClient)
+          _ <- admin.registerClient(webClient)
+          _ <- admin.registerClient(webClient)
+          state <- fake.snapshot
+        yield assertTrue(
+          state.clientCalls(Method.POST).map(_.path) == Chunk("/configuration/clients/native", "/configuration/clients/web"),
+          state.clientCalls(Method.PUT).map(_.path) == Chunk("/configuration/clients/native", "/configuration/clients/web"),
+          state.callsTo(Method.POST, "/configuration/clients").isEmpty,
         )
       },
       test("marks a mobile client public and carries no secret back") {
@@ -164,7 +199,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           body = state.clients(passkeyClient.clientId).spec
         yield assertTrue(
           str(body, "authMethod") == "none",
-          str(body, "applicationType") == "native",
+          state.clients(passkeyClient.clientId).kind == "device",
           field(body, "registrationFlow").isEmpty,
           creds == ClientCreds(passkeyClient.clientId, None),
         )
@@ -179,8 +214,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state <- fake.snapshot
         yield assertTrue(
           second == ClientCreds(webClient.clientId, Some("secret-web-otp-1")),
-          state.callsTo(Method.POST, "/configuration/clients").size == 1,
-          state.callsTo(Method.PUT, "/configuration/clients").size == 1,
+          state.clientCalls(Method.POST).size == 1,
+          state.clientCalls(Method.PUT).size == 1,
           state.callsTo(Method.POST, "/configuration/clients/rotate-secret").size == 1,
         )
       },
@@ -193,7 +228,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         yield assertTrue(
           second == ClientCreds(passkeyClient.clientId, None),
           state.callsTo(Method.POST, "/configuration/clients/rotate-secret").isEmpty,
-          state.callsTo(Method.PUT, "/configuration/clients").size == 1,
+          state.clientCalls(Method.PUT).size == 1,
         )
       },
       // Central's cached client listing can be stale, so a create can still lose the race -- the
@@ -206,29 +241,29 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state <- fake.snapshot
         yield assertTrue(
           // Both runs see an empty listing and try to create; the second is told it lost.
-          state.callsTo(Method.POST, "/configuration/clients").size == 2,
-          state.callsTo(Method.PUT, "/configuration/clients").size == 1,
+          state.clientCalls(Method.POST).size == 2,
+          state.clientCalls(Method.PUT).size == 1,
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-1")),
         )
       },
       // A patchable field is cleared by an explicit null and left alone by omission, so a client
-      // that carried a registration flow the campaign no longer wants must be sent one.
-      test("clears a dropped registration flow and logout URI rather than omitting them") {
+      // that carried a logout URI the campaign no longer wants must be sent one.
+      test("clears a dropped logout URI rather than omitting it") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(passkeyClient)
           _ <- admin.registerClient(passkeyClient)
           state <- fake.snapshot
-          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          update = parse(state.clientCalls(Method.PUT).head.body)
         yield assertTrue(
-          field(update, "registrationFlow").contains(Json.Null),
+          field(update, "registrationFlow").isEmpty,
           field(update, "backChannelLogoutUri").contains(Json.Null),
         )
       },
       // The multi-value fields are patched, not replaced, so a redirect URI or scope the
       // blueprint narrowed away stays active on central unless the update names it -- an
       // obsolete OAuth redirect target surviving every re-run.
-      test("takes away a redirect URI, scope and permission the blueprint no longer wants") {
+      test("takes away a redirect URI and a scope the blueprint no longer wants") {
         val widened = webClient.copy(
           redirectUris = webClient.redirectUris + "https://bank.example.test/stale",
           allowedScopes = webClient.allowedScopes + "stale:scope",
@@ -236,45 +271,28 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(widened)
-          _ <- fake.grantClientPermissions(webClient.clientId, Set("stale:permission"))
           _ <- admin.registerClient(webClient)
           state <- fake.snapshot
-          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          update = parse(state.clientCalls(Method.PUT).head.body)
           stored = state.clients(webClient.clientId)
         yield assertTrue(
           strings(obj(update, "redirectUris"), "remove") == List("https://bank.example.test/stale"),
           strings(obj(update, "scope"), "remove") == List("stale:scope"),
-          strings(obj(update, "permissions"), "remove") == List("stale:permission"),
+          // A web or mobile client has no permissions of its own: users bring theirs through their roles.
+          field(update, "permissions").isEmpty,
           stored.redirectUris == webClient.redirectUris,
           stored.scopes == webClient.allowedScopes,
-          stored.permissions.isEmpty,
         )
       },
-      // Central validates the roles a registration flow grants while saving the client, so a
-      // pass that wrote the clients before the roles would be rejected outright.
-      test("is refused when the role its registration flow grants does not exist yet") {
-        for
-          fake <- FakeCentral.make()
-          _ <- TestClient.addRoutes(fake.handler.toRoutes)
-          client <- ZIO.service[Client]
-          admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
-          error <- admin.registerClient(webClient).flip
-        yield assert(error)(
-          isSubtype[AdminCallFailed](
-            hasField[AdminCallFailed, String]("operation", _.operation, equalTo("registerClient")) &&
-              hasField[AdminCallFailed, Status]("status", _.status, equalTo(Status.BadRequest)),
-          ),
-        )
-      },
-      test("sends the blueprint's flow as a patch when the client keeps one") {
+      test("patches the blueprint's auth flow and scopes when the client keeps one") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(webClient)
           _ <- admin.registerClient(webClient)
           state <- fake.snapshot
-          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          update = parse(state.clientCalls(Method.PUT).head.body)
         yield assertTrue(
-          field(update, "registrationFlow") == webClient.registrationFlow,
+          field(update, "registrationFlow").isEmpty,
           field(update, "authFlow").contains(webClient.authFlow),
           strings(obj(update, "scope"), "add").toSet == webClient.allowedScopes,
         )
@@ -455,6 +473,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           strings(obj(body, "acrVocabulary"), versola.loadgen.protocol.Acr.OtpLevel) == List("otp"),
           field(obj(body, "submissionLimits"), "banDurationSeconds").isDefined,
           str(body, "securityProfile") == "standard",
+          str(obj(body, "emailRegistration"), "mode") == "open",
+          strings(body, "defaultRoles") == List(CampaignBlueprint.retailUserRoleId),
         )
       },
     ),

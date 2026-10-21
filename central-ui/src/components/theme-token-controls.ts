@@ -1,0 +1,257 @@
+import { LitElement, html, css, nothing } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import { theme } from '../styles/theme';
+import { segmentedStyles } from '../styles/components';
+import type { ResolvedThemeTokens, ThemeBackground, ThemeMode, ThemeOverrides, ThemeShape, ThemeSurface } from '../types';
+
+const HEX = /^#?[0-9a-fA-F]{6}$/;
+// Colours to start from; any #rrggbb can be typed.
+const SWATCHES = ['#ff6b4a', '#e5484d', '#b4348a', '#5b5bd6', '#2563eb', '#0e9f8e', '#2f9e63', '#f5c518', '#14130f'];
+const SHAPES: Array<[ThemeShape, string]> = [['round', 'Round'], ['soft', 'Soft'], ['sharp', 'Sharp']];
+const SURFACES: Array<[ThemeSurface, string, string]> = [
+  ['bold', 'Bold', 'A deep shade of the brand colour behind the card'],
+  ['soft', 'Soft', 'A pale tint of the brand colour'],
+  ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
+];
+const BACKGROUNDS: Array<[ThemeBackground, string, string]> = [
+  ['glow', 'Glow', 'The brand glowing from behind the card (the default look)'],
+  ['linear', 'Linear', 'A soft diagonal wash of the brand colour'],
+  ['horizon', 'Horizon', 'A soft light rising from the bottom edge'],
+  ['flat', 'Flat', 'The plain page colour, no gradient'],
+];
+const MODES: Array<[ThemeMode, string]> = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
+
+const normalize = (hex: string) => (hex.startsWith('#') ? hex : `#${hex}`).toLowerCase();
+
+export interface OverridesChange {
+  overrides: ThemeOverrides;
+  /** The brand colour field holds text that is not a #rrggbb colour. */
+  brandInvalid: boolean;
+}
+
+/**
+ * The five tokens a theme sets (brand colour, page, background, shape, colour scheme) laid over a base: each shows the
+ * base's value until it is overridden, then an "Overridden" badge with a Reset. Used for the theme itself
+ * (the base is a built-in theme) and for a client's own overrides (the base is the theme the client uses).
+ * It owns no state beyond the colour field's text: the overrides come in as a property and go out as an
+ * `overrides-change` event.
+ */
+@customElement('versola-theme-token-controls')
+export class VersolaThemeTokenControls extends LitElement {
+  /** What the tokens are without any override: the values shown as inherited. */
+  @property({ attribute: false }) base?: ResolvedThemeTokens;
+  /** The base is a stylesheet, whose values are not known here (`base` is then not used). Nothing is shown as
+   *  inherited, and every choice is written as an override even when it matches some preset: an override equal to
+   *  a value the stylesheet may not have would otherwise be dropped. */
+  @property({ type: Boolean }) stylesheet = false;
+  @property({ attribute: false }) overrides: ThemeOverrides = {};
+  /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
+  @property({ type: String }) inheritedNote = '';
+  /** Each token is a row divided from the next by a line (the theme editor's Look card). */
+  @property({ type: Boolean, reflect: true }) ruled = false;
+  /** The scheme the preview next to the controls shows, which the background thumbnails are drawn in. Without one the
+   *  dark scheme is drawn unless the scheme is fixed to light. */
+  @property({ type: String }) scheme: 'light' | 'dark' | '' = '';
+
+  @state() private brandText = '';
+
+  willUpdate(changed: Map<string, unknown>) {
+    if (!changed.has('overrides')) return;
+    const own = this.overrides.brand;
+    const text = this.brandText.trim();
+    if (own !== undefined) {
+      if (!HEX.test(text) || normalize(text) !== own) this.brandText = own;
+    } else if (HEX.test(text) && normalize(text) !== this.base?.brand) {
+      // Cleared from outside (Reset, Clear overrides, another theme). A colour typed that equals the base's stays:
+      // it is no override, but it is what the operator typed.
+      this.brandText = '';
+    }
+  }
+
+  /** Empties the colour field, for a "Clear overrides" kept outside the controls (it would leave unparsable text). */
+  clearBrandText() {
+    this.brandText = '';
+  }
+
+  static styles = [
+    theme,
+    segmentedStyles,
+    css`
+      :host { display: block; }
+      .field-label { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 0.5rem; white-space: nowrap; }
+      .hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.5rem; }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--field); border: 1.5px solid var(--border-input); border-radius: var(--radius-md); font-size: var(--text-base); color: var(--text-primary); box-sizing: border-box; }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
+      .group + .group { margin-top: var(--spacing-lg); }
+      :host([ruled]) .group + .group { margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-subtle); }
+      .group-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 var(--spacing-sm); }
+      .field-label { display: flex; align-items: center; gap: 0.375rem; }
+      .dot-overridden { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); }
+      .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
+      .reset { font: inherit; font-size: var(--text-sm); color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
+
+      .seg-control { gap: 0.375rem; }
+
+      .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-default); cursor: pointer; padding: 0; }
+      .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
+      .swatch:focus-visible, .bg-card:focus-visible, .reset:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+      .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
+      .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
+      .hex-row .bad { color: var(--danger-text); font-size: var(--text-sm); }
+      /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
+         repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
+         --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
+         They follow the scheme property (the preview's), else the dark scheme unless the scheme is fixed to light. */
+      .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
+      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
+      .bg-card:hover { border-color: var(--text-secondary); }
+      .bg-card.sel { border-color: var(--text-primary); background: var(--surface-inset); }
+      .bg-card b { display: block; font-size: var(--text-sm); margin-top: 0.3125rem; }
+      .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
+      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 9%, #f6f4ef); --lin: 34%; --hor: 36%; --glow-x: 30%; }
+      .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
+      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 16%; }
+      .bg-swatch[data-surface='neutral'] { --pg: #0b0b0a; --lin: 16%; --hor: 14%; --glow-x: 0%; }
+      .bg-swatch[data-surface='neutral'][data-scheme='light'] { --pg: #ecebe7; --lin: 14%; --hor: 18%; --glow-x: 0%; }
+      .bg-swatch[data-bg='glow'] { background: radial-gradient(75% 70% at 50% 40%, color-mix(in oklab, var(--b) var(--glow-x), transparent), transparent 75%), var(--pg); }
+      .bg-swatch[data-bg='linear'] { background: linear-gradient(160deg, color-mix(in oklab, var(--b) var(--lin), var(--pg)) 0%, var(--pg) 65%); }
+      .bg-swatch[data-bg='horizon'] { background: radial-gradient(130% 60% at 50% 110%, color-mix(in oklab, var(--b) var(--hor), transparent), transparent 72%), var(--pg); }
+      .bg-sheet { display: block; width: 46%; height: 64%; background: #fffdf9; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+      .bg-swatch[data-scheme='dark'] .bg-sheet { background: #262628; }
+      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-default); }
+    `,
+  ];
+
+  private get brandInvalid(): boolean {
+    return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
+  }
+
+  /** The value each token shows; `undefined` for one a stylesheet sets and the operator has not overridden. */
+  private get resolved(): Partial<ResolvedThemeTokens> {
+    const base = this.stylesheet ? undefined : this.base;
+    return {
+      brand: this.overrides.brand ?? base?.brand,
+      shape: this.overrides.shape ?? base?.shape,
+      surface: this.overrides.surface ?? base?.surface,
+      background: this.overrides.background ?? base?.background,
+      mode: this.overrides.mode ?? base?.mode,
+    };
+  }
+
+  private emit(overrides: ThemeOverrides) {
+    this.dispatchEvent(new CustomEvent<OverridesChange>('overrides-change', {
+      detail: { overrides, brandInvalid: this.brandInvalid },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
+    const next = { ...this.overrides };
+    // A value equal to the base's is not an override: the theme then follows the base when it changes. Not so over
+    // a stylesheet, whose own values are unknown: the choice is the only record of what the operator wants.
+    if (value === undefined || (!this.stylesheet && value === this.base?.[key])) delete next[key];
+    else next[key] = value;
+    this.emit(next);
+  }
+
+  private reset(key: keyof ThemeOverrides) {
+    if (key === 'brand') this.brandText = '';
+    this.setOverride(key, undefined);
+  }
+
+  /** A token's title row: its label, an accent dot once it is overridden (the base value in the row's title), and the
+   *  Reset; while it is not overridden, where it comes from. */
+  private groupTitle(key: keyof ThemeOverrides, label: string, baseValue: string | undefined) {
+    const own = this.overrides[key] !== undefined;
+    const note = this.stylesheet ? 'Set by the stylesheet' : this.inheritedNote;
+    const title = own ? (this.stylesheet ? 'Overridden' : `Overridden · base: ${baseValue}`) : '';
+    return html`
+      <div class="group-title" title=${title || nothing}>
+        <div class="field-label">${own ? html`<span class="dot-overridden" role="img" aria-label="Overridden"></span>` : nothing}${label}</div>
+        ${own
+          ? html`<button class="reset" aria-label=${`Reset ${key} to ${this.stylesheet ? 'the stylesheet' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>`
+          : note ? html`<span class="note-inherited">${note}</span>` : nothing}
+      </div>`;
+  }
+
+  render() {
+    if (!this.base && !this.stylesheet) return nothing;
+    const resolved = this.resolved;
+    const base = this.base;
+    return html`
+      <div class="group">
+        ${this.groupTitle('brand', 'Brand colour', base?.brand)}
+        <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
+        <div class="swatches" role="group" aria-label="Brand colour">
+          ${SWATCHES.map(c => html`
+            <button class="swatch ${resolved.brand === c ? 'sel' : ''}" style=${`background:${c}`} aria-label=${c} aria-pressed=${resolved.brand === c ? 'true' : 'false'}
+              @click=${() => { this.brandText = c; this.setOverride('brand', c); }}></button>
+          `)}
+        </div>
+        <div class="hex-row">
+          <span class="chip" style=${`background:${resolved.brand ?? 'transparent'}`}></span>
+          <input class="kv-value" aria-label="Brand colour, #rrggbb" placeholder=${resolved.brand ?? '#rrggbb'} spellcheck="false" maxlength="7"
+            .value=${this.brandText}
+            @input=${(e: Event) => {
+              this.brandText = (e.target as HTMLInputElement).value;
+              const text = this.brandText.trim();
+              if (text === '') this.setOverride('brand', undefined);
+              else if (HEX.test(text)) this.setOverride('brand', normalize(text));
+              else this.emit(this.overrides);
+            }} />
+          ${this.brandInvalid ? html`<span class="bad" role="alert">Use #rrggbb</span>` : nothing}
+        </div>
+      </div>
+
+      <div class="group">
+        ${this.groupTitle('surface', 'Page background', base?.surface)}
+        <div class="seg-control" role="group" aria-label="Page background">
+          ${SURFACES.map(([value, label]) => html`
+            <button class="seg-btn ${resolved.surface === value ? 'seg-active' : ''}" aria-pressed=${resolved.surface === value ? 'true' : 'false'}
+              @click=${() => this.setOverride('surface', value)}>${label}</button>
+          `)}
+        </div>
+        <div class="hint" style="margin-top: 0.5rem">${SURFACES.find(s => s[0] === resolved.surface)?.[2]}</div>
+      </div>
+
+      <div class="group">
+        ${this.groupTitle('background', 'Background style', base?.background)}
+        <div class="hint">What is drawn over the page colour behind the card. Always a tint of the brand colour; text above the card stays readable.</div>
+        <div class="bgs" role="group" aria-label="Background style">
+          ${BACKGROUNDS.map(([value, label, description]) => html`
+            <button class="bg-card ${resolved.background === value ? 'sel' : ''}" aria-pressed=${resolved.background === value ? 'true' : 'false'}
+              title=${description} @click=${() => this.setOverride('background', value)}>
+              <span class="bg-swatch" style=${`--b:${resolved.brand ?? '#155e75'}`} data-bg=${value} data-surface=${resolved.surface ?? 'bold'}
+                data-scheme=${this.scheme || (resolved.mode === 'light' ? 'light' : 'dark')} aria-hidden="true"><i class="bg-sheet"></i></span>
+              <b>${label}</b>
+            </button>
+          `)}
+        </div>
+        <div class="hint" style="margin-top: 0.5rem">${BACKGROUNDS.find(b => b[0] === resolved.background)?.[2]}</div>
+      </div>
+
+      <div class="group">
+        ${this.groupTitle('shape', 'Shape', base?.shape)}
+        <div class="seg-control" role="group" aria-label="Shape">
+          ${SHAPES.map(([value, label]) => html`
+            <button class="seg-btn ${resolved.shape === value ? 'seg-active' : ''}" aria-pressed=${resolved.shape === value ? 'true' : 'false'}
+              @click=${() => this.setOverride('shape', value)}>${label}</button>
+          `)}
+        </div>
+      </div>
+
+      <div class="group">
+        ${this.groupTitle('mode', 'Colour scheme', base?.mode)}
+        <div class="seg-control" role="group" aria-label="Colour scheme">
+          ${MODES.map(([value, label]) => html`
+            <button class="seg-btn ${resolved.mode === value ? 'seg-active' : ''}" aria-pressed=${resolved.mode === value ? 'true' : 'false'}
+              @click=${() => this.setOverride('mode', value)}>${label}</button>
+          `)}
+        </div>
+        <div class="hint" style="margin-top: 0.5rem">Auto follows the visitor's device.</div>
+      </div>
+    `;
+  }
+}

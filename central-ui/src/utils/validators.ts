@@ -12,12 +12,12 @@ export function validateResourceAction(value: string): boolean {
 }
 
 /**
- * Validates permission format: lowercase segments separated by dots or colons
+ * Validates permission format: lowercase segments separated by colons only (no dots)
  * Each segment must start with a letter and may include numbers/underscores
- * Examples: users.read, users:read, users:read:managed
+ * Examples: users:read, orders:read:managed
  */
 export function validatePermission(permission: string): boolean {
-  return /^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$/.test(permission);
+  return /^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$/.test(permission);
 }
 
 /**
@@ -31,7 +31,7 @@ export function validateRoleId(roleId: string): boolean {
 }
 
 /**
- * Validates scope ID format: same as resource/action
+ * Validates scope ID format: a single segment, no dots and no colons
  * Lowercase letters, numbers, underscore, starting with letter
  * Examples: openid, profile, user_data
  */
@@ -91,6 +91,16 @@ export function validateEdgeFrontedRedirectUri(uri: string): { valid: boolean; e
   return uri.trim().toLowerCase().startsWith('https://')
     ? validation
     : { valid: false, error: 'An app fronted by edge accepts only https redirect URIs (App Links / Universal Links)' };
+}
+
+/** An absolute http(s) URL with a host: what central accepts for a logo. */
+export function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '';
+  } catch {
+    return false;
+  }
 }
 
 export function validateRedirectUri(uri: string): { valid: boolean; error?: string } {
@@ -295,6 +305,41 @@ export function validateAccessTokenTtl(seconds: number, dpopBoundAccessTokens: b
   return { valid: true };
 }
 
+/** One line of what a pasted JWK Set holds, so an operator can see what they registered
+ *  without reading base64url. `kind` is the key type with its size or curve, e.g. `EC P-256`
+ *  or `RSA 2048`. `private` flags private key material, which the backend refuses. */
+export interface JwkSummary {
+  kind: string;
+  kid?: string;
+  alg?: string;
+  use?: string;
+  private: boolean;
+}
+
+export function describeJwks(keySet: Record<string, unknown> | undefined): JwkSummary[] {
+  const keys = keySet?.keys;
+  if (!Array.isArray(keys)) return [];
+  return keys.map((raw): JwkSummary => {
+    const key = (raw ?? {}) as Record<string, unknown>;
+    const kty = typeof key.kty === 'string' ? key.kty : '?';
+    let kind = kty;
+    if (kty === 'EC' && typeof key.crv === 'string') {
+      kind = `EC ${key.crv}`;
+    } else if (kty === 'RSA' && typeof key.n === 'string') {
+      // base64url length -> modulus bits: 4 chars carry 3 bytes
+      const bits = Math.floor((key.n.length * 6) / 8) * 8;
+      kind = `RSA ${bits}`;
+    }
+    return {
+      kind,
+      kid: typeof key.kid === 'string' ? key.kid : undefined,
+      alg: typeof key.alg === 'string' ? key.alg : undefined,
+      use: typeof key.use === 'string' ? key.use : undefined,
+      private: ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k'].some(field => field in key),
+    };
+  });
+}
+
 /** RFC 8705 section 2.1.2 subject types a client's certificate can be recognised by. */
 export const MTLS_SUBJECT_TYPES = ['subject_dn', 'san_dns', 'san_uri', 'san_ip', 'san_email'] as const;
 
@@ -373,7 +418,7 @@ export function validateMtlsTermination(
   if (mtlsAuth && !mtlsCertificateHeader) {
     return {
       valid: false,
-      error: 'This tenant has no mTLS certificate header configured under Challenges & Security - '
+      error: 'This tenant has no mTLS certificate header configured under Security › Tokens & keys - '
         + 'Central refuses a client that registers an mTLS credential without one, '
         + 'since no certificate would ever reach auth for it.',
     };
@@ -455,3 +500,64 @@ export function getValidationError(type: string): string {
   return errors[type] || 'Invalid format';
 }
 
+
+/**
+ * Mirrors PhoneRegion.validate in central. The regex is only checked for being non-empty: it is a
+ * Java regex, which JavaScript cannot compile faithfully, so central has the final say.
+ * Returns one error per row index (undefined when the row is fine).
+ */
+export function validatePhoneRegions(
+  regions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>,
+): Array<string | undefined> {
+  const seen = new Map<string, number>();
+  return regions.map(r => {
+    if (!/^[A-Z]{2}$/.test(r.region)) return 'Region must be an ISO 3166-1 alpha-2 code (two capital letters, e.g. KZ).';
+    if (seen.has(r.region)) return `Region ${r.region} is listed more than once.`;
+    seen.set(r.region, 1);
+    if (!/^\+[1-9][0-9]{0,3}$/.test(r.dialCode)) return 'Dial code must be + followed by 1-4 digits (e.g. +7).';
+    if (!Number.isInteger(r.length) || r.length < 4 || r.length > 14) return 'Length must be a whole number between 4 and 14.';
+    if (r.dialCode.length - 1 + r.length > 15) return 'Dial code and length together must be at most 15 digits.';
+    if (r.regex.length === 0) return 'Regex is required.';
+    return undefined;
+  });
+}
+
+export const MAX_REGISTRATION_DOMAINS = 500;
+const MAX_DOMAIN_LENGTH = 253;
+const DOMAIN_LABEL = /^[\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?$/u;
+
+/**
+ * Mirrors the server's check of an email-registration domain entry: `example.com` or
+ * `*.example.com` (its subdomains, not `example.com` itself), at least one dot in the domain, labels of letters, digits
+ * and hyphens (IDN is accepted in unicode and normalised to punycode by the server), at most 253
+ * characters. Case is not significant. Returns an error message, or undefined when the entry is fine.
+ */
+export function validateRegistrationDomain(entry: string): string | undefined {
+  if (entry.length > MAX_DOMAIN_LENGTH) return `"${entry.slice(0, 20)}..." is longer than ${MAX_DOMAIN_LENGTH} characters.`;
+  // The `*.` prefix does not count: `*.com` would cover a whole top-level domain.
+  const host = entry.startsWith('*.') ? entry.slice(2) : entry;
+  const labels = host.split('.');
+  const shape = 'must look like example.com or *.example.com';
+  if (!host.includes('.')) return `"${entry}" ${shape} (the domain needs at least one dot).`;
+  if (labels.some(label => label.length === 0 || label.length > 63 || !DOMAIN_LABEL.test(label))) {
+    return `"${entry}" ${shape}: labels use letters, digits and hyphens, and cannot start or end with a hyphen.`;
+  }
+  return undefined;
+}
+
+/**
+ * Validates the whole domain list (already trimmed, blanks removed). Returns the first error, or
+ * undefined: more than 500 entries, a malformed entry, or an entry repeated once lower-cased.
+ */
+export function validateRegistrationDomains(domains: string[]): string | undefined {
+  if (domains.length > MAX_REGISTRATION_DOMAINS) return `At most ${MAX_REGISTRATION_DOMAINS} domains are allowed.`;
+  const seen = new Set<string>();
+  for (const entry of domains) {
+    const error = validateRegistrationDomain(entry);
+    if (error) return error;
+    const key = entry.toLowerCase();
+    if (seen.has(key)) return `"${entry}" is listed more than once.`;
+    seen.add(key);
+  }
+  return undefined;
+}

@@ -32,7 +32,7 @@ export class VersolaLocalizedTextEditor extends LitElement {
     }
     .locale-tab {
       padding: 0.25rem 0.625rem;
-      border: 1px solid var(--border-dark);
+      border: 1px solid var(--border-default);
       border-radius: var(--radius-sm);
       background: transparent;
       color: var(--text-secondary);
@@ -41,7 +41,7 @@ export class VersolaLocalizedTextEditor extends LitElement {
     }
     .locale-tab.active {
       border-color: var(--accent);
-      background: rgba(var(--accent-tint), 0.12);
+      background: var(--accent-subtle);
       color: var(--accent);
     }
     .hint {

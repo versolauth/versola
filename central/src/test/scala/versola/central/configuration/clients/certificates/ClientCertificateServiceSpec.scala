@@ -89,7 +89,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -114,6 +113,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   private def record =
@@ -130,7 +130,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set.empty,
       theme = "",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -153,6 +152,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = registeredAt,
       applicationType = ApplicationType.native,
+      themeOverrides = None,
     )
 
   private val config =
@@ -175,7 +175,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -196,6 +195,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   def spec = suite("ClientCertificateService")(

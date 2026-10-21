@@ -76,7 +76,7 @@ object ProvisionerSpec extends ZIOSpecDefault:
         state <- fake.snapshot
         settings = state.challengeSettings.get
         settingsAt = state.calls.indexWhere(call => call.path == "/configuration/challenges/challenge-settings" && call.method == Method.PUT)
-        firstClient = state.calls.indexWhere(call => call.path == "/configuration/clients" && call.method == Method.POST)
+        firstClient = state.calls.indexWhere(call => FakeCentral.isClientWrite(call) && call.method == Method.POST)
       yield assertTrue(
         state.tenants("loadgen-fapi2").profile == "fapi2",
         FakeCentral.optionalStr(settings, "mtlsCertificateHeader").contains("ssl-client-cert"),
@@ -164,22 +164,20 @@ object ProvisionerSpec extends ZIOSpecDefault:
         lastResource = state.calls.lastIndexWhere(_.path == "/configuration/resources")
       yield assertTrue(granted == declared, granted.size == 10, lastResource < firstPermission)
     },
-    // A client's registration flow grants a role by id, and central validates that the role
-    // exists while saving the client -- a pass that wrote the clients first would be rejected
-    // with a 400 on the very first one.
-    test("creates the roles a client's registration flow grants before the client") {
+    // The challenge settings name the roles a self-registered account gets, and central may
+    // validate them while saving, so the roles are written before the settings.
+    test("creates the roles the challenge settings grant before the settings") {
       for
         (admin, fake) <- fakeAdmin
         _ <- Provisioner.run(admin, blueprint)
         state <- fake.snapshot
-        granted = blueprint.clients.flatMap(_.registrationFlow).flatMap(_.asObject)
-          .flatMap(flow => FakeCentral.strings(flow, "roleIds"))
+        granted = FakeCentral.strings(state.challengeSettings.get, "defaultRoles")
         lastRole = state.calls.lastIndexWhere(_.path == "/configuration/roles")
-        firstClient = state.calls.indexWhere(_.path == "/configuration/clients")
+        settingsAt = state.calls.indexWhere(call => call.path == "/configuration/challenges/challenge-settings" && call.method == Method.PUT)
       yield assertTrue(
         granted.toSet == Set(CampaignBlueprint.retailUserRoleId),
         granted.toSet.subsetOf(state.roles.keySet),
-        lastRole < firstClient,
+        lastRole < settingsAt,
       )
     },
     // The listings the create-or-update choices are made on are cached, so a pass retried

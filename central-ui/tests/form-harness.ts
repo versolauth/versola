@@ -27,9 +27,15 @@ export type SubmittedRequest = {
   fields: URLSearchParams;
 };
 
+// What the server's page shell runs before first paint (ConversationRenderService.SchemeScript), after the <style> block.
+const SCHEME_SCRIPT = `<script>(function(){try{var d=document.documentElement;`
+  + `if(getComputedStyle(d).getPropertyValue('--scheme-locked').trim()==='1')return;`
+  + `var v=localStorage.getItem('versola.colorScheme');`
+  + `if(v==='light'||v==='dark')d.style.colorScheme=v}catch(e){}})()</script>`;
+
 const bundles = new Map<string, Promise<string>>();
 
-function formBundle(id: string): Promise<string> {
+export function formBundle(id: string): Promise<string> {
   let bundle = bundles.get(id);
   if (!bundle) {
     bundle = build({
@@ -55,13 +61,14 @@ export async function translations(id: string): Promise<Translations> {
 /** What a form config needs besides its `step`; anything given overrides the defaults. */
 export type FormConfig = { step: Record<string, unknown> } & Record<string, unknown>;
 
-export async function renderForm(page: Page, id: string, config: FormConfig) {
+export async function renderForm(page: Page, id: string, config: FormConfig, options: { extraCss?: string } = {}) {
   const [all, commonCss, formCss, script] = await Promise.all([
     translations(id),
     read('../forms/common.css'),
     read(`../forms/${id}/${id}.css`),
     formBundle(id),
   ]);
+  // No localeNames by default: a form without them shows bare codes, and a test that cares passes them.
   const full = { locale: 'en', locales: Object.keys(all), t: all.en, allT: all, csrf: CSRF, ...config };
 
   const submitted: SubmittedRequest[] = [];
@@ -85,7 +92,7 @@ export async function renderForm(page: Page, id: string, config: FormConfig) {
   await page.setContent(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${all.en.page_title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
-<style>${commonCss}\n${formCss}</style></head><body>
+<style>${commonCss}\n${options.extraCss ?? ''}\n${formCss}</style>${SCHEME_SCRIPT}</head><body>
 <script>window.__VERSOLA_FORM__ = ${JSON.stringify(full).replace(/</g, '\\u003c')};</script>
 <div id="versola-form-root"></div>
 <script>${script}</script>

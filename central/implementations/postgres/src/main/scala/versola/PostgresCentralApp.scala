@@ -217,15 +217,13 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateService.renewal
 
   given DeriveConfig[Secret] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
+    .mapOrFail(SecretConfig.secret)
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   given DeriveConfig[SecretKey] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
     .map(bytes => SecretKeySpec(bytes, "AES"))
 
   given DeriveConfig[URL] = DeriveConfig[String]
@@ -241,11 +239,3 @@ object PostgresCentralApp extends VersolaApp("central"):
     DeriveConfig[String].mapOrFail: str =>
       versola.central.configuration.clients.ClientId.from(str)
         .left.map(message => zio.Config.Error.InvalidData(message = message))
-
-  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
-    newType.fromBase64Url(str)
-      .left.map(message => zio.Config.Error.InvalidData(message = message))
-      .filterOrElse(
-        _.length == newType.length,
-        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
-      )

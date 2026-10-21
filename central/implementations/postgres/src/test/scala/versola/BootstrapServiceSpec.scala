@@ -16,7 +16,11 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.forms.FormPreviews
+import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
@@ -35,7 +39,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private def mtlsSeed(certificate: String) =
-    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(certificate, "ssl-client-cert", "urlEncodedPem")
+    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(Some(certificate), "ssl-client-cert", "urlEncodedPem")
 
   /** The stored `central-admin` a previous boot left behind, varying only the one column
     * [[BootstrapService.authMethodMismatch]] reads. */
@@ -53,7 +57,6 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set.empty,
       theme = "default",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -75,6 +78,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       edgeClientCertificate = None,
       template = None,
       createdAt = Instant.EPOCH,
+      themeOverrides = None,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
@@ -85,6 +89,54 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
+      val settings = BootstrapService.defaultChallengeSettings(
+        versola.central.configuration.tenants.TenantId("default"),
+        versola.central.CentralConfig.PasskeyConfig("localhost", List("http://localhost")),
+      )
+      assertTrue(settings.acrVocabulary == Some(Map("otp" -> List("otp"), "passkey" -> List("passkey"))))
+    },
+    test("names each seeded locale in its own language, as the login forms' language selector shows it") {
+      assertTrue(
+        BootstrapService.defaultLocales.map(locale => locale.code -> locale.name).toMap ==
+          Map("en" -> "English", "ru" -> "Русский"),
+      )
+    },
+    test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector.empty)
+        _ <- themes.create.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        created = themes.create.calls
+        updates = themes.update.times
+      yield assertTrue(created == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), updates == 0)
+    },
+    test("converts a stylesheet default (tokens NULL) to the visual theme, keeping its tenant") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector(ThemeRecord("default", ":root{--brand:red}", None, tokens = None)))
+        _ <- themes.update.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        updated = themes.update.calls
+        creates = themes.create.times
+      yield assertTrue(updated == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))), creates == 0)
+    },
+    test("leaves a token default alone: the administrator may have changed its base or overrides") {
+      val themes = stub[ThemeRepository]
+      val custom = ThemeRecord(
+        "default",
+        "a{}",
+        None,
+        Some(ThemeTokens("versola", Some(ThemeOverrides.empty.copy(shape = Some(versola.util.theme.Shape.sharp))))),
+      )
+      for
+        _ <- themes.getAll.succeedsWith(Vector(custom))
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        creates = themes.create.times
+        updates = themes.update.times
+      yield assertTrue(creates == 0, updates == 0)
+    },
     // The client and challenge-settings caches load before bootstrap seeds central-admin, and
     // the seed's notifications are lost: without this reload edge's first sync misses it.
     test("refreshCachesAfterBootstrap reloads the client and challenge-settings caches") {
@@ -110,6 +162,19 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
         credential.map(_.mtlsAuth) == Right(Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn))),
         credential.map(_.edgeClientCertificate.map(_.pem)) == Right(Some(certificate.bundle)),
+        credential.map(_.requirePushedAuthorizationRequests) == Right(true),
+        credential.exists(_.conformant),
+      )
+    },
+    test("has central issue central-admin's tls_client_auth certificate when the seed carries none") {
+      val credential = BootstrapService.centralAdminCredential(
+        Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, "ssl-client-cert", "urlEncodedPem")),
+      )
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
+        credential.map(_.mtlsAuth) == Right(None),
+        credential.map(_.edgeClientCertificate) == Right(None),
+        credential.map(_.issueEdgeClientCertificate) == Right(true),
         credential.map(_.requirePushedAuthorizationRequests) == Right(true),
         credential.exists(_.conformant),
       )
@@ -182,6 +247,29 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         prod.forall(nonProd.contains),
         nonProd.size == prod.size + 2,
       )
+    },
+    test("offline_access is described without the word refresh, which users do not know") {
+      val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
+      assertTrue(
+        description == Map("en" -> "Long-lived access", "ru" -> "Длительный доступ"),
+      )
+    },
+    test("the consent previews describe the standard scopes exactly as bootstrap seeds them") {
+      val matches =
+        for
+          form <- FormPreviews.all if form.formId == "consent"
+          scenario <- form.scenarios
+          scope <- scenario.step.asObject.flatMap(_.get("scopes")).flatMap(_.asArray).toList.flatMap(_.toList)
+        yield
+          val token = scope.asObject.flatMap(_.get("scope")).flatMap(_.asString).map(ScopeToken(_))
+          val localizations = scope.asObject
+            .flatMap(_.get("descriptionLocalizations"))
+            .flatMap(_.asObject)
+            .toList
+            .flatMap(_.fields.collect { case (language, Json.Str(text)) => language -> text })
+            .toMap
+          token.flatMap(BootstrapService.scopeDescriptions.get).contains(localizations)
+      assertTrue(matches.nonEmpty, matches.forall(identity))
     },
     test("service:operate covers exactly the service endpoints") {
       assertTrue(

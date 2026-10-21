@@ -86,6 +86,7 @@ services:
       - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
       - ./central.conf:/opt/versola-tools/config/central.conf:ro
       - ./edge.conf:/opt/versola-tools/config/edge.conf:ro
+      - ./postgres-ca:/etc/versola/postgres-ca:ro
 
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
@@ -118,8 +119,15 @@ services:
     # the comment on central's env_file in compose.fragment.yml.template.
     env_file:
       - ./central.secrets.env
+    # `up -d central` is how versola-cli starts the stack, so this is what brings step-ca and
+    # mtls-init up: central reads the CA they leave in versola-central-ca-vps at startup
+    # (client-certificates.step-ca in central.conf) and exits without it.
+    depends_on:
+      mtls-init:
+        condition: service_completed_successfully
     volumes:
       - ./central.conf:/app/config/env.conf:ro
+      - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-central-diagnostics-vps:/diagnostics
       - versola-central-ca-vps:/app/ca:ro
 
@@ -162,6 +170,7 @@ services:
       - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
+      - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-auth-diagnostics-vps:/diagnostics
       - versola-mtls-vps:/app/mtls:ro
 
@@ -191,6 +200,7 @@ services:
       - ./edge.secrets.env
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
+      - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-edge-diagnostics-vps:/diagnostics
       - versola-mtls-vps:/app/mtls:ro
 

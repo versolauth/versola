@@ -1,4 +1,4 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { codeHighlightStyles } from '../styles/code-highlight';
@@ -12,6 +12,10 @@ export class VersolaCodeEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
   @property({ type: Boolean }) invalid = false;
   @property({ type: String }) placeholder = '';
+  /** The accessible name of the text area: a `<label for>` cannot reach into this shadow root. */
+  @property({ type: String }) label = '';
+  /** Long lines scroll sideways inside the editor instead of wrapping (JSON texts, where a wrapped value reads as two). */
+  @property({ type: Boolean }) nowrap = false;
 
   @query('textarea') private textarea!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
@@ -29,21 +33,23 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--field);
+        border: 1.5px solid var(--border-input);
         border-radius: var(--radius-md);
         overflow: hidden;
         transition: border-color var(--transition-fast);
       }
       .wrapper:focus-within {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
+        background: var(--surface);
+        border-color: var(--text-primary);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
       .wrapper.invalid {
-        border-color: var(--danger, #f85149);
+        border-color: var(--danger);
       }
       .wrapper.invalid:focus-within {
-        box-shadow: 0 0 0 2px rgba(var(--danger-tint), 0.15);
+        border-color: var(--danger);
       }
       pre, textarea {
         margin: 0;
@@ -60,6 +66,11 @@ export class VersolaCodeEditor extends LitElement {
         overflow-wrap: anywhere;
         word-break: break-word;
       }
+      :host([nowrap]) pre, :host([nowrap]) textarea {
+        white-space: pre;
+        overflow-wrap: normal;
+        word-break: normal;
+      }
       pre {
         position: absolute;
         inset: 0;
@@ -74,10 +85,11 @@ export class VersolaCodeEditor extends LitElement {
         color: transparent;
         caret-color: var(--accent);
         resize: vertical;
+        /* The wrapper draws the focus ring (:focus-within above). */
         outline: none;
         overflow: auto;
       }
-      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
+      textarea::selection { background: var(--selection-bg); color: transparent; }
     `,
   ];
 
@@ -92,6 +104,9 @@ export class VersolaCodeEditor extends LitElement {
         <textarea
           .value=${this.value}
           ?disabled=${this.disabled}
+          aria-label=${this.label || nothing}
+          aria-invalid=${this.invalid ? 'true' : nothing}
+          wrap=${this.nowrap ? 'off' : 'soft'}
           spellcheck="false"
           autocomplete="off"
           autocorrect="off"
@@ -105,6 +120,20 @@ export class VersolaCodeEditor extends LitElement {
         ></textarea>
       </div>
     `;
+  }
+
+  /** Puts the caret at the start of the line holding `offset`, scrolls that line into view and focuses the text area. */
+  focusAt(offset: number) {
+    const ta = this.textarea;
+    if (!ta) return;
+    const at = Math.max(0, Math.min(offset, ta.value.length));
+    ta.focus();
+    ta.setSelectionRange(at, at);
+    const line = ta.value.slice(0, at).split('\n').length - 1;
+    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+    ta.scrollTop = Math.max(0, line * lineHeight - ta.clientHeight / 3);
+    ta.scrollLeft = 0;
+    this.handleScroll();
   }
 
   private handleInput(event: Event) {

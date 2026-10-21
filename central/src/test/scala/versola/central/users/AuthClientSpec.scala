@@ -40,6 +40,17 @@ object AuthClientSpec extends ZIOSpecDefault:
     createdAt = "2024-01-01T00:00:00Z",
   )
 
+  private val userAgentDto = AuthClient.UserAgentDto(
+    id = "00000000-0000-0000-0000-0000000000a1",
+    userAgent = Some("Mozilla/5.0 (Macintosh) Chrome/125.0"),
+    platform = Some("desktop"),
+    os = Some("macOS"),
+    browser = Some("Chrome"),
+    version = Some("125"),
+    createdAt = Instant.parse("2023-12-01T00:00:00Z"),
+    expiresAt = Instant.parse("2024-06-01T00:00:00Z"),
+  )
+
   private val sessionDto = AuthClient.SessionDto(
     publicId = "public-session-1",
     clients = List(AuthClient.ClientEntryDto(ClientId("client-1"), Instant.parse("2024-01-01T00:00:00Z"))),
@@ -48,6 +59,9 @@ object AuthClientSpec extends ZIOSpecDefault:
     browser = Some("Chrome"),
     version = Some("125"),
     createdAt = "2024-01-01T00:00:00Z",
+    expiresAt = Instant.parse("2024-01-08T00:00:00Z"),
+    idleExpiresAt = Some(Instant.parse("2024-01-01T01:00:00Z")),
+    userAgent = Some(userAgentDto),
   )
 
   private val resetRequest = ResetPasswordRequest(
@@ -179,7 +193,7 @@ object AuthClientSpec extends ZIOSpecDefault:
   ) @@ TestAspect.silentLogging
 
   // ── Bearer token is attached to every outbound request ─────────────────────
-  private val bearerSuite = suite("Bearer token added to all 15 methods")(
+  private val bearerSuite = suite("Bearer token added to every method")(
     mkTest(
       "deleteUser",
       _.deleteUser(userId),
@@ -207,6 +221,18 @@ object AuthClientSpec extends ZIOSpecDefault:
     mkTest(
       "invalidateSession",
       _.invalidateSession(userId),
+    ),
+    mkTest(
+      "endSession",
+      _.endSession(userId, "c2lk").unit,
+    ),
+    mkTest(
+      "forgetUserAgent",
+      _.forgetUserAgent(userId, "00000000-0000-0000-0000-0000000000a1").unit,
+    ),
+    mkTest(
+      "revokeRefreshTokens",
+      _.revokeRefreshTokens(userId, ClientId("app")),
     ),
     mkTest(
       "resetUserLimits",
@@ -238,6 +264,11 @@ object AuthClientSpec extends ZIOSpecDefault:
       "getUserSessions",
       """{"sessions":[]}""",
       _.getUserSessions(userId).unit,
+    ),
+    mkJsonTest(
+      "getUserDevices",
+      """{"devices":[]}""",
+      _.getUserDevices(userId).unit,
     ),
     mkJsonTest(
       "listPasskeys",
@@ -295,6 +326,24 @@ object AuthClientSpec extends ZIOSpecDefault:
         result <- client.getUserRoles(userId, tenantId)
       yield assertTrue(result == List(RoleId("r1"), RoleId("r2")))
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("endSession answers false when auth does not know the session as the user's") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NotFound))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.endSession(userId, "c2lk")
+      yield assertTrue(!ended)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("endSession answers true when auth ended the session") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NoContent))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.endSession(userId, "c2lk")
+      yield assertTrue(ended)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("getUserSessions decodes the session list") {
       val json = AuthClient.SessionListResponse(List(sessionDto)).toJson
       for
@@ -304,6 +353,59 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         result <- client.getUserSessions(userId)
       yield assertTrue(result == List(sessionDto))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("getUserDevices decodes a signed-in device, a signed-out one with session null, and the ended session ids") {
+      val json =
+        """{"devices":[
+          |{"userAgent":{"id":"00000000-0000-0000-0000-0000000000a1","userAgent":"raw","platform":"desktop","os":"macOS","browser":"Chrome","version":"125",
+          |"createdAt":"2023-12-01T00:00:00Z","expiresAt":"2024-06-01T00:00:00Z"},
+          |"session":{"publicId":"public-session-1","clients":[],"createdAt":"2024-01-01T00:00:00Z","expiresAt":"2024-01-08T00:00:00Z"},
+          |"endedSessionIds":[]},
+          |{"userAgent":{"id":"00000000-0000-0000-0000-0000000000a2","createdAt":"2023-12-01T00:00:00Z","expiresAt":"2024-06-01T00:00:00Z"},
+          |"session":null,"endedSessionIds":["old-1"]}
+          |]}""".stripMargin
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.json(json))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        result <- client.getUserDevices(userId)
+      yield assertTrue(
+        result.size == 2,
+        result.head.session.map(_.publicId).contains("public-session-1"),
+        result.head.session.flatMap(_.idleExpiresAt).isEmpty,
+        result.head.userAgent.flatMap(_.userAgent).contains("raw"),
+        result(1).session.isEmpty,
+        result(1).userAgent.map(_.id).contains("00000000-0000-0000-0000-0000000000a2"),
+        result(1).userAgent.flatMap(_.browser).isEmpty,
+        result(1).endedSessionIds == List("old-1"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("forgetUserAgent answers false when auth does not know the user agent as the user's") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NotFound))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        forgotten <- client.forgetUserAgent(userId, "00000000-0000-0000-0000-0000000000a1")
+      yield assertTrue(!forgotten)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("forgetUserAgent answers true when auth forgot it, naming the user and the user agent") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](req => seen.set(Some(req)).as(Response.status(Status.NoContent))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        forgotten <- client.forgetUserAgent(userId, "00000000-0000-0000-0000-0000000000a1")
+        request <- seen.get
+      yield assertTrue(
+        forgotten,
+        request.exists(_.method == Method.DELETE),
+        request.exists(_.url.path.segments.toList == List("users", "user-agents")),
+        request.flatMap(_.url.queryParams.getAll("userId").headOption).contains(userId.toString),
+        request.flatMap(_.url.queryParams.getAll("userAgentId").headOption).contains("00000000-0000-0000-0000-0000000000a1"),
+      )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("listPasskeys decodes the passkey list") {
       val response = ListPasskeysResponse(List(passkeyInfo))

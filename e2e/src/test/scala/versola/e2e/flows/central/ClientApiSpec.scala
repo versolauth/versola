@@ -111,15 +111,16 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(15552000))
         .label("clients registered without a refresh lifetime must still get a usable default")
     },
-    test("a client registered from a console template reads it back, and a registration time") {
+    test("a client reads back the kind of the endpoint it was registered at, and a registration time") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("device")))
+        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("service")), redirectUris = Set.empty)
         record <- withClient(central, body)(_ => read(central, id))
         template = record.flatMap(_.obj("template"))
-      yield assertTrue(template.flatMap(_.str("kind")).contains("device"))
-        .label("the console shows the client's settings against this, so it has to survive the round trip") &&
+      yield assertTrue(template.flatMap(_.str("kind")).contains("service")) &&
+        assertTrue(record.flatMap(_.str("kind")).contains("service"))
+          .label("the console updates a client at the endpoint of this kind, so it has to survive the round trip") &&
         assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
     },
     test("a template that still names the retired tier is accepted and read back without it") {
@@ -146,13 +147,13 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.flatMap(_.str("createdAt")).contains(answered))
           .label("the console dates a client it just registered by this, so it has to be the stored one")
     },
-    test("a client registered without a template reads back without one") {
+    test("a client registered with a template that disagrees with its settings is still the kind of its endpoint") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         record <- withClient(central, Fixtures.client(id))(_ => read(central, id))
-      yield assertTrue(record.exists(_.obj("template").isEmpty))
-        .label("an API registration names no combination, and a guessed one would look like a recorded choice")
+      yield assertTrue(record.flatMap(_.str("kind")).contains("web"))
+        .label("a client with redirect URIs and a secret is a web client, whatever a caller's template says")
     },
     test("a new client reports no secret rotation in progress") {
       for
@@ -395,13 +396,15 @@ object ClientApiSpec extends CentralApiSpec:
         .label("the method is fixed, and a certificate method with nothing to be matched against is one nobody can use") &&
         assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=e2e-client,O=Example"))
     },
-    test("an update naming another authMethod is refused, and the client keeps the one it registered with") {
+    // A client's authentication method is fixed when it is registered, so the update request has no
+    // member for it: naming one is refused outright rather than compared with the stored one.
+    test("an update naming an authMethod is refused, and the client keeps the one it registered with") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         outcome <- withClient(central, Fixtures.client(id)) { clientId =>
           central.put(
-            path,
+            s"$path/web",
             Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("private_key_jwt"), "accessTokenTtl" -> Json.Num(60)),
           ).zip(read(central, id))
         }
@@ -410,15 +413,6 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.flatMap(_.str("authMethod")).contains("client_secret")) &&
         assertTrue(!record.flatMap(_.int("accessTokenTtl")).contains(60))
           .label("the refused update changed nothing, not even the setting that was valid")
-    },
-    test("an update restating the authMethod the client registered with is accepted") {
-      for
-        central <- api
-        id <- CentralApi.id("e2e-client")
-        updated <- withClient(central, Fixtures.client(id)) { clientId =>
-          central.put(path, Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("client_secret")))
-        }
-      yield assertTrue(updated.status == Status.NoContent)
     },
     test("an update leaving mtlsAuth unmentioned does not disturb it") {
       for
@@ -531,7 +525,19 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Fixtures.client(id, permissions = Set("Not A Permission")))
+        // Permissions are a service client's alone: a token issued to a user carries the user's roles'.
+        rejected <- central.post(
+          s"$path/service",
+          Json.Obj(
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
+            "id" -> Json.Str(id),
+            "clientName" -> Fixtures.text("Service"),
+            "allowedScopes" -> Json.Arr(),
+            "permissions" -> Json.Arr(Json.Str("Not A Permission")),
+            "accessTokenTtl" -> Json.Num(3600),
+            "authMethod" -> Json.Str("client_secret"),
+          ),
+        )
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("permissions are matched literally against endpoint grants, so the alphabet is fixed")
     },
@@ -545,7 +551,7 @@ object ClientApiSpec extends CentralApiSpec:
     test("a body that is not JSON is refused") {
       for
         central <- api
-        rejected <- central.raw(Method.POST, path, "{")
+        rejected <- central.raw(Method.POST, s"$path/web", "{")
       yield assertTrue(rejected.status == Status.BadRequest)
     },
     test("the listing is scoped to one tenant and demands to be told which") {
@@ -760,12 +766,16 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.exists(!_.strings("redirectUris").contains("versola://callback")))
           .label("validation that only runs on the create path is validation an update can bypass")
     },
-    test("an update without the required patch members is refused") {
+    test("an update that names only the client changes nothing, and is accepted") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.put(path, Json.Obj("clientId" -> Json.Str(id)))
-      yield assertTrue(rejected.status == Status.BadRequest)
+        outcome <- withClient(central, Fixtures.client(id, name = "Untouched")) { clientId =>
+          central.put(s"$path/web", Json.Obj("clientId" -> Json.Str(clientId))).zip(read(central, id))
+        }
+        (updated, record) = outcome
+      yield assertTrue(updated.status == Status.NoContent) &&
+        assertTrue(record.flatMap(_.obj("clientName")).flatMap(_.str("en")).contains("Untouched"))
     },
     test("rotating the secret answers a different secret") {
       for

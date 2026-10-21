@@ -36,6 +36,11 @@ case class PasskeyEnrollSubmission(response: String, name: PasskeyName, csrf: St
 case class PasskeySkipSubmission(csrf: String)
   extends Submission derives Schema
 
+/** The browser could not produce a passkey for a passkey-only step: none on this device, or the prompt was
+  * dismissed. Nothing else is offered in its place, so the conversation is denied. */
+case class PasskeyUnavailableSubmission(csrf: String)
+  extends Submission derives Schema
+
 case class SetPasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
 

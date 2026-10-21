@@ -8,8 +8,8 @@ description: >-
   repository root and is imported by whatever observability stack the campaign already runs
   (see versola-loadgen-dev-spec.md §11 and #280).
 type: application
-version: 0.2.3
-appVersion: "0.6.2"
+version: 0.2.4
+appVersion: "0.7.1"
 home: https://github.com/versolauth/versola
 sources:
   - https://github.com/versolauth/versola

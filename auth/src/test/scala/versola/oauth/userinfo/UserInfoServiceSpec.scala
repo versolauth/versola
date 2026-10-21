@@ -31,6 +31,8 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
   val openIdScope = scope(ScopeToken.OpenId)
   val profileScope = scope(ScopeToken("profile"), Claim("name"), Claim("given_name"), Claim("family_name"))
   val emailScope = scope(ScopeToken("email"), Claim("email"))
+  val emailWithVerifiedScope = scope(ScopeToken("email"), Claim("email"), Claim("email_verified"))
+  val phoneWithVerifiedScope = scope(ScopeToken("phone"), Claim("phone_number"), Claim("phone_number_verified"))
 
   val clientId1 = ClientId("test-client")
 
@@ -47,7 +49,6 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -65,6 +66,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   /** The same client, but one that shows the user a consent screen. */
@@ -223,6 +225,49 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
         result <- env.service.getUserInfoForIdToken(testUser, clientId1, Set(ScopeToken.OpenId), Some(requested), None, None)
       yield assertTrue(result.claims.get("email").contains(Json.Str("john@example.com")))
     },
+    suite("verified contact claims")(
+      // A confirmed OTP stores email_verified / phone_number_verified in the user's claims; userinfo
+      // reports them like any other claim, when the scope that releases them is granted.
+      test("email_verified is reported once the claim is stored and the scope releases it") {
+        val env = Env()
+        val verified = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(verified))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
+        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(true)))
+      },
+      test("email_verified is not reported for an email nobody has confirmed") {
+        val env = Env()
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
+        yield assertTrue(!result.claims.contains("email_verified"))
+      },
+      test("phone_number_verified is reported once the claim is stored") {
+        val env = Env()
+        val phoneUser = testUser.copy(
+          email = None,
+          phone = Some(versola.util.Phone("+49151123456789")),
+          claims = Json.Obj("phone_number_verified" -> Json.Bool(true)),
+        )
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(phoneUser))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, phoneWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("phone")), None)
+        yield assertTrue(result.claims.get("phone_number_verified").contains(Json.Bool(true)))
+      },
+      test("email_verified stays out of the response when the email scope was not granted") {
+        val env = Env()
+        val verified = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(verified))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId), None)
+        yield assertTrue(!result.claims.contains("email_verified"))
+      },
+    ),
     test("a first-party client's claims request does not widen what it gets when the request names none") {
       val env = Env()
       for

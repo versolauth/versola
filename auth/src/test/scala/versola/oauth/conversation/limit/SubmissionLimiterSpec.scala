@@ -27,7 +27,6 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -45,6 +44,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

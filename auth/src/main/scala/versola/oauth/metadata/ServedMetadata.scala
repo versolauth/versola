@@ -54,8 +54,10 @@ object ServedMetadata:
   /** RFC 9101 §4 / OpenID Connect Discovery: whether a `request` parameter is accepted at all.
     * Derived rather than stored for the same reason the algorithm sets are -- it is true
     * because `AuthorizeRequestParser` resolves one, not because a document said so. The
-    * by-reference `request_uri` of §5.2 is not implemented (a `request_uri` here is always a
-    * pushed request, RFC 9126), so its field is derived to `false` just as firmly.
+    * `request_uri` parameter is supported too: `AuthorizeRequestParser` resolves the
+    * `urn:ietf:params:oauth:request_uri:` reference a pushed request (RFC 9126) returns. A
+    * client-hosted URL is refused, but OpenID Connect Discovery 1.0 §3 asks whether the
+    * parameter is supported, not whether arbitrary URIs are, so the field is derived to `true`.
     */
   private val RequestParameterField = "request_parameter_supported"
   private val RequestUriParameterField = "request_uri_parameter_supported"
@@ -143,7 +145,7 @@ object ServedMetadata:
           true,
         ),
         RequestUriParameterField,
-        false,
+        true,
       ),
       mutualTlsExternalUrl,
     )

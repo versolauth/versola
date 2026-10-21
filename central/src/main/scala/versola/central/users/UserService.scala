@@ -20,7 +20,22 @@ trait UserService:
 
   def getSessions(id: UserId): Task[List[SessionResponse]]
 
+  /** Every remembered device of the user -- user agent, and the live session under it or `None` once
+    * signed out -- as auth stores them. */
+  def getDevices(id: UserId): Task[List[DeviceResponse]]
+
+  /** Forgets a device: its user agent, session and the refresh tokens bound to that session.
+    * `false` when the user agent is not the user's. */
+  def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean]
+
   def invalidateSession(userId: UserId): Task[Unit]
+
+  /** Signs one user agent out: ends that session of the user, relying parties told. `false`
+    * when the session is not the user's or no longer live. */
+  def endSession(userId: UserId, sessionId: String): Task[Boolean]
+
+  /** Revokes the offline access one client holds for the user. The user's sessions stay. */
+  def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
 
   /** Every currently-live refresh token issued to the user, independent of
     * [[getSessions]]: a refresh token's expiry is fixed at issuance and independent of a
@@ -32,11 +47,16 @@ trait UserService:
   /** Claim credentials and return the canonical ID for self-service registration. */
   def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId]
 
-  def patch(request: PatchUserRequest): Task[Unit]
+  def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
-  def delete(id: UserId): Task[Unit]
+  /** Hard-deletes the user: everything auth holds for them first -- sessions, refresh tokens,
+    * passkeys, passwords, roles, throttling, pending conversations -- then the index row. Fails
+    * with [[UserNotFound]] when the id is not indexed, and leaves the index row in place when
+    * auth's purge fails, so the deletion can be retried rather than leaving a user nothing can
+    * find but who can still sign in. */
+  def delete(id: UserId): IO[UserNotFound | Throwable, Unit]
 
   def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
@@ -89,6 +109,33 @@ object UserService:
         ttlByClientId = clients.map(c => c.id -> c.accessTokenTtl).toMap
       yield sessions.map(toSessionResponse(_, ttlByClientId))
 
+    override def getDevices(id: UserId): Task[List[DeviceResponse]] =
+      for
+        devices <- authClient.getUserDevices(id)
+        clients <- oAuthClientService.getAllClients
+        ttlByClientId = clients.map(c => c.id -> c.accessTokenTtl).toMap
+      yield devices.map: device =>
+        DeviceResponse(
+          userAgent = device.userAgent.map(toUserAgentResponse),
+          session = device.session.map(toSessionResponse(_, ttlByClientId)),
+          endedSessionIds = device.endedSessionIds,
+        )
+
+    override def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean] =
+      authClient.forgetUserAgent(userId, userAgentId)
+
+    private def toUserAgentResponse(agent: AuthClient.UserAgentDto): UserAgentResponse =
+      UserAgentResponse(
+        id = agent.id,
+        userAgent = agent.userAgent,
+        platform = agent.platform,
+        os = agent.os,
+        browser = agent.browser,
+        version = agent.version,
+        createdAt = agent.createdAt,
+        expiresAt = agent.expiresAt,
+      )
+
     private def toSessionResponse(
         session: AuthClient.SessionDto,
         ttlByClientId: Map[ClientId, Duration],
@@ -112,10 +159,19 @@ object UserService:
         browser = session.browser,
         version = session.version,
         createdAt = session.createdAt,
+        expiresAt = session.expiresAt,
+        idleExpiresAt = session.idleExpiresAt,
+        userAgent = session.userAgent.map(toUserAgentResponse),
       )
 
     override def invalidateSession(userId: UserId): Task[Unit] =
       authClient.invalidateSession(userId)
+
+    override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
+      authClient.endSession(userId, sessionId)
+
+    override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
+      authClient.revokeRefreshTokens(userId, clientId)
 
     override def getRefreshTokens(id: UserId): Task[List[RefreshTokenResponse]] =
       authClient.getUserRefreshTokens(id).map(_.map { token =>
@@ -138,14 +194,21 @@ object UserService:
     override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId] =
       userRepository.indexFromAuth(request.email, request.phone, request.login)
 
-    override def patch(request: PatchUserRequest): Task[Unit] =
+    override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
       userRepository.patch(request.id, request.email, request.phone, request.login)
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
 
-    override def delete(id: UserId): Task[Unit] =
-      userRepository.delete(id)
+    override def delete(id: UserId): IO[UserNotFound | Throwable, Unit] =
+      for
+        _ <- userRepository.findById(id).someOrFail(UserNotFound)
+        _ <- authClient.deleteUser(id)
+        // The index row goes with a `DeleteUser` event queued behind it: the outbox delivers
+        // per user in order, so an upsert still in flight for this user is followed by a
+        // second, idempotent purge rather than resurrecting the account in auth.
+        _ <- userRepository.delete(id)
+      yield ()
 
     override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
       userRepository.enqueueRoleUpdate(request.userId, request.tenantId, request.add, request.remove)

@@ -6,8 +6,9 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.client.model.SecurityProfile
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.dpop.DpopService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
-import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{ClientAssertion, Dpop, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -34,7 +35,6 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -52,6 +52,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(
@@ -95,6 +96,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     val parser = stub[AuthorizeRequestParser]
     val repository = stub[PushedAuthorizationRepository]
     val configuration = stub[OAuthConfigurationService]
+    val dpopService = stub[DpopService]
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     configuration.find.returnsWith(ZIO.none)
@@ -133,6 +135,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
             requestObjectService,
             secureRandom,
             securityService,
+            dpopService,
+            configuration,
           )
         }
       }.provideLayer(zio.Scope.default)
@@ -197,6 +201,18 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
 
   private val request = Request.get(URL.empty / "par")
 
+  // RFC 9449 §10.1 fixtures.
+  private def dpopEnv(verified: IO[Throwable | DpopService.Error, Dpop.Proof]): UIO[Env] =
+    val env = Env()
+    env.dpopService.verify.returnsWith(verified)
+    for
+      _ <- env.happyPath
+      _ <- env.configuration.requireDpopNonce.succeedsWith(false)
+      _ <- env.configuration.getDpopKeyPolicy.succeedsWith(Dpop.KeyPolicy(Set(Dpop.Algorithm.ES256), Dpop.KeyPolicy.MinRsaKeySize))
+    yield env
+
+  private def proof(jkt: String) = Dpop.Proof(jkt, "jti-1", java.time.Instant.EPOCH, None, None)
+
   private val assertionCredentials = ClientIdWithAssertion(clientId, "client-assertion")
 
   def spec = suite("PushedAuthorizationService")(
@@ -205,7 +221,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        response <- service.push(validParams(), credentials, None, request)
+        response <- service.push(validParams(), credentials, None, request, Nil)
       yield assertTrue(
         response.requestUri.startsWith(RequestUri.Prefix),
         response.expiresIn == config.parOrDefault.requestUriTtl.toSeconds,
@@ -216,7 +232,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        response <- service.push(validParams("state" -> Chunk("test-state")), credentials, None, request)
+        response <- service.push(validParams("state" -> Chunk("test-state")), credentials, None, request, Nil)
         created = env.repository.create.calls
       yield assertTrue(
         created.size == 1,
@@ -249,6 +265,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           assertionCredentials,
           None,
           request,
+          Nil,
         )
         created = env.repository.create.calls.head._2
       yield assertTrue(
@@ -269,6 +286,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           assertionCredentials,
           None,
           request,
+          Nil,
         ).flip
       // The body says only that the object is invalid; which check it failed travels with the
       // error for the log alone, so the expected value names it.
@@ -284,7 +302,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.jarClient
         _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
         service <- env.service
-        result <- service.push(validParams(), assertionCredentials, None, request).flip
+        result <- service.push(validParams(), assertionCredentials, None, request, Nil).flip
       yield assertTrue(
         result == PushedAuthorizationError.RequestObjectRequired,
         env.repository.create.calls.isEmpty,
@@ -313,6 +331,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           assertionCredentials,
           None,
           request,
+          Nil,
         )
         created = env.repository.create.times
       yield assertTrue(created == 1)
@@ -327,6 +346,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           credentials,
           None,
           request,
+          Nil,
         )
         created = env.repository.create.calls.head._2
         validated = env.parser.validate.calls.head._1
@@ -341,7 +361,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.happyPath
         secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
         service <- env.service
-        response <- service.push(validParams(), credentials, None, request)
+        response <- service.push(validParams(), credentials, None, request, Nil)
         reference <- ZIO.fromEither(RequestUri.parse(response.requestUri)).mapError(RuntimeException(_))
         hashingSemaphore <- Semaphore.make(1)
         expected <- SecurityService.Impl(secureRandom, hashingSemaphore).mac(Secret(reference), config.security.parRequestsSecret)
@@ -356,7 +376,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.configuration.verifySecret.succeedsWith(None)
         service <- env.service
-        result <- service.push(validParams(), credentials, None, request).either
+        result <- service.push(validParams(), credentials, None, request, Nil).either
       yield assertTrue(result == Left(PushedAuthorizationError.InvalidClient))
     },
     test("rejects a request_uri parameter") {
@@ -364,7 +384,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        result <- service.push(validParams("request_uri" -> Chunk("urn:x")), credentials, None, request).either
+        result <- service.push(validParams("request_uri" -> Chunk("urn:x")), credentials, None, request, Nil).either
       yield assertTrue(result == Left(PushedAuthorizationError.RequestUriNotAllowed))
     },
     test("rejects a request without client_id") {
@@ -372,7 +392,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        result <- service.push(validParams() - "client_id", credentials, None, request).either
+        result <- service.push(validParams() - "client_id", credentials, None, request, Nil).either
       yield assertTrue(result == Left(PushedAuthorizationError.ClientIdMissing))
     },
     test("reports authorization request validation failures directly") {
@@ -381,7 +401,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
         _ <- env.parser.validate.failsWith(Error.ScopeMissing(clientId, redirectUri, None, responseMode = ResponseMode.Query))
         service <- env.service
-        result <- service.push(validParams(), credentials, None, request).either
+        result <- service.push(validParams(), credentials, None, request, Nil).either
       yield assertTrue(result.left.toOption.exists(_.asInstanceOf[PushedAuthorizationError].error == "invalid_scope"))
     },
     test("authenticates a client by its certificate, with no secret presented") {
@@ -397,6 +417,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           ClientIdWithSecret(clientId, None),
           Some(TestEnvConfig.clientCertificate),
           request,
+          Nil,
         ).either
       yield assertTrue(
         result.isRight,
@@ -413,6 +434,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           ClientIdWithSecret(clientId, None),
           Some(TestEnvConfig.otherClientCertificate),
           request,
+          Nil,
         ).either
       yield assertTrue(
         result == Left(PushedAuthorizationError.InvalidClient),
@@ -425,13 +447,99 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.configuration.find.succeedsWith(Some(mtlsClientRecord))
         service <- env.service
-        result <- service.push(validParams(), ClientIdWithSecret(clientId, None), None, request).either
+        result <- service.push(validParams(), ClientIdWithSecret(clientId, None), None, request, Nil).either
       yield assertTrue(
         result == Left(PushedAuthorizationError.InvalidClient),
         // The registered method is the certificate, so no secret can stand in for it.
         env.configuration.verifySecret.calls.isEmpty,
       )
     },
+    suite("DPoP proof at the PAR endpoint (RFC 9449 §10.1)")(
+      test("a proof binds the code to its key, as if the client had sent dpop_jkt") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          _ <- service.push(validParams(), credentials, None, request, List("proof"))
+          // What the parser validates -- and so what `/authorize` later reads back -- names the key.
+          validated = env.parser.validate.calls.head._1
+        yield assertTrue(
+          validated.get("dpop_jkt") == Some(Chunk("proof-jkt")),
+          env.dpopService.verify.calls.head._2 == zio.http.Method.POST,
+          env.dpopService.verify.calls.head._3.endsWith("/par"),
+        )
+      },
+      test("a dpop_jkt that agrees with the proof is accepted") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          result <- service.push(validParams("dpop_jkt" -> Chunk("proof-jkt")), credentials, None, request, List("proof")).either
+        yield assertTrue(result.isRight)
+      },
+      test("a dpop_jkt that names another key than the proof is refused, and nothing is stored") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          result <- service.push(validParams("dpop_jkt" -> Chunk("other-jkt")), credentials, None, request, List("proof")).either
+        yield assertTrue(
+          result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]),
+          env.repository.create.calls.isEmpty,
+        )
+      },
+      test("a dpop_jkt sent twice is refused even when both agree with the proof") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          result <- service.push(validParams("dpop_jkt" -> Chunk("proof-jkt", "proof-jkt")), credentials, None, request, List("proof")).either
+        yield assertTrue(
+          result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]),
+          env.repository.create.calls.isEmpty,
+        )
+      },
+      test("a proof that does not verify is refused") {
+        for
+          env <- dpopEnv(ZIO.fail(DpopService.Error.InvalidProof(Dpop.Error.InvalidSignature)))
+          service <- env.service
+          result <- service.push(validParams(), credentials, None, request, List("proof")).either
+        yield assertTrue(
+          result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]),
+          env.repository.create.calls.isEmpty,
+        )
+      },
+      test("a replayed proof is refused") {
+        for
+          env <- dpopEnv(ZIO.fail(DpopService.Error.Replayed))
+          service <- env.service
+          result <- service.push(validParams(), credentials, None, request, List("proof")).either
+        yield assertTrue(result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]))
+      },
+      test("a required nonce is answered with use_dpop_nonce carrying a fresh one") {
+        for
+          env <- dpopEnv(ZIO.fail(DpopService.Error.NonceRequired("fresh")))
+          service <- env.service
+          result <- service.push(validParams(), credentials, None, request, List("proof")).either
+        yield assertTrue(result == Left(PushedAuthorizationError.UseDpopNonce("fresh")))
+      },
+      test("more than one DPoP header is refused without verifying any") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          result <- service.push(validParams(), credentials, None, request, List("one", "two")).either
+        yield assertTrue(
+          result.left.exists(_.isInstanceOf[PushedAuthorizationError.InvalidDpopProof]),
+          env.dpopService.verify.calls.isEmpty,
+        )
+      },
+      test("a request with no proof is left exactly as sent") {
+        for
+          env <- dpopEnv(ZIO.succeed(proof("proof-jkt")))
+          service <- env.service
+          _ <- service.push(validParams("dpop_jkt" -> Chunk("stated-jkt")), credentials, None, request, Nil)
+        yield assertTrue(
+          env.dpopService.verify.calls.isEmpty,
+          env.parser.validate.calls.head._1.get("dpop_jkt") == Some(Chunk("stated-jkt")),
+        )
+      },
+    ),
     test("rejects a hybrid flow request pushed without a nonce") {
       val env = Env()
       for
@@ -443,6 +551,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           credentials,
           None,
           request,
+          Nil,
         ).either
       yield assertTrue(result == Left(PushedAuthorizationError.from(
         Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
@@ -454,15 +563,40 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         _ <- env.configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
         service <- env.serviceWithRealParser
         result <- service.push(
           validParams("response_type" -> Chunk("code id_token")),
           credentials,
           None,
           request,
+          Nil,
         ).either
       yield assertTrue(result == Left(PushedAuthorizationError.from(
         Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
       )))
+    },
+    test("refuses to store a hybrid flow request for a client of a fapi2 tenant") {
+      val env = Env()
+      for
+        _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
+        _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+        _ <- env.configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+        service <- env.serviceWithRealParser
+        result <- service.push(
+          validParams("response_type" -> Chunk("code id_token"), "nonce" -> Chunk("n-0S6_WzA2Mj")),
+          credentials,
+          None,
+          request,
+          Nil,
+        ).either
+      yield assertTrue(
+        result.left.exists {
+          case PushedAuthorizationError.Validation("unsupported_response_type", _, _, _) => true
+          case _ => false
+        },
+        env.repository.create.calls.isEmpty,
+      )
     },
   )

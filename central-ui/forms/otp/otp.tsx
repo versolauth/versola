@@ -1,50 +1,14 @@
 import { render } from 'solid-js/web';
 import { createSignal, onCleanup, onMount, Show } from 'solid-js';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { PageBrand, ClientBadge } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
 
 type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: OtpStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -56,23 +20,17 @@ declare global {
 
 
 function OtpForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const otpLength = props.config.step.length ?? 6;
   const description = () => {
-    const destination = props.config.step.destination;
-    return t().description.replace('{destination}', destination);
+    const [before, ...rest] = t().description.split('{destination}');
+    return (
+      <>
+        {before}
+        <span class="otp-destination">{props.config.step.destination}</span>
+        {rest.join('{destination}')}
+      </>
+    );
   };
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
@@ -99,21 +57,20 @@ function OtpForm(props: { config: FormConfig }) {
   });
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
       <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
-        <div class="error-text" style="margin-bottom: 8px;">
+        <div class="error-text error-text-block" role="alert">
           {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}
         </div>
       </Show>
       <Show when={props.config.error && lockRemaining() <= 0}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
         <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
@@ -123,7 +80,7 @@ function OtpForm(props: { config: FormConfig }) {
               const digit = otp()[i];
               return (
                 <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
-                  <span class={`otp-cell-dot${digit !== undefined ? ' otp-cell-dot-filled' : ''}`} />
+                  {digit ?? ''}
                 </div>
               );
             })}
@@ -164,6 +121,7 @@ function OtpForm(props: { config: FormConfig }) {
         </form>
       </Show>
     </div>
+    </>
   );
 }
 

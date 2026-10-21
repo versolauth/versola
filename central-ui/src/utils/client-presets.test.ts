@@ -4,7 +4,11 @@ import {
   ClientKind,
   authMethodFor,
   certificateBoundFor,
+  clientKindOf,
+  clientLocks,
+  fapiConformance,
   clientPreset,
+  profilePosture,
   clientTypeFor,
   credentialBinding,
   defaultCredentialMode,
@@ -74,7 +78,6 @@ describe('clientPreset', () => {
       expect(patch.redirectUris).toEqual([]);
       expect(patch.scope).toEqual([]);
       expect(patch.authFlow).toBeNull();
-      expect(patch.registrationFlow).toBeNull();
       expect(patch.consentFlow).toBeNull();
       expect(patch.requirePushedAuthorizationRequests).toBe(false);
       expect(patch.requireSignedRequestObject).toBe(false);
@@ -253,5 +256,125 @@ describe('templateLabel', () => {
   it('names what the client was registered as', () => {
     expect(templateLabel({ kind: 'device' })).toBe('Mobile or desktop app');
     expect(templateLabel({ kind: 'web' })).toBe('Web app');
+  });
+});
+
+describe('clientKindOf', () => {
+  it('trusts the template the wizard recorded', () => {
+    expect(clientKindOf({ clientType: 'web', redirectUris: [], template: { kind: 'device' } })).toBe('device');
+  });
+  it('reads an untemplated client off its shape', () => {
+    expect(clientKindOf({ clientType: 'native', redirectUris: [] })).toBe('device');
+    expect(clientKindOf({ clientType: 'web', redirectUris: ['https://a/cb'] })).toBe('web');
+    expect(clientKindOf({ clientType: 'web', redirectUris: [] })).toBe('service');
+  });
+});
+
+describe('clientLocks', () => {
+  it('holds a mobile app to DPoP and PAR in either profile, with no certificate binding or JAR', () => {
+    for (const profile of PROFILES) {
+      const locks = clientLocks('device', profile, 'edge');
+      expect(locks.dpop).toMatchObject({ locked: true, value: true });
+      expect(locks.par).toMatchObject({ locked: true, value: true });
+      expect(locks.certificateBound).toMatchObject({ locked: true, value: false });
+      expect(locks.jar).toMatchObject({ locked: true, value: false });
+    }
+  });
+
+  it('holds a web app to certificate-bound tokens and PAR, with no DPoP or JAR', () => {
+    const locks = clientLocks('web', 'fapi2', 'edge');
+    expect(locks.certificateBound).toMatchObject({ locked: true, value: true });
+    expect(locks.dpop).toMatchObject({ locked: true, value: false });
+    expect(locks.par).toMatchObject({ locked: true, value: true });
+    expect(locks.jar).toMatchObject({ locked: true, value: false });
+  });
+
+  it('leaves a web client that authenticates for itself to choose PAR and JAR', () => {
+    const locks = clientLocks('web', 'standard', 'secret');
+    expect(locks.par).toEqual({ locked: false });
+    expect(locks.jar).toEqual({ locked: false });
+    expect(locks.certificateBound).toEqual({ locked: false });
+  });
+
+  it('gives a service no authorization request to push or sign', () => {
+    const locks = clientLocks('service', 'fapi2', 'private-key-jwt');
+    expect(locks.par).toMatchObject({ locked: true, value: false });
+    expect(locks.jar).toMatchObject({ locked: true, value: false });
+  });
+
+  it('requires DPoP of a key-authenticated service on FAPI 2.0 only', () => {
+    expect(clientLocks('service', 'fapi2', 'private-key-jwt').dpop).toMatchObject({ locked: true, value: true });
+    expect(clientLocks('service', 'standard', 'private-key-jwt').dpop).toEqual({ locked: false });
+  });
+
+  it('binds a certificate-authenticated service to its certificate', () => {
+    expect(clientLocks('service', 'fapi2', 'mtls').certificateBound).toMatchObject({ locked: true, value: true });
+    expect(clientLocks('service', 'standard', 'secret').certificateBound).toEqual({ locked: false });
+  });
+});
+
+describe('profilePosture', () => {
+  const ok = {
+    authMethod: 'private_key_jwt' as const,
+    clientType: 'web' as const,
+    dpopBoundAccessTokens: true,
+    certificateBoundAccessTokens: false,
+    redirectUris: [],
+    requirePushedAuthorizationRequests: false,
+  };
+
+  it('asks nothing of a standard tenant', () => {
+    expect(profilePosture({ ...ok, authMethod: 'client_secret' }, 'standard')).toEqual([]);
+  });
+
+  it('passes a conformant service', () => {
+    expect(profilePosture(ok, 'fapi2').every(check => check.ok)).toBe(true);
+  });
+
+  it('names each way a client falls short', () => {
+    const checks = profilePosture(
+      { ...ok, authMethod: 'client_secret', dpopBoundAccessTokens: false, redirectUris: ['http://a/cb'] },
+      'fapi2',
+    );
+    expect(checks.filter(check => !check.ok).map(check => check.text)).toEqual([
+      'Authenticates with a key or a certificate',
+      'Tokens are sender-constrained',
+      'Authorization requests pushed (PAR)',
+      'Redirect URIs use https',
+    ]);
+  });
+
+  it('admits a loopback http redirect for a web client too: central admits it only outside production', () => {
+    const checks = profilePosture({ ...ok, redirectUris: ['http://localhost:2821/cb'], requirePushedAuthorizationRequests: true }, 'fapi2');
+    expect(checks.every(check => check.ok)).toBe(true);
+    expect(profilePosture({ ...ok, redirectUris: ['http://example.com/cb'], requirePushedAuthorizationRequests: true }, 'fapi2')
+      .some(check => !check.ok)).toBe(true);
+  });
+
+  it('admits a native loopback http redirect', () => {
+    const checks = profilePosture(
+      { ...ok, clientType: 'native', redirectUris: ['http://127.0.0.1:8123/cb'], requirePushedAuthorizationRequests: true },
+      'fapi2',
+    );
+    expect(checks.every(check => check.ok)).toBe(true);
+  });
+});
+
+describe('fapiConformance', () => {
+  const base = {
+    authMethod: 'tls_client_auth' as const,
+    clientType: 'web' as const,
+    dpopBoundAccessTokens: false,
+    certificateBoundAccessTokens: true,
+    redirectUris: ['https://a/cb'],
+    requirePushedAuthorizationRequests: true,
+  };
+  it('calls a certificate-authenticated, pushed client conformant', () => {
+    expect(fapiConformance(base).conformant).toBe(true);
+  });
+  it('lists what a secret-authenticated client lacks', () => {
+    const result = fapiConformance({ ...base, authMethod: 'client_secret', certificateBoundAccessTokens: false });
+    expect(result.conformant).toBe(false);
+    expect(result.gaps.length).toBe(2);
   });
 });

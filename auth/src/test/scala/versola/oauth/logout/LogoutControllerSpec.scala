@@ -20,6 +20,8 @@ import zio.prelude.{Equal, EqualOps}
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPrivateKey
 import java.time.Instant
 import java.util.UUID
 
@@ -51,6 +53,7 @@ object LogoutControllerSpec extends UnitSpecBase:
     logoutUris = List(logoutUri),
     postLogoutRedirectUri = Some(redirectUri),
     state = Some("st-1"),
+    clientId = None,
   )
 
   private def sessionCookieHeader(id: SessionId = rawSessionId): Header.Cookie =
@@ -66,18 +69,29 @@ object LogoutControllerSpec extends UnitSpecBase:
   private val malformedSessionCookieHeader: Header.Cookie =
     Header.Cookie(NonEmptyChunk(Cookie.Request(SessionCookie.name, "not-a-valid-cookie-payload")))
 
-  private def idTokenHint(sid: String = publicSessionId, sub: String = "user-1"): String =
+  private lazy val foreignKey: RSAPrivateKey =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    generator.generateKeyPair().getPrivate.asInstanceOf[RSAPrivateKey]
+
+  private def idTokenHint(
+      sid: String = publicSessionId,
+      sub: String = "user-1",
+      expiresInSeconds: Long = 3600,
+      issuer: String = TestEnvConfig.coreConfig.jwt.issuer,
+      signingKey: RSAPrivateKey = TestEnvConfig.privateKey,
+  ): String =
     val header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("test-key-id").`type`(JOSEObjectType.JWT).build()
     val claims = new JWTClaimsSet.Builder()
       .subject(sub)
       .claim("sid", sid)
-      .issuer(TestEnvConfig.coreConfig.jwt.issuer)
+      .issuer(issuer)
       .audience("test-client")
       .jwtID(UUID.randomUUID().toString)
-      .expirationTime(java.util.Date.from(Instant.now().plusSeconds(3600)))
+      .expirationTime(java.util.Date.from(Instant.now().plusSeconds(expiresInSeconds)))
       .build()
     val jwt = new SignedJWT(header, claims)
-    jwt.sign(new RSASSASigner(TestEnvConfig.privateKey))
+    jwt.sign(new RSASSASigner(signingKey))
     jwt.serialize()
 
   /** Mirrors `LogoutController.csrfToken`, so tests can produce a token that the
@@ -173,6 +187,15 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
+      description = "GET /logout renders the signed-out page in the requested ui_locales, then Accept-Language",
+      request = Request.get((URL.root / "logout").addQueryParam("ui_locales", "ru kk"))
+        .addHeader(Header.AcceptLanguage.parse("de, fr;q=0.8").toOption.get),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, _, renderService, _) =>
+        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru", "kk", "de", "fr")), None)))),
+    ),
+    controllerTestCase(
       description = "GET /logout with a session cookie for an unknown session renders the generic logout page",
       request = Request.get(URL.root / "logout").addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
@@ -182,7 +205,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -278,7 +301,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -290,7 +313,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -302,7 +325,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -318,6 +341,34 @@ object LogoutControllerSpec extends UnitSpecBase:
           logoutService.logout.calls === List((Left(publicSessionId), None, None)),
           sessionService.find.calls.isEmpty,
         )),
+    ),
+    controllerTestCase(
+      description = "accepts an expired id_token_hint (RP-Initiated Logout 1.0 §2) and ends the session it names",
+      request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(expiresInSeconds = -7200))),
+      expectedStatus = Status.Ok,
+      setup = (logoutService, renderService, _) =>
+        logoutService.logout.succeedsWith(logoutResult) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, _, _) =>
+        ZIO.succeed(assertTrue(logoutService.logout.calls === List((Left(publicSessionId), None, None)))),
+    ),
+    controllerTestCase(
+      description = "does not accept an expired id_token_hint with a foreign issuer",
+      request = Request.get(
+        (URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(expiresInSeconds = -7200, issuer = "https://evil.example")),
+      ),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, _, _) => ZIO.succeed(assertTrue(logoutService.logout.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "does not accept an expired id_token_hint signed by an unknown key",
+      request = Request.get(
+        (URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(expiresInSeconds = -7200, signingKey = foreignKey)),
+      ),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, _, _) => ZIO.succeed(assertTrue(logoutService.logout.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "treats a malformed id_token_hint as no identifier",
@@ -436,7 +487,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -458,7 +509,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
         )),
     ),
   )

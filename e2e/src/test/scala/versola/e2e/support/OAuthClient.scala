@@ -175,6 +175,8 @@ object UserinfoResult:
       givenName: Option[String],
       familyName: Option[String],
       phoneNumber: Option[String],
+      emailVerified: Option[Boolean] = None,
+      phoneVerified: Option[Boolean] = None,
   ) extends UserinfoResult
 
   case class Failure(response: Response, body: String) extends UserinfoResult
@@ -186,6 +188,8 @@ object UserinfoResult:
       @jsonField("given_name") givenName: Option[String],
       @jsonField("family_name") familyName: Option[String],
       @jsonField("phone_number") phoneNumber: Option[String],
+      @jsonField("email_verified") emailVerified: Option[Boolean],
+      @jsonField("phone_number_verified") phoneVerified: Option[Boolean],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[UserinfoResult] =
@@ -195,7 +199,9 @@ object UserinfoResult:
           err => ZIO.succeed(Failure(response, s"JSON parse error [$err] body=$body")),
           raw =>
             ZIO.attempt(java.util.UUID.fromString(raw.sub))
-              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber))
+              .map(uuid =>
+                Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified),
+              )
               .orElse(ZIO.succeed(Failure(response, s"sub is not a valid UUID: ${raw.sub}"))),
         )
       else ZIO.succeed(Failure(response, body))
@@ -520,6 +526,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authorizationDetails: Option[String] = None,
       /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
       claims: Option[String] = None,
+      /** The `User-Agent` header the browser would send; auth stores it, parsed, with the user agent
+        * the sign-in creates. None sends the HTTP client's own. */
+      userAgent: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -536,7 +545,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
       ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
-      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+      request = userAgent.fold(Request.get(url))(ua => Request.get(url).addHeader(Header.Custom("User-Agent", ua)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
           s"No SSO_CONVERSATION cookie in /authorize response (status=${response.status})",
@@ -630,6 +640,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
         * a secret and Basic, neither of which are then sent. */
       assertion: Option[String] = None,
+      /** RFC 9449 §10.1: a proof sent to `/par`, which binds the authorization code to its key. */
+      dpop: Option[DpopProver] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -652,7 +664,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth && assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/par")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(proofed).provide(ZLayer.succeed(client))
+        .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    yield result
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
   def parRaw(method: Method): Task[Response] =
@@ -660,9 +680,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
-  def getChallenge(cookie: String): Task[ChallengeResult] =
+  /** GET /challenge. `uiLocale` is the `ui_locale` the redirect from the previous submit carried. */
+  def getChallenge(cookie: String, uiLocale: Option[String] = None): Task[ChallengeResult] =
     Client.batched(
-      Request.get(s"${config.authUrl}/challenge")
+      Request.get(s"${config.authUrl}/challenge${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}")
         .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
     ).provide(ZLayer.succeed(client))
       .flatMap(resp => resp.body.asString.map(ChallengeResult(resp, _)))
@@ -701,6 +722,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/passkey/unavailable — what the passkey-only form sends when the browser
+    * could not produce a passkey.
+    */
+  def submitPasskeyUnavailable(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/unavailable", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
@@ -717,9 +745,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       cookie,
     ).map(SubmitResult(_))
 
-  /** POST /challenge/consent/deny — refuses the grant. */
-  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+  /** POST /challenge/consent/deny — refuses the grant. `uiLocale` is the language the user
+    * switched the form to, which the form sends as the `ui_locale` query parameter.
+    */
+  def denyConsent(cookie: String, csrf: String, uiLocale: Option[String] = None): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /token — exchanges authorization code for tokens.
@@ -1115,7 +1145,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"assignUserRoles failed: status=${resp.status} body=$bodyStr"))
 
-  /** POST /configuration/clients — registers a new OAuth client via the Central API.
+  /** POST /configuration/clients/{web,native,service} — registers a new OAuth client via the Central API,
+    * at the endpoint of the kind the arguments describe (see [[ClientEndpoints]]).
     * Authenticates with the central resource secret.
     */
   def registerClient(
@@ -1125,7 +1156,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = Fixtures.suiteTenant,
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
-      registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
       authMethod: String = "client_secret",
@@ -1180,7 +1210,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** Seconds; absent takes central's default (180 days). */
       refreshTokenTtl: Option[Int] = None,
   ): Task[RegisterClientResult] =
-    val body = Body.fromString(OAuthClient.RegisterClientBody(
+    val flat = OAuthClient.RegisterClientBody(
       tenantId = tenantId,
       id = clientId,
       clientName = Map("en" -> clientName),
@@ -1192,7 +1222,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = refreshTokenTtl,
       theme = "default",
       authFlow = authFlow,
-      registrationFlow = registrationFlow,
       consentFlow = consentFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
@@ -1213,11 +1242,40 @@ final class OAuthClient(client: Client, config: E2EConfig):
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
-    ).toJson)
-    val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
+    ).toJson
+    val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
+    val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse).tap:
+      case _: RegisterClientResult.Success => redirectUris.headOption.fold(ZIO.unit)(awaitKnownToAuth(clientId, _))
+      case _: RegisterClientResult.Failure => ZIO.unit
+
+  /** Waits until auth serves the client that central has just registered.
+    *
+    * Registration writes central's database only. Auth learns of the client when it reloads from
+    * central's configuration cache, and central refreshes that cache from a Postgres notification,
+    * so a reload that runs before the notification is processed misses the client and `/token`
+    * answers `invalid_client` for it. `/token` cannot tell the two cases apart (its answer is the
+    * same for an unknown client and for wrong credentials), but `/authorize` can: an unknown client
+    * is a `400` with no redirect, a known one always redirects (to the challenge, or to the
+    * registered redirect URI with an error). What is awaited is that redirect, so no credentials
+    * are needed and no token is issued. Each attempt asks auth to reload again, because a reload
+    * that ran too early is not repeated on its own. Bounded at ten seconds; on a timeout the
+    * registration still succeeds and the spec's own assertion reports the missing client. */
+  private def awaitKnownToAuth(clientId: String, redirectUri: String): Task[Unit] =
+    val probe =
+      for
+        _ <- syncConfiguration()
+        result <- authorizeRaw(clientId, redirectUri)
+        _ <- ZIO.fail(RuntimeException(s"auth does not serve client $clientId yet"))
+          .unless(result.response.status.isRedirection)
+      yield ()
+    probe.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+      .timeout(10.seconds)
+      .withClock(Clock.ClockLive)
+      .unit
+      .orElse(ZIO.unit)
 
   /** PUT /configuration/clients — patches a registered client through the Central API.
     *
@@ -1225,10 +1283,16 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * already fills in as no-ops, so a caller names only the member it is changing.
     */
   def updateClient(body: Json.Obj): Task[Unit] =
-    val req = Request.put(s"${config.centralUrl}/configuration/clients", Body.fromString(body.toJson))
-      .addHeader(centralAuthorization)
-      .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    def attempt(kindPath: String, typed: Json.Obj) =
+      val req = Request.put(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
+        .addHeader(centralAuthorization)
+        .addHeader(Header.ContentType(MediaType.application.json))
+      Client.batched(req).provide(ZLayer.succeed(client))
+    // The update names a client, not its kind: the first endpoint that does not call it another's.
+    ZIO.foldLeft(ClientEndpoints.updates(body))(Option.empty[Response]):
+      case (done @ Some(resp), _) if resp.status != Status.Conflict => ZIO.succeed(done)
+      case (_, (kindPath, typed)) => attempt(kindPath, typed).asSome
+    .map(_.get).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: responseBody =>
@@ -1393,6 +1457,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The JWKS key this tenant's tokens are signed with. `None` clears the selection,
         * which puts the tenant back on auth's own configured private key. */
       signingKeyId: Option[String] = None,
+      /** The tenant's accepted phone regions as a JSON array; `[]` accepts any E.164 number for sign-in
+        * and lets none register. The default is the German mobiles the suite's users have, with
+        * registration on, because registering a phone number is the country's say. */
+      phoneRegions: String = OAuthClient.germanMobileRegion,
+      /** The tenant's email self-registration policy as a JSON object. The default is `open` with
+        * no blocked domain, so the suite's flows keep registering unknown addresses. */
+      emailRegistration: String = OAuthClient.openEmailRegistration,
+      /** The role ids a self-registered account gets, as a JSON array; central wants at least one. */
+      defaultRoles: String = """["user"]""",
+      /** The tenant's logo for the light and the dark colour scheme. Sent as null when `None`, which clears the
+        * stored file (central keeps what an omitted field says), so every call leaves the tenant on exactly
+        * these two. Central takes both or neither. */
+      logoLight: Option[String] = None,
+      logoDark: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1403,7 +1481,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val bodyStr =
       s"""{
          |  "tenantId": "$tenantId",
-         |  "allowedPrefixes": [],
+         |  "phoneRegions": $phoneRegions,
+         |  "emailRegistration": $emailRegistration,
+         |  "defaultRoles": $defaultRoles,
          |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
@@ -1412,7 +1492,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson,
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
          |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
-         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")}
+         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")},
+         |  "logoLight": ${logoLight.fold("null")(url => s"\"$url\"")},
+         |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)
@@ -1775,6 +1857,21 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
 object OAuthClient:
 
+  /** `+49` and eleven digits starting 15, 16 or 17: the numbers the suite's users are given. */
+  val germanMobileRegion: String =
+    """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":true}]"""
+
+  /** Any email domain registers; nothing is blocked. */
+  val openEmailRegistration: String =
+    """{"mode":"open","domains":[],"blockSubaddress":false}"""
+
+  val openEmailRegistrationJson: zio.json.ast.Json =
+    zio.json.ast.Json.Obj(
+      "mode" -> zio.json.ast.Json.Str("open"),
+      "domains" -> zio.json.ast.Json.Arr(),
+      "blockSubaddress" -> zio.json.ast.Json.Bool(false),
+    )
+
   /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
     ZLayer.fromZIO(
@@ -1822,7 +1919,6 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
-      registrationFlow: Option[zio.json.ast.Json],
       consentFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],

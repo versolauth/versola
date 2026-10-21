@@ -1,30 +1,27 @@
 .conversation-expired-icon {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
-  background: rgba(107, 114, 128, 0.12);
+  background: var(--field);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 20px;
-  color: var(--text-muted);
+  margin: 0 0 24px;
+  color: var(--ink);
 }
 
 .conversation-expired-icon svg {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
 }
 
 .conversation-expired-description {
-  font-size: 0.95rem;
+  font-size: 1rem;
   color: var(--text-muted);
-  margin: -8px 0 0;
+  margin: -14px 0 0;
   line-height: 1.6;
-  text-align: center;
 }
 
 .conversation-expired-return {
-  display: block;
   margin-top: 28px;
-  text-decoration: none;
 }
