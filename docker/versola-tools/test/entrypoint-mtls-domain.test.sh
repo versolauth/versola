@@ -79,7 +79,7 @@ run_entrypoint vps MTLS_DOMAIN=id-mtls.example.com CENTRAL_MTLS_DOMAIN=central-m
 frag=$work/out.d/compose.fragment.yml
 grep -qF 'MTLS_DOMAIN: "id-mtls.example.com"' "$frag" && pass "the compose fragment carries MTLS_DOMAIN" || fail "the compose fragment carries MTLS_DOMAIN"
 grep -qF 'CENTRAL_MTLS_DOMAIN: "central-mtls.example.com"' "$frag" && pass "the compose fragment carries CENTRAL_MTLS_DOMAIN" || fail "the compose fragment carries CENTRAL_MTLS_DOMAIN"
-! grep -q '@MTLS_DOMAIN@\|@CENTRAL_MTLS_DOMAIN@\|\${VERSION}' "$frag" && pass "no placeholder is left" || fail "no placeholder is left"
+! grep -q '@MTLS_DOMAIN@\|@CENTRAL_MTLS_DOMAIN@\|@MTLS_CERT_DAYS@\|\${VERSION}' "$frag" && pass "no placeholder is left" || fail "no placeholder is left"
 [ "$(cat "$work/java.env")" = "id-mtls.example.com|central-mtls.example.com" ] && pass "gen-env gets both names in its environment" || fail "gen-env gets both names in its environment"
 [ "$(tail -1 "$work/java.args")" = "--some-flag=1" ] && pass "the entrypoint's own arguments still reach gen-env" || fail "the entrypoint's own arguments still reach gen-env"
 cmp -s "$tools/mtls-init.sh" "$work/out.d/mtls-init.sh" && cmp -s "$tools/step-ca-intermediates.sh" "$work/out.d/step-ca-intermediates.sh" \
@@ -87,6 +87,17 @@ cmp -s "$tools/mtls-init.sh" "$work/out.d/mtls-init.sh" && cmp -s "$tools/step-c
 [ "$(stat -f %Lp "$work/out.d/mtls-init.sh" 2>/dev/null || stat -c %a "$work/out.d/mtls-init.sh")" = 644 ] && pass "the scripts are world-readable" || fail "the scripts are world-readable"
 run_entrypoint vps
 grep -qF 'MTLS_DOMAIN: ""' "$frag" && grep -qF 'CENTRAL_MTLS_DOMAIN: ""' "$frag" && pass "without names the environment is empty" || fail "without names the environment is empty"
+# MTLS_CERT_DAYS: digits, at most 100 years, vps only, and it reaches mtls-init's environment.
+run_entrypoint vps MTLS_CERT_DAYS=90
+grep -qF 'MTLS_CERT_DAYS: "90"' "$frag" && pass "the lifetime reaches mtls-init" || fail "the lifetime reaches mtls-init"
+run_entrypoint vps MTLS_CERT_DAYS=0
+grep -qF 'MTLS_CERT_DAYS: "0"' "$frag" && pass "0 (unlimited) reaches mtls-init" || fail "0 (unlimited) reaches mtls-init"
+run_entrypoint vps
+grep -qF 'MTLS_CERT_DAYS: ""' "$frag" && pass "no lifetime: the default is mtls-init's" || fail "no lifetime: the default is mtls-init's"
+for bad in abc -1 '1;rm' 36501 123456 '9 9'; do
+  if run_entrypoint vps MTLS_CERT_DAYS="$bad"; then fail "refused lifetime: $bad"; else pass "refused lifetime: $bad"; fi
+done
+if run_entrypoint docker-local MTLS_CERT_DAYS=90; then fail "refused lifetime for docker-local"; else pass "refused lifetime for docker-local"; fi
 run_entrypoint docker-local
 cmp -s "$work/out.d/compose.fragment.yml" "$tools/compose.fragment.yml.template" && fail "docker-local: version not substituted" || pass "docker-local fragment is the plain template with the version"
 [ ! -e "$work/out.d/mtls-init.sh" ] && pass "docker-local gets no vps scripts" || fail "docker-local gets no vps scripts"

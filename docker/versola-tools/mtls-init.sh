@@ -6,9 +6,9 @@
 # `versola` (the CLI) drives through MTLS_INIT_PHASE.
 #
 # Leaves, by the intermediate that signs them (step-ca-intermediates.sh made all three):
-#   server          auth's listener             server intermediate  90 days  pinned by edge
-#   central-server  central's listener          server intermediate  90 days  pinned by edge
-#   edge-client     identity of the local edge  edge intermediate     30 days  not pinned
+#   server          auth's listener             server intermediate  365 days pinned by edge
+#   central-server  central's listener          server intermediate  365 days pinned by edge
+#   edge-client     identity of the local edge  edge intermediate    365 days not pinned
 # `client` (intermediate_ca.crt) is the CA step-ca itself signs with, for central's provisioner.
 #
 # Trust files, each holding exactly one intermediate and never the root, because a trust anchor
@@ -40,6 +40,12 @@
 # /app/ca in central alone) holds edge-ca.crt and edge-ca.key (unencrypted PKCS#8, mode 0600). The key
 # never goes into $MTLS_DIR, which auth and edge mount too.
 #
+# MTLS_CERT_DAYS: how long the three leaves live (default 365; renewal is still at a third of the
+# life left). 0 means unlimited: a notAfter 100 years away, so the files never need renewing -- which
+# gives up the expiry as a damage limit for a leaked key. A leaf whose lifetime differs from the
+# configured one is due, so changing the setting takes effect at the next prepare/all. The
+# intermediates and the root keep their own lifetimes.
+#
 # MTLS_DOMAIN / CENTRAL_MTLS_DOMAIN: public names added to the SAN of auth's and central's leaf
 # (opt-in, `versola configure vps --mtls-domain/--central-mtls-domain`). A leaf that lacks the
 # configured name is due, so setting one takes effect at the next prepare/all. STEP_HOME and
@@ -52,6 +58,14 @@ CENTRAL_CA_DIR="${CENTRAL_CA_DIR:-/central-ca}"
 PHASE="${MTLS_INIT_PHASE:-all}"
 MTLS_DOMAIN="${MTLS_DOMAIN:-}"
 CENTRAL_MTLS_DOMAIN="${CENTRAL_MTLS_DOMAIN:-}"
+CERT_DAYS="${MTLS_CERT_DAYS:-365}"
+case "$CERT_DAYS" in
+  ''|*[!0-9]*) echo "mtls-init: MTLS_CERT_DAYS '$CERT_DAYS' is not a number of days" >&2; exit 1 ;;
+esac
+# 0 = unlimited: 100 years.
+if [ "$CERT_DAYS" -eq 0 ]; then CERT_DAYS=36500; fi
+if [ "$CERT_DAYS" -gt 36500 ]; then echo "mtls-init: MTLS_CERT_DAYS $CERT_DAYS is more than 100 years" >&2; exit 1; fi
+LEAF_HOURS=$((CERT_DAYS * 24))h
 
 case "$PHASE" in
   all|prepare|commit|identity|report) ;;
@@ -91,12 +105,12 @@ mint() {
   name=$1 prefix=$2
   case "$name" in
     server)
-      cn=localhost hours=2160h; set -- --san auth --san localhost --san 127.0.0.1 ;;
+      cn=localhost hours=$LEAF_HOURS; set -- --san auth --san localhost --san 127.0.0.1 ;;
     central-server)
-      cn=central hours=2160h; set -- --san central --san localhost --san 127.0.0.1 ;;
+      cn=central hours=$LEAF_HOURS; set -- --san central --san localhost --san 127.0.0.1 ;;
     edge-client)
       # The URI name is what central checks against the edge the token names (`authorizeEdge`).
-      cn=edge-default hours=720h; set -- --san urn:versola:edge:edge-default ;;
+      cn=edge-default hours=$LEAF_HOURS; set -- --san urn:versola:edge:edge-default ;;
   esac
   domain=$(leaf_domain "$name")
   if [ -n "$domain" ]; then set -- "$@" --san "$domain"; fi
@@ -130,9 +144,16 @@ due() {
   # `step certificate needs-renewal`: exit 0 = due, 1 = not due, anything else is an error.
   rc=0
   step certificate needs-renewal "$crt" --expires-in 33% >/dev/null 2>&1 || rc=$?
-  if [ "$rc" -eq 1 ]; then echo "mtls-init: $name is valid, leaving it"; return 1; fi
-  if [ "$rc" -ne 0 ]; then echo "mtls-init: cannot read $crt (step exit $rc)" >&2; exit 1; fi
-  echo "mtls-init: $name is due for renewal"; return 0
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then echo "mtls-init: cannot read $crt (step exit $rc)" >&2; exit 1; fi
+  if [ "$rc" -eq 0 ]; then echo "mtls-init: $name is due for renewal"; return 0; fi
+  # The setting was changed: a certificate of another lifetime is replaced, so that going unlimited
+  # (or back) takes effect without waiting for the old one to run out.
+  length=$(step certificate inspect "$crt" --format json | sed -n 's/.*"length": \([0-9]*\).*/\1/p' | head -1)
+  want=$((CERT_DAYS * 86400))
+  if [ -n "$length" ] && [ "$length" -ne "$want" ] && [ $((length - want)) -gt 7200 -o $((want - length)) -gt 7200 ]; then
+    echo "mtls-init: $name lives $((length / 86400)) days, not the configured $CERT_DAYS"; return 0
+  fi
+  echo "mtls-init: $name is valid, leaving it"; return 1
 }
 
 # --- moving files around --------------------------------------------------------------------------

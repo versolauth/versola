@@ -301,6 +301,8 @@ services:
     environment:
       MTLS_DOMAIN: "@MTLS_DOMAIN@"
       CENTRAL_MTLS_DOMAIN: "@CENTRAL_MTLS_DOMAIN@"
+      # Days the leaves live (365 when empty; 0 = unlimited, 100 years).
+      MTLS_CERT_DAYS: "@MTLS_CERT_DAYS@"
     volumes:
       - versola-step-ca-vps:/home/step:ro
       - versola-mtls-vps:/mtls
