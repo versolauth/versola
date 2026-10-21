@@ -573,7 +573,7 @@ certificate expiry.
    `central.<domain>` URL) and a persistent `identity { directory }`. The edge makes its key locally,
    sends a CSR with exactly `urn:versola:edge:<id>` and `urn:versola:edge-group:<group>` to
    `POST /edge/enroll`, and renews with `POST /edge/certificate/renew` at a third of its lifetime left,
-   with a new key each time. The certificate lives 30 days; an outage of `central` of about twenty days is survived. The chain of renewals ends a year after the enrollment: `central` then refuses to renew and you enroll the edge again with a new token. Without the volume it must enroll again on every restart.
+   with a new key each time. The certificate lives 30 days; an outage of `central` of about twenty days is survived. Renewals form a chain from the enrollment; `central`'s `edge-identity { max-age = 365d, auto-extend = true }` extends it itself at `max-age`, so no edge stops for want of a new enrollment. `auto-extend = false` applies only to partners' edges: `central` then stops at `max-age` until `POST /configuration/edges/extend?edgeId=<id>` or a new enrollment (token up to 24 hours). The edge is told the end date in every answer and warns daily from 30 days before; `GET /configuration/edges` shows `identityChainEndsAt`. First-party edges are always extended. Without the volume it must enroll again on every restart.
 4. Set `central.url` to `https://central-mtls.<domain>` and `native.auth-mutual-tls-url` to
    `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration"). In this release the operator updates a remote edge's pins (0.8.0 is planned to publish them from `central`).
 
