@@ -1363,12 +1363,28 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // chart's `pki` block, which mounts a cert-manager Secret per purpose.
   val mtlsServerCertificate = if isKubernetes then "/app/mtls/server/tls.crt" else "/app/mtls/server.crt"
   val mtlsServerKey = if isKubernetes then "/app/mtls/server/tls.key" else "/app/mtls/server.key"
-  val mtlsTrustedCertificates = if isKubernetes then "/app/mtls/trust/ca.crt" else "/app/mtls/ca.crt"
-  val mtlsAuthPin = if isKubernetes then "/app/mtls/auth-pin/tls.crt" else "/app/mtls/server.crt"
+  // vps: auth's handshake accepts client certificates (client intermediate) and edge identities
+  // (edge intermediate) -- one file holding both, never the root, which would accept every
+  // intermediate. (Auth does not accept an edge certificate for anything yet: it is trusted so
+  // that the handshake is the same once it does.)
+  val mtlsTrustedCertificates =
+    if isKubernetes then "/app/mtls/trust/ca.crt" else if isVps then "/app/mtls/auth-trust.crt" else "/app/mtls/ca.crt"
+  // Pins are lists: `.next.crt` is the certificate that replaces the leaf at the next rotation (a
+  // copy of the current one while none is staged), so edge accepts both across the switch.
+  val mtlsAuthPins =
+    if isKubernetes then Seq("/app/mtls/auth-pin/tls.crt")
+    else if isVps then Seq("/app/mtls/server.crt", "/app/mtls/server.next.crt")
+    else Seq("/app/mtls/server.crt")
   // vps: authInternalUrl is the public domain there, which nothing proxies to this port -- edge
   // is on the same host and reaches the listener (bound to BIND_HOST) on loopback.
   val mtlsExternalUrl =
     if isVps then "https://127.0.0.1:8083" else s"https://${URI.create(authInternalUrl).getHost}:8083"
+  // vps, opt-in: the public name remote edges and external mTLS clients reach the listener on
+  // (versola-cli publishes it through its proxy; `mtls-init` adds it to the leaf's SAN). Only
+  // what auth advertises (`mtls_endpoint_aliases`) changes: the local edge keeps `mtlsExternalUrl`.
+  // versola-tools' entrypoint has already validated the name as a bare DNS name.
+  val mtlsPublicDomain = sys.env.get("MTLS_DOMAIN").filter(_.nonEmpty).filter(_ => isVps)
+  val mtlsAdvertisedUrl = mtlsPublicDomain.fold(mtlsExternalUrl)(domain => s"https://$domain")
   val authMutualTlsDir = File("auth/dev/mtls")
   val authMutualTlsPort = 9008
   val authMutualTlsUrl = s"https://localhost:$authMutualTlsPort"
@@ -1395,7 +1411,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |  certificate            = "$mtlsServerCertificate"
          |  private-key            = "$mtlsServerKey"
          |  trusted-certificates   = "$mtlsTrustedCertificates"
-         |  external-url           = "$mtlsExternalUrl"
+         |  external-url           = "$mtlsAdvertisedUrl"
          |}
          |""".stripMargin
 
@@ -1417,7 +1433,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |# pin is a list so auth's listener certificate can be rotated with an overlap window.
          |native {
          |  auth-mutual-tls-url   = "$mtlsExternalUrl"
-         |  trusted-certificates  = ["$mtlsAuthPin"]
+         |  trusted-certificates  = [${mtlsAuthPins.map(pin => s"\"$pin\"").mkString(", ")}]
          |  blob-key              = ${secretField(useOpenBao, edgeNativeBlobKey, "EDGE_NATIVE_BLOB_KEY")}
          |}
          |""".stripMargin
@@ -1436,14 +1452,18 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     if isKubernetes then "/app/central-mtls/server/tls.crt" else "/app/mtls/central-server.crt"
   val centralMutualTlsKey =
     if isKubernetes then "/app/central-mtls/server/tls.key" else "/app/mtls/central-server.key"
+  // vps: central trusts edge identities only (the edge intermediate), so a client certificate does
+  // not even complete the handshake.
   val centralMutualTlsTrust =
-    if isKubernetes then "/app/central-mtls/trust/ca.crt" else "/app/mtls/ca.crt"
+    if isKubernetes then "/app/central-mtls/trust/ca.crt" else if isVps then "/app/mtls/edge-ca.crt" else "/app/mtls/ca.crt"
   val edgeCentralCertificate =
     if isKubernetes then "/app/central-mtls/client/tls.crt" else "/app/mtls/edge-client.crt"
   val edgeCentralKey =
     if isKubernetes then "/app/central-mtls/client/tls.key" else "/app/mtls/edge-client.key"
-  val edgeCentralPin =
-    if isKubernetes then "/app/central-mtls/server-pin/tls.crt" else "/app/mtls/central-server.crt"
+  val edgeCentralPins =
+    if isKubernetes then Seq("/app/central-mtls/server-pin/tls.crt")
+    else if isVps then Seq("/app/mtls/central-server.crt", "/app/mtls/central-server.next.crt")
+    else Seq("/app/mtls/central-server.crt")
   val centralMutualTlsUrlDefault =
     if isDockerLocal then "https://central:8093"
     else if isVps then "https://127.0.0.1:8093"
@@ -1479,14 +1499,14 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |}
          |""".stripMargin
   val edgeCentralBlock =
-    val (certificate, key, pin) =
+    val (certificate, key, pins) =
       if isLocal then
         (
           File(centralMutualTlsDir, "edge-client.crt").getAbsolutePath,
           File(centralMutualTlsDir, "edge-client.key").getAbsolutePath,
-          File(centralMutualTlsDir, "server.crt").getAbsolutePath,
+          Seq(File(centralMutualTlsDir, "server.crt").getAbsolutePath),
         )
-      else (edgeCentralCertificate, edgeCentralKey, edgeCentralPin)
+      else (edgeCentralCertificate, edgeCentralKey, edgeCentralPins)
     s"""central {
        |  url = "$centralMutualTlsUrl"
        |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
@@ -1494,7 +1514,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  mutual-tls {
        |    certificate          = "$certificate"
        |    private-key          = "$key"
-       |    trusted-certificates = ["$pin"]
+       |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
        |  }
        |}""".stripMargin
 
@@ -1879,13 +1899,45 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |}
          |""".stripMargin
 
+  // vps: central signs edge identities (/edge/enroll, /edge/certificate/renew) with the edge
+  // intermediate, which its listener trusts, and not through step-ca's client intermediate. `mtls-init`
+  // puts the certificate and its key into the volume only central mounts (/app/ca).
+  // k8s: the chart's EDGE_CERT_ISSUER_NAME/_KIND/_GROUP (the `edge` cert-manager issuer, kept apart
+  // from the clients' one) name the issuer, and the block is written only where the name is given
+  // here; without it central falls back to the client issuer.
+  val edgeCertificateAuthorityBlock =
+    if isKubernetes && sys.env.get("EDGE_CERT_ISSUER_NAME").exists(_.nonEmpty) then
+      """
+        |# Edge identities (`/edge/enroll`, `/edge/certificate/renew`) are issued by cert-manager with the
+        |# `edge` issuer; the edge renews them itself at a third of their life left.
+        |edge-certificates {
+        |  validity     = "30 days"
+        |  renew-before = "10 days"
+        |  cert-manager {
+        |    issuer-name  = ${EDGE_CERT_ISSUER_NAME}
+        |    issuer-kind  = ${?EDGE_CERT_ISSUER_KIND}
+        |    issuer-group = ${?EDGE_CERT_ISSUER_GROUP}
+        |  }
+        |}
+        |""".stripMargin
+    else if isVps then
+      """
+        |# The CA edge identities are signed with: the edge intermediate (develop.md, "Certificate
+        |# storage and rotation"). Clients' certificates stay with the client CA above.
+        |edge-certificate-authority {
+        |  certificate = "/app/ca/edge-ca.crt"
+        |  private-key = "/app/ca/edge-ca.key"
+        |}
+        |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"

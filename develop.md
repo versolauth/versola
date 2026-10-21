@@ -285,8 +285,30 @@ the URI name is the only link, which is why it is a name and not a pinned finger
 
 `local` writes `central/dev/mtls/{ca,server,edge-client}.{crt,key}` (a CA of its own, central's
 leaf, and `edge-default`'s certificate) for both services and e2e's `EdgeSyncSurfaceSpec`.
-`MPORT=9011` there. docker-local/vps: `mtls-init` issues `central-server.*` and `edge-client.*`
+`MPORT=9011` there. docker-local: `mtls-init` issues `central-server.*` and `edge-client.*`
 into the shared `/app/mtls` volume; k8s: the chart's `pki` block (cert-manager).
+
+vps (the compose bundle that `versola-cli` deploys) splits the roles across three intermediates of one
+step-ca root, so the rule above is enforced by the handshake and not only by the name: `central`
+trusts `/app/mtls/edge-ca.crt`, which holds the **edge** intermediate and nothing else, so a client
+certificate (from the **client** intermediate) does not complete the handshake, and `auth` trusts
+`/app/mtls/auth-trust.crt` (client + edge; auth accepts no edge certificate for anything yet, so
+the name check on that side comes with the step that does). The listener
+leaves come from the **server** intermediate (365 days), the edge identity of the local edge from the edge
+intermediate (365 days; `versola configure vps --cert-lifetime-days N`, 0 = unlimited). **`central` signs edge identities itself** (`/edge/enroll`,
+`/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that
+intermediate, accepts them: `mtls-init` puts `edge-ca.crt` and `edge-ca.key` (unencrypted PKCS#8, 0600)
+into `versola-central-ca-*` -- the volume only central mounts, `/app/ca`, never the shared
+`/app/mtls` -- and `central.conf` gets `edge-certificate-authority { certificate, private-key }`. That
+is acceptable because central already decides which edges exist (registering one and enrolling it are
+both its admin API). Clients' certificates are still signed by the client intermediate through
+step-ca's `central` provisioner (`client-certificates`). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
+central's `APORT` (8094, not auth's 8082) is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
+an external client reaches them only through public names that are opt-in
+(`versola configure vps --mtls-domain`, `--central-mtls-domain`, `--central-domain`), which
+`versola-cli`'s proxy forwards; the first two are added to the leaf's SAN by `mtls-init` through
+`MTLS_DOMAIN` / `CENTRAL_MTLS_DOMAIN` of `versola-tools`. The local edge keeps using
+`https://127.0.0.1:8083` and `:8093`, never the public names.
 
 ### Certificate storage and rotation (#440)
 
@@ -296,7 +318,7 @@ Three certificate relationships exist in the mTLS work, with different rotation 
 |---|---|---|---|
 | 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
 | 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
-| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the same CA and restarts the edge -- no registration in central; a CA change follows (1) |
+| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the edge CA (vps: `mtls-init`, 365 days by default, `MTLS_INIT_PHASE=identity`) and restarts the edge -- no registration in central; a CA change follows (1) |
 | 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
 
 **(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
@@ -320,6 +342,28 @@ and the TLS client accepts a server certificate matching *any* entry. Roll it ou
 it; (c) once every edge has the new set, drop the old entry. Edge reads the files at startup, so
 a changed file needs a restart. A single-element list is the previous behaviour; the previous
 bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
+
+In the vps bundle the overlap is built in. Edge's pins are always the pairs
+`/app/mtls/server.crt` + `server.next.crt` (auth) and `central-server.crt` + `central-server.next.crt`
+(central); `<name>.next.crt` is a copy of the current leaf until a replacement is staged. `mtls-init`
+(`docker/versola-tools/mtls-init.sh`, whose header is the contract) does the steps of (a)-(c)
+as phases of `MTLS_INIT_PHASE`, run with
+`docker compose run --rm -e MTLS_INIT_PHASE=<phase> mtls-init` and driven by `versola certs renew`
+and `rollout`:
+
+1. `prepare`: for each server leaf that is due, write the replacement as `<name>.next.crt` and
+   `<name>.next.key`; the current pair is untouched. Printing `mtls-init: staged <name>` and
+   `mtls-init: changed`. Repeating it keeps what is staged, so a renewal cut off here goes on to 3.
+2. Restart `edge`: it now pins old and new.
+3. `commit`: the staged pair becomes the current pair (`mtls-init: committed <name>`); `<name>.next.crt`
+   stays as a copy of it. With nothing staged it prints nothing.
+4. Restart the service whose leaf changed (`auth` or `central`).
+
+`all` (the default, what `up` runs) skips the choreography and replaces what is due in place, with
+the short gap described in [deploy.md](deploy.md#mutual-tls-certificates); `identity` renews only
+`edge-client`, which nobody pins; `report` changes nothing and prints one line per certificate,
+`mtls-init: cert <file> notBefore=<UTC> notAfter=<UTC> subject=<CN or URN>`, for `doctor` and `status`.
+`docker/versola-tools/test/mtls-init.test.sh` runs every phase against a throwaway step-ca in Docker.
 
 **(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
