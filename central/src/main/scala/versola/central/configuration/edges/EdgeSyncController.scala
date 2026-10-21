@@ -29,6 +29,8 @@ import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 
+import java.security.cert.X509Certificate
+
 /** The surface central serves to edges and to nobody else (#554): `GET /edge/sync/<resource>`
   * for what an edge reads, and the certificate signing an edge enrols through. Every route
   * authenticates the caller as a registered edge with [[authorizeEdge]] and answers for that edge
@@ -212,7 +214,11 @@ object EdgeSyncController extends Controller:
       (for
         edgeId <- authorizeEdge(request)
         body <- request.bodyAs[RenewEdgeCertificateRequest]
-        chain <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(edgeId, body.csr))
+        chain <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
+          edgeId,
+          body.csr,
+          request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
+        ))
       yield Response.json(SignEdgeCertificateResponse(chain).toJson))
         .catchAll {
           case error: EdgeIdentityService.Refused =>

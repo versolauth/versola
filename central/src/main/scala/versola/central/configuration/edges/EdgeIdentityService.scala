@@ -10,7 +10,7 @@ import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.cert.{CertificateFactory, X509Certificate}
-import java.time.Instant
+import java.time.{Duration as JavaDuration, Instant}
 
 /** What an edge is recognised by, on central's mutual-TLS listener and at auth: a certificate that names it
   * (`urn:versola:edge:<id>`) and the group it belongs to (`urn:versola:edge-group:<group>`).
@@ -22,9 +22,14 @@ import java.time.Instant
   * listener with the certificate the edge already has ([[renew]]), with a new key each time.
   */
 trait EdgeIdentityService:
-  /** A token for `edgeId` to enrol with, valid for [[EdgeIdentityService.TokenValidity]] and for one use. The token is
-    * returned here and never again: only its hash is kept. */
-  def issueEnrollmentToken(edgeId: EdgeId): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.IssuedToken]
+  /** A token for `edgeId` to enrol with, valid for `validity` (an hour by default, at most
+    * [[EdgeIdentityService.MaxTokenValidity]]: a bundle handed to someone on another continent may need longer than an
+    * hour, and no token should wait for days) and for one use. The token is returned here and never again: only its
+    * hash is kept. */
+  def issueEnrollmentToken(
+      edgeId: EdgeId,
+      validity: Duration = EdgeIdentityService.TokenValidity,
+  ): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.IssuedToken]
 
   /** The edge's first certificate chain, for the token it was given. */
   def enroll(
@@ -33,11 +38,19 @@ trait EdgeIdentityService:
       csrPem: String,
   ): IO[EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | Throwable, String]
 
-  /** A new certificate chain for an edge that proved who it is on the mutual-TLS listener. */
-  def renew(edgeId: EdgeId, csrPem: String): IO[EdgeIdentityService.Refused | Throwable, String]
+  /** A new certificate chain for an edge that proved who it is on the mutual-TLS listener. `presentedSerial` is the
+    * certificate it proved it with, for the log. Refused once the chain of renewals is older than
+    * [[EdgeIdentityService.MaxChainAge]]: an identity is not good for ever on renewals alone, the operator enrols the edge
+    * again with a new token. */
+  def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String] = None): IO[EdgeIdentityService.Refused | Throwable, String]
 
 object EdgeIdentityService:
   val TokenValidity: Duration = 1.hour
+
+  val MaxTokenValidity: Duration = 24.hours
+
+  /** How long an edge may renew its way from one enrollment before it has to enrol again. */
+  val MaxChainAge: Duration = 365.days
 
   case class IssuedToken(token: String, expiresAt: Instant)
 
@@ -68,12 +81,14 @@ object EdgeIdentityService:
   ) extends EdgeIdentityService:
     private val validity: Duration = EdgeCertificateIssuer.validity(config)
 
-    override def issueEnrollmentToken(edgeId: EdgeId): IO[Refused | Throwable, IssuedToken] =
+    override def issueEnrollmentToken(edgeId: EdgeId, validity: Duration): IO[Refused | Throwable, IssuedToken] =
       for
+        _ <- ZIO.fail(Refused(s"a token is valid for at most ${MaxTokenValidity.toHours} hours")).when(validity > MaxTokenValidity)
+        _ <- ZIO.fail(Refused("a token must be valid for a positive time")).when(validity <= Duration.Zero)
         _ <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
         token <- random.nextBytes(32).map(Base64Url.encode)
         now <- Clock.instant
-        expiresAt = now.plus(TokenValidity)
+        expiresAt = now.plus(validity)
         _ <- tokens.create(hash(token), edgeId, expiresAt)
       yield IssuedToken(token, expiresAt)
 
@@ -95,10 +110,17 @@ object EdgeIdentityService:
         chain <- sign(edge, csrPem)
       yield chain
 
-    override def renew(edgeId: EdgeId, csrPem: String): IO[Refused | Throwable, String] =
+    override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, String] =
       for
         edge <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
         _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
+        now <- Clock.instant
+        started <- issued.firstIssuedAt(edgeId)
+        _ <- ZIO.fail(
+          Refused(s"the identity of edge '$edgeId' has been renewed for more than ${MaxChainAge.toDays} days: enrol it again with a new token"),
+        )
+          .when(started.exists(first => JavaDuration.between(first, now).compareTo(MaxChainAge) > 0))
+        _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         chain <- sign(edge, csrPem)
       yield chain
 

@@ -2155,12 +2155,23 @@ paths:
       tags: [Edges]
       summary: Create a one-time token for an edge to enrol with
       description: |
-        The edge trades the token, once and within an hour, together with a certificate request,
-        for its first certificate (`POST /edge/enroll` on the enrollment listener). Only a hash of
-        the token is kept: it is shown here and never again.
+        The edge trades the token, once and within an hour (`validityHours` asks for longer, up
+        to 24: a bundle handed to someone far away may need it), together with a certificate
+        request, for its first certificate (`POST /edge/enroll` on the enrollment listener). Only a
+        hash of the token is kept: it is shown here and never again. The certificate is renewed by
+        the edge itself over the mutual-TLS listener, for a year from this enrollment; after that
+        the edge is enrolled again with a new token.
       operationId: createEdgeEnrollmentToken
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
+        - name: validityHours
+          in: query
+          required: false
+          description: How long the token is good for, in hours; 1 when absent, at most 24.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 24
       responses:
         '201':
           description: Token created.
@@ -2171,7 +2182,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: No edge is registered under that id.
+          description: No edge is registered under that id, or the validity asked for is out of range.
 
   /configuration/edges/dpop:
     put:

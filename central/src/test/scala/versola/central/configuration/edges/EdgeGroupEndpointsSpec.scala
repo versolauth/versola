@@ -156,7 +156,20 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       verify = (response, stubs) =>
         for body <- response.body.asJson[EnrollmentTokenResponse]
-        yield assertTrue(body.token == "TOKEN", stubs.identity.issueEnrollmentToken.calls == List(edgeId)),
+        yield assertTrue(body.token == "TOKEN", stubs.identity.issueEnrollmentToken.calls == List((edgeId, EdgeIdentityService.TokenValidity))),
+    ),
+    testCase(
+      description = "a token can be asked for longer than an hour",
+      request = Request.post(
+        (URL.root / "configuration" / "edges" / "enrollment-tokens").addQueryParam("edgeId", edgeId.toString).addQueryParam("validityHours", "6"),
+        Body.empty,
+      ),
+      expectedStatus = Status.Created,
+      setup = stubs =>
+        stubs.identity.issueEnrollmentToken.succeedsWith(
+          EdgeIdentityService.IssuedToken("TOKEN", java.time.Instant.parse("2026-10-21T18:00:00Z")),
+        ),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.issueEnrollmentToken.calls == List((edgeId, 6.hours)))),
     ),
     testCase(
       description = "a token for an edge that is not registered is 404",

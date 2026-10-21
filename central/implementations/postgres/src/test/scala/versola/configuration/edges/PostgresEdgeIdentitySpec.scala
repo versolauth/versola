@@ -124,8 +124,11 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
         _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
+        _ <- certificates.record(edgeId, "cd34", now.plusSeconds(172800), now.plusSeconds(3600))
+        started <- certificates.firstIssuedAt(edgeId)
         _ <- edges.deleteEdge(edgeId)
+        gone <- certificates.firstIssuedAt(edgeId)
         spent <- tokens.consume("hash-1", now)
-      yield assertTrue(spent.isEmpty)
+      yield assertTrue(spent.isEmpty, started == Some(now), gone.isEmpty)
     },
   ) @@ TestAspect.sequential

@@ -590,7 +590,11 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         setup = services => services.identity.renew.succeedsWith("CHAIN"),
         verify = (response, services) =>
           for body <- decodeBody[SignEdgeCertificateResponse](response)
-          yield assertTrue(body.certificate == "CHAIN", services.identity.renew.calls == List((edgeId, "REQUEST"))),
+          yield assertTrue(
+            body.certificate == "CHAIN",
+            services.identity.renew.calls.map(call => (call._1, call._2)) == List((edgeId, "REQUEST")),
+            services.identity.renew.calls.head._3.isDefined,
+          ),
       ),
       testCase(
         description = "certificate renewal: a request that names something else is 422",

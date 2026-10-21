@@ -6,11 +6,11 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
 import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
-import zio.ZIO
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
+import zio.{Duration, ZIO}
 
 import java.time.Instant
 
@@ -93,7 +93,9 @@ object EdgeController extends Controller:
       for
         _ <- authorizeBasic(request)
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
-        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.issueEnrollmentToken(edgeId)).map: issued =>
+        hours <- ZIO.succeed(request.url.queryParams.getAll("validityHours").headOption.flatMap(_.toLongOption))
+        validity = hours.fold(EdgeIdentityService.TokenValidity)(h => Duration.fromSeconds(h * 3600L))
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.issueEnrollmentToken(edgeId, validity)).map: issued =>
           Response.json(EnrollmentTokenResponse(token = issued.token, expiresAt = issued.expiresAt).toJson).status(Status.Created)
         .catchSome:
           case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))

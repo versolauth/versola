@@ -42,11 +42,14 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     def hashes: UIO[Set[String]] = state.get.map(_.keySet)
 
-  private class InMemoryCertificates(state: Ref[Vector[(EdgeId, String)]]) extends EdgeCertificateRepository:
+  private class InMemoryCertificates(state: Ref[Vector[(EdgeId, String)]], val first: Ref[Map[EdgeId, Instant]])
+    extends EdgeCertificateRepository:
     override def record(edgeId: EdgeId, serial: String, notAfter: Instant, issuedAt: Instant): Task[Unit] =
-      state.update(_ :+ (edgeId -> serial))
+      state.update(_ :+ (edgeId -> serial)) *> first.update(m => if m.contains(edgeId) then m else m.updated(edgeId, issuedAt))
 
     def all: UIO[Vector[(EdgeId, String)]] = state.get
+
+    override def firstIssuedAt(edgeId: EdgeId): Task[Option[Instant]] = first.get.map(_.get(edgeId))
 
   /** Issues what was asked, the way a CA that signs the request as it is does. */
   private val honestIssuer: ClientCertificateIssuer =
@@ -61,7 +64,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private class Env(edges: List[EdgeRecord], issuer: ClientCertificateIssuer = honestIssuer):
     val edgeService = stub[EdgeService]
     val tokens = InMemoryTokens(Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (EdgeId, Instant, Boolean)])(using _)))
-    val certificates = InMemoryCertificates(Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)))
+    val certificates = InMemoryCertificates(
+      Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)),
+      Unsafe.unsafe(Ref.unsafe.make(Map.empty[EdgeId, Instant])(using _)),
+    )
     val service: URIO[SecureRandom, EdgeIdentityService] =
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
@@ -183,6 +189,40 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         failure <- service.enroll(edgeId, issued.token, csr).flip
         recorded <- env.certificates.all
       yield assertTrue(failure.isInstanceOf[EdgeIdentityService.Refused], recorded.isEmpty)
+    },
+    test("an edge renews its way along for a year from its enrollment, and then enrols again") {
+      val edge = edgeRecord(edgeId)
+      val env = Env(List(edge))
+      for
+        service <- env.service
+        issued <- service.issueEnrollmentToken(edgeId)
+        csr <- csrFor(edge)
+        _ <- service.enroll(edgeId, issued.token, csr)
+        _ <- TestClock.adjust(EdgeIdentityService.MaxChainAge.minus(1.day))
+        renewedInTime <- csrFor(edge).flatMap(service.renew(edgeId, _))
+        _ <- TestClock.adjust(2.days)
+        late <- csrFor(edge).flatMap(service.renew(edgeId, _)).flip
+      yield assertTrue(
+        renewedInTime.contains("BEGIN CERTIFICATE"),
+        late.isInstanceOf[EdgeIdentityService.Refused],
+        late.getMessage.contains("enrol it again"),
+      )
+    },
+    test("an enrollment token is valid for an hour unless asked for longer, and for no more than a day") {
+      val env = Env(List(edgeRecord(edgeId)))
+      for
+        service <- env.service
+        now <- Clock.instant
+        byDefault <- service.issueEnrollmentToken(edgeId)
+        afterFiveHours <- service.issueEnrollmentToken(edgeId, 5.hours)
+        tooLong <- service.issueEnrollmentToken(edgeId, 25.hours).flip
+        none <- service.issueEnrollmentToken(edgeId, Duration.Zero).flip
+      yield assertTrue(
+        byDefault.expiresAt == now.plusSeconds(3600),
+        afterFiveHours.expiresAt == now.plusSeconds(5 * 3600),
+        tooLong.isInstanceOf[EdgeIdentityService.Refused],
+        none.isInstanceOf[EdgeIdentityService.Refused],
+      )
     },
     test("an edge in a partner group enrols for a certificate that names its group") {
       val edge = edgeRecord(edgeId, partnerGroup, EdgeGroupKind.Partner)
