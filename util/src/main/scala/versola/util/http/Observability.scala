@@ -143,6 +143,27 @@ object Observability:
 
   def updateAccessLog(next: AccessLogSettings): UIO[Unit] = ZIO.succeed(accessLog.set(next))
 
+  /** The peers (`host:port`) of this deployment's own services (central, auth, ...). A successful call to one of them is
+    * written at DEBUG: high volume, and the metrics have it. A call to any other peer (an OTP, SMS or e-mail provider,
+    * any third-party integration) is external and a success is written at INFO whatever the access-log mode: that line
+    * is the record that a message was handed over, for support and billing questions and for fraud investigations.
+    * Empty until the service sets it at start-up (see `VersolaApp.internalPeers`), so a peer nobody classified is
+    * external: an extra line is the safe mistake.
+    */
+  val internalPeers: java.util.concurrent.atomic.AtomicReference[Set[String]] =
+    new java.util.concurrent.atomic.AtomicReference(Set.empty)
+
+  def setInternalPeers(peers: Set[String]): UIO[Unit] = ZIO.succeed(internalPeers.set(peers))
+
+  private val internalCall: FiberRef[Boolean] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(false)
+  }
+
+  /** Marks the calls made inside `zio` as internal whatever their peer: for a hot path whose peers are not known at
+    * start-up (edge's proxied upstreams), where an INFO line per success would be the cost this setting exists to avoid.
+    */
+  def asInternalCall[R, E, A](zio: ZIO[R, E, A]): ZIO[R, E, A] = internalCall.locally(true)(zio)
+
   /** Lowest level the JSON logger writes, from `LOG_LEVEL` (`trace`, `debug`, `info`, `warn`, `error`; default `info`).
     * Known here so a line below it is not built at all, see [[logsDebug]]. */
   val minLogLevel: LogLevel =
@@ -482,7 +503,8 @@ object Observability:
                   (duration, exit) = result
                   masking <- clientLogging.get
                   route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))
-                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit)
+                  internal <- internalCall.get
+                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit, internal)
                   response <- exit.unsandbox
                 yield response
 
@@ -504,6 +526,7 @@ object Observability:
       duration: Duration,
       masking: HttpObservabilityConfig.Client,
       exit: Exit[Cause[Any], Response],
+      internalCall: Boolean,
   ): UIO[Unit] =
     val baseUri = url.kind match
       case loc: URL.Location.Absolute => s"${loc.scheme.encode}://${loc.host}:${loc.port}"
@@ -568,10 +591,11 @@ object Observability:
           MetricLabel("route", route),
           MetricLabel("status_class", statusClass),
         )
-        // A successful call is DEBUG unless it was slow; failures keep their level.
+        // A successful call to one of our own services is DEBUG unless it was slow; a call to an external peer, and any
+        // failure, keeps INFO or above.
         val level =
           if response.status.isServerError then LogLevel.Error
-          else if status >= 400 || accessLog.get.isSlow(duration.toMillis) then LogLevel.Info
+          else if status >= 400 || accessLog.get.isSlow(duration.toMillis) || !(internalCall || internalPeers.get.contains(peer)) then LogLevel.Info
           else LogLevel.Debug
         val write = level != LogLevel.Debug || logsDebug
         val bodyEffect =

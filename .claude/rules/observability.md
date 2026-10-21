@@ -11,7 +11,9 @@ request, response, timing, and two accumulated annotations. Enrich that line; do
 The line is not guaranteed for a successful request: `HTTP_ACCESS_LOG=sampled|off` (`AccessLogSettings`) drops
 most of them. A request with status 400 or above, or an unhandled error, is always logged, so everything above about
 `setError` still holds; never rely on a successful request's line being in the log, use metrics for that. Successful
-`send-http` lines are `DEBUG`.
+`send-http` lines to the deployment's own services are `DEBUG`; to any other peer (a message provider, a third-party
+integration) they are `INFO` always. Classify a new internal peer in `VersolaApp.internalPeers` (or wrap a hot call in
+`Observability.asInternalCall`); an unclassified peer is external, and an extra line is the safe mistake.
 
 ## The request log context
 

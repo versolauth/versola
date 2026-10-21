@@ -117,6 +117,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override protected def guardExemptPeers =
     ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
+  override protected def internalPeers =
+    ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
+
   override protected def accessLogConfigurable: Boolean = false
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =

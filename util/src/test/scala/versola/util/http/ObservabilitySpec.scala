@@ -649,7 +649,34 @@ object ObservabilitySpec extends ZIOSpecDefault:
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+          _ <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok"))).ensuring(ZIO.succeed(Observability.logsDebug = true))
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(!logs.exists(_.message() == "send-http"))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a successful send-http call to an external peer is INFO even when DEBUG is hidden and the access log is off") {
+        for
+          levels <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 0.0)):
+            for
+              _ <- ZIO.succeed(Observability.logsDebug = false)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+              rawClient <- ZIO.service[Client]
+              tracing <- ZIO.service[Tracing]
+              client = rawClient @@ Observability.clientMiddleware(tracing)
+              _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+              logs <- ZTestLogger.logOutput
+            yield logs.filter(_.message() == "send-http").map(_.logLevel)
+        yield assertTrue(levels == Chunk(LogLevel.Info))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a peer listed as internal is DEBUG") {
+        for
+          _ <- ZIO.succeed(Observability.internalPeers.set(Set("unknown")))
+          _ <- ZIO.succeed(Observability.logsDebug = false)
+          _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- client.batched(Request.get(URL.empty / "ok"))
+            .ensuring(ZIO.succeed { Observability.logsDebug = true; Observability.internalPeers.set(Set.empty) })
           logs <- ZTestLogger.logOutput
         yield assertTrue(!logs.exists(_.message() == "send-http"))
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
@@ -675,7 +702,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          response <- client.batched(Request.get(URL.empty / "ok"))
+          response <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok")))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
           rawLog <- ZIO.fromOption(sendLogs.headOption).orElseFail(new RuntimeException("Missing send-http log"))

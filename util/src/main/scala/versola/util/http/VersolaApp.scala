@@ -85,6 +85,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   protected def accessLogConfigurable: Boolean = true
 
+  /** The peers (`host:port`) of this deployment's own services, whose successful `send-http` lines are DEBUG (see
+    * [[Observability.internalPeers]]). Every other peer, a message provider above all, is external and logged at INFO.
+    */
+  protected def internalPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
+
   /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
     * without and whose configuration it waits for at start-up (central). */
   protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
@@ -264,6 +269,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       guard <- ZIO.service[OutboundGuard]
       _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
+      _ <- internalPeers.provideEnvironment(appDependencies).flatMap(Observability.setInternalPeers)
       baseOutbound <- guard.current
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>

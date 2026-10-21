@@ -744,9 +744,12 @@ profile under load, almost all of it for successful requests.
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
 error ratios and latency do not change; only a search for one successful request in the log can come up empty.
 
-`send-http` lines are `DEBUG` when the call succeeded and was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not
-written at the default `LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before.
-Raise `LOG_LEVEL` to `debug` to see all of them again. `http_client_requests_total` is unchanged.
+`send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
+upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+`LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
+`debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
+is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
 
 Invalid values fall back to the defaults.
 
@@ -762,7 +765,7 @@ Invalid values fall back to the defaults.
 | `HTTP_ACCESS_LOG` | `full` | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
 | `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
 | `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
-| `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines are `debug` |
+| `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
