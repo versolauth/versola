@@ -180,7 +180,7 @@ export class VersolaPermissionPicker extends LitElement {
           return html`
             <div class="group">
               <div class="group-head">
-                <span>${group.category} · ${group.permissions.length}</span>
+                <span>${group.category}</span>
                 <button type="button" @click=${() => this.toggleGroup(group)}>${allSelected ? 'Clear all' : 'Select all'}</button>
               </div>
               ${group.permissions.map(permission => html`

@@ -10,16 +10,12 @@ import type {
   FormPreview,
   FormRecord,
   OtpTemplateRecord,
+  ChallengeSettingsChanges,
   ChallengeSettingsRecord,
-  EmailRegistration,
   ClientTemplate,
   JwksKeySummary,
-  MtlsCertificateEncoding,
   MutualTlsAuth,
   SystemSettingsRecord,
-  PasskeySettings,
-  PhoneRegion,
-  SubmissionLimits,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -79,14 +75,14 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
 };
-type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
-type ResourceEndpointWriteDto = {
+export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
+export type ResourceEndpointWriteDto = {
   id?: string | number;
   method: string;
   path: string;
@@ -350,6 +346,10 @@ function invalidateAllRefData() {
   rolesStore.clear();
 }
 
+/** What central answered with, when it was JSON: a screen that can show more than the message
+ * (the keys a locale is missing, the lines a JSON Schema fails on) reads it from `error.details`. */
+export type ApiError = Error & { status: number; details?: unknown };
+
 function buildErrorMessage(status: number, bodyText: string): string {
   const trimmed = bodyText.trim();
 
@@ -358,14 +358,25 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[] };
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[]; InvalidSchema?: { errors?: string[] } };
     if (parsed.missing?.length) {
       const prefix = parsed.message || parsed.error || `Locale ${parsed.locale || ''} is incomplete`;
       return `${prefix}. Missing: ${parsed.missing.join(', ')}`;
     }
+    if (parsed.InvalidSchema?.errors?.length) {
+      return `Invalid JSON Schema: ${parsed.InvalidSchema.errors.join('; ')}`;
+    }
     return parsed.message || parsed.error || `Request failed (${status})`;
   } catch {
     return `${trimmed} (${status})`;
+  }
+}
+
+function parseErrorDetails(bodyText: string): unknown {
+  try {
+    return JSON.parse(bodyText) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -453,8 +464,10 @@ async function request<T>(
     }
 
     if (!response.ok) {
-      const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
+      const bodyText = await response.text();
+      const error = new Error(buildErrorMessage(response.status, bodyText)) as ApiError;
       error.status = response.status;
+      error.details = parseErrorDetails(bodyText);
       throw error;
     }
 
@@ -899,23 +912,33 @@ export async function deletePreviousResourceSecret(resourceId: string): Promise<
   resourcesStore.clear();
 }
 
+/**
+ * One PUT for any group of a resource: the URI, the audience (sent as a patch against what the
+ * caller last saw) and the endpoints. Endpoints are a patch too: `deleteEndpoints` leaves the
+ * server's set, `createEndpoints` are added, and one whose id already exists overwrites it, so an
+ * edited endpoint is sent only in `createEndpoints` and keeps its id (and the permissions linked
+ * to it). A group the caller does not touch is left out and is not changed.
+ */
 export async function updateResource(
   resourceId: string,
-  existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
-  resource: string,
-  existingAudience: string[],
-  audience: string[],
-  endpoints?: SaveResourceEndpointPayload[],
+  patch: {
+    resource?: string;
+    audience?: { existing: string[]; next: string[] };
+    deleteEndpoints?: ResourceEndpointId[];
+    createEndpoints?: SaveResourceEndpointPayload[];
+  },
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
-  const createEndpoints = (endpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
-  const nextEndpointIds = new Set(createEndpoints.map(endpoint => endpoint.id));
-  const deleteEndpoints = existingEndpoints
-    .map(endpoint => endpoint.id)
-    .filter(endpointId => !nextEndpointIds.has(endpointId));
+  const createEndpoints = (patch.createEndpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, audience: patchSet(existingAudience, audience), deleteEndpoints, createEndpoints },
+    body: {
+      resourceId,
+      ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
+      audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      deleteEndpoints: patch.deleteEndpoints ?? [],
+      createEndpoints,
+    },
   });
 
   resourcesStore.clear();
@@ -1339,8 +1362,9 @@ export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
 
-export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
-  return request<Record<string, unknown>>('/configuration/server-metadata');
+/** The stored overrides, or null when none are configured. */
+export async function fetchServerMetadata(): Promise<Record<string, unknown> | null> {
+  return (await request<Record<string, unknown> | null>('/configuration/server-metadata')) ?? null;
 }
 
 export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
@@ -1575,59 +1599,46 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
-const DEFAULT_ROLES = ['user'];
-
-export async function upsertChallengeSettings(
-  tenantId: string,
-  phoneRegions: PhoneRegion[],
-  submissionLimits: SubmissionLimits,
-  otpLength: number,
-  otpResendAfter: number,
-  passkeySettings: PasskeySettings,
-  authConversationTtlSeconds: number,
-  sessionTtlSeconds: number,
-  sessionIdleTtlSeconds: number | null,
-  userAgentTtlSeconds: number,
-  ipHeader: string,
-  acrVocabulary?: Record<string, string[]> | null,
-  postLogoutRedirectUris?: string[],
-  requireDpopNonce?: boolean,
-  mtlsCertificateHeader?: string | null,
-  mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
-  signingKeyId?: string | null,
-  clientAssertionMaxLifetimeSeconds?: number | null,
-  emailRegistration: EmailRegistration = DEFAULT_EMAIL_REGISTRATION,
-  defaultRoles: string[] = DEFAULT_ROLES,
-  logoLight?: string | null,
-  logoDark?: string | null,
-): Promise<void> {
+/** Creates the tenant's settings, or replaces the whole record: only the first save of a tenant that has none goes
+ * through here, because a PATCH needs a record to merge into. Optional members go as explicit nulls, which central
+ * reads as "clear", never as "keep". */
+export async function upsertChallengeSettings(settings: ChallengeSettingsRecord): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
     body: {
-      tenantId,
-      phoneRegions,
-      submissionLimits,
-      otpLength,
-      otpResendAfter,
-      passkeySettings,
-      authConversationTtlSeconds,
-      sessionTtlSeconds,
-      sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
-      userAgentTtlSeconds,
-      ipHeader,
-      acrVocabulary: acrVocabulary ?? null,
-      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
-      requireDpopNonce: requireDpopNonce ?? null,
-      mtlsCertificateHeader: mtlsCertificateHeader ?? null,
-      mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
-      signingKeyId: signingKeyId ?? null,
-      clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
-      emailRegistration,
-      defaultRoles,
-      logoLight: logoLight ?? null,
-      logoDark: logoDark ?? null,
+      tenantId: settings.tenantId,
+      phoneRegions: settings.phoneRegions,
+      submissionLimits: settings.submissionLimits,
+      otpLength: settings.otpLength,
+      otpResendAfter: settings.otpResendAfter,
+      passkeySettings: settings.passkeySettings ?? null,
+      authConversationTtlSeconds: settings.authConversationTtlSeconds,
+      sessionTtlSeconds: settings.sessionTtlSeconds,
+      sessionIdleTtlSeconds: settings.sessionIdleTtlSeconds ?? null,
+      userAgentTtlSeconds: settings.userAgentTtlSeconds,
+      ipHeader: settings.ipHeader,
+      acrVocabulary: settings.acrVocabulary ?? null,
+      postLogoutRedirectUris: settings.postLogoutRedirectUris,
+      requireDpopNonce: settings.requireDpopNonce,
+      mtlsCertificateHeader: settings.mtlsCertificateHeader ?? null,
+      mtlsCertificateEncoding: settings.mtlsCertificateEncoding ?? null,
+      signingKeyId: settings.signingKeyId ?? null,
+      clientAssertionMaxLifetimeSeconds: settings.clientAssertionMaxLifetimeSeconds ?? null,
+      emailRegistration: settings.emailRegistration ?? { mode: 'closed', domains: [], blockSubaddress: false },
+      defaultRoles: settings.defaultRoles?.length ? settings.defaultRoles : ['user'],
+      logoLight: settings.logoLight ?? null,
+      logoDark: settings.logoDark ?? null,
     },
+  });
+}
+
+/** Merge patch (RFC 7396) of the members named in `changes`: the ones left out keep what is stored, so saving one group
+ * cannot overwrite a change another admin made to a different one. `null` clears an optional member; the body carries
+ * no other nulls. 404 when the tenant has no settings yet: create them with `upsertChallengeSettings`. */
+export async function patchChallengeSettings(tenantId: string, changes: ChallengeSettingsChanges): Promise<void> {
+  await requestVoid('/configuration/challenges/challenge-settings', {
+    method: 'PATCH',
+    body: { tenantId, ...changes },
   });
 }
 

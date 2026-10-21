@@ -30,7 +30,7 @@ import versola.oauth.conversation.{
   ConversationService,
   PostgresConversationRepository,
 }
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -67,6 +67,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ClientAssertionRepository &
       ClientAssertionService &
       DpopService &
+      EdgeAssertionService &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -110,6 +111,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService &
       SessionService &
       UserRegistrationSyncClient
+
+  // central is the one peer auth cannot work without and waits for at start-up
+  override protected def guardExemptPeers =
+    ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -224,6 +229,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>
       DpopNonceService.live >++>
+      EdgeAssertionService.live >++>
       JsonSchemaValidator.live >++>
       OAuthConfigurationService.live >++>
       DpopService.live >++>

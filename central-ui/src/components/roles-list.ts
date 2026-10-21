@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
+import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles, toggleStyles } from '../styles/components';
 import { getPermissionCategory, type Locale, type Permission, type Resource, type Role } from '../types';
 import { createRole, deleteRole, fetchChallengeSettings, fetchLocales, getPermissions, getResources, getRoles, updateRole } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -10,6 +10,7 @@ import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../ut
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateRoleId } from '../utils/validators';
 import { localizedValue } from './localized-value';
+import { valueChips } from './value-chips';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
@@ -30,10 +31,13 @@ type RoleFilter = 'all' | 'active' | 'inactive' | 'default';
 type RoleGroup = 'general' | 'permissions';
 
 const DEFAULT_ROLE_REASON = 'Default role for new registrations: change it in the sign-in settings first.';
+/** What `active` does: central lists and assigns an inactive role as usual, but edge skips it on
+ *  sync (`RolesSyncClient`), so the users holding it get none of its permissions. */
+const ACTIVE_HINT = 'An inactive role stays assigned to its users, but the edge grants none of its permissions until it is switched on again.';
 
 /**
  * Roles: the table of the tenant's roles and, for the one selected, the side panel with its
- * description, its permissions grouped by category, the Fixed group and the danger card.
+ * description, its permissions grouped by category and the danger card.
  * Editing a group and creating a role happen in the same panel; the permissions editor and the
  * create form open the wide panel for the picker.
  */
@@ -77,6 +81,7 @@ export class VersolaRolesList extends LitElement {
     editorStyles,
     iconButtonStyles,
     recordStyles,
+    toggleStyles,
     css`
       :host {
         display: block;
@@ -328,13 +333,9 @@ export class VersolaRolesList extends LitElement {
       && (!query || role.id.toLowerCase().includes(query) || getLocalizedDescription(role.description).toLowerCase().includes(query)));
   }
 
-  private count(filter: RoleFilter): number {
-    return this.roles.filter(role => this.matchesFilter(role, filter)).length;
-  }
-
   private statusChips(role: Role) {
     return html`
-      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip danger">Inactive</span>`}
+      ${role.active ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Active</span>` : html`<span class="chip">Inactive</span>`}
       ${this.defaultRoleIds.has(role.id) ? html`<span class="chip">Default for sign-up</span>` : ''}
     `;
   }
@@ -351,7 +352,7 @@ export class VersolaRolesList extends LitElement {
         <input class="search-input" type="search" aria-label="Search roles" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter roles"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as RoleFilter}></versola-filter-bar>
       </div>
@@ -361,13 +362,11 @@ export class VersolaRolesList extends LitElement {
   private renderTable() {
     const columns: DataTableColumn<Role>[] = [
       { id: 'role', label: 'Role', cell: role => html`
-        <button type="button" class="row-link" aria-label=${`Open role ${role.id}`}>
+        <button type="button" class="row-link" aria-label=${`Open role ${getLocalizedDescription(role.description) || role.id} ${role.id}`}>
           <span class="row-title">${getLocalizedDescription(role.description) || role.id}</span>
           <span class="row-id">${role.id}</span>
         </button>` },
-      { id: 'permissions', label: 'Permissions', cell: role => role.permissions.length
-        ? html`<span title=${role.permissions.map(permission => permission.id).join(', ')}>${role.permissions.length}</span>`
-        : html`<span class="muted">0</span>` },
+      { id: 'permissions', label: 'Permissions', cell: role => valueChips(role.permissions.map(permission => permission.id), { empty: 'None' }) },
       { id: 'status', label: 'Status', cell: role => html`<div class="chips">${this.statusChips(role)}</div>` },
     ];
     const menuItems = (role: Role): RowMenuItem[] => [
@@ -381,7 +380,7 @@ export class VersolaRolesList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredRoles}
         .rowKey=${(role: Role) => role.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(role: Role) => `Actions for ${role.id}`}
         @row-select=${(e: CustomEvent<{ row: Role }>) => this.openView(e.detail.row)}
@@ -412,7 +411,7 @@ export class VersolaRolesList extends LitElement {
         ${this.row('Active', role.active ? 'Yes' : 'No')}
       `} @edit=${() => this.openEditor('general')}></versola-record-card>
 
-      <versola-record-card heading=${`Permissions (${role.permissions.length})`} subheading="What a user with this role may call." ?editable=${this.canManage}
+      <versola-record-card heading="Permissions" subheading="What a user with this role may call." ?editable=${this.canManage}
         .body=${role.permissions.length ? this.permissionGroups(role).map(group => this.row(group.category, html`
             <div class="tag-list">${group.permissions.map(permission => {
               const full = this.permissions?.find(candidate => candidate.id === permission.id) ?? permission;
@@ -420,10 +419,6 @@ export class VersolaRolesList extends LitElement {
             })}</div>`))
           : html`<div class="record-row"><div class="record-value muted">No permissions. Users with this role can call nothing.</div></div>`}
         @edit=${() => this.openEditor('permissions')}></versola-record-card>
-
-      <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
-        ${this.row('Role ID', html`<span class="mono">${role.id}</span>`, 'Set at creation')}
-      `}></versola-record-card>
 
       ${this.canManage ? html`
         <versola-danger-card heading="Delete role" text="Users assigned this role lose the permissions it grants. This can't be undone."
@@ -438,19 +433,16 @@ export class VersolaRolesList extends LitElement {
       <div class="banner info" role="status">
         <div class="banner-text">
           <div class="banner-title">${statusIcon('info')}Granted to every self-registered account</div>
-          <div>Change the default roles under Challenges &amp; Security › Registration before deleting it.</div>
+          <div>Change the default roles under Security › Registration before deleting it.</div>
         </div>
         <button type="button" class="btn btn-secondary btn-sm"
-          @click=${() => this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'challenges' }, bubbles: true, composed: true }))}>Open sign-in settings</button>
+          @click=${() => this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'security' }, bubbles: true, composed: true }))}>Open sign-in settings</button>
       </div>
     `;
   }
 
   private renderMeta(role: Role) {
-    return html`
-      ${this.statusChips(role)}
-      <span class="chip">${role.permissions.length} ${role.permissions.length === 1 ? 'permission' : 'permissions'}</span>
-    `;
+    return this.statusChips(role);
   }
 
   private renderRecordPage(role: Role) {
@@ -486,12 +478,14 @@ export class VersolaRolesList extends LitElement {
     const locked = this.editorMode === 'edit' && !!this.openRole && this.defaultRoleIds.has(this.openRole.id);
     return html`
       <div class="form-group">
-        <label class="toggle-row">
-          <input type="checkbox" id="role-active" .checked=${this.draftActive} ?disabled=${locked} aria-describedby="role-active-hint"
-            @change=${(e: Event) => this.draftActive = (e.target as HTMLInputElement).checked} />
+        <label class="toggle-row" for="role-active">
+          <span class="toggle">
+            <input type="checkbox" role="switch" id="role-active" .checked=${this.draftActive} ?disabled=${locked} aria-describedby="role-active-hint"
+              @change=${(e: Event) => this.draftActive = (e.target as HTMLInputElement).checked} />
+          </span>
           <span>Active</span>
         </label>
-        <div class="hint" id="role-active-hint">${locked ? DEFAULT_ROLE_REASON : 'An inactive role stays assigned but grants nothing until it is switched on.'}</div>
+        <div class="hint" id="role-active-hint">${locked ? DEFAULT_ROLE_REASON : ACTIVE_HINT}</div>
       </div>
     `;
   }
@@ -499,7 +493,7 @@ export class VersolaRolesList extends LitElement {
   private renderPermissionsEditor() {
     return html`
       <div class="editor-box">
-        <h3>Permissions (${this.draftPermissions.length} selected)</h3>
+        <h3>Permissions</h3>
         <p class="editor-sub">Grouped by the text before the first <code>:</code>.</p>
         ${this.permissionsError ? html`
           <div class="editor-error" role="alert">Could not load permissions: ${this.permissionsError}

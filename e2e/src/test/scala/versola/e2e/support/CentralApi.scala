@@ -159,7 +159,7 @@ object CentralApi:
   def token(prefix: String): UIO[String] =
     suffix.map(s => s"${prefix}_$s")
 
-  /** A permission matching `^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$`. */
+  /** A permission matching `^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$`. */
   def permission(prefix: String): UIO[String] =
     suffix.map(s => s"$prefix:p_$s")
 

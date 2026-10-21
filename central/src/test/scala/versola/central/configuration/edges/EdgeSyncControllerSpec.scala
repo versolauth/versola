@@ -38,7 +38,7 @@ import versola.central.configuration.{
   ResourceUri,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
 import versola.util.{Base64, JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -312,7 +312,9 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
-  private val syncResources = List("clients", "resources", "roles", "permissions", "jwks", "dpop", "auth-request-presets", "server-metadata")
+  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+
+  private val syncResources = List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "auth-request-presets", "server-metadata")
 
   private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString
@@ -425,6 +427,24 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for body <- decodeBody[EdgeDpopSyncResponse](response)
           yield assertTrue(!body.requireDpopNonce),
+      ),
+      testCase(
+        description = "overload: the calling edge's own policy, null when none is set",
+        request = Request.get(sync("overload")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord.copy(overloadPolicy = Some(overloadPolicy)))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeOverloadSyncResponse](response)
+          yield assertTrue(body.overloadPolicy.contains(overloadPolicy)),
+      ),
+      testCase(
+        description = "overload: an edge with no policy set is served null",
+        request = Request.get(sync("overload")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord)),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeOverloadSyncResponse](response)
+          yield assertTrue(body.overloadPolicy.isEmpty),
       ),
       testCase(
         description = "jwks: the public document",

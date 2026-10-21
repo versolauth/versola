@@ -473,6 +473,36 @@ keeps serving the configuration it last loaded. For a rotation with no gap use t
 from before its client template existed keeps issuing certificates with the subject rewritten to the
 bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` volume to lift it.
 
+### Overload protection
+
+When a service is asked for more than it can do, it should refuse the surplus quickly rather than queue it
+until everything is slow. Two guards do that, both in `off` / `shadow` / `enforce` mode and both in
+**`shadow` by default**: `shadow` counts what `enforce` would refuse and refuses nothing, so a deployment
+behaves as before until someone turns enforcement on.
+
+- **Inbound admission** (edge): a bound on requests in flight, with priorities. A new login is refused
+  first, then work already begun (code exchange, logout), then proxied resource calls; health, metrics,
+  config sync and back-channel logout are never refused. A refusal is `503` with `Retry-After`. An
+  adaptive limit can replace the fixed bound: it shrinks when call times rise or the executor stalls and
+  grows back while calls are fast, inside operator-set bounds.
+- **Outbound guard** (every service, per peer): a limit on calls in flight, a bounded wait and a timeout
+  (`503` / `504`), a circuit breaker and a retry budget. Central is never limited by it, so a service can
+  still wait for its configuration at start-up; nothing is enforced until the service has started.
+
+Settings start from the environment (`HTTP_ADMISSION_MODE`, `_MAX_IN_FLIGHT`, `_CONTINUATION_SHARE`,
+`_START_SHARE`, `_RETRY_AFTER`; `HTTP_CLIENT_GUARD_MODE`, `_MAX_CONCURRENT`, `_MAX_QUEUE`, `_QUEUE_TIMEOUT`,
+`_REQUEST_TIMEOUT`). An **edge** also takes an *overload policy* from central, per edge, which is a patch
+over those values: set it with `PUT /configuration/edges/overload?edgeId=…` (the body is described in
+`central/open-api/central.yaml`; `{}` removes it). It reaches a running edge within the configuration
+refresh interval, and the edge keeps the last policy it received while central is unreachable. The
+console has no screen for it yet. Migration `V1025` adds a nullable column and needs no action.
+
+Roll out in `shadow`: watch `http_admission_refused_total{mode="shadow"}` and
+`http_client_guard_rejected_total{mode="shadow"}` under real load (they are what `enforce` would have
+refused; they should be near zero while the service has capacity), then set `enforce`. Other metrics:
+`http_admission_in_flight`, `http_admission_limit`, `http_executor_lag_seconds`,
+`http_client_guard_in_flight`, `_waiting`, `_breaker_state`.
+
 ### Configuration reference
 
 | Variable | Default | Meaning |

@@ -40,6 +40,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     browser = Some("Firefox"),
     version = Some("140"),
     expiresAt = Instant.EPOCH,
+    idleExpiresAt = None,
+    userAgent = None,
   )
 
   private val otherDeviceSession = ownSession.copy(publicId = PublicSessionId("session-on-another-device"))
@@ -314,8 +316,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             obj = body.fromJson[Json.Obj].toOption.get
           yield assertTrue(
-            stubs._4.startRegistration.calls.map((settings, user, _) => (settings, user)) ==
-              List((passkeySettings, userId)),
+            stubs._4.startRegistration.calls.map((settings, user, accountName, _) => (settings, user, accountName)) ==
+              List((passkeySettings, userId, passkeySettings.rpName)),
             obj.fields.exists((key, value) => key == "publicKeyOptions" && value == Json.Str("""{"publicKey":{}}""")),
             obj.fields.exists((key, _) => key == "ticket"),
           ),

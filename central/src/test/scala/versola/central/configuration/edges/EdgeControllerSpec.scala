@@ -6,7 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -77,7 +77,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     * other route here uses, so these cases build their own credentials. */
   private def internalTestCase(
       description: String,
-      url: URL,
+      url: URL = URL.root / "configuration" / "edges" / "registry",
       token: Stub[EdgeService] => Task[String],
       tenants: Vector[TenantRecord] = Vector.empty,
       expectedStatus: Status,
@@ -138,6 +138,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+
+  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -218,6 +220,51 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
     ),
+    internalTestCase(
+      description = "edges registry serves every edge's public keys and assigned tenants to auth",
+      token = authSyncToken,
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getAllEdges.succeedsWith(
+          Vector(
+            edgeRecord,
+            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
+          ),
+        ),
+      tenants = Vector(
+        TenantRecord(TenantId("tenant-a"), "Tenant A", edgeId = Some(edgeId)),
+        TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
+        TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
+        // Assigned to neither edge below, and must not leak into either one's tenantIds --
+        // this is the set `EdgeAssertionService` checks a token's tenant against.
+        TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
+      ),
+      verify = response =>
+        for
+          raw <- response.body.asString
+          body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
+        yield assertTrue(
+          body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
+          body.edges.head.publicKey == publicJwk,
+          // Both halves of a rotation, so auth keeps accepting assertions signed with the key
+          // being rotated out until it is removed.
+          body.edges.head.oldPublicKey.isEmpty,
+          body.edges(1).oldPublicKey.contains(publicJwk),
+          // What lets auth refuse an assertion from a real, correctly signed edge that is
+          // simply not the one this token's tenant is behind.
+          body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
+          body.edges(1).tenantIds == List(TenantId("tenant-c")),
+        ),
+    ),
+    // An edge has no business reading its peers' identities: the keys it would need to forge
+    // one are exactly what this would hand it.
+    internalTestCase(
+      description = "edges registry refuses an edge, authenticated or not",
+      token = edgeSyncToken,
+      expectedStatus = Status.Unauthorized,
+      setup = service => service.getAllEdges.succeedsWith(Vector(edgeRecord)),
+      verify = response => ZIO.succeed(assertTrue(response.status == Status.Unauthorized)),
+    ),
     controllerTestCase(
       description = "setting an edge's nonce requirement returns 204 No Content and records it",
       request = Request(
@@ -243,5 +290,43 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "setting a valid overload policy returns 204 and records it for the named edge",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls == List((edgeId, overloadPolicy)))),
+    ),
+    controllerTestCase(
+      description = "an overload policy the service refuses is answered 400 with what is wrong, not 204",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.failsWith(
+          InvalidOverloadPolicy("inbound.maxInFlight must be between 1 and 100000"),
+        ),
+      verify = (response, _) =>
+        for body <- response.body.asJson[OverloadPolicyError]
+        yield assertTrue(body.error.contains("inbound.maxInFlight")),
+    ),
+    controllerTestCase(
+      description = "setting the overload policy of an unregistered edge returns 404 and writes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", "edge-missing"),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
     ),
   )

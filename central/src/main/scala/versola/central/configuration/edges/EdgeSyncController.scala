@@ -46,6 +46,7 @@ object EdgeSyncController extends Controller:
     permissionsEndpoint,
     jwksEndpoint,
     dpopEndpoint,
+    overloadEndpoint,
     presetsEndpoint,
     serverMetadataEndpoint,
     signEdgeCertificateEndpoint,
@@ -125,6 +126,18 @@ object EdgeSyncController extends Controller:
       for
         edge <- callerEdge(request)
         response = EdgeDpopSyncResponse(requireDpopNonce = edge.requireDpopNonce)
+      yield Response.json(response.toJson)
+    }
+
+  /** What the calling edge does when asked for more than it can do, as an operator set it for
+    * that edge (`edges.overload_policy`); `null` when none is set. Served like [[dpopEndpoint]]:
+    * the edge's own row only, the edge named by the certificate and the token, never by the
+    * request. */
+  val overloadEndpoint =
+    Method.GET / "edge" / "sync" / "overload" -> handler { (request: Request) =>
+      for
+        edge <- callerEdge(request)
+        response = EdgeOverloadSyncResponse(overloadPolicy = edge.overloadPolicy)
       yield Response.json(response.toJson)
     }
 

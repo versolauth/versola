@@ -150,6 +150,19 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )),
     ),
     controllerTestCase(
+      description = "PUT /configuration/forms answers 400 with the reason when the texts of the languages disagree",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "forms",
+        body = Body.fromString(updateFormRequest.copy(localizations = Map("en" -> Map("title" -> "Hello"), "ru" -> Map.empty)).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.updateForm.failsWith(IllegalArgumentException("Locale 'ru' has no text for 'title', which 'en' has")),
+      verify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body.fromJson[Json] == Right(Json.Obj("message" -> Json.Str("Locale 'ru' has no text for 'title', which 'en' has")))),
+    ),
+    controllerTestCase(
       description = "PUT /configuration/forms/active sets the active version",
       request = Request(
         method = Method.PUT,

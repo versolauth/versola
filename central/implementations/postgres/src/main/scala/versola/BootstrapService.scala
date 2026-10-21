@@ -393,6 +393,7 @@ object BootstrapService:
         endpointId("GET", "/users/passkeys"),
         endpointId("GET", "/users/roles"),
         endpointId("GET", "/users/sessions"),
+        endpointId("GET", "/users/user-agents"),
         endpointId("GET", "/users/refresh-tokens"),
       ),
     ),
@@ -408,6 +409,7 @@ object BootstrapService:
         endpointId("DELETE", "/users/passkeys"),
         endpointId("PATCH", "/users/roles"),
         endpointId("DELETE", "/users/sessions"),
+        endpointId("DELETE", "/users/user-agents"),
         endpointId("DELETE", "/users/refresh-tokens"),
         endpointId("POST", "/users/limits/reset"),
         endpointId("POST", "/users/password/reset"),
@@ -745,7 +747,13 @@ object BootstrapService:
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
-  private def defaultChallengeSettings(
+  /** The authentication context classes a new tenant starts with, each named for the factor it requires: `otp` asks for
+    * a one-time code and `passkey` for a passkey. A session that already passed the factor satisfies the class; a
+    * client that wants it asked for again on every request says `prompt=login`. */
+  private[versola] val DefaultAcrVocabulary: Map[String, List[String]] =
+    Map("otp" -> List("otp"), "passkey" -> List("passkey"))
+
+  private[versola] def defaultChallengeSettings(
       tenantId: TenantId,
       passkeyConfig: CentralConfig.PasskeyConfig,
   ): ChallengeSettingsRecord =
@@ -768,7 +776,7 @@ object BootstrapService:
       sessionIdleTtlSeconds = None,
       userAgentTtlSeconds = 15552000,
       ipHeader = "X-Real-IP",
-      acrVocabulary = None,
+      acrVocabulary = Some(DefaultAcrVocabulary),
       postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
@@ -785,10 +793,11 @@ object BootstrapService:
   /** Default theme seeded from the shared CSS resource. */
   private val defaultThemeId = "default"
 
-  /** Default locales seeded for the console. */
-  private val defaultLocales: Vector[LocaleRecord] = Vector(
+  /** Default locales seeded for the console. A locale's name is written in that language (`Русский`, not
+    * `Russian`): the login forms' language selector shows it as it is, so a visitor can find their own. */
+  private[versola] val defaultLocales: Vector[LocaleRecord] = Vector(
     LocaleRecord("en", "English", isDefault = true, active = true),
-    LocaleRecord("ru", "Russian", isDefault = false, active = true),
+    LocaleRecord("ru", "Русский", isDefault = false, active = true),
   )
 
   /** Default forms loaded from classpath resources, with their backend properties. */
@@ -910,6 +919,8 @@ object BootstrapService:
     "PATCH" -> "/users/roles",
     "GET" -> "/users/sessions",
     "DELETE" -> "/users/sessions",
+    "GET" -> "/users/user-agents",
+    "DELETE" -> "/users/user-agents",
     "GET" -> "/users/refresh-tokens",
     "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",

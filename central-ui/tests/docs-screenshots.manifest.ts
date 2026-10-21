@@ -70,8 +70,8 @@ const scopes = [
 ];
 
 const permissions = [
-  { permission: 'orders.read', description: { en: 'Read orders' }, endpointIds: [301] },
-  { permission: 'orders.write', description: { en: 'Create and update orders' }, endpointIds: [302] },
+  { permission: 'orders:read', description: { en: 'Read orders' }, endpointIds: [301] },
+  { permission: 'orders:write', description: { en: 'Create and update orders' }, endpointIds: [302] },
 ];
 
 const ordersApi = {
@@ -80,7 +80,7 @@ const ordersApi = {
   audience: ['storefront-web'],
   endpoints: [
     { id: 301, method: 'GET', path: '/orders', fetchUserInfo: false, allow: 'true', inject: [] },
-    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders.write' in token.scope", inject: [] },
+    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders:write' in token.scope", inject: [] },
   ],
   internal: true,
   secretRotation: false,
@@ -148,7 +148,7 @@ const serviceClient = {
   clientName: { en: 'Billing Job' },
   redirectUris: [],
   scope: [],
-  permissions: ['orders.read'],
+  permissions: ['orders:read'],
   secretRotation: false,
   accessTokenTtl: 3600,
   authMethod: 'client_secret' as const,
@@ -159,8 +159,28 @@ const serviceClient = {
   createdAt: '2026-09-03T14:30:00Z',
 };
 
-const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders.read', 'orders.write'], active: true };
+const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders:read', 'orders:write'], active: true };
 const userRole = { id: 'user', description: { en: 'Self-registered user' }, permissions: [], active: true };
+
+const chromeAgent = {
+  id: '00000000-0000-0000-0000-0000000000a1',
+  userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+  platform: 'desktop' as const,
+  os: 'macOS 15',
+  browser: 'Chrome',
+  version: '145',
+  createdAt: '2026-07-14T08:00:00',
+  expiresAt: '2027-03-19T20:36:00',
+};
+const shopAgent = {
+  id: '00000000-0000-0000-0000-0000000000a2',
+  userAgent: 'ExampleShop/4.2 (iPhone; iOS 18.1)',
+  platform: 'ios' as const,
+  os: 'iOS 18.1',
+  browser: 'Example Shop app',
+  createdAt: '2026-08-30T17:50:00',
+  expiresAt: '2027-03-19T18:03:00',
+};
 
 const dana = {
   id: '00000000-0000-0000-0000-000000000042',
@@ -179,14 +199,66 @@ const dana = {
     lastUsedAt: '2026-09-14T15:24:30',
     createdAt: '2026-09-12T19:00:35',
   }],
-  sessions: [{
-    platform: 'desktop' as const,
-    os: 'macOS 15',
-    browser: 'Chrome',
-    version: '145',
-    createdAt: '2026-09-20T20:36:00',
-    clients: [{ clientId: 'storefront-web', enteredAt: '2026-09-20T20:36:00', expiresAt: '2026-09-20T21:36:00' }],
-  }],
+  // The four user agents auth remembers for Dana (user agent TTL 180 days from the last sign-in): Chrome and the
+  // shop app are signed in, Firefox signed out leaving offline access, an iPad signed out and only remembered.
+  sessions: [
+    {
+      publicId: 'sess-chrome-macos',
+      platform: 'desktop' as const,
+      os: 'macOS 15',
+      browser: 'Chrome',
+      version: '145',
+      createdAt: '2026-09-20T20:36:00',
+      expiresAt: '2026-09-21T20:36:00',
+      idleExpiresAt: '2026-09-20T21:52:00',
+      userAgent: chromeAgent,
+      clients: [
+        { clientId: 'storefront-web', enteredAt: '2026-09-20T20:36:00', expiresAt: '2026-09-20T21:36:00' },
+        { clientId: 'admin-console', enteredAt: '2026-09-20T20:52:00', expiresAt: '2026-09-20T21:52:00' },
+      ],
+    },
+    {
+      publicId: 'sess-shop-ios',
+      platform: 'ios' as const,
+      os: 'iOS 18.1',
+      browser: 'Example Shop app',
+      createdAt: '2026-09-20T18:03:00',
+      expiresAt: '2026-09-21T18:03:00',
+      userAgent: shopAgent,
+      clients: [{ clientId: 'shop-mobile', enteredAt: '2026-09-20T18:03:00', expiresAt: '2026-09-20T19:03:00' }],
+    },
+  ],
+  userAgents: [
+    chromeAgent,
+    shopAgent,
+    {
+      id: '00000000-0000-0000-0000-0000000000a3',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0',
+      platform: 'desktop' as const,
+      os: 'Windows 10 / 11',
+      browser: 'Firefox',
+      version: '140',
+      createdAt: '2026-05-02T09:40:00',
+      expiresAt: '2027-02-21T11:30:00',
+      endedSessionIds: ['sess-firefox-gone'],
+    },
+    {
+      id: '00000000-0000-0000-0000-0000000000a4',
+      userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+      platform: 'ios' as const,
+      os: 'iOS 18.1',
+      browser: 'Safari',
+      version: '18',
+      createdAt: '2026-06-12T08:10:00',
+      expiresAt: '2026-12-30T10:15:00',
+      endedSessionIds: ['sess-ipad-ended'],
+    },
+  ],
+  refreshTokens: [
+    { sessionId: 'sess-chrome-macos', clientId: 'storefront-web', scope: ['openid', 'profile', 'offline_access'], issuedAt: '2026-09-20T20:36:00', expiresAt: '2026-12-31T20:36:00', dpopBound: false },
+    { sessionId: 'sess-shop-ios', clientId: 'shop-mobile', scope: ['openid', 'orders', 'offline_access'], issuedAt: '2026-09-20T18:03:00', expiresAt: '2027-03-19T18:03:00', dpopBound: true },
+    { sessionId: 'sess-firefox-gone', clientId: 'storefront-web', scope: ['openid', 'offline_access'], issuedAt: '2026-08-25T11:30:00', expiresAt: '2026-12-31T11:30:00', dpopBound: false },
+  ],
 };
 
 // The tenant's logo pair, as artwork with its text already outlined (the wordmark is Inter Bold converted to paths) (an <img> has no fonts): dark ink for the light
@@ -299,7 +371,6 @@ const resolve = (tokens: { base: string; overrides?: Partial<Tokens> }): Tokens 
 
 const themes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
-  { id: 'legacy-acme', css: 'body { font-family: Georgia, serif; }', tenantId: null },
   { id: 'acme', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#2563eb' } } },
   { id: 'storefront', css: '', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } } },
 ];
@@ -327,6 +398,7 @@ async function activeForms() {
 
 const brandingState = async (): Promise<MockState> => ({
   ...alpha,
+  clients: { [tenant]: [{ ...webClient, theme: 'storefront' }] as MockConfigState['clients'][string] },
   forms: await activeForms(),
   formLocales: [{ code: 'en', name: 'English' }, { code: 'ru', name: 'Russian' }],
   formPreviews: golden.previews,
@@ -334,8 +406,24 @@ const brandingState = async (): Promise<MockState> => ({
   themes,
 });
 
+// The Forms screens: the built-in forms only (the docs never show a form somebody made up). credential has a v2 stored but
+// not active, and no Russian text for two keys, which the JSON editor lists as problems.
+const formsDocsState = async (): Promise<MockState> => {
+  const state = await brandingState();
+  const forms = state.forms!;
+  const credential = forms.find(form => form.id === 'credential')!;
+  const withGaps = { ...credential.localizations, ru: Object.fromEntries(Object.entries(credential.localizations.ru).filter(([key]) => !['passkey_button', 'phone_hint'].includes(key))) };
+  return {
+    ...state,
+    forms: [
+      ...forms.map(form => (form.id === 'credential' ? { ...form, localizations: withGaps } : form)),
+      { ...credential, version: 2, active: false, localizations: withGaps },
+    ],
+  };
+};
+
 // The preview's stylesheet is what central would build for the tokens (the mock returns a stub).
-const realThemeCss: Act = async page => {
+export const realThemeCss: Act = async page => {
   await page.route('**/configuration/themes/css', async route => {
     const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens> }; css?: string };
     const generated = generate(resolve(tokens));
@@ -371,6 +459,12 @@ const jwksState: MockState = {
   ],
 };
 
+// The keys screen also shows who signs with a key, from the tenants' own settings.
+const keysState: MockState = {
+  ...jwksState,
+  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
+};
+
 const serverMetadata = {
   issuer: 'https://auth.example.com',
   authorization_endpoint: 'https://auth.example.com/authorize',
@@ -390,18 +484,18 @@ const serverMetadata = {
   tls_client_certificate_bound_access_tokens: true,
 };
 
-// The mock serves a one-line metadata document; the docs show a realistic one.
+// The mock serves a one-line metadata document; the docs show a realistic one, as the overrides.
 const realServerMetadata: Act = async page => {
   await page.route('**/configuration/server-metadata', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify(serverMetadata) }));
   await page.reload();
-  await expect(page.locator('.metadata-json')).toContainText('pushed_authorization_request_endpoint');
+  await expect(page.getByRole('region', { name: 'Server metadata overrides' })).toContainText('pushed_authorization_request_endpoint');
 };
 
 // ---------------------------------------------------------------------------------------------
 // Actions shared by several entries
 
 const openClient = (id: string): Act => async page => {
-  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
   await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 };
 
@@ -445,8 +539,8 @@ const serviceBasics: Act = async page => {
 const servicePermissions: Act = async page => {
   await serviceBasics(page);
   await page.getByRole('button', { name: 'Continue to permissions', exact: true }).click();
-  await page.getByRole('button', { name: 'orders.read', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'orders.read', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'orders:read', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'orders:read', exact: true })).toHaveAttribute('aria-pressed', 'true');
 };
 
 const serviceReview: Act = async page => {
@@ -456,16 +550,65 @@ const serviceReview: Act = async page => {
 };
 
 const searchUser = (login: string, name: string): Act => async page => {
-  await page.getByPlaceholder('Search users…').fill(login);
+  await page.getByRole('searchbox', { name: 'Search users' }).fill(login);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await expect(page.locator('.user-card').filter({ hasText: name }).first()).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: name }).first()).toBeVisible();
 };
 
-const userCard = (page: Page) => page.locator('.user-card').filter({ hasText: 'Dana Reyes' }).first();
+const userPath = `/?view=users&tenant=${tenant}&id=${dana.id}`;
+const userClientsState = (): MockState => ({
+  ...alpha,
+  clients: { [tenant]: ['storefront-web', 'admin-console', 'shop-mobile'].map(id => ({
+    id,
+    clientName: { en: id === 'storefront-web' ? 'Storefront Web' : id === 'admin-console' ? 'Admin console' : 'Shop mobile' },
+    redirectUris: [`https://${id}.example.com/callback`],
+    scope: ['openid'],
+    permissions: [],
+    secretRotation: false,
+    accessTokenTtl: 3600,
+  })) as MockConfigState['clients'][string] },
+});
+const userLoaded: Act = async page => {
+  await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
+  // Four devices: two signed in (one with an idle timeout), a signed-out one that still holds offline
+  // access and a signed-out one that is only remembered. Each is named by its user agent and says when
+  // its session expires and how long the device is remembered.
+  await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(4);
+  await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('MacBook');
+};
 
-const expandResource: Act = async page => {
-  await page.locator('.resource-shell').filter({ hasText: 'orders-api.orders.svc.cluster.local' }).first().locator('.resource-header').click();
-  await expect(page.locator('.endpoint-card')).toHaveCount(2);
+// The orders resource as the record shows it: the two endpoints of the data above plus a refund
+// that asks for a stronger sign-in, three clients, the ACR values of the tenant's step-up.
+const ordersRecord = {
+  ...ordersApi,
+  audience: ['storefront-web', 'admin-console'],
+  endpoints: [
+    ...ordersApi.endpoints,
+    {
+      id: 303, method: 'POST', path: '/orders/{orderId}/refund', fetchUserInfo: true,
+      allow: 'request.body.amount <= user.refund_limit', stepUpCondition: 'request.body.amount > 10000', stepUpAcr: 'mfa', maxAge: 300,
+      inject: [{ target: 'header' as const, name: 'X-User-Id', expression: 'token.sub' }],
+    },
+  ],
+};
+const resourcesState = (): MockState => ({
+  ...alpha,
+  resources: { [tenant]: [ordersRecord] },
+  permissions: { [tenant]: [...permissions, { permission: 'orders:refund', description: { en: 'Refund orders' }, endpointIds: [303] }] },
+  clients: { [tenant]: ['storefront-web', 'admin-console', 'shop-mobile'].map(id => ({
+    id,
+    clientName: { en: id === 'storefront-web' ? 'Storefront Web' : id === 'admin-console' ? 'Admin console' : 'Shop mobile' },
+    redirectUris: [`https://${id}.example.com/callback`],
+    scope: ['openid'],
+    permissions: [],
+    secretRotation: false,
+  })) as MockConfigState['clients'][string] },
+});
+const resourcePath = `/?view=resources&tenant=${tenant}&id=orders-api`;
+const resourceRecordLoaded: Act = async page => {
+  await expect(page.getByRole('heading', { level: 1, name: 'orders-api' })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Endpoints of orders-api' }).getByRole('row')).toHaveCount(4);
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -583,7 +726,7 @@ const consoleShots: DocsShot[] = [
     name: 'console/client-edit-permissions-service', kind: 'frame', path: clientsPath, state: { ...withClients(serviceClient), tenants: standardTenants },
     before: async page => {
       await editClient('billing-job', 'permissions', 'Permissions')(page);
-      await expect(page.locator('versola-client-form .checkbox-item', { hasText: 'orders.read' }).getByRole('checkbox')).toBeChecked();
+      await expect(page.locator('versola-client-form .checkbox-item', { hasText: 'orders:read' }).getByRole('checkbox')).toBeChecked();
     },
   },
   {
@@ -599,7 +742,7 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await editClient('acme-wallet', 'branding and logout', 'Branding and logout')(page);
       const block = page.getByRole('region', { name: 'Appearance for this app' });
-      await expect(block.getByText('Overridden · base: #2563eb')).toBeVisible();
+      await expect(block.getByTitle('Overridden · base: #2563eb')).toBeVisible();
       await block.scrollIntoViewIfNeeded();
     },
   },
@@ -697,180 +840,225 @@ const consoleShots: DocsShot[] = [
     },
   },
 
-  // Locales
+  // Locales (a card of System settings)
   {
-    name: 'console/locales', kind: 'frame', path: `/?view=locales&tenant=${tenant}`, state: { locales },
-    before: async page => { await expect(page.locator('.locale-row')).toHaveCount(2); },
+    name: 'console/locales', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales: [...locales, { code: 'kk', name: 'Kazakh', isDefault: false, active: false }] },
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Kazakh' })).toContainText('Inactive'); },
   },
   {
-    name: 'console/locales-edit', kind: 'frame', path: `/?view=locales&tenant=${tenant}`, state: { locales },
+    name: 'console/locales-edit', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales },
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Set default' })).toBeVisible();
+      await page.getByRole('button', { name: 'Actions for ru' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Set as default' })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/locales-add', kind: 'frame', path: '/?view=system-settings', state: { ...systemSettingsState, locales },
+    before: async page => {
+      await page.getByRole('button', { name: '+ Add locale' }).click();
+      await page.getByLabel('Language *').selectOption('de');
+      await expect(page.getByRole('button', { name: 'Add locale', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/locales-activation-failure', kind: 'frame', path: '/?view=system-settings',
+    state: { ...systemSettingsState, locales: [...locales, { code: 'kk', name: 'Kazakh', isDefault: false, active: false }], localeActivationMissing: { kk: ['forms.sign-in.title', 'scopes.email.description', 'otp-templates.default.sms'] } },
+    before: async page => {
+      await page.getByRole('button', { name: 'Actions for kk' }).click();
+      await page.getByRole('menuitem', { name: 'Activate kk' }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'Cannot activate kk' })).toBeVisible();
     },
   },
 
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
-    before: async page => { await expect(page.locator('versola-system-settings .prop-label').filter({ hasText: 'History size' })).toBeVisible(); },
+    before: async page => { await expect(page.getByRole('region', { name: 'Password policy' })).toContainText('previous passwords'); },
   },
   {
     name: 'console/system-settings-edit', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.locator('versola-system-settings input[type="text"]')).toBeVisible();
+      await page.getByRole('button', { name: 'Edit password policy' }).click();
+      await expect(page.getByLabel('Password regex *')).toBeVisible();
     },
   },
 
-  // Well Known
+  // Keys & metadata
   {
-    name: 'console/well-known', kind: 'frame', fullPage: true, path: '/?view=well-known', state: jwksState,
+    name: 'console/well-known', kind: 'frame', fullPage: true, path: '/?view=keys', state: keysState,
     before: async page => {
       await realServerMetadata(page);
-      await expect(page.locator('.key-card').filter({ hasText: 'central-es256' }).locator('.key-badge')).toHaveText(/Can sign/);
+      await expect(page.getByRole('row').filter({ hasText: 'central-es256' })).toContainText('Can sign');
     },
   },
   {
-    name: 'console/well-known-add-key', kind: 'frame', path: '/?view=well-known', state: jwksState,
+    name: 'console/well-known-add-key', kind: 'frame', path: '/?view=keys', state: keysState,
     before: async page => {
-      await realServerMetadata(page);
-      await page.getByRole('button', { name: '+ Add Key' }).click();
-      await expect(page.getByRole('heading', { name: 'Add JWK', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Add key (paste JWK)' }).click();
+      await expect(sidePanelDialog(page, 'Add key')).toBeVisible();
+    },
+  },
+  {
+    name: 'console/keys-panel', kind: 'frame', path: '/?view=keys&id=central-es256', state: keysState,
+    before: async page => { await expect(sidePanel(page, 'central-es256').getByRole('region', { name: 'Used by tenants' })).toContainText(tenant); },
+  },
+  {
+    name: 'console/keys-generate', kind: 'frame', path: '/?view=keys', state: keysState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Generate key', exact: true }).click();
+      await expect(sidePanelDialog(page, 'Generate key')).toBeVisible();
     },
   },
 
-  // Challenges & Security
+  // Security (was Challenges & Security)
   {
-    name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible(); },
+    name: 'console/challenges-security', kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('region', { name: 'Submission limits', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/challenges-logo', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('.card').filter({ has: page.getByText('Logo', { exact: true }) }).last(),
+    name: 'console/challenges-logo', kind: 'crop', path: `/?view=security&tenant=${tenant}`, state: alpha,
+    section: page => page.getByRole('region', { name: 'Branding', exact: true }),
     before: async page => {
       await expect(page.getByTestId('logo-preview-light').locator('img')).toBeVisible();
       await expect(page.getByTestId('logo-preview-dark').locator('img')).toBeVisible();
     },
   },
   {
-    name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    name: 'console/challenges-settings-edit', kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=tokens`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Edit', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Edit Challenge Settings', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Edit tokens & keys', level: 1 })).toBeVisible();
       await expect(page.getByLabel("This tenant's reverse proxy terminates mutual TLS")).toBeChecked();
     },
   },
+  ...(['methods', 'codes', 'passkeys', 'registration', 'stepup', 'sessions', 'logout', 'limits'] as const).map((group): DocsShot => ({
+    name: `console/security-edit-${group}`, kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=${group}`, state: alpha,
+    before: async page => { await expect(page.getByRole('button', { name: /^Save / })).toBeVisible(); },
+  })),
+
+  // OTP templates
   {
-    // The form opens inline in the middle of the whole Challenges page; the figure is the form.
-    name: 'console/challenges-authorization-detail-type-add', kind: 'crop', path: `/?view=challenges&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('versola-authorization-detail-type-form'),
-    before: async page => {
-      await page.getByRole('button', { name: 'Create Type', exact: true }).first().click();
-      await expect(page.getByRole('heading', { name: 'Create Authorization Detail Type', exact: true })).toBeVisible();
-      await page.getByLabel('Type *').fill('payment_initiation');
-      await page.getByLabel('Description *').fill('Payment initiation');
-      await expect(page.locator('#detail-type-schema textarea')).toHaveValue(/draft\/2020-12/);
-    },
+    name: 'console/otp-templates', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'Email' }).locator('.chip.value', { hasText: 'ru' })).toBeVisible(); },
   },
   {
-    name: 'console/challenges-template-add', kind: 'frame', fullPage: true, path: `/?view=challenges&tenant=${tenant}`, state: alpha,
+    name: 'console/otp-templates-panel', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}&id=default:otp:email`, state: alpha,
+    before: async page => { await expect(sidePanel(page, 'default').locator('iframe.email-preview').first()).toBeVisible(); },
+  },
+  {
+    name: 'console/challenges-template-add', kind: 'frame', path: `/?view=otp-templates&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Add Template', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Add OTP Template', exact: true })).toBeVisible();
-      await page.getByPlaceholder('e.g. login-otp').fill('signup-otp');
-      await page.locator('.edit-loc-card').filter({ hasText: 'en (English)' }).locator('textarea').fill('Your Example sign-up code is {{code}}');
-      await page.locator('.edit-loc-card').filter({ hasText: 'ru (Russian)' }).locator('textarea').fill('Ваш код регистрации Example: {{code}}');
-      await expect(page.locator('.edit-loc-card')).toHaveCount(2);
+      await page.getByRole('button', { name: '+ Create Template', exact: true }).click();
+      const dialog = sidePanel(page, 'Create template');
+      await expect(dialog.getByRole('dialog')).toBeVisible();
+      await dialog.getByLabel('Template ID *').fill('signup-otp');
+      await dialog.locator('#message-en').fill('Your Example sign-up code is {{code}}');
+      await dialog.locator('#message-ru').fill('Ваш код регистрации Example: {{code}}');
+      await expect(dialog.locator('#message-ru')).toHaveValue(/регистрации/);
+    },
+  },
+
+  // Authorization details
+  {
+    name: 'console/authorization-details', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}`, state: alpha,
+    before: async page => { await expect(page.getByRole('row').filter({ hasText: 'payment_initiation' })).toContainText('required: type'); },
+  },
+  {
+    name: 'console/authorization-details-panel', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}&id=payment_initiation`, state: alpha,
+    before: async page => { await expect(sidePanel(page, 'Payment initiation').getByRole('region', { name: 'JSON Schema' })).toBeVisible(); },
+  },
+  {
+    // The type form is the panel's create form; the figure is the panel with the default schema.
+    name: 'console/challenges-authorization-detail-type-add', kind: 'frame', path: `/?view=authorization-details&tenant=${tenant}`, state: alpha,
+    before: async page => {
+      await page.getByRole('button', { name: '+ Create Type', exact: true }).click();
+      const dialog = sidePanel(page, 'Create type');
+      await expect(dialog.getByRole('dialog')).toBeVisible();
+      await dialog.getByLabel('Type *').fill('payment_initiation_v2');
+      await dialog.locator('#detail-description').fill('Payment initiation');
+      await expect(dialog.locator('versola-code-editor#detail-schema textarea')).toHaveValue(/draft\/2020-12/);
     },
   },
 
   // Forms and Themes
   {
-    name: 'console/forms-list', kind: 'frame', path: `/?view=forms&tenant=${tenant}`, state: brandingState,
-    before: async page => { await expect(page.locator('.form-id').filter({ hasText: 'consent' })).toBeVisible(); },
+    name: 'console/forms-list', kind: 'frame', path: `/?view=forms&tenant=${tenant}`, state: formsDocsState,
+    before: async page => { await expect(page.getByRole('button', { name: 'Open form consent', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/forms-list-expanded', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
+    name: 'console/form-texts', kind: 'frame', path: `/?view=forms&tenant=${tenant}&id=credential`, state: formsDocsState,
     before: async page => {
       await realThemeCss(page);
       // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.locator('.form-header').filter({ hasText: 'consent' }).click();
-      await page.locator('.version-card').filter({ hasText: 'v1' }).click();
-      await page.getByRole('button', { name: 'Preview', exact: true }).click();
-      await page.getByRole('button', { name: 'Everything requested' }).click();
-      await page.getByRole('button', { name: 'Mobile', exact: true }).click();
-      await expect(page.getByRole('group', { name: 'Preview state' })).toBeVisible();
+      await page.getByLabel('Language', { exact: true }).selectOption('ru');
+      await expect(page.getByRole('list', { name: 'Problems in the texts' })).toContainText('Russian is missing "');
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
+      await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('"locale":"ru"');
     },
   },
   {
-    name: 'console/form-edit', kind: 'frame', fullPage: true, path: `/?view=forms&tenant=${tenant}`, state: brandingState,
+    name: 'console/form-versions', kind: 'frame', path: `/?view=forms&tenant=${tenant}&id=credential&edit=versions`, state: formsDocsState,
     before: async page => {
       await realThemeCss(page);
-      // The forms screen fetches the previews' stylesheets on load, so reload to fetch them through the real one.
       await page.reload();
-      await page.locator('.form-header').filter({ hasText: 'consent' }).click();
-      await page.getByRole('button', { name: 'New Version', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'New Version', exact: true })).toBeVisible();
-      await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Set active v2' })).toBeVisible();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:');
     },
   },
   {
     name: 'console/themes', kind: 'frame', path: `/?view=themes&tenant=${tenant}`, state: brandingState,
-    before: async page => { await expect(page.getByRole('button', { name: 'Edit theme storefront', exact: true })).toBeVisible(); },
+    before: async page => { await expect(page.getByRole('button', { name: 'Open theme storefront', exact: true })).toBeVisible(); },
   },
   {
-    name: 'console/theme-new', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}`, state: brandingState,
+    name: 'console/theme-new', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}&new=1`, state: brandingState,
     before: async page => {
       await realThemeCss(page);
-      await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
       await page.getByPlaceholder('e.g. default').fill('acme-web');
       await page.getByRole('button', { name: 'Fintech' }).click();
-      await page.getByRole('button', { name: 'Mobile', exact: true }).click();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:#5b5bd6');
     },
   },
   {
-    name: 'console/theme-edit', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}`, state: brandingState,
+    name: 'console/theme-edit', kind: 'frame', fullPage: true, path: `/?view=themes&tenant=${tenant}&id=storefront`, state: brandingState,
     before: async page => {
       await realThemeCss(page);
-      await page.getByRole('button', { name: 'Edit theme storefront', exact: true }).click();
+      await page.reload();
       await page.locator('#preview-form').selectOption('consent');
-      await expect(page.getByText('2 overrides on Studio')).toBeVisible();
+      await expect(page.getByText('Overrides on Studio: brand colour, shape.')).toBeVisible();
       await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((f: HTMLIFrameElement) => f.srcdoc)).toContain('--brand:#b4348a');
     },
   },
 
   // Users
-  {
-    name: 'console/user-detail', kind: 'frame', fullPage: true, path: `/?view=users&tenant=${tenant}`, state: alpha,
-    before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      const card = userCard(page);
-      await card.getByRole('button', { name: 'Get Claims', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Roles', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Sessions', exact: true }).click();
-      await card.getByRole('button', { name: 'Get Passkeys', exact: true }).click();
-      await expect(card.locator('.role-tag', { hasText: 'alpha_admin' })).toBeVisible();
-      await expect(card.locator('.session-card')).toBeVisible();
-      await expect(card.locator('.passkey-card')).toBeVisible();
-    },
-  },
+  { name: 'console/user-detail', kind: 'frame', fullPage: true, path: userPath, state: userClientsState, before: userLoaded },
   {
     name: 'entities/users-search-empty', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha,
     before: async page => { await expect(page.getByRole('heading', { name: 'Search for a user', exact: true })).toBeVisible(); },
   },
   { name: 'entities/users-list', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha, before: searchUser('dana', 'Dana Reyes') },
   {
-    name: 'entities/users-list-roles-expanded', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha,
+    name: 'entities/user-devices', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    section: page => page.getByRole('region', { name: 'Signed-in devices' }),
+  },
+  {
+    name: 'entities/user-offline-access', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    section: page => page.getByRole('region', { name: 'Apps with access' }),
+  },
+  {
+    name: 'entities/user-forget-device-confirm', kind: 'frame', path: userPath, state: userClientsState,
     before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      await userCard(page).getByRole('button', { name: 'Get Roles', exact: true }).click();
-      await expect(userCard(page).locator('.role-tag', { hasText: 'alpha_admin' })).toBeVisible();
+      await userLoaded(page);
+      await page.getByRole('region', { name: 'Signed-in devices' }).locator('details.signed-out summary').click();
+      await page.getByRole('button', { name: /^Forget device Firefox 140/ }).click();
+      await expect(page.getByRole('dialog')).toContainText('Auth no longer remembers it');
+    },
+  },
+  {
+    name: 'entities/user-delete-confirm', kind: 'frame', path: userPath, state: userClientsState,
+    before: async page => {
+      await userLoaded(page);
+      await page.getByRole('button', { name: 'Delete user Dana Reyes' }).click();
+      await expect(page.getByRole('dialog')).toContainText('back-channel logout');
     },
   },
   {
@@ -891,112 +1079,93 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'entities/user-claims-edit', kind: 'frame', fullPage: true, path: `/?view=users&tenant=${tenant}`, state: alpha,
+    name: 'entities/user-roles-edit', kind: 'frame', path: `${userPath}&edit=roles`, state: userClientsState,
     before: async page => {
-      await searchUser('dana', 'Dana Reyes')(page);
-      await userCard(page).getByRole('button', { name: 'Get Claims', exact: true }).click();
-      await userCard(page).locator('.icon-action[title="Edit Claims"]').click();
-      await expect(page.getByRole('heading', { name: 'Edit Claims', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Edit roles' })).toBeVisible();
+      await expect(page.getByRole('checkbox', { name: /alpha_admin/ })).toBeChecked();
+    },
+  },
+  {
+    name: 'entities/user-claims-edit', kind: 'frame', fullPage: true, path: `${userPath}&edit=claims`, state: alpha,
+    before: async page => {
+      await expect(page.getByRole('heading', { name: 'Edit claims', exact: true })).toBeVisible();
       await expect(page.locator('versola-claim-edit .section-label')).toHaveText(['email', 'payments_read', 'phone', 'profile']);
     },
   },
 
   // Resources
   {
-    name: 'entities/resources-list', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
-    before: async page => { await expect(page.locator('.resource-shell')).toHaveCount(1); },
+    name: 'entities/resources-list', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: resourcesState,
+    before: async page => { await expect(page.getByRole('button', { name: 'Open resource orders-api' })).toBeVisible(); },
   },
-  { name: 'entities/resources-list-expanded', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha, before: expandResource },
+  { name: 'entities/resource-record', kind: 'frame', fullPage: true, path: resourcePath, state: resourcesState, before: resourceRecordLoaded },
   {
-    name: 'console/resources-list-endpoint-expanded', kind: 'crop', path: `/?view=resources&tenant=${tenant}`,
-    state: {
-      ...alpha,
-      resources: { [tenant]: [{
-        ...ordersApi,
-        endpoints: [
-          ordersApi.endpoints[0],
-          { id: 302, method: 'POST', path: '/orders', fetchUserInfo: true, allow: 'request.body.total <= user.orderLimit', inject: [{ target: 'body' as const, name: 'userId', expression: 'token.sub' }], stepUpCondition: 'request.body.total > 100000', stepUpAcr: 'otp', maxAge: 600 },
-        ],
-      }] },
-    },
-    section: page => page.locator('.endpoint-card').filter({ hasText: 'user.orderLimit' }),
+    name: 'console/resource-endpoints', kind: 'crop', path: resourcePath, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Endpoints', exact: true }),
     before: async page => {
-      await expandResource(page);
-      await page.locator('.endpoint-card').filter({ hasText: 'POST' }).first().locator('.endpoint-card-header').click();
-      const card = page.locator('.endpoint-card').filter({ hasText: 'user.orderLimit' });
-      await expect(card.locator('.permission-tag')).toHaveText(['orders.write']);
-      await expect(card.getByText('600 seconds')).toBeVisible();
+      await resourceRecordLoaded(page);
+      const refund = page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]');
+      await expect(refund).toContainText('orders:refund');
+      await expect(refund.getByTitle('300 seconds')).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-form-empty', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-create', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: resourcesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Create Resource', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Create resource', exact: true })).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-form-identity', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-create-filled', kind: 'frame', fullPage: true, path: `/?view=resources&tenant=${tenant}&new=1`, state: resourcesState,
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
+      await page.getByLabel('Resource ID').fill('invoices-api');
       await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'internal', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Audience client' }).fill('storefront-web');
-      await page.getByRole('option', { name: 'storefront-web', exact: true }).click();
-      await page.getByRole('button', { name: 'Add audience', exact: true }).click();
-      await expect(page.getByRole('button', { name: 'Remove audience storefront-web', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: /^Internal/ }).click();
+      await page.getByRole('checkbox', { name: /storefront-web/ }).check();
+      await expect(page.getByRole('checkbox', { name: /storefront-web/ })).toBeChecked();
     },
   },
   {
-    name: 'entities/resource-form-endpoint', kind: 'frame', fullPage: true, path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'entities/resource-endpoints-edit', kind: 'frame', fullPage: true, path: `${resourcePath}&edit=endpoints`, state: resourcesState,
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByLabel('Method').selectOption('GET');
+      await page.getByLabel('Relative path').fill('/orders/{orderId}/invoice');
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByLabel('Max auth age').fill('10m');
+      await expect(page.getByRole('status')).toContainText('(new)');
+    },
+  },
+  {
+    name: 'entities/resource-created-secret', kind: 'frame', path: `/?view=resources&tenant=${tenant}&new=1`, state: resourcesState,
+    before: async page => {
+      await page.getByLabel('Resource ID').fill('invoices-api');
       await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-      const endpoint = page.locator('.endpoint-editor').last();
-      await endpoint.locator('select').first().selectOption('GET');
-      await endpoint.getByPlaceholder('/users').fill('/invoices');
-      await endpoint.getByRole('textbox', { name: 'Allow expression' }).click();
-      await page.keyboard.type("'orders.read' in token.scope");
-      await expect(endpoint.getByText("'orders.read' in token.scope")).toBeVisible();
+      await page.getByRole('button', { name: /^Internal/ }).click();
+      await page.getByRole('button', { name: 'Create resource', exact: true }).click();
+      await expect(page.getByText('Resource created: invoices-api')).toBeVisible();
+      await expect(page.locator('.secret-value')).toBeVisible();
     },
   },
   {
-    name: 'entities/resource-created-secret', kind: 'frame', path: `/?view=resources&tenant=${tenant}`, state: alpha,
+    name: 'console/resource-endpoint-stepup-inject', kind: 'crop', path: `${resourcePath}&edit=endpoints`, state: resourcesState,
+    section: page => page.getByRole('group', { name: /^Endpoint POST \/payments\/transfer/ }),
     before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
-      await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'internal', exact: true }).click();
-      await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Resource created: invoices-api', exact: true })).toBeVisible();
-      await expect(page.locator('.secret-banner .secret-value')).toBeVisible();
-    },
-  },
-
-  {
-    name: 'console/resource-form-cel-inject-stepup', kind: 'crop', path: `/?view=resources&tenant=${tenant}`, state: alpha,
-    section: page => page.locator('.endpoint-editor').last(),
-    before: async page => {
-      await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-      await page.getByRole('textbox', { name: 'Resource ID' }).fill('payments-api');
-      await page.getByLabel('Absolute resource URI').fill('http://payments-api.payments.svc.cluster.local:8080');
-      await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-      const endpoint = page.locator('.endpoint-editor').last();
-      await endpoint.locator('select').first().selectOption('POST');
-      await endpoint.getByPlaceholder('/users').fill('/payments/transfer');
-      await endpoint.getByRole('checkbox', { name: 'Fetch userinfo' }).check();
-      await endpoint.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
-      await endpoint.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
-      await endpoint.getByRole('checkbox', { name: 'otp', exact: true }).check();
-      await endpoint.getByPlaceholder('e.g. 3600').fill('600');
-      await endpoint.getByRole('button', { name: 'Add rule', exact: true }).click();
-      await endpoint.locator('.header-editor-item select').selectOption('body');
-      await endpoint.locator('.header-editor-item input[type=text]').fill('userId');
-      await endpoint.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
-      await expect(endpoint.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.getByLabel('Method').selectOption('POST');
+      await page.getByLabel('Relative path').fill('/payments/transfer');
+      await page.getByRole('switch', { name: 'Fetch userinfo' }).check();
+      await page.getByRole('textbox', { name: 'Allow expression' }).fill('request.body.amount <= user.daily_transfer_limit');
+      await page.getByRole('textbox', { name: 'Step-up condition' }).fill('request.body.amount > 100000');
+      await page.getByRole('checkbox', { name: 'otp', exact: true }).check();
+      await page.getByLabel('Max auth age').fill('10m');
+      await page.getByRole('button', { name: 'Add rule', exact: true }).click();
+      await page.getByLabel('Target').selectOption('body');
+      await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');
+      await page.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
+      await expect(page.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
     },
   },
 
@@ -1057,7 +1226,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/scopes-list-expanded', kind: 'frame', path: `/?view=scopes&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open scope openid' }).click();
+      await page.getByRole('button', { name: /^Open scope (.* )?openid$/ }).click();
       await expect(sidePanel(page, 'OpenID scope').getByRole('region', { name: 'Claims' })).toContainText('Subject');
     },
   },
@@ -1092,7 +1261,7 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/permissions-list-expanded', kind: 'frame', path: `/?view=permissions&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open permission orders.read' }).click();
+      await page.getByRole('button', { name: /^Open permission (.* )?orders:read$/ }).click();
       await expect(sidePanel(page, 'Read orders').getByRole('region', { name: 'Endpoints' })).toContainText('/orders');
     },
   },
@@ -1108,7 +1277,7 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
       const dialog = sidePanel(page, 'Create permission');
-      await dialog.getByLabel('Permission ID *').fill('orders.cancel');
+      await dialog.getByLabel('Permission ID *').fill('orders:cancel');
       await dialog.locator('#permission-description').fill('Cancel orders');
       await dialog.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
       await dialog.getByRole('button', { name: 'Add resource', exact: true }).click();
@@ -1128,8 +1297,8 @@ const consoleShots: DocsShot[] = [
   {
     name: 'entities/roles-list-expanded', kind: 'frame', path: `/?view=roles&tenant=${tenant}`, state: alpha,
     before: async page => {
-      await page.getByRole('button', { name: 'Open role alpha_admin' }).click();
-      await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('orders.read');
+      await page.getByRole('button', { name: /^Open role (.* )?alpha_admin$/ }).click();
+      await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions' })).toContainText('orders:read');
     },
   },
   {
@@ -1146,8 +1315,8 @@ const consoleShots: DocsShot[] = [
       const dialog = sidePanel(page, 'Create role');
       await dialog.getByLabel('Role ID *').fill('support');
       await dialog.locator('#role-description').fill('Customer support agent');
-      await dialog.getByRole('checkbox', { name: /orders\.read/ }).check();
-      await expect(dialog.getByRole('checkbox', { name: /orders\.read/ })).toBeChecked();
+      await dialog.getByRole('checkbox', { name: /orders:read/ }).check();
+      await expect(dialog.getByRole('checkbox', { name: /orders:read/ })).toBeChecked();
     },
   },
 ];

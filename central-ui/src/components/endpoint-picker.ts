@@ -65,7 +65,11 @@ export class VersolaEndpointPicker extends LitElement {
         font-size: var(--text-sm);
         color: var(--accent);
         font-weight: 600;
-        overflow-wrap: anywhere;
+        /* A long host is cut, the full name is in the title. */
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .endpoints {
@@ -87,10 +91,22 @@ export class VersolaEndpointPicker extends LitElement {
 
       .endpoint-main {
         display: flex;
-        align-items: center;
-        gap: 0.75rem;
+        align-items: baseline;
         flex-wrap: wrap;
+        gap: 0.25rem 0.75rem;
         min-width: 0;
+        flex: 1;
+      }
+
+      .endpoint-main .method-badge {
+        flex: none;
+      }
+
+      .endpoint-main .endpoint-path {
+        flex: 1 1 16rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: normal;
       }
 
       .endpoint .picker-row {
@@ -182,7 +198,7 @@ export class VersolaEndpointPicker extends LitElement {
         return html`
           <div class="resource">
             <div class="resource-head">
-              <span class="resource-name">${label}</span>
+              <span class="resource-name" title=${label}>${label}</span>
               <button type="button" class="icon-button danger" aria-label=${`Remove resource ${label}`} title="Remove resource"
                 @click=${() => this.removeResource(resource)}>${statusIcon('x', 'icon')}</button>
             </div>
