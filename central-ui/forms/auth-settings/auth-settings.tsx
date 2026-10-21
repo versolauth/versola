@@ -1,5 +1,5 @@
 import { render } from 'solid-js/web';
-import { createMemo, createSignal, For, Show } from 'solid-js';
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
@@ -107,12 +107,18 @@ function takeReturnError(): string | null {
 
 // An action that asks for a stronger or fresher sign-in than the session has is answered with 401 and
 // the edge login URL that asks for exactly that (RFC 9470); the page goes there, asking to be sent back
-// to this very address, and keeps `action` for the user to continue with. Only a path on this origin
-// is followed, so a response can never send the browser elsewhere.
-function followStepUp(res: Response, action: PendingAction | null): boolean {
+// to this very address, and keeps `action` to carry out when it is back: the user already confirmed it.
+// Only a path on this origin is followed, so a response can never send the browser elsewhere.
+function followStepUp(res: Response, action: PendingAction | null, resumed: boolean, giveUp: () => void): boolean {
   if (res.status !== 401) return false;
   const location = res.headers.get('Location');
   if (!location || !location.startsWith('/') || location.startsWith('//')) return false;
+  // The sign-in has just ended and the very same call is still refused: going round again would never end.
+  if (resumed) {
+    clearPending();
+    giveUp();
+    return true;
+  }
   if (action) savePending(action);
   const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
   window.location.assign(`${location}${location.includes('?') ? '&' : '?'}return_to=${returnTo}`);
@@ -149,8 +155,12 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   // The sign-in that was asked for has ended, one way or the other, and sent the browser back here.
   const returnError = takeReturnError();
   const [stepUpError, setStepUpError] = createSignal<string | null>(returnError);
-  const [resuming, setResuming] = createSignal<PendingAction | null>(returnError ? null : readPending());
-  if (returnError) clearPending();
+  // What the user was doing when the sign-in took them away, to carry out once the page is up.
+  const interrupted = returnError ? null : readPending();
+  clearPending();
+  let resumedNow = false;
+  const stepUp = (res: Response, action: PendingAction | null) =>
+    followStepUp(res, action, resumedNow, () => setStepUpError('step_up_failed'));
 
   const revokeSession = async (session: AccountSession) => {
     if (busySessionId()) return;
@@ -162,7 +172,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetSessionId: session.id }),
       });
-      if (followStepUp(res, { kind: 'session', id: session.id })) return;
+      if (stepUp(res, { kind: 'session', id: session.id })) return;
       if (res.ok) {
         setSessions(sessions().filter((s) => s.id !== session.id));
       }
@@ -192,7 +202,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         body: JSON.stringify({ credentialId: id, name: trimmed || null }),
       });
       // A rename is not resumed: the new name is only in the field the user was typing in.
-      if (followStepUp(res, null)) return;
+      if (stepUp(res, null)) return;
       if (res.ok) {
         setPasskeys(passkeys().map((p) => (p.id === id ? { ...p, name: trimmed || undefined } : p)));
         setRenamingId(null);
@@ -211,7 +221,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: id }),
       });
-      if (followStepUp(res, { kind: 'passkey', id })) return;
+      if (stepUp(res, { kind: 'passkey', id })) return;
       if (res.ok) setPasskeys(passkeys().filter((p) => p.id !== id));
     } finally {
       setBusyPasskeyId(null);
@@ -248,7 +258,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      if (followStepUp(startRes, { kind: 'enroll', name: trimmed })) return;
+      if (stepUp(startRes, { kind: 'enroll', name: trimmed })) return;
       if (!startRes.ok) throw new Error('start failed');
       const { publicKeyOptions, ticket } = await startRes.json();
       const response = JSON.parse(await getRegistrationResponse(publicKeyOptions));
@@ -257,7 +267,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket, response, name: trimmed }),
       });
-      if (followStepUp(finishRes, { kind: 'enroll', name: trimmed })) return;
+      if (stepUp(finishRes, { kind: 'enroll', name: trimmed })) return;
       if (!finishRes.ok) throw new Error('finish failed');
       const passkey = (await finishRes.json()) as AccountPasskey;
       setPasskeys([...passkeys(), passkey]);
@@ -269,32 +279,29 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     }
   };
 
-  const resumeText = (action: PendingAction): string => {
-    if (action.kind === 'session') return t().resume_session;
-    if (action.kind === 'passkey') return t().resume_passkey;
-    return (t().resume_enroll ?? '').replace('{name}', action.name);
-  };
-
-  const continuePending = async () => {
-    const action = resuming();
-    setResuming(null);
-    clearPending();
-    if (!action) return;
-    if (action.kind === 'session') {
-      const session = sessions().find((candidate) => candidate.id === action.id);
-      if (session) await revokeSession(session);
-    } else if (action.kind === 'passkey') {
-      await deletePasskey(action.id);
-    } else {
-      setEnrollName(action.name);
-      await enroll();
+  // The action was confirmed before the sign-in, so it is carried out, not asked about again. Adding a
+  // passkey asks the browser for one, which some refuse without a click of its own: the name stays in the
+  // field and the button is the one the user already knows.
+  const resume = async (action: PendingAction) => {
+    resumedNow = true;
+    try {
+      if (action.kind === 'session') {
+        const session = sessions().find((candidate) => candidate.id === action.id);
+        if (session) await revokeSession(session);
+      } else if (action.kind === 'passkey') {
+        await deletePasskey(action.id);
+      } else {
+        setEnrollName(action.name);
+        await enroll();
+      }
+    } finally {
+      resumedNow = false;
     }
   };
 
-  const cancelPending = () => {
-    setResuming(null);
-    clearPending();
-  };
+  onMount(() => {
+    if (interrupted) void resume(interrupted);
+  });
 
   return (
     <div class="container account-container">
@@ -306,22 +313,6 @@ function AccountSettingsForm(props: { config: FormConfig }) {
           <div class="error-text account-notice" role="alert">
             {error() === 'unmet_authentication_requirements' ? t().step_up_unavailable : t().step_up_failed}
           </div>
-        )}
-      </Show>
-      <Show when={resuming()}>
-        {(action) => (
-          <section class="account-section account-resume" role="status">
-            <h2>{t().resume_title}</h2>
-            <p>{resumeText(action())}</p>
-            <div class="confirmation-actions">
-              <button type="button" class="btn btn-secondary" onClick={cancelPending}>
-                {t().cancel_button}
-              </button>
-              <button type="button" class="btn btn-primary" onClick={() => void continuePending()}>
-                {t().resume_continue}
-              </button>
-            </div>
-          </section>
         )}
       </Show>
 
