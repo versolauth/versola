@@ -86,8 +86,8 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     path
 
   private def centralMutualTls(trusted: Path*) = EdgeConfig.CentralMutualTls(
-    certificate = "/edge/central-client.crt",
-    privateKey = "/edge/central-client.key",
+    certificate = Some("/edge/central-client.crt"),
+    privateKey = Some("/edge/central-client.key"),
     trustedCertificates = trusted.map(_.toString).toSet,
   )
 
@@ -318,6 +318,61 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .provideLayer(ZLayer.succeed(baseConfig(None).copy(central = baseConfig(None).central.copy(mutualTls = None))) >>> EdgeConfig.validated)
             .exit
         yield assertTrue(exit.isFailure)
+      },
+      test("accepts a certificate that central issues, in place of one deployed with the edge") {
+        val identity = EdgeConfig.CentralIdentity(
+          directory = "/var/lib/edge/identity",
+          enrollment = Some(EdgeConfig.CentralEnrollment(URL.decode("https://central.example").toOption.get, "/run/token")),
+        )
+        val base = baseConfig(None)
+        val config = base.copy(central =
+          base.central.copy(
+            mutualTls = Some(base.central.mutualTls.get.copy(certificate = None, privateKey = None)),
+            identity = Some(identity),
+          ),
+        )
+        for result <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated)
+        yield assertTrue(result.central.identity.contains(identity))
+      },
+      test("refuses a certificate named both as a file and as one central issues") {
+        val base = baseConfig(None)
+        val config = base.copy(central =
+          base.central.copy(identity = Some(EdgeConfig.CentralIdentity(directory = "/var/lib/edge/identity"))),
+        )
+        for exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("both name this edge's certificate"))
+      },
+      test("refuses a central block that does not say which certificate this edge presents") {
+        val base = baseConfig(None)
+        val config = base.copy(central =
+          base.central.copy(mutualTls = Some(base.central.mutualTls.get.copy(certificate = None, privateKey = None))),
+        )
+        for exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("is not named"))
+      },
+      test("refuses a certificate without its key") {
+        val base = baseConfig(None)
+        val config = base.copy(central =
+          base.central.copy(mutualTls = Some(base.central.mutualTls.get.copy(privateKey = None))),
+        )
+        for exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("given together"))
+      },
+      test("refuses an enrollment url that is not https, where the one-time token would travel in clear") {
+        val base = baseConfig(None)
+        val config = base.copy(central =
+          base.central.copy(
+            mutualTls = Some(base.central.mutualTls.get.copy(certificate = None, privateKey = None)),
+            identity = Some(
+              EdgeConfig.CentralIdentity(
+                directory = "/var/lib/edge/identity",
+                enrollment = Some(EdgeConfig.CentralEnrollment(URL.decode("http://central.example").toOption.get, "/run/token")),
+              ),
+            ),
+          ),
+        )
+        for exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("must be https"))
       },
       test("refuses a central url that is not https") {
         for

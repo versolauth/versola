@@ -1,6 +1,6 @@
 package versola.central
 
-import versola.central.configuration.edges.{EdgeCertificate, EdgeId, EdgeService}
+import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupKind, EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.util.http.{Observability, Unauthorized}
 import versola.util.{JWT, Secret}
@@ -59,8 +59,13 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
 def authorizeEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeId] =
   for
     edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
+    edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
     presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
-    _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId))
+    _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId, edge.groupId))
+    // What a partner's edge may do is decided by the operator's registration of its group, not by anything the edge
+    // presents: it gets a certificate that names its group and nothing from central's configuration.
+    _ <- (Observability.setError("edge_group_partner") *> ZIO.fail(Unauthorized))
+      .when(edge.groupKind != EdgeGroupKind.FirstParty)
   yield edgeId
 
 /** Refuses an edge token on every route it wraps (#554). The edge-facing surface is

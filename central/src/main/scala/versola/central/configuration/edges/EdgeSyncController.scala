@@ -25,8 +25,11 @@ import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
 import zio.http.*
-import zio.json.EncoderOps
 import zio.json.ast.Json
+import zio.json.{EncoderOps, JsonCodec}
+import zio.schema.*
+
+import java.security.cert.X509Certificate
 
 /** The surface central serves to edges and to nobody else (#554): `GET /edge/sync/<resource>`
   * for what an edge reads, and the certificate signing an edge enrols through. Every route
@@ -36,7 +39,7 @@ import zio.json.ast.Json
   * token is refused ([[versola.central.refuseEdgeCallers]]).
   */
 object EdgeSyncController extends Controller:
-  type Env = Tracing & CentralConfig & EdgeService & SecurityService & OAuthClientService & ClientCertificateService &
+  type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
     AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -50,6 +53,7 @@ object EdgeSyncController extends Controller:
     presetsEndpoint,
     serverMetadataEndpoint,
     signEdgeCertificateEndpoint,
+    renewIdentityEndpoint,
   )
 
   val clientsEndpoint =
@@ -202,6 +206,28 @@ object EdgeSyncController extends Controller:
         }
     }
 
+  /** A new certificate for the calling edge itself, for the one it has: asked for over the mutual-TLS listener, so the
+    * handshake and the token have already said which edge this is. The request must name exactly that edge and its
+    * group, and carries a new key every time. */
+  val renewIdentityEndpoint =
+    Method.POST / "edge" / "certificate" / "renew" -> handler { (request: Request) =>
+      (for
+        edgeId <- authorizeEdge(request)
+        body <- request.bodyAs[RenewEdgeCertificateRequest]
+        identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
+          edgeId,
+          body.csr,
+          request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
+        ))
+      yield Response.json(EdgeIdentityResponse(identity.chain, identity.chainEndsAt).toJson))
+        .catchAll {
+          case error: EdgeIdentityService.Refused =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
+          case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
+          case error: Throwable => ZIO.fail(error)
+        }
+    }
+
   /** The calling edge's record, for the routes that encrypt to its key or answer with its own
     * row. `authorizeEdge` has verified the token against this same record. */
   private def callerEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeRecord] =
@@ -236,3 +262,7 @@ object EdgeSyncController extends Controller:
         secret = encryptedSecret,
       )
     }
+
+case class RenewEdgeCertificateRequest(
+    csr: String,
+) derives JsonCodec, Schema
