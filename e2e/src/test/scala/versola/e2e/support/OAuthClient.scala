@@ -1727,6 +1727,24 @@ final class OAuthClient(client: Client, config: E2EConfig):
       accessToken,
     )
 
+  /** PATCH /resources/auth/settings/password — changes the caller's password through edge. */
+  def edgeChangePassword(
+      accessToken: Option[String],
+      currentPassword: String,
+      newPassword: String,
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/password",
+      Some(
+        Json.Obj(
+          "currentPassword" -> Json.Str(currentPassword),
+          "newPassword" -> Json.Str(newPassword),
+        ),
+      ),
+      accessToken,
+    )
+
   /** POST /resources/auth/settings/passkeys/register/start — obtains creation options plus the ticket. */
   def edgeStartPasskeyEnrollment(accessToken: Option[String]): Task[AccountResult] =
     edgeAccountRequest(Method.POST, "/settings/passkeys/register/start", Some(Json.Obj()), accessToken)

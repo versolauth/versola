@@ -2,7 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.account.AccountSettingsController
+import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
   AcrResolutionService,
   AuthorizationResponseService,
@@ -107,6 +107,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
+      AccountSettingsService &
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
@@ -262,6 +263,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >++>
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
+      AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
       UserService.live >++>

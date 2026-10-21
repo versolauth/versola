@@ -205,7 +205,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       "renderAccount",
       "auth-settings",
       (service, id) =>
-        service.renderAccount(id.getOrElse(clientId), StepView.AccountSettings(Nil, Nil), None),
+        service.renderAccount(
+          id.getOrElse(clientId),
+          StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+          None,
+        ),
     ),
     (
       "renderLogoutConfirm",
@@ -1172,7 +1176,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(Nil, Nil),
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
             None,
           )
           body <- response.body.asString
@@ -1188,7 +1192,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
-          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          response <- env.service.renderAccount(
+            clientId,
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            None,
+          )
           body <- response.body.asString
         yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
@@ -1200,7 +1208,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
-          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          response <- env.service.renderAccount(
+            clientId,
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            None,
+          )
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
