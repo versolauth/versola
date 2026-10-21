@@ -831,6 +831,24 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/edge-overload-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: { ...edgesState, edges: [{ ...edges[0], overloadPolicy: { inbound: { mode: 'enforce', maxInFlight: 512, adaptive: { maxLimit: 1536 } }, outbound: { mode: 'shadow' } } }] },
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
+    },
+  },
+  {
+    // Tall, so the whole editor is in the frame: the panel scrolls inside its own viewport.
+    name: 'console/edge-overload-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.setViewportSize({ width: 1440, height: 2300 });
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit overload protection', exact: true }).click();
+      await expect(sidePanel(page, 'Edit overload protection').getByRole('button', { name: 'Save overload protection' })).toBeVisible();
+    },
+  },
+  {
     name: 'console/edge-form', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Edge' }).click();
