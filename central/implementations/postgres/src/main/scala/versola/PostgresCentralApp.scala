@@ -178,19 +178,16 @@ object PostgresCentralApp extends VersolaApp("central"):
     ).reduce(_ ++ _)
     authOnly @@ refuseEdgeCallers
 
-  /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on a listener of its own
-    * (`EPORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central. Nothing else is
+  /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
+    * (`APORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central, which makes it the
+    * public one of central's three ports (`PORT` is internal, `MPORT` is the edges' mutual TLS). Nothing else is
     * served there.
     *
-    * Only where `EPORT` is set: the listener is a new port, and one that nothing asked for must not be bound. A
-    * default would be another service's on a host where central and auth share the network (vps), and an edge
-    * that is not remote has no use for enrollment at all. */
+    * Only where `APORT` is set. Unlike auth, which has always served its additional listener on the default, central
+    * has none unless asked: binding 8082 by default would take a port another service uses on a host where central
+    * and auth share the network (vps), and an edge that is not remote has no use for enrollment at all. */
   override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    enrollmentPort.map(_ => EdgeEnrollController.routes)
-
-  override def additionalPort: Int = enrollmentPort.getOrElse(super.additionalPort)
-
-  private def enrollmentPort: Option[Int] = Option(JavaSystem.getenv("EPORT")).flatMap(_.toIntOption)
+    Option.when(JavaSystem.getenv("APORT") != null)(EdgeEnrollController.routes)
 
   /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
     * authenticated by the certificate it presents in the handshake as well as by its token. */
