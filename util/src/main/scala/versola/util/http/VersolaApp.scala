@@ -470,6 +470,7 @@ object VersolaApp:
         formats <- ZIO.service[LogFormats]
         env <- ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env")))
         config = ConsoleLoggerConfig.default.copy(
+          filter = LogFilter.LogLevelByNameConfig(Observability.minLogLevel),
           format =
             List(
               label("timestamp", timestamp.fixed(32)),
