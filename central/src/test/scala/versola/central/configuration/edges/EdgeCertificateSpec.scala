@@ -56,4 +56,30 @@ object EdgeCertificateSpec extends ZIOSpecDefault:
         !EdgeCertificate.isReserved("urn:example:client"),
       )
     },
+    test("the reserved namespace is compared the way a URN is: scheme and namespace case-insensitive, whitespace ignored") {
+      assertTrue(
+        EdgeCertificate.isReserved("URN:Versola:Edge:edge-a"),
+        EdgeCertificate.isReserved("urn:VERSOLA:edge-group:default"),
+        EdgeCertificate.isReserved("  urn:versola:edge:edge-a"),
+        EdgeCertificate.isReserved("urn:versola:anything-else"),
+        !EdgeCertificate.isReserved("urn:example:versola:edge:x"),
+      )
+    },
+    test("a client is not issued a spelling of an edge's name either") {
+      import versola.central.configuration.clients.certificates.ClientCertificateRequests
+      import versola.central.configuration.clients.{ClientId, MutualTlsSubjectType}
+      val spellings = List("URN:Versola:Edge:edge-a", "urn:versola:EDGE-GROUP:default", " urn:versola:edge:edge-a")
+      assertTrue(
+        spellings.forall(value =>
+          ClientCertificateRequests.subjectFor(
+            ClientId("web"),
+            versola.central.configuration.clients.MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, value),
+          ).isLeft,
+        ),
+      )
+    },
+    test("accepting an edge's name stays exact: a variant spelling is not an identity") {
+      val variant = TestCertificates.generate(uri = Some("URN:Versola:Edge:edge-a")).certificate
+      assertTrue(!EdgeCertificate.isIssuedTo(variant, edgeId), EdgeCertificate.edgeIds(variant).isEmpty)
+    },
   )

@@ -93,6 +93,20 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         stillThere <- tokens.consume("hash-1", now)
       yield assertTrue(expired.isEmpty, unknown.isEmpty, stillThere == Some(edgeId))
     },
+    test("looking at a token spends nothing, and sees only a token that is still good") {
+      for
+        _ <- reset
+        (edges, _, tokens, _) <- repositories
+        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId)
+        _ <- tokens.create("hash-1", edgeId, now.plusSeconds(10))
+        first <- tokens.peek("hash-1", now)
+        again <- tokens.peek("hash-1", now)
+        unknown <- tokens.peek("hash-2", now)
+        expired <- tokens.peek("hash-1", now.plusSeconds(10))
+        spent <- tokens.consume("hash-1", now)
+        afterSpent <- tokens.peek("hash-1", now)
+      yield assertTrue(first == Some(edgeId), again == Some(edgeId), unknown.isEmpty, expired.isEmpty, spent == Some(edgeId), afterSpent.isEmpty)
+    },
     test("two simultaneous trades of one token enrol exactly one") {
       for
         _ <- reset

@@ -1,9 +1,9 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig.ClientCertificateAuthorityConfig
+import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.{CertificateSubject, EdgeIdentityNames, PrivateClientCertificate, TestCertificates}
-import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
 import zio.*
 import zio.http.Client
 import zio.test.*
@@ -39,7 +39,7 @@ object EdgeCertificateIssuerSpec extends ZIOSpecDefault:
   def spec = suite("EdgeCertificateIssuer")(
     test("with nothing configured for edges, the client issuer signs them") {
       for issuer <- built(TestCentralConfig.config)
-      yield assertTrue(issuer.issuer eq sharedIssuer)
+      yield assertTrue(issuer.issuer.eq(sharedIssuer))
     },
     test("with an edge CA central holds the key of, that CA signs the edge, not the client's") {
       for
@@ -59,7 +59,7 @@ object EdgeCertificateIssuerSpec extends ZIOSpecDefault:
         )
         material <- ZIO.fromEither(PrivateClientCertificate(chain + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
       yield assertTrue(
-        !(issuer.issuer eq sharedIssuer),
+        !(issuer.issuer.eq(sharedIssuer)),
         scala.util.Try(material.leaf.verify(edgeCa.certificate.getPublicKey)).isSuccess,
         scala.util.Try(material.leaf.verify(clientCa.certificate.getPublicKey)).isFailure,
         material.subjectValues("san_uri") == subject.uris.toSet,

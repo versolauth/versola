@@ -19,6 +19,13 @@ class PostgresEdgeEnrollmentTokenRepository(xa: TransactorZIO) extends EdgeEnrol
       """.update.run()
     .unit
 
+  override def peek(tokenHash: String, now: Instant): Task[Option[EdgeId]] =
+    xa.connectMeasured("peek-edge-enrollment-token"):
+      sql"""
+        SELECT edge_id FROM edge_enrollment_tokens
+        WHERE token_hash = $tokenHash AND used_at IS NULL AND expires_at > $now
+      """.query[EdgeId].run().headOption
+
   override def consume(tokenHash: String, now: Instant): Task[Option[EdgeId]] =
     xa.connectMeasured("consume-edge-enrollment-token"):
       sql"""

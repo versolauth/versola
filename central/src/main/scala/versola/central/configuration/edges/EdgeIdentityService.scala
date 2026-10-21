@@ -79,13 +79,19 @@ object EdgeIdentityService:
 
     override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, String] =
       for
-        edge <- edges.find(edgeId).someOrFail(InvalidToken)
-        // The request is checked before the token is spent, so a mistake in it does not cost the operator a token.
-        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
         now <- Clock.instant
-        owner <- tokens.consume(hash(token), now)
-        // Unknown, spent, expired, or for another edge look the same from outside.
+        // Nothing is read or parsed on the strength of a token before the token is known good: the request comes from
+        // someone not yet authenticated, so an unregistered edge, a registered one and a bad token are one and the
+        // same answer, and a garbage request costs a hash and a lookup, not a parse.
+        owner <- tokens.peek(hash(token), now)
         _ <- ZIO.fail(InvalidToken).unless(owner.contains(edgeId))
+        edge <- edges.find(edgeId).someOrFail(InvalidToken)
+        // Authenticated from here on, so a mistake in the request may be told: and it is checked before the token is
+        // spent, so it does not cost the operator a token.
+        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
+        spent <- tokens.consume(hash(token), now)
+        // Another caller spent it between the look and now.
+        _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
         chain <- sign(edge, csrPem)
       yield chain
 

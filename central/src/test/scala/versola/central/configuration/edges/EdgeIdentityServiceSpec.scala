@@ -30,6 +30,9 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
     override def create(tokenHash: String, edgeId: EdgeId, expiresAt: Instant): Task[Unit] =
       state.update(_.updated(tokenHash, (edgeId, expiresAt, false)))
 
+    override def peek(tokenHash: String, now: Instant): Task[Option[EdgeId]] =
+      state.get.map(_.get(tokenHash).collect { case (edge, expiresAt, false) if expiresAt.isAfter(now) => edge })
+
     override def consume(tokenHash: String, now: Instant): Task[Option[EdgeId]] =
       state.modify: tokens =>
         tokens.get(tokenHash) match
@@ -108,6 +111,31 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         again == EdgeIdentityService.InvalidToken,
         recorded.map(_._1) == Vector(edgeId),
       )
+    },
+    test("an unregistered edge and a registered one with no good token get the same answer, whatever the request") {
+      val edge = edgeRecord(edgeId)
+      val env = Env(List(edge))
+      for
+        service <- env.service
+        unregistered <- service.enroll(EdgeId("nobody"), "not-a-token", "garbage").flip
+        registered <- service.enroll(edgeId, "not-a-token", "garbage").flip
+        right <- csrFor(edge)
+        registeredGoodRequest <- service.enroll(edgeId, "not-a-token", right).flip
+      yield assertTrue(
+        unregistered == EdgeIdentityService.InvalidToken,
+        registered == EdgeIdentityService.InvalidToken,
+        registeredGoodRequest == EdgeIdentityService.InvalidToken,
+      )
+    },
+    test("a request that is not even a certificate request is not parsed before the token is known good") {
+      val edge = edgeRecord(edgeId)
+      val env = Env(List(edge))
+      for
+        service <- env.service
+        issued <- service.issueEnrollmentToken(edgeId)
+        withToken <- service.enroll(edgeId, issued.token, "garbage").flip
+        stillGood <- csrFor(edge).flatMap(csr => service.enroll(edgeId, issued.token, csr))
+      yield assertTrue(withToken.isInstanceOf[EdgeIdentityService.Refused], stillGood.contains("BEGIN CERTIFICATE"))
     },
     test("a token of another edge does not enrol this one") {
       val edge = edgeRecord(edgeId)

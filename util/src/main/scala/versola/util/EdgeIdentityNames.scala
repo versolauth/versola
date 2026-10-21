@@ -1,5 +1,6 @@
 package versola.util
 
+import java.util.Locale
 import javax.security.auth.x500.X500Principal
 
 /** What an edge's certificate says, shared by central, which decides it, and by the edge, which asks for exactly
@@ -17,8 +18,17 @@ object EdgeIdentityNames:
 
   def groupUri(groupId: String): String = s"$GroupPrefix$groupId"
 
-  /** Whether `uri` is in either namespace. */
-  def isReserved(uri: String): Boolean = uri.startsWith(EdgePrefix) || uri.startsWith(GroupPrefix)
+  /** The namespace as a whole, every name below it. */
+  val Namespace: String = "urn:versola:"
+
+  /** Whether `uri` is in a namespace that is only ever issued to an edge: anything below `urn:versola:`.
+    *
+    * The scheme and the namespace identifier of a URN are case-insensitive (RFC 8141 §3.1), and a name with surrounding
+    * whitespace is one a lenient parser may read as the plain one, so a name is compared lowercased and trimmed:
+    * `URN:Versola:Edge:x` is as reserved as `urn:versola:edge:x`. This is the check that keeps a client from being issued
+    * an edge's name. The check that accepts an edge's name is the opposite and stays exact (see `EdgeCertificate`):
+    * a variant spelling is refused as an identity, and refused as a client's name. */
+  def isReserved(uri: String): Boolean = uri.trim.toLowerCase(Locale.ROOT).startsWith(Namespace)
 
   /** The certificate of `edgeId`, member of `groupId`: CN the edge's id, the two names, nothing else. */
   def subject(edgeId: String, groupId: String): CertificateSubject =
