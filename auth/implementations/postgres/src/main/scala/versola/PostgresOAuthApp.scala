@@ -297,7 +297,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.rsaPrivateKey)
+    .mapOrFail(SecretConfig.signingPrivateKey)
 
   given DeriveConfig[EnvName] = DeriveConfig[String]
     .map:
