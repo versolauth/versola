@@ -87,18 +87,13 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - A DNS record for the `--auth-url` host pointing at the host's public IP **before `versola up`**
   (Let's Encrypt validates over port 80). Behind Cloudflare it must be *DNS only* while the
   certificate is issued.
-- **A second DNS name for central's edge surface** (#554), for example `central.versola.kz` next to
-  `id.versola.kz`, pointing at the same host. A deployment is addressed by two hostnames:
-  `id.<domain>` is auth (browsers, `--auth-url`, behind the proxy and Let's Encrypt), and
-  `central.<domain>` is **routed to central's mutual-TLS port** (`MPORT`, `8093`): the proxy in front
-  forwards that name's TCP/TLS to `127.0.0.1:8093` by SNI, **without terminating TLS** -- the
-  handshake and the edge's client certificate must reach central untouched. An edge's `central.url`
-  is `https://central.<domain>` (gen-env's `--central-mutual-tls-url`). The name is only an
-  address: edge authenticates central by pinning its leaf certificate, so no public certificate is
-  needed for it. It is not needed when every edge runs on the same host as central
-  (`https://127.0.0.1:8093`). The routing itself belongs to the proxy that `versola-cli` writes (its
-  own repository); until it forwards that name, edges outside the host must use the host's address and
-  port `8093` directly (see [Mutual TLS certificates](#mutual-tls-certificates)).
+- **Extra DNS names only for an edge that is not on this host.** While every edge runs on this host,
+  `id.<domain>` (auth: browsers, `--auth-url`, behind the proxy and Let's Encrypt) is the only name,
+  and an edge reaches `central` and `auth` on `127.0.0.1`. A remote first-party edge also needs
+  `central-mtls.<domain>` (routed to central's mutual-TLS port `8093`), `id-mtls.<domain>` (routed to
+  auth's `8083`) and `central.<domain>` (ordinary TLS, enrollment only). Which name serves which case
+  is in [Remote and partner edges](#remote-and-partner-edges-and-the-public-domains). Create a name
+  only for a case you have.
 - `versola-cli`: `curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh`,
   then `export PATH="$HOME/.local/bin:$PATH"`. `versola upgrade` updates it later.
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
@@ -472,6 +467,78 @@ keeps serving the configuration it last loaded. For a rotation with no gap use t
 `develop.md`. Without the schedule nothing renews: the first leaf expires two years after install. A step-ca volume
 from before its client template existed keeps issuing certificates with the subject rewritten to the
 bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` volume to lift it.
+
+### Remote and partner edges, and the public domains
+
+> **Design for the next release.** This section describes what that release contains, so a deployment
+> can be planned. Nothing here is released yet and nothing is certified. The user-facing version, with
+> the same facts, is "Network, domains and certificates" and "Partner edge" in the documentation
+> (versolauth/versola-website, in the pull request versolauth/versola-website#144).
+
+The default deployment is one host: every edge is local and reaches `central` and `auth` on `127.0.0.1`
+(`8093`, `8083`). Two things add public names: an edge in another network (**remote first-party
+edge**) and clients that authenticate with a certificate. A **partner edge** is a different thing: it
+is run by a partner and is, for `auth`, an ordinary OAuth client.
+
+**Which names to create, and when**
+
+| Name | Create it when | TLS ends at | Certificate |
+|---|---|---|---|
+| `id.<domain>` | always | the proxy | Let's Encrypt |
+| `id-mtls.<domain>` | a remote edge reaches auth, or an external client uses `tls_client_auth` | auth (the proxy forwards TCP by SNI) | internal CA leaf, name in its SAN |
+| `central-mtls.<domain>` | a remote edge reads central's configuration | central (forwarded the same way) | internal CA leaf, name in its SAN |
+| `central.<domain>` | a remote first-party edge enrolls | the proxy | Let's Encrypt; serves `POST /edge/enroll` only |
+
+A local edge never uses these names: it keeps using the loopback addresses. The mutual-TLS names stay
+off until you pass them to `configure`; with no flag, the listeners stay on loopback and no `stream`
+server is generated. Never terminate TLS on the two `-mtls` names (the client certificate is lost).
+Protect the public ports: `limit_conn` per source at the `stream` layer with its own log, source
+addresses restricted to the hosts that run an edge, attempt limits on `/edge/enroll`, and an alert on
+certificate expiry.
+
+**Enrolling a remote first-party edge**
+
+1. Create the edge group and the edge: `POST /configuration/edge-groups` (`{"id","kind"}`) and
+   `POST /configuration/edges` (optional `groupId`, default `default`). `kind` and an edge's group
+   never change.
+2. `POST /configuration/edges/enrollment-tokens?edgeId=<id>` returns `{token, expiresAt}`. It is shown
+   once, lives 1 hour and works once.
+3. On the remote host give the edge the token file, `central.enrollment { url, token-file }` (the
+   `central.<domain>` URL) and a persistent `identity { directory }`. The edge makes its key locally,
+   sends a CSR with exactly `urn:versola:edge:<id>` and `urn:versola:edge-group:<group>` to
+   `POST /edge/enroll`, and renews with `POST /edge/certificate/renew` at a third of its lifetime left,
+   with a new key each time. Without the volume it must enroll again on every restart.
+4. Set `central.url` to `https://central-mtls.<domain>` and `native.auth-mutual-tls-url` to
+   `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration").
+
+**Partner edge.** The operator decides, in `central`: an edge group has a `kind` of `first_party` or
+`partner`, set at creation and never changed by the edge. The `mode` key in an edge's own configuration
+is only a declaration: at start the edge compares it with the group in its credentials and refuses to
+start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
+`central`'s configuration; `auth` trusts an edge identity only for a `first_party` group bound to the
+client, and a client of a partner group needs standard client authentication (`private_key_jwt` or
+`tls_client_auth`). Onboarding: create a `partner` group and its edge, register the partner's clients
+bound to that group, publish `id.<domain>` (and `id-mtls.<domain>` for `tls_client_auth`). A partner
+never gets `central-mtls.<domain>`.
+
+**Behaviour change and breaking items** (read before upgrading; `central`, `auth` and every `edge`
+move together and `configure` is re-run)
+
+- The public name for central's mutual-TLS port is `central-mtls.<domain>`, not `central.<domain>`;
+  `central.<domain>` now means enrollment over ordinary TLS. A deployment that already routed
+  `central.<domain>` to `8093` must rename it.
+- An edge calls `auth` with **its own certificate** (`urn:versola:edge:<id>`) for every client it
+  serves. Those clients no longer need `issueEdgeClientCertificate` or a certificate from the client
+  CA; `auth` checks in the registry that the edge serves the client. Client certificates and
+  `tls_client_auth` remain for clients no edge serves.
+- Names under `urn:versola:edge:*` and `urn:versola:edge-group:*` are valid only on a leaf signed by
+  the edge CA: `auth` gains `mutual-tls.edge-trusted-certificates`.
+- The edge identity is short-lived and renewed by the edge itself, not by `versola certs renew`; it
+  needs a persistent `identity.directory`.
+- The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
+  upgrade changes nothing for existing edges.
+- CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
+  decided.
 
 ### Overload protection
 
