@@ -47,6 +47,25 @@ object FormLocalizations:
               )
             missing ++ extra ++ mismatched
 
+  /** The texts every language of a form is compared with: its English texts when it has them, else the first language
+    * by code; empty for a form that carries no text at all. */
+  def referenceTexts(localizations: Map[String, Map[String, String]]): Map[String, String] =
+    reference(localizations).flatMap(localizations.get).getOrElse(Map.empty)
+
+  /** The faults of `texts` as the translation of a form into `locale`, held against the form's `reference` texts: a key
+    * the form does not have, a blank text, a placeholder spelled differently. A key the translation lacks is no fault
+    * here: a translation is filled in over time, and a language is checked as a whole when it is activated. */
+  def translationFaults(reference: Map[String, String], locale: String, texts: Map[String, String]): Vector[String] =
+    texts.toVector.sortBy((key, _) => key).flatMap: (key, text) =>
+      reference.get(key) match
+        case None => Vector(s"'$key' is not a text of this form")
+        case Some(_) if text.trim.isEmpty => Vector(s"The text for '$key' in '$locale' is blank; leave a key out to remove it")
+        case Some(base) =>
+          val want = placeholders(base)
+          val have = placeholders(text)
+          if want == have then Vector.empty
+          else Vector(s"Key '$key' has the placeholders ${render(want)} in the form but ${render(have)} in '$locale'")
+
   /** `Left` with the faults as one sentence, the first few of them, when the languages disagree. */
   def validate(localizations: Map[String, Map[String, String]]): Either[String, Unit] =
     val found = faults(localizations)

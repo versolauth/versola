@@ -26,29 +26,36 @@ trait FormService:
   def sync(event: SyncEvent.FormsUpdated): Task[Unit]
 
 object FormService:
-  def live: ZLayer[FormRepository & Scope & LocaleService & CentralConfig, Throwable, FormService] =
+  def live: ZLayer[FormRepository & FormTranslationRepository & Scope & LocaleService & CentralConfig, Throwable, FormService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[FormRecord]](config.configurationCacheRefreshInterval),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[FormRecord]],
       repository: FormRepository,
       localeService: LocaleService,
+      translations: FormTranslationRepository,
   ) extends FormService:
 
     override def getAllForms: Task[Vector[FormRecord]] =
       cache.get.map(_.sortBy(_.id))
 
+    /** The active forms as `auth` serves them: each form's own texts with the translations stored for it laid over,
+      * in the languages that are active. The overlay is applied here, on every call, so a translation takes effect
+      * for whichever version of the form is active and survives `central` re-seeding a built-in form. */
     override def getSyncForms: Task[Vector[FormRecord]] =
       for
         forms <- cache.get.map(_.filter(_.active).sortBy(_.id))
+        stored <- translations.getAll.map(_.groupBy(_.formId))
         activeLocales <- localeService.getActive.map(_.map(_.code).toSet)
-        formWithActiveLocales = forms.map(f => f.copy(localizations = f.localizations.filter((code, _) => activeLocales.contains(code))))
-      yield formWithActiveLocales
+      yield forms.map: form =>
+        val merged = stored.getOrElse(form.id, Vector.empty).foldLeft(form.localizations): (localizations, translation) =>
+          localizations.updated(translation.locale, localizations.getOrElse(translation.locale, Map.empty) ++ translation.texts)
+        form.copy(localizations = merged.filter((code, _) => activeLocales.contains(code)))
 
     override def updateForm(
         id: FormId,

@@ -55,6 +55,17 @@ trait LocaleRepositorySpec extends DatabaseSpecBase[LocaleRepositorySpec.Env]:
           locs.headOption.exists(l => l.contains(""""en"""") && !l.contains(""""ru"""")),
         )
       },
+      test("update delete removes the locale's form translations, and only its own") {
+        for
+          _ <- env.repository.update(add = Vector(en, ru), delete = Vector.empty)
+          _ <- env.xa.connect:
+            sql"""INSERT INTO form_translations (form_id, locale, texts) VALUES
+                  ('credential', 'ru', '{"title":"Вход"}'), ('credential', 'en', '{"title":"Sign in"}')""".update.run()
+          _ <- env.repository.update(add = Vector.empty, delete = Vector("ru"))
+          left <- env.xa.connect:
+            sql"""SELECT locale FROM form_translations ORDER BY locale""".query[String].run()
+        yield assertTrue(left == Vector("en"))
+      },
       test("update batch-deletes multiple locale keys from forms localizations") {
         for
           _ <- env.repository.update(add = Vector(en, ru, fr), delete = Vector.empty)

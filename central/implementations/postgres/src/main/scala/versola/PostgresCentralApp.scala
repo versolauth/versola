@@ -27,7 +27,7 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
-import versola.central.configuration.forms.{FormController, FormRepository, FormService}
+import versola.central.configuration.forms.{FormController, FormRepository, FormService, FormTranslationRepository, FormTranslationService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
@@ -49,7 +49,7 @@ import versola.configuration.clients.{
 }
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
 import versola.configuration.edges.PostgresEdgeRepository
-import versola.configuration.forms.PostgresFormRepository
+import versola.configuration.forms.{PostgresFormRepository, PostgresFormTranslationRepository}
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
 import versola.configuration.metadata.PostgresServerMetadataRepository
@@ -102,7 +102,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeRepository &
       EdgeService &
       FormRepository &
+      FormTranslationRepository &
       FormService &
+      FormTranslationService &
       LocaleRepository &
       LocaleCompletenessValidator &
       LocaleService &
@@ -167,6 +169,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresRoleRepository.live >++>
           PostgresEdgeRepository.live >++>
           PostgresFormRepository.live >++>
+          PostgresFormTranslationRepository.live >++>
           PostgresLocaleRepository.live >++>
           PostgresThemeRepository.live >++>
           PostgresOtpChallengeRepository.live >++>
@@ -205,6 +208,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>
       FormService.live >++>
+      FormTranslationService.live >++>
       ThemeService.live >++>
       OtpChallengeService.live >++>
       SystemSettingsService.live >++>

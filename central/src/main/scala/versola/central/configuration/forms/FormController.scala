@@ -10,7 +10,7 @@ import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 
 object FormController extends Controller:
-  type Env = Tracing & FormService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & FormService & FormTranslationService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllFormsEndpoint,
@@ -18,6 +18,9 @@ object FormController extends Controller:
     syncFormsEndpoint,
     updateFormEndpoint,
     setActiveVersionEndpoint,
+    getTranslationsEndpoint,
+    putTranslationEndpoint,
+    deleteTranslationEndpoint,
   )
 
   val getAllFormsEndpoint =
@@ -62,6 +65,37 @@ object FormController extends Controller:
         service <- ZIO.service[FormService]
         body <- request.bodyAs[SetActiveVersionRequest]
         _ <- service.setActiveVersion(body.id, body.version)
+      yield Response.status(Status.NoContent)
+    }
+
+  /** The translations stored apart from the forms, which `auth` is served laid over each form's own texts. */
+  val getTranslationsEndpoint =
+    Method.GET / "configuration" / "forms" / "translations" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[FormTranslationService]
+        translations <- service.getAll
+      yield Response.json(GetFormTranslationsResponse(translations).toJson)
+    }
+
+  val putTranslationEndpoint =
+    Method.PUT / "configuration" / "forms" / "translations" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[FormTranslationService]
+        body <- request.bodyAs[PutFormTranslationRequest]
+        _ <- service.put(body.formId, body.locale, body.texts)
+      yield Response.status(Status.NoContent)).catchSome(badRequest)
+    }
+
+  val deleteTranslationEndpoint =
+    Method.DELETE / "configuration" / "forms" / "translations" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[FormTranslationService]
+        formId <- request.url.queryZIO[String]("formId")
+        locale <- request.url.queryZIO[String]("locale")
+        _ <- service.delete(FormId(formId), locale)
       yield Response.status(Status.NoContent)
     }
 
