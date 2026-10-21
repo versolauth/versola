@@ -25,6 +25,15 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** How central issues the certificates of edges (`POST /edge/enroll`, `/edge/certificate/renew`), when that is not
+      * the CA that issues clients' certificates. Edge certificates are what central's mutual-TLS listener and auth
+      * trust for edges, clients' what auth trusts for clients, so the two are signed by different CAs. Same shape as
+      * [[clientCertificates]]. */
+    edgeCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** The same, for a deployment where central holds the edge CA's own key (certificate and PKCS#8 key files), the
+      * way `client-certificate-authority` does for clients. Central is the one authority on which edges exist --
+      * registering one and enrolling it are both its admin API -- so the key gives it no power it lacks. */
+    edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
     /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
       * central has no such listener and no edge can sync from it -- there is deliberately no
       * fallback to the main listener, which is the admin console's and auth's. */
@@ -35,6 +44,10 @@ case class CentralConfig(
     * absent, not as a block with no backend. */
   def certificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
     clientCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
+
+  /** `edge-certificates` only where it names a CA, for the reason given on [[certificateBackends]]. */
+  def edgeCertificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
+    edgeCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
 object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")

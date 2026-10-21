@@ -1,7 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
-import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
+import versola.central.configuration.clients.certificates.ClientCertificateRequests
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
@@ -53,7 +53,7 @@ object EdgeIdentityService:
     EdgeIdentityNames.subject(edgeId = edge.id, groupId = edge.groupId)
 
   val live: URLayer[
-    EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & ClientCertificateIssuer & SecureRandom &
+    EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & EdgeCertificateIssuer & SecureRandom &
       CentralConfig,
     EdgeIdentityService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
@@ -62,12 +62,11 @@ object EdgeIdentityService:
       edges: EdgeService,
       tokens: EdgeEnrollmentTokenRepository,
       issued: EdgeCertificateRepository,
-      issuer: ClientCertificateIssuer,
+      issuer: EdgeCertificateIssuer,
       random: SecureRandom,
       config: CentralConfig,
   ) extends EdgeIdentityService:
-    private val validity: Duration =
-      config.certificateBackends.getOrElse(CentralConfig.ClientCertificatesConfig()).validity
+    private val validity: Duration = EdgeCertificateIssuer.validity(config)
 
     override def issueEnrollmentToken(edgeId: EdgeId): IO[Refused | Throwable, IssuedToken] =
       for
@@ -100,7 +99,7 @@ object EdgeIdentityService:
     private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
       val subject = subjectFor(edge)
       for
-        chain <- issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
+        chain <- issuer.issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
         leaf <- ZIO.attempt:
           CertificateFactory.getInstance("X.509")
             .generateCertificates(ByteArrayInputStream(chain.getBytes(StandardCharsets.UTF_8)))

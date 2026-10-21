@@ -26,6 +26,7 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{
+  EdgeCertificateIssuer,
   EdgeCertificateRepository,
   EdgeController,
   EdgeEnrollController,
@@ -122,6 +123,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeCertificateRepository &
       EdgeService &
       EdgeGroupService &
+      EdgeCertificateIssuer &
       EdgeIdentityService &
       FormRepository &
       FormService &
@@ -256,6 +258,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateAuthority.live >++>
       OAuthClientService.live >++>
       ClientCertificateIssuer.live >++>
+      EdgeCertificateIssuer.live >++>
       ClientCertificateService.live >++>
       BootstrapService.live >++>
       TenantService.live >++>

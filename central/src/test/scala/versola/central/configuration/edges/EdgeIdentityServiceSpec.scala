@@ -63,7 +63,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
         random <- ZIO.service[SecureRandom]
-      yield EdgeIdentityService.Impl(edgeService, tokens, certificates, issuer, random, TestCentralConfig.config)
+      yield EdgeIdentityService.Impl(edgeService, tokens, certificates, EdgeCertificateIssuer(issuer), random, TestCentralConfig.config)
 
   private def csrFor(edge: EdgeRecord): UIO[String] =
     CertificateSubject.generate(EdgeIdentityService.subjectFor(edge)).orDie.map(_.csrPem)
