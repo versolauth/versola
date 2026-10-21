@@ -842,13 +842,15 @@ object EdgeService:
           acr = acrFailed,
           maxAge = maxAgeRequired,
           loginUri = authSource match
-            case AuthSource.Cookie(presetId) => Some(stepUpLoginUri(presetId, acrFailed, maxAgeRequired))
+            case AuthSource.Cookie(presetId) => Some(stepUpLoginUri(presetId, requiredAcr, maxAgeRequired))
             case AuthSource.Header(_) => None,
         ))).when(acrFailed.isDefined || maxAgeFailed)
       yield ()
 
-    /** The edge login of the preset the caller's session came from, asking for what the endpoint found
-      * missing: the `acr_values` and `max_age` of the challenge, which `/login` passes on to `/authorize`. */
+    /** The edge login of the preset the caller's session came from, asking for what the endpoint requires: its
+      * `acr_values` whenever the endpoint asks for one, and the `max_age` when the sign-in is too old. The class
+      * is asked for again even when only the age failed: a sign-in that is not asked for it yields a token
+      * without it, and the very next call would be refused for that. Both go on to `/authorize` through `/login`. */
     private def stepUpLoginUri(presetId: PresetId, acr: Option[String], maxAge: Option[Int]): URL =
       val login = URL(Path.root / "login" / presetId)
       val withAcr = acr.fold(login)(login.addQueryParam("acr_values", _))

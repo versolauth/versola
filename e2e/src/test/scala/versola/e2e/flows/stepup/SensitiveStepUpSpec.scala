@@ -152,6 +152,37 @@ object SensitiveStepUpSpec extends E2ESpec:
         assertTrue(noCode.isFailure).label("a wrong password yields no code") &&
         assertTrue(claims.contains(s""""acr":"${Acr.Sensitive}"""")).label(s"acr claim in $claims")
     },
+    test("an old session that already holds the class is asked for the password again when only max_age fails, and keeps the class") {
+      for
+        (s, auth) <- freshUser
+        authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        submit <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf)
+        _ <- submit.assertRedirect
+        session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the sign-in"))
+        // What edge's login asks for when the token already carries the class but its sign-in is too old: both
+        // the class and the age, so that the new sign-in is not left without the class.
+        started <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          sessionCookie = Some(session),
+          maxAge = Some(0),
+          acrValues = Some(Acr.Sensitive),
+        ).assertChallengeRedirect
+        step <- auth.getChallenge(started.conversationCookie.get)
+        code <- auth.submitPassword(started.conversationCookie.get, s.password, step.csrf).assertRedirect
+        token <- auth.token(
+          code,
+          started.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+        claims <- claimsOf(token.idToken.get)
+      yield assertTrue(step.step.contains(ConversationStep.Password)).label("the password step, not the credential card") &&
+        assertTrue(claims.contains(s""""acr":"${Acr.Sensitive}"""")).label(s"acr claim in $claims")
+    },
     test("a session that passed only a password does not satisfy it for a user who has a passkey: the passkey is asked for") {
       for
         (s, auth) <- freshUser
