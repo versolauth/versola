@@ -6,14 +6,16 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
 import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
-import zio.ZIO
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
+import zio.{Duration, ZIO}
+
+import java.time.Instant
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & ResourceService & CentralConfig & TenantRepository
+  type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & ResourceService & CentralConfig & TenantRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,
@@ -24,6 +26,10 @@ object EdgeController extends Controller:
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
     setEdgeOverloadEndpoint,
+    createEdgeGroupEndpoint,
+    getEdgeGroupsEndpoint,
+    createEnrollmentTokenEndpoint,
+    extendEdgeEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -32,6 +38,7 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
+        chainEnds <- ZIO.serviceWithZIO[EdgeIdentityService](_.chainEnds)
         response = GetAllEdgesResponse(
           edges = edges.map(edge =>
             EdgeResponse(
@@ -39,6 +46,8 @@ object EdgeController extends Controller:
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
               overloadPolicy = edge.overloadPolicy,
+              groupId = edge.groupId,
+              identityChainEndsAt = chainEnds.get(edge.id),
             ),
           ).toList,
         )
@@ -51,10 +60,62 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         body <- request.bodyAs[RegisterEdgeRequest]
-        keyPair <- service.registerEdge(body.id)
-        privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
-        response = ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded)
-      yield Response.json(response.toJson).status(Status.Created)
+        groupId = body.groupId.getOrElse(EdgeGroup.DefaultId)
+        group <- ZIO.serviceWithZIO[EdgeGroupService](_.find(groupId))
+        response <- group match
+          case None => ZIO.succeed(Response.text(s"edge group '$groupId' does not exist").status(Status.UnprocessableEntity))
+          case Some(_) =>
+            service.registerEdge(body.id, groupId).map: keyPair =>
+              val privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
+              Response.json(ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded).toJson).status(Status.Created)
+      yield response
+    }
+
+  /** Creates a group of edges. The kind is the operator's decision and is not changed afterwards; an existing id is
+    * answered `409` and left as it was. */
+  val createEdgeGroupEndpoint =
+    Method.POST / "configuration" / "edge-groups" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        body <- request.bodyAs[EdgeGroupRecord]
+        created <- ZIO.serviceWithZIO[EdgeGroupService](_.create(body))
+      yield if created then Response.json(body.toJson).status(Status.Created) else Response.status(Status.Conflict)
+    }
+
+  val getEdgeGroupsEndpoint =
+    Method.GET / "configuration" / "edge-groups" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        groups <- ZIO.serviceWithZIO[EdgeGroupService](_.getAll)
+      yield Response.json(GetEdgeGroupsResponse(groups).toJson)
+    }
+
+  /** Starts the certificate chain of the edge over, for an operator who turned `edge-identity.auto-extend` off: the edge's
+    * next renewals are not refused for age. A no-op in effect where central extends chains itself. */
+  val extendEdgeEndpoint =
+    Method.POST / "configuration" / "edges" / "extend" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.extend(edgeId)).as(Response.status(Status.NoContent))
+          .catchSome:
+            case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
+    }
+
+  /** A one-time token for the named edge to trade for its first certificate, shown once. */
+  val createEnrollmentTokenEndpoint =
+    Method.POST / "configuration" / "edges" / "enrollment-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        hours <- ZIO.succeed(request.url.queryParams.getAll("validityHours").headOption.flatMap(_.toLongOption))
+        validity = hours.fold(EdgeIdentityService.TokenValidity)(h => Duration.fromSeconds(h * 3600L))
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.issueEnrollmentToken(edgeId, validity)).map: issued =>
+          Response.json(EnrollmentTokenResponse(token = issued.token, expiresAt = issued.expiresAt).toJson).status(Status.Created)
+        .catchSome:
+          case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
     }
 
   val rotateEdgeKeyEndpoint =
@@ -161,6 +222,17 @@ object EdgeController extends Controller:
 
 case class RegisterEdgeRequest(
     id: EdgeId,
+    /** The group the edge joins and never leaves; absent means `default`. */
+    groupId: Option[EdgeGroupId] = None,
+) derives Schema, JsonCodec
+
+case class GetEdgeGroupsResponse(
+    groups: Vector[EdgeGroupRecord],
+) derives Schema, JsonCodec
+
+case class EnrollmentTokenResponse(
+    token: String,
+    expiresAt: Instant,
 ) derives Schema, JsonCodec
 
 case class EdgeResponse(
@@ -168,6 +240,9 @@ case class EdgeResponse(
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
+    groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
+    identityChainEndsAt: Option[Instant] = None,
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(

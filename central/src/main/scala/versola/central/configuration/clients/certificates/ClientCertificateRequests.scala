@@ -55,8 +55,8 @@ object ClientCertificateRequests:
           // `urn:versola:edge:<id>` is what makes a certificate an edge's on central's mutual-TLS
           // listener (`EdgeCertificate`); the CA that signs here may be one that listener trusts,
           // so a client must not be issued a certificate carrying it.
-          case MutualTlsSubjectType.san_uri if value.startsWith(EdgeCertificate.NamePrefix) =>
-            Left(s"san_uri '$value' is in the namespace that names an edge to central, and is not issued to a client")
+          case MutualTlsSubjectType.san_uri if EdgeCertificate.isReserved(value) =>
+            Left(s"san_uri '$value' is in the namespace that names an edge or a group of edges, and is not issued to a client")
           case MutualTlsSubjectType.san_uri =>
             Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = List(value), emailAddresses = Nil, ipAddresses = Nil))
           case MutualTlsSubjectType.san_email =>

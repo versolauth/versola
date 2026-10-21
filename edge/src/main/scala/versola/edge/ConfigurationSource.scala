@@ -1,8 +1,8 @@
 package versola.edge
 
-import versola.util.{ConfigSnapshot, SecurityService}
 import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
+import versola.util.{ConfigSnapshot, SecurityService}
 import zio.http.Client
 import zio.{Scope, ZLayer}
 
@@ -42,7 +42,9 @@ object ConfigurationSource:
     * the certificates it is registered to generate.
     */
   val central: ZLayer[Requirements, Throwable, ConfigurationSource] =
-    CentralSyncTokenService.live >++>
+    EdgeCertificateHolder.live >++>
+      CentralSyncTokenService.live >++>
+      EdgeIdentityEnrollment.live >++>
       AuthorizationPresetsSyncClient.live >++>
       ClientCertificateEnrollment.live >++>
       OAuthClientsSyncClient.live >++>

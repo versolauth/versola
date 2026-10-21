@@ -24,10 +24,10 @@ object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
 
-  def live: ZLayer[Scope & EdgeConfig & ConfigSnapshot, Throwable, CentralSyncTokenService] = {
+  def live: ZLayer[Scope & EdgeConfig & ConfigSnapshot & EdgeCertificateHolder, Throwable, CentralSyncTokenService] = {
     TokenSource >>>
       ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
-      ZLayer.fromFunction(Impl(_, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _))
   }
 
   private val TokenSource: ZLayer[EdgeConfig, Throwable, CacheSource[String]] = ZLayer:
@@ -55,16 +55,22 @@ object CentralSyncTokenService:
       cache: ReloadingCache[String],
       config: EdgeConfig,
       snapshot: ConfigSnapshot,
+      certificate: EdgeCertificateHolder,
   ) extends CentralSyncTokenService:
     override def getToken: UIO[String] = cache.get
 
-    private val ssl: Option[ClientSSLConfig] = config.central.mutualTls.map: mtls =>
-      ClientSSLConfig.FromClientAndServerCert(
-        EdgeConfig.pinnedTrust(mtls.trustedCertificates),
-        ClientSSLCertConfig.FromClientCertFile(mtls.certificate, mtls.privateKey),
-      )
-
-    override def connection(client: Client): Client = ssl.fold(client)(client.ssl)
+    // Built per call, not once: where central issues this edge's certificate it is replaced before it expires, and
+    // the connection has to present the one that is current. A pin and the files are read, nothing is fetched.
+    override def connection(client: Client): Client =
+      val ssl =
+        for
+          mtls <- config.central.mutualTls
+          (certificate, privateKey) <- certificate.paths
+        yield ClientSSLConfig.FromClientAndServerCert(
+          EdgeConfig.pinnedTrust(mtls.trustedCertificates),
+          ClientSSLCertConfig.FromClientCertFile(certificate, privateKey),
+        )
+      ssl.fold(client)(client.ssl)
 
     override def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
       snapshot.through(request)(connection(client).request(request))

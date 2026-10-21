@@ -200,7 +200,7 @@ object ClientCertificateService:
         // pass `authorizeEdge` on central's mutual-TLS listener (the CA signing here may be one that
         // listener trusts).
         _ <- ZIO.fail(refused("the issued certificate carries a name that identifies an edge to central"))
-          .when(EdgeCertificate.edgeIds(leaf).nonEmpty)
+          .when(EdgeCertificate.uriNames(leaf).exists(EdgeCertificate.isReserved))
         // What the CA returned must say what the client is registered by, or auth would never
         // accept it: refuse here, with the reason, rather than hand the edge a certificate it
         // would present to a 401.
@@ -290,7 +290,7 @@ object ClientCertificateService:
           .mapError(reason => RuntimeException(s"the CA returned a certificate central cannot use: $reason"))
         // See `sign`: never a certificate that names an edge.
         _ <- ZIO.fail(RuntimeException("the issued certificate carries a name that identifies an edge to central"))
-          .when(EdgeCertificate.edgeIds(material.leaf).nonEmpty)
+          .when(EdgeCertificate.uriNames(material.leaf).exists(EdgeCertificate.isReserved))
         // The issued certificate must name what the registration compares it against; refuse
         // here, with a reason, rather than store one auth would never accept.
         _ <- ZIO.foreachDiscard(auth match
