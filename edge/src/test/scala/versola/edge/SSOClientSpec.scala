@@ -333,6 +333,58 @@ object SSOClientSpec extends ZIOSpecDefault:
         )
       }*,
     ),
+    // What `versola configure vps` writes: `versola-internal-url` is auth's public https name, which no terminator
+    // pins, and the native back channel points at auth's own mutual-TLS listener. A certificate client (central-admin)
+    // used to be sent to the public name and refused for want of pins, so the admin console could not sign in.
+    suite("with an https internal url")(
+      {
+        val publicName = URL.decode("https://id.example.com").toOption.get
+        val listener = URL.decode("https://127.0.0.1:8083").toOption.get
+        val native = EdgeConfig.Native(
+          authMutualTlsUrl = listener,
+          trustedCertificates = Set("listener.pem"),
+          blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+        )
+        val mutualTls = ClientCredential.MutualTls(certificateMaterial)
+
+        Chunk(
+          test("with no pins for it and the native back channel configured, a certificate client goes to the listener") {
+            val unpinned = config.copy(
+              versolaInternalUrl = Some(publicName),
+              versolaInternalTrustedCertificates = Set.empty,
+              native = Some(native),
+            )
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, unpinned, certificateFiles)
+            yield assertTrue(
+              sso.endpoint(mutualTls, "par") == listener / "par",
+              sso.endpoint(mutualTls, "token") == listener / "token",
+              sso.endpoint(secretClient.credential, "par") == publicName / "par",
+            )
+          },
+          test("a terminator the operator pinned is kept, the native back channel notwithstanding") {
+            val terminated = config.copy(
+              versolaInternalUrl = Some(publicName),
+              versolaInternalTrustedCertificates = Set("terminator.pem"),
+              native = Some(native),
+            )
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, terminated, certificateFiles)
+            yield assertTrue(sso.endpoint(mutualTls, "par") == publicName / "par")
+          },
+          test("with no pins and no native back channel the call is still refused, not made unauthenticated") {
+            val bare = config.copy(versolaInternalUrl = Some(publicName), versolaInternalTrustedCertificates = Set.empty, native = None)
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, bare, certificateFiles)
+              error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls).flip
+            yield assertTrue(error == SSOClient.CredentialNeedsTrustedServer(clientId, publicName / "token"))
+          },
+        )
+      }*,
+    ),
     test("refuses an endpoint with no trust anchors instead of trusting whatever answers") {
       // zio-http's fallback authenticates no server at all, so presenting the certificate
       // without anchors would carry the session it opens over a connection to any host able

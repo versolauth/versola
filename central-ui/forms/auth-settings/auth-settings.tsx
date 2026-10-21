@@ -2,6 +2,7 @@ import { render } from 'solid-js/web';
 import { createMemo, createSignal, For, Show } from 'solid-js';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 import { LocaleSelector, createTranslations } from '../shared/locale';
+import { PasswordInput } from '../shared/password-input';
 import type { BaseFormConfig } from '../shared/config';
 
 type AccountSession = {
@@ -31,6 +32,8 @@ type AccountSettingsStep = {
   type: 'auth-settings';
   sessions: AccountSession[];
   passkeys: AccountPasskey[];
+  hasPassword: boolean;
+  passwordRegex: string;
 };
 
 interface FormConfig extends BaseFormConfig {
@@ -61,6 +64,20 @@ function formatDate(value: string, locale: string): string {
   }
 }
 
+// The API refuses a password change with `{ error: <code>, retryAfterSeconds? }`; the page owns the wording,
+// so each code is a key of auth-settings.i18n.json. A refusal is kept as its code and rendered through t(),
+// so it follows the language when the visitor switches it. Which field a code is shown under follows from what it says.
+type PasswordRefusal = { error: string; retryAfterSeconds?: number };
+type PasswordFieldErrors = { current?: PasswordRefusal; next?: PasswordRefusal; confirm?: PasswordRefusal; general?: PasswordRefusal };
+
+async function readRefusal(res: Response): Promise<Partial<PasswordRefusal>> {
+  try {
+    return await res.json();
+  } catch (_) {
+    return {};
+  }
+}
+
 function AccountSettingsForm(props: { config: FormConfig }) {
   const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
@@ -79,6 +96,9 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [enrolling, setEnrolling] = createSignal(false);
   const [enrollNameError, setEnrollNameError] = createSignal(false);
   const [enrollError, setEnrollError] = createSignal(false);
+  const [changingPassword, setChangingPassword] = createSignal(false);
+  const [passwordErrors, setPasswordErrors] = createSignal<PasswordFieldErrors>({});
+  const [passwordChanged, setPasswordChanged] = createSignal(false);
   const [deletionRequest, setDeletionRequest] = createSignal<DeletionRequest | null>(null);
 
   const revokeSession = async (session: AccountSession) => {
@@ -189,6 +209,66 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       if (!isPasskeyCancellation(error)) setEnrollError(true);
     } finally {
       setEnrolling(false);
+    }
+  };
+
+  const refusalText = (refusal: PasswordRefusal | undefined) => {
+    if (!refusal) return undefined;
+    if (refusal.error === 'too_many_attempts' && refusal.retryAfterSeconds) {
+      return t().too_many_attempts_retry.replace('{seconds}', String(refusal.retryAfterSeconds));
+    }
+    return t()[refusal.error] ?? t().password_change_failed;
+  };
+
+  const placePasswordRefusal = (refusal: Partial<PasswordRefusal>): PasswordFieldErrors => {
+    const known = { ...refusal, error: refusal.error ?? '' };
+    switch (known.error) {
+      case 'current_password_incorrect':
+        return { current: known };
+      case 'password_not_allowed':
+      case 'password_reused':
+        return { next: known };
+      case 'too_many_attempts':
+        return { general: known };
+      default:
+        return { general: { error: 'password_change_failed' } };
+    }
+  };
+
+  const submitPasswordChange = async (event: SubmitEvent) => {
+    event.preventDefault();
+    if (changingPassword()) return;
+    const form = event.currentTarget as HTMLFormElement;
+    const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value;
+    const [currentPassword, newPassword, confirm] = [value('currentPassword'), value('newPassword'), value('confirm')];
+
+    setPasswordChanged(false);
+    // The same rules the server applies; checking them here only saves the round trip.
+    const errors: PasswordFieldErrors = {};
+    try {
+      if (step.passwordRegex && !new RegExp(step.passwordRegex).test(newPassword)) errors.next = { error: 'password_not_allowed' };
+    } catch (_) {}
+    if (newPassword !== confirm) errors.confirm = { error: 'password_mismatch' };
+    setPasswordErrors(errors);
+    if (errors.next || errors.confirm) return;
+
+    setChangingPassword(true);
+    try {
+      const res = await fetch(`${base}password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      if (res.ok) {
+        form.reset();
+        setPasswordChanged(true);
+      } else {
+        setPasswordErrors(placePasswordRefusal(await readRefusal(res)));
+      }
+    } catch (_) {
+      setPasswordErrors({ general: { error: 'password_change_failed' } });
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -321,6 +401,53 @@ function AccountSettingsForm(props: { config: FormConfig }) {
           </div>
         </Show>
       </section>
+
+      <Show when={step.hasPassword}>
+        <section class="account-section">
+          <h2>{t().password_title}</h2>
+          <form class="account-password-form" onSubmit={submitPasswordChange}>
+            <PasswordInput
+              id="currentPassword"
+              name="currentPassword"
+              label={t().current_password_label}
+              autocomplete="current-password"
+              error={refusalText(passwordErrors().current)}
+              showLabel={t().show_password}
+              hideLabel={t().hide_password}
+              onInput={() => setPasswordErrors({ ...passwordErrors(), current: undefined })}
+            />
+            <PasswordInput
+              id="newPassword"
+              name="newPassword"
+              label={t().new_password_label}
+              autocomplete="new-password"
+              error={refusalText(passwordErrors().next)}
+              showLabel={t().show_password}
+              hideLabel={t().hide_password}
+              onInput={() => setPasswordErrors({ ...passwordErrors(), next: undefined })}
+            />
+            <PasswordInput
+              id="confirm"
+              name="confirm"
+              label={t().confirm_password_label}
+              autocomplete="new-password"
+              error={refusalText(passwordErrors().confirm)}
+              showLabel={t().show_password}
+              hideLabel={t().hide_password}
+              onInput={() => setPasswordErrors({ ...passwordErrors(), confirm: undefined })}
+            />
+            <Show when={passwordErrors().general}>
+              <div class="error-text error-text-block" role="alert">{refusalText(passwordErrors().general)}</div>
+            </Show>
+            <Show when={passwordChanged()}>
+              <div class="account-password-done" role="status">{t().password_changed}</div>
+            </Show>
+            <button type="submit" class="btn btn-primary" disabled={changingPassword()}>
+              {t().change_password_button}
+            </button>
+          </form>
+        </section>
+      </Show>
 
       <button type="button" class="btn btn-secondary account-go-back" onClick={() => history.back()}>
         {t().go_back_button}

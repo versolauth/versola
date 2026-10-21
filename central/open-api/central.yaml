@@ -2242,16 +2242,21 @@ paths:
       summary: Set what an edge does when it is asked for more than it can do
       description: |
         The overload policy of one edge: its inbound admission limits (with priorities, so a new
-        login is refused before work already begun, and the proxied calls last), an adaptive limit
-        inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
+        login is refused before work already begun, and the proxied calls last) held to a limit the
+        edge learns from its own call times inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
         its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
         removes it and returns the edge to the values of its own deployment.
 
         Every field is optional and means "what the edge starts with" when absent, so a policy is
-        a patch over the deployment. `mode` is `off`, `shadow` (count what `enforce` would
+        a patch over the deployment: the values of the edge's own environment (`HTTP_ADMISSION_*`,
+        `HTTP_CLIENT_GUARD_*`) when set, the built-in defaults below otherwise. `mode` is `off`, `shadow` (count what `enforce` would
         refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
         change up on its next configuration sync and, while central is unreachable, keeps the last
-        policy it received.
+        policy it received (the sync runs every configuration refresh interval, 5 minutes by default).
+
+        Fields the schema does not know are ignored, so a leftover `inbound.adaptive.enabled` from
+        an earlier draft has no effect: the limit is learned whenever the inbound mode is not `off`.
+        A value outside the documented range answers `400` with the first problem found.
       operationId: setEdgeOverloadPolicy
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
@@ -5644,7 +5649,7 @@ components:
       enum: [off, shadow, enforce]
       description: |
         `off` does nothing; `shadow` counts what `enforce` would refuse and refuses nothing;
-        `enforce` refuses.
+        `enforce` refuses. The default is `shadow`.
     InboundOverloadPolicy:
       type: object
       description: Admission control at the edge's entry; a refusal is `503` with `Retry-After`.
@@ -5655,7 +5660,9 @@ components:
           type: integer
           minimum: 1
           maximum: 100000
-          description: Requests in flight at once; ignored while the adaptive limit is on.
+          description: |
+            Where the learned limit starts, in requests in flight at once, clamped into
+            `adaptive.minLimit`..`adaptive.maxLimit`. The limit then follows the pod. Default 256.
         continuationShare:
           type: number
           minimum: 0.01
@@ -5663,50 +5670,61 @@ components:
           description: |
             The share of the limit work already begun (code exchange, logout) may use; above it
             such requests are refused. New logins use `startShare`, proxied calls the whole limit.
+            Default 0.85.
         startShare:
           type: number
           minimum: 0.01
           maximum: 1
-          description: The share of the limit a new login may use; must not exceed `continuationShare`.
+          description: |
+            The share of the limit a new login may use; must not exceed `continuationShare`.
+            Default 0.65.
         retryAfterSeconds:
           type: integer
           minimum: 1
           maximum: 60
+          description: The `Retry-After` of a refusal, in seconds. Default 1.
         adaptive:
           type: object
           description: |
-            A limit that follows the pod: it shrinks when call times rise or the executor stalls,
-            and grows back while calls are fast, inside `[minLimit, maxLimit]`.
+            Bounds and gains of the learned limit. The limit shrinks when call times rise or the
+            executor stalls and grows back while calls are fast, inside `[minLimit, maxLimit]`; it is
+            learned whenever `mode` is not `off` (in `shadow` nothing is refused, but the refusals
+            `enforce` would make are counted). There is no switch.
           properties:
-            enabled:
-              type: boolean
             minLimit:
               type: integer
               minimum: 1
               maximum: 100000
+              description: The limit never goes below this. Default 16.
             maxLimit:
               type: integer
               minimum: 1
               maximum: 100000
+              description: The limit never goes above this. Default 1024.
             tolerance:
               type: number
               minimum: 1
               maximum: 5
-              description: How much slower than usual a call may get before the limit shrinks.
+              description: |
+                How much slower than usual a call may get before the limit shrinks (1.5: half
+                again). Default 1.5.
             smoothing:
               type: number
               minimum: 0.01
               maximum: 1
+              description: The share of each new estimate that replaces the limit. Default 0.2.
             lagTargetMillis:
               type: integer
               minimum: 5
               maximum: 10000
-              description: How late the executor may run a timer before it counts as stalled.
+              description: |
+                How late the executor may run a timer before it counts as stalled. Default 50.
     OutboundOverloadPolicy:
       type: object
       description: |
         Bounds on the edge's calls to auth and to resource backends, per peer. A refusal is `503`
-        with `Retry-After`, a call that took too long is `504`.
+        with `Retry-After`, a call that took too long is `504`. Queueing and timeouts apply in
+        `enforce` only.
       properties:
         mode:
           $ref: '#/components/schemas/OverloadMode'
@@ -5714,47 +5732,57 @@ components:
           type: integer
           minimum: 1
           maximum: 100000
+          description: Calls in flight towards one peer. Defaults to the connection pool size (128).
         maxQueue:
           type: integer
           minimum: 1
           maximum: 100000
+          description: Calls allowed to wait for a place; one more is refused. Default 256.
         queueTimeoutMillis:
           type: integer
           minimum: 1
           maximum: 600000
+          description: The longest a call waits for a place. Default 1000.
         requestTimeoutMillis:
           type: integer
           minimum: 1
           maximum: 600000
+          description: The longest a call may take to the response headers. Default 10000.
         breaker:
           type: object
           description: |
             Opens when `failureRatio` of the calls in the window fail (a transport error, a
             timeout, or a `502`/`503`/`504`), refuses at once while open, then lets `probeCalls`
-            probes through.
+            probes through. Off unless `enabled`.
           properties:
             enabled:
               type: boolean
+              description: Default false.
             failureRatio:
               type: number
               minimum: 0.01
               maximum: 1
+              description: Default 0.5.
             minCalls:
               type: integer
               minimum: 1
               maximum: 10000
+              description: Calls the window must hold before the ratio counts. Default 20.
             windowSeconds:
               type: integer
               minimum: 1
               maximum: 300
+              description: Default 10.
             openSeconds:
               type: integer
               minimum: 1
               maximum: 600
+              description: How long the circuit stays open before probing. Default 5.
             probeCalls:
               type: integer
               minimum: 1
               maximum: 100
+              description: Default 3.
         retryBudget:
           type: object
           description: What retries may add to the load on a peer, as a share of its calls.
@@ -5763,10 +5791,12 @@ components:
               type: number
               minimum: 0
               maximum: 1
+              description: Retries allowed per call made. Default 0.1.
             minPerSecond:
               type: number
               minimum: 0
               maximum: 1000
+              description: Retries per second always allowed, whatever the ratio. Default 5.
     OverloadPolicyError:
       type: object
       properties:

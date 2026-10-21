@@ -93,7 +93,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           inbound = Some(InboundPolicy(
             mode = Some("enforce"),
             maxInFlight = Some(128),
-            adaptive = Some(AdaptivePolicy(enabled = Some(true), minLimit = Some(16))),
+            adaptive = Some(AdaptivePolicy(minLimit = Some(16))),
           )),
           outbound =
             Some(OutboundPolicy(requestTimeoutMillis = Some(2500), breaker = Some(BreakerPolicy(enabled = Some(true), openSeconds = Some(20))))),
