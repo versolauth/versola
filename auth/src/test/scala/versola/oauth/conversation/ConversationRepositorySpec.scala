@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{AuthFlow, AuthorizationDetail, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
@@ -160,6 +160,19 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           _ <- env.repository.create(authId1, record1.copy(authorizationDetails = Some(List(detail))), ttl)
           found <- env.repository.find(authId1)
         yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
+      },
+      test("persist and retrieve the factors fixed for a built-in class") {
+        val sensitive = record1.copy(targetAcr = Some(Acr("sensitive")), targetFactors = Some(List(PassedAuthFactor.passkey)))
+        for
+          _ <- env.repository.create(authId1, sensitive, ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.contains(sensitive))
+      },
+      test("a conversation that fixed no factors reads back with none") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.map(_.targetFactors) == Some(None))
       },
       test("delete conversation by auth ID") {
         for

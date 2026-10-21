@@ -371,7 +371,7 @@ object ConversationRouter:
       */
     private def passkeyPending(conversation: ConversationRecord): Task[Boolean] =
       configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
-        conversation.targetAcr.flatMap(vocabulary.get).exists(_.exists(_ == PassedAuthFactor.passkey)) &&
+        conversation.requiredFactors(vocabulary).exists(_.contains(PassedAuthFactor.passkey)) &&
           !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.passkey, conversation.authFlow.equivalents))
 
     private def afterFactorSteps(
@@ -412,7 +412,7 @@ object ConversationRouter:
     ): Task[Option[(AuthFactor, Int)]] =
       for
         vocabulary <- configService.getAcrVocabulary(conversation.clientId)
-        reqFactors = conversation.targetAcr.flatMap(vocabulary.get).map(_.toList.toSet).getOrElse(Set.empty)
+        reqFactors = conversation.requiredFactors(vocabulary).map(_.toSet).getOrElse(Set.empty)
       yield factors.find { case (factor, _) =>
         val passed = isSatisfied(conversation, factor)
         val needed = factor.required || PassedAuthFactor.fromFactorType(factor.`type`).exists(reqFactors.contains)

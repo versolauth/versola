@@ -1743,6 +1743,15 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.acrValues.isEmpty)
       },
+      test("keeps a class the server defines itself even when the tenant's vocabulary does not") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "1 sensitive")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(Map.empty)
+          result <- env.parser.parse(request)
+        yield assertTrue(result.acrValues == Some(NonEmptyList(AcrResolutionService.Sensitive)))
+      },
     ),
     suite("id_token_hint")(
       test("captures the id_token_hint parameter") {

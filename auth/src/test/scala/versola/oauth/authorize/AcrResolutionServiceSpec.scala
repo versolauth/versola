@@ -5,7 +5,7 @@ import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PasskeyAuthFlow}
+import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, ClientId, PassedAuthFactor, PasskeyAuthFlow}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.UnitSpecBase
@@ -43,6 +43,33 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
   val userId = UserId(UUID.randomUUID())
   val flow = AuthFlow.default
   val passkeyFlow = flow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+  val passwordFlow = flow.copy(primary = flow.primary.copy(factors = List(AuthFactor(AuthFactorType.password, required = true))))
+  val passwordAndOtpFlow = flow.copy(primary =
+    flow.primary.copy(factors =
+      List(
+        AuthFactor(AuthFactorType.password, required = true),
+        AuthFactor(AuthFactorType.otp, required = false),
+      ),
+    ),
+  )
+  val someone = UserRecord.empty(userId).copy(email = Some(versola.util.Email("test@example.com")))
+  val aPasskey = PasskeyRecord(
+    id = CredentialId(Array.fill(32)(1.toByte)),
+    userId = userId,
+    publicKey = Array.fill(16)(7.toByte),
+    signatureCounter = 0L,
+    deviceType = CredentialDeviceType.MultiDevice,
+    backedUp = true,
+    backupEligible = true,
+    transports = List.empty,
+    attestationObject = None,
+    clientDataJson = None,
+    aaguid = None,
+    name = None,
+    lastUsedAt = None,
+    createdAt = Instant.now(),
+    updatedAt = Instant.now(),
+  )
   val mfaAcr = Acr("mfa")
   val passwordAcr = Acr("password")
 
@@ -183,7 +210,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val amr = Set(PassedAuthFactor.otp)
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
-          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, Map.empty)
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, userId, flow)
         yield assertTrue(result == Some(mfaAcr))
       },
       test("return None when not satisfied") {
@@ -192,7 +219,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val amr = Set(PassedAuthFactor.otp)
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
-          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, Map.empty)
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, userId, flow)
         yield assertTrue(result.isEmpty)
       },
       test("satisfied via equivalents") {
@@ -202,7 +229,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val equivalents = Map(PassedAuthFactor.passkey -> Set(PassedAuthFactor.otp))
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
-          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, equivalents)
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr), amr, userId, flow.copy(equivalents = equivalents))
         yield assertTrue(result == Some(mfaAcr))
       },
       test("return None when ACR is not in the vocabulary") {
@@ -212,7 +239,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val amr = Set(PassedAuthFactor.otp)
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
-          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(unknownAcr), amr, Map.empty)
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(unknownAcr), amr, userId, flow)
         yield assertTrue(result.isEmpty)
       },
       test("fall through to second ACR when first is not satisfied") {
@@ -225,8 +252,158 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val amr = Set(PassedAuthFactor.otp) // satisfies otpAcr but not mfaAcr
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
-          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr, otpAcr), amr, Map.empty)
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr, otpAcr), amr, userId, flow)
         yield assertTrue(result == Some(otpAcr))
+      },
+    ),
+    suite("the built-in sensitive class")(
+      test("asks a user who has a passkey for the passkey") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(aPasskey))
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, passkeyFlow)
+        yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.passkey)))
+      },
+      test("never lets a one-time code stand in for a passkey the flow cannot ask for") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(aPasskey))
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, flow)
+        yield assertTrue(result.isEmpty, env.userRepository.find.calls.isEmpty)
+      },
+      test("asks a user with a password but no passkey for the password, not a one-time code") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(true)
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, passwordAndOtpFlow)
+        yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.password)))
+      },
+      test("asks for a one-time code when the user has no passkey and no password") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(someone))
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, flow)
+        yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.otp)))
+      },
+      test("falls back to a one-time code when the flow cannot ask for the password the user has") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(true)
+          _ <- env.userRepository.find.succeedsWith(Some(someone))
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, flow)
+        yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.otp)))
+      },
+      test("has nothing to ask a user who has no factor the flow offers") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, flow)
+        yield assertTrue(result.isEmpty)
+      },
+      test("gives way to a definition of the same name in the tenant's vocabulary") {
+        val env = makeEnv
+        val vocabulary = Map(AcrResolutionService.Sensitive -> NonEmptyList(PassedAuthFactor.otp))
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, passkeyFlow)
+        yield assertTrue(
+          result.isEmpty,
+          env.passkeyRepository.listByUser.calls.isEmpty,
+        )
+      },
+      test("does not look anything up for a name that is not built in") {
+        val env = makeEnv
+        for
+          result <- env.service.builtInFactors(clientId, mfaAcr, userId, flow)
+        yield assertTrue(
+          result.isEmpty,
+          env.configurationService.getAcrVocabulary.calls.isEmpty,
+        )
+      },
+      test("is achievable for a user who has a factor the flow offers, without being in the vocabulary") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(someone))
+          result <- env.service.resolveAchievableAcr(userId, NonEmptyList(AcrResolutionService.Sensitive), clientId, flow, Set.empty)
+        yield assertTrue(result == Some(AcrResolutionService.Sensitive))
+      },
+      test("is not achievable for a user with a passkey the flow cannot ask for") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(aPasskey))
+          result <- env.service.resolveAchievableAcr(userId, NonEmptyList(AcrResolutionService.Sensitive), clientId, flow, Set.empty)
+        yield assertTrue(result.isEmpty)
+      },
+      test("is satisfied by a session that already passed the factor this user is asked for") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(someone))
+          result <- env.service.checkAcrSatisfaction(
+            clientId,
+            NonEmptyList(AcrResolutionService.Sensitive),
+            Set(PassedAuthFactor.otp),
+            userId,
+            flow,
+          )
+        yield assertTrue(result == Some(AcrResolutionService.Sensitive))
+      },
+      test("is satisfied by a session that passed the passkey of a user who has one") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(aPasskey))
+          result <- env.service.checkAcrSatisfaction(
+            clientId,
+            NonEmptyList(AcrResolutionService.Sensitive),
+            Set(PassedAuthFactor.passkey),
+            userId,
+            passkeyFlow,
+          )
+        yield assertTrue(result == Some(AcrResolutionService.Sensitive))
+      },
+      test("is not satisfied by a session that passed only a password or a one-time code, for a user who has a passkey") {
+        val env = makeEnv
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(aPasskey))
+          result <- env.service.checkAcrSatisfaction(
+            clientId,
+            NonEmptyList(AcrResolutionService.Sensitive),
+            Set(PassedAuthFactor.otp, PassedAuthFactor.password),
+            userId,
+            passkeyFlow,
+          )
+        yield assertTrue(result.isEmpty)
+      },
+      test("is not satisfied when nothing the flow offers can satisfy it for the user, whatever the session passed") {
+        val env = makeEnv
+        val amr = Set(PassedAuthFactor.passkey, PassedAuthFactor.password, PassedAuthFactor.otp)
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(AcrResolutionService.Sensitive), amr, userId, flow)
+        yield assertTrue(result.isEmpty)
       },
     ),
   )

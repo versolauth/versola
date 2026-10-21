@@ -21,7 +21,7 @@ import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
+import zio.prelude.{NonEmptyList, NonEmptySet}
 
 case class ConversationRecord(
     clientId: ClientId,
@@ -80,6 +80,11 @@ case class ConversationRecord(
     /** RFC 9449 §10 `dpop_jkt` requested at `/authorize`, carried onto the authorization code
       * this conversation eventually issues. */
     dpopJkt: Option[String],
+    /** The factors `targetAcr` asks of this user when the class is one the server defines itself
+      * ([[versola.oauth.authorize.AcrResolutionService.builtIn]]) and so depends on who the user is.
+      * Fixed when the conversation starts: a passkey enrolled halfway through must not change what
+      * the sign-in in progress is held to. `None` for a class the tenant's vocabulary defines. */
+    targetFactors: Option[List[PassedAuthFactor]] = None,
 ):
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(
@@ -91,6 +96,12 @@ case class ConversationRecord(
       uiLocales = uiLocales,
     )
   }
+
+  /** What the conversation's target ACR requires: the factors fixed at the start when the class
+    * depends on the user, else the tenant vocabulary's entry for it. `None` without a target, or when
+    * the vocabulary does not define it. */
+  def requiredFactors(vocabulary: Map[Acr, NonEmptyList[PassedAuthFactor]]): Option[List[PassedAuthFactor]] =
+    targetFactors.orElse(targetAcr.flatMap(vocabulary.get).map(_.toList))
 
   /** The scope to issue on, i.e. the granted subset once consent has been decided. */
   def effectiveScope: Set[ScopeToken] = grantedScope.getOrElse(scope)
