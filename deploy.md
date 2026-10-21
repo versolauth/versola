@@ -568,22 +568,21 @@ certificate expiry.
    `POST /configuration/edges` (optional `groupId`, default `default`). `kind` and an edge's group
    never change.
 2. `POST /configuration/edges/enrollment-tokens?edgeId=<id>` returns `{token, expiresAt}`. It is shown
-   once, lives 1 hour and works once.
+   once and works once; it lives 1 hour, or up to 24 with the `validityHours` query parameter.
 3. On the remote host give the edge the token file, `central.enrollment { url, token-file }` (the
    `central.<domain>` URL) and a persistent `identity { directory }`. The edge makes its key locally,
    sends a CSR with exactly `urn:versola:edge:<id>` and `urn:versola:edge-group:<group>` to
    `POST /edge/enroll`, and renews with `POST /edge/certificate/renew` at a third of its lifetime left,
-   with a new key each time. Without the volume it must enroll again on every restart.
+   with a new key each time. The certificate lives 30 days; an outage of `central` of about twenty days is survived. The chain of renewals ends a year after the enrollment: `central` then refuses to renew and you enroll the edge again with a new token. Without the volume it must enroll again on every restart.
 4. Set `central.url` to `https://central-mtls.<domain>` and `native.auth-mutual-tls-url` to
-   `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration").
+   `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration"). In this release the operator updates a remote edge's pins (0.8.0 is planned to publish them from `central`).
 
 **Partner edge.** The operator decides, in `central`: an edge group has a `kind` of `first_party` or
 `partner`, set at creation and never changed by the edge. The `mode` key in an edge's own configuration
 is only a declaration: at start the edge compares it with the group in its credentials and refuses to
 start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
-`central`'s configuration; `auth` trusts an edge identity only for a `first_party` group bound to the
-client, and a client of a partner group needs standard client authentication (`private_key_jwt` or
-`tls_client_auth`). Onboarding: create a `partner` group and its edge, register the partner's clients
+`central`'s configuration; a client of a partner group needs standard client authentication (`private_key_jwt` or
+`tls_client_auth`). Planned, not in this release: `auth` accepting an edge's certificate for the clients of its group. Onboarding: create a `partner` group and its edge, register the partner's clients
 bound to that group, publish `id.<domain>` (and `id-mtls.<domain>` for `tls_client_auth`). A partner
 never gets `central-mtls.<domain>`.
 
@@ -593,14 +592,17 @@ move together and `configure` is re-run)
 - The public name for central's mutual-TLS port is `central-mtls.<domain>`, not `central.<domain>`;
   `central.<domain>` now means enrollment over ordinary TLS. A deployment that already routed
   `central.<domain>` to `8093` must rename it.
-- An edge calls `auth` with **its own certificate** (`urn:versola:edge:<id>`) for every client it
-  serves. Those clients no longer need `issueEdgeClientCertificate` or a certificate from the client
-  CA; `auth` checks in the registry that the edge serves the client. Client certificates and
-  `tls_client_auth` remain for clients no edge serves.
-- Names under `urn:versola:edge:*` and `urn:versola:edge-group:*` are valid only on a leaf signed by
-  the edge CA: `auth` gains `mutual-tls.edge-trusted-certificates`.
-- The edge identity is short-lived and renewed by the edge itself, not by `versola certs renew`; it
-  needs a persistent `identity.directory`.
+- `central` signs edge certificates with its own edge CA (`edge-certificate-authority` on `vps`, an
+  edge `Issuer` through `edge-certificates` on Kubernetes): it is already the one authority on which
+  edges exist, and registering and enrolling an edge are both its admin API. Clients' certificates
+  stay with the client CA.
+- The edge identity is 30 days (`vps`) and renewed by the edge itself, not by `versola certs renew`;
+  it needs a persistent `identity.directory`. Revocation: deleting the edge, or rotating its signing
+  key (`POST /configuration/edges/rotate-key`), cuts it off at once, because `central` needs both the
+  certificate and the edge's signed token. A list of revoked serials comes later.
+- **Not in this release:** `auth` accepting an edge's certificate (so clients served by an edge still
+  need their own certificate or `issueEdgeClientCertificate`), `mutual-tls.edge-trusted-certificates`
+  on `auth`, and `central` publishing pins to remote edges.
 - The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
   upgrade changes nothing for existing edges.
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
