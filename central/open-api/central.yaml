@@ -29,7 +29,7 @@ info:
       issued a certificate that names its group and is given no configuration.
     * `POST /edge/enroll`, which an edge reaches before it has a certificate: it trades a one-time
       token (`POST /configuration/edges/enrollment-tokens`) and a certificate request for its first
-      certificate. It is served alone on central's additional listener (`APORT`, plain HTTP meant to
+      certificate. It is served alone on central's listener of its own (`EPORT`, plain HTTP meant to
       sit behind the TLS terminator of the public name for central), with no client certificate;
       an unknown, spent, expired or other-edge token is one and the same `401`.
 
