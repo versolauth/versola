@@ -793,10 +793,11 @@ object BootstrapService:
   /** Default theme seeded from the shared CSS resource. */
   private val defaultThemeId = "default"
 
-  /** Default locales seeded for the console. */
-  private val defaultLocales: Vector[LocaleRecord] = Vector(
+  /** Default locales seeded for the console. A locale's name is written in that language (`Русский`, not
+    * `Russian`): the login forms' language selector shows it as it is, so a visitor can find their own. */
+  private[versola] val defaultLocales: Vector[LocaleRecord] = Vector(
     LocaleRecord("en", "English", isDefault = true, active = true),
-    LocaleRecord("ru", "Russian", isDefault = false, active = true),
+    LocaleRecord("ru", "Русский", isDefault = false, active = true),
   )
 
   /** Default forms loaded from classpath resources, with their backend properties. */
