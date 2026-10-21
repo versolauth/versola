@@ -249,7 +249,7 @@ services:
     # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
     # stating one, and minReplicas/maxReplicas bound the autoscaler.
     #
-    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # CPU is a weak signal for this service. Token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are its CPU-bound hot
     # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
     # saturates at what those admit instead of rising with demand: a CPU target can sit below its
     # threshold while requests queue. `metrics` replaces the default CPU metric with an
@@ -321,7 +321,7 @@ services:
     # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
     # stating one, and minReplicas/maxReplicas bound the autoscaler.
     #
-    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # CPU is a weak signal for this service. Token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are its CPU-bound hot
     # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
     # saturates at what those admit instead of rising with demand: a CPU target can sit below its
     # threshold while requests queue. `metrics` replaces the default CPU metric with an
@@ -385,7 +385,7 @@ services:
     # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
     # stating one, and minReplicas/maxReplicas bound the autoscaler.
     #
-    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # CPU is a weak signal for this service. Token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are its CPU-bound hot
     # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
     # saturates at what those admit instead of rising with demand: a CPU target can sit below its
     # threshold while requests queue. `metrics` replaces the default CPU metric with an
