@@ -12,7 +12,7 @@ import versola.edge.model.{
   State,
   TokenResponse,
 }
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
+import versola.util.{Base64, ClientAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
 import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
@@ -135,13 +135,14 @@ object SSOClient:
       @jsonField("error_description") errorDescription: Option[String] = None,
   ) derives JsonCodec
 
-  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles, SSOClient] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, SSOClient] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
       certificateFiles: ClientCertificateFiles,
+      identity: EdgeIdentity,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
     // versolaUrl (public-facing), never internalUrl. tokenUrl and
@@ -157,24 +158,29 @@ object SSOClient:
       * there: a certificate is only presented in a TLS handshake, so such a call cannot take
       * `internalUrl` when that is plaintext.
       *
-      * `internalUrl` stays the answer wherever it is `https` -- a TLS terminator in front of
-      * auth, which reads the certificate off the handshake and forwards it, and which accepts
-      * the calls that carry none just as well. Where it is plaintext and this edge has the
-      * `native` back channel, the certificate goes to auth's own mutual-TLS listener instead,
-      * pinned to the certificate that listener presents. That listener serves exactly the
-      * endpoints edge calls for a client (`/token`, `/par`, `/userinfo`) and refuses any
-      * connection without a certificate, which is why only these calls move and the ones
-      * that carry none (a key-bound `/userinfo`) stay on `internalUrl`.
+      * Two places can receive it. A TLS terminator in front of auth reads the certificate off the
+      * handshake and forwards it; it is what `internalUrl` names where that is `https`, and an
+      * operator says so by pinning it (`versola-internal-trusted-certificates`). Auth's own
+      * mutual-TLS listener (the `native` back channel) takes the certificate itself, pinned to
+      * the certificate it presents; it serves exactly the endpoints edge calls for a client
+      * (`/token`, `/par`, `/userinfo`) and refuses any connection without a certificate, which is
+      * why only these calls move and the ones that carry none (a key-bound `/userinfo`) stay on
+      * `internalUrl`.
+      *
+      * The terminator is kept where it was set up: `internalUrl` is `https` and pinned. Everywhere
+      * else an edge with the `native` back channel uses the listener. An `https` `internalUrl`
+      * with no pins is not a terminator, it is the public name of auth (what `versola configure
+      * vps` writes), and a certificate sent there is refused by the missing pins -- which is how
+      * `central-admin` could not sign in on such a deployment.
       *
       * With neither, the route is `internalUrl` again and the call is refused as before
-      * (`CredentialNeedsTls`), not made unauthenticated.
+      * (`CredentialNeedsTls`, `CredentialNeedsTrustedServer`), not made unauthenticated.
       */
     private val certificateRoute: CertificateRoute =
-      if config.internalUrl.scheme.contains(Scheme.HTTPS) then
-        CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
-      else
-        config.native.fold(CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))): native =>
-          CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates))
+      val terminator = CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
+      val pinnedTerminator = config.internalUrl.scheme.contains(Scheme.HTTPS) && config.versolaInternalTrustedCertificates.nonEmpty
+      if pinnedTerminator then terminator
+      else config.native.fold(terminator)(native => CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates)))
 
     private def internalTrustOf(pins: Set[String]): Option[ClientSSLConfig] =
       Option.when(pins.nonEmpty)(EdgeConfig.pinnedTrust(pins))
@@ -444,16 +450,11 @@ object SSOClient:
       for
         // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
         // own: the client's key signed the one edge already checked, and edge does not hold
-        // that key to mint another. The assertion is how auth tells this call apart from the
-        // `Bearer` downgrade of a key-bound token -- minted only when the token is bound to a
-        // key, since nothing else needs such an exemption, and per call because it is bound to the token
-        // below: one captured elsewhere buys nothing for any other token.
-        assertion <- EdgeAssertion.issue(
-          edgeId = config.id,
-          keyId = config.keyId,
-          privateKey = config.privateKey,
-          accessToken = accessToken.toString,
-        ).when(binding == SSOClient.TokenBinding.Key)
+        // that key to mint another. What this edge sends instead to tell the call apart from
+        // the `Bearer` downgrade of a key-bound token is the identity's business
+        // (`EdgeIdentity`, an `EdgeAssertion` for a first-party edge) -- asked for only when
+        // the token is bound to a key, since nothing else needs such an exemption.
+        identification <- identity.headersFor(accessToken).when(binding == SSOClient.TokenBinding.Key)
 
         // RFC 8705 §3: the other binding is answered by the connection rather than by a
         // header -- auth hashes the certificate this handshake presents and refuses the token
@@ -475,7 +476,7 @@ object SSOClient:
         request = Request
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
-          .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
+          .addHeaders(identification.getOrElse(Headers.empty))
 
         response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
 

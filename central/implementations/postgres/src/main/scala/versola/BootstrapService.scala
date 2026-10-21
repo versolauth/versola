@@ -37,7 +37,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -254,6 +254,7 @@ object BootstrapService:
     "DELETE" -> "/settings/passkeys",
     "POST" -> "/settings/passkeys/register/start",
     "POST" -> "/settings/passkeys/register/finish",
+    "PATCH" -> "/settings/password",
   )
 
   /** Endpoints of the account page. Granted to every seeded role - each of them belongs to
@@ -297,8 +298,9 @@ object BootstrapService:
   /** The calls that change who can sign in to the account or who is signed in: removing a passkey, starting
     * to add one, and signing another session out. Seeded asking for [[sensitiveAcr]], so a session that
     * only passed a one-time code cannot do them for an account that has a passkey. Reading the page and
-    * renaming a passkey change neither, and the second half of an enrollment is bound by the ticket its first
-    * half returned, so none of those asks. An operator can change any of this; a restart keeps what they set. */
+    * renaming a passkey change neither, the second half of an enrollment is bound by the ticket its first
+    * half returned, and a password change asks for the current password, which is what an attacker holding only a
+    * one-time code lacks, so none of those asks. An operator can change any of this; a restart keeps what they set. */
   private val accountStepUpEndpoints: Set[(String, String)] = Set(
     "DELETE" -> "/settings/sessions",
     "DELETE" -> "/settings/passkeys",
@@ -1529,7 +1531,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the

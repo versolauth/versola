@@ -12,6 +12,8 @@ const formConfig = {
       { id: 'other-session', browser: 'Firefox', os: 'Linux', createdAt: '2026-01-02T00:00:00Z', expiresAt: '2026-02-02T00:00:00Z', current: false },
     ],
     passkeys: [{ id: 'passkey-1', name: 'Old name', backedUp: true, createdAt: '2026-01-01T00:00:00Z' }],
+    hasPassword: true,
+    passwordRegex: '^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$',
   },
   t: {
     page_title: 'Security', sessions_title: 'Sessions', no_sessions: 'No active sessions', unknown_device: 'Unknown device',
@@ -22,6 +24,12 @@ const formConfig = {
     add_passkey_button: 'Add a passkey', enroll_failed: 'Could not add the passkey',
     step_up_unavailable: 'This action is not available for your account right now',
     step_up_failed: 'We could not confirm your sign-in',
+    password_title: 'Password', current_password_label: 'Current password', new_password_label: 'New password',
+    confirm_password_label: 'Repeat the new password', show_password: 'Show password', hide_password: 'Hide password',
+    change_password_button: 'Change password', password_changed: 'Password changed', password_mismatch: 'Passwords do not match',
+    password_not_allowed: 'Password is too weak', password_reused: 'This password was used recently',
+    current_password_incorrect: 'The current password is incorrect', too_many_attempts: 'Too many failed attempts',
+    too_many_attempts_retry: 'Too many failed attempts, retry in {seconds} s', password_change_failed: 'Could not change the password',
   },
   locales: ['en'],
 };
@@ -41,7 +49,7 @@ async function accountFormScript(): Promise<string> {
   return formScript;
 }
 
-async function loadAccountForm(page: Page, url = accountUrl) {
+async function loadAccountForm(page: Page, config: unknown = formConfig, url = accountUrl) {
   const [commonCss, formCss, script] = await Promise.all([
     readFile(new URL('../forms/common.css', import.meta.url), 'utf8'),
     readFile(new URL('../forms/auth-settings/auth-settings.css', import.meta.url), 'utf8'),
@@ -50,7 +58,7 @@ async function loadAccountForm(page: Page, url = accountUrl) {
   await page.goto(url);
   await page.setContent(`
     <style>${commonCss}${formCss}</style>
-    <script>window.__VERSOLA_FORM__ = ${JSON.stringify(formConfig)};</script>
+    <script>window.__VERSOLA_FORM__ = ${JSON.stringify(config)};</script>
     <div id="versola-form-root"></div>
     <script>${script}</script>
   `);
@@ -213,7 +221,7 @@ test('ignores an interrupted action that is too old or not one this page wrote',
 
 test('says so when the sign-in ended with an error, forgets the action and takes the error off the address', async ({ page }) => {
   await rememberPending(page, { kind: 'passkey', id: 'passkey-1' });
-  await loadAccountForm(page, `${accountUrl}?error=unmet_authentication_requirements`);
+  await loadAccountForm(page, formConfig, `${accountUrl}?error=unmet_authentication_requirements`);
 
   await expect(page.getByRole('alert')).toHaveText('This action is not available for your account right now');
   await expect(page.getByRole('status')).toHaveCount(0);
@@ -256,3 +264,66 @@ test('a row action stays on one line when the details beside it are long', async
   });
   expect(lines).toBe(1);
 });
+
+
+async function fillPasswordForm(page: Page, current: string, next: string, confirm = next) {
+  await page.locator('#currentPassword').fill(current);
+  await page.locator('#newPassword').fill(next);
+  await page.locator('#confirm').fill(confirm);
+  await page.getByRole('button', { name: 'Change password', exact: true }).click();
+}
+
+test('shows no password section to an account without a password', async ({ page }) => {
+  await loadAccountForm(page, { ...formConfig, step: { ...formConfig.step, hasPassword: false } });
+  await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
+  await expect(page.locator('#currentPassword')).toHaveCount(0);
+});
+
+test('changes the password and clears the form', async ({ page }) => {
+  const bodies: string[] = [];
+  await page.route('**/resources/auth/settings/password', async route => {
+    bodies.push(route.request().postData() ?? '');
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await loadAccountForm(page);
+  await fillPasswordForm(page, 'OldPass1', 'NewPass1');
+  await expect(page.getByText('Password changed')).toBeVisible();
+  await expect(page.locator('#newPassword')).toHaveValue('');
+  expect(bodies.map(body => JSON.parse(body))).toEqual([{ currentPassword: 'OldPass1', newPassword: 'NewPass1' }]);
+});
+
+test('checks the new password locally before asking the server', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/resources/auth/settings/password', async route => { requests += 1; await route.fulfill({ status: 204, body: '' }); });
+  await loadAccountForm(page);
+  await fillPasswordForm(page, 'OldPass1', 'weak');
+  await expect(page.getByText('Password is too weak')).toBeVisible();
+  await fillPasswordForm(page, 'OldPass1', 'NewPass1', 'NewPass2');
+  await expect(page.getByText('Passwords do not match')).toBeVisible();
+  expect(requests).toBe(0);
+});
+
+// Each refusal arrives as a status plus a stable code; the page, not the server, supplies the words.
+for (const refusal of [
+  { name: 'a wrong current password', status: 400, body: { error: 'current_password_incorrect' }, text: 'The current password is incorrect', field: '#currentPassword' },
+  { name: 'a reused password', status: 400, body: { error: 'password_reused' }, text: 'This password was used recently', field: '#newPassword' },
+  { name: 'a server-side policy refusal', status: 400, body: { error: 'password_not_allowed' }, text: 'Password is too weak', field: '#newPassword' },
+  { name: 'a ban', status: 429, body: { error: 'too_many_attempts' }, text: 'Too many failed attempts', field: undefined },
+  { name: 'a wait', status: 429, body: { error: 'too_many_attempts', retryAfterSeconds: 30 }, text: 'Too many failed attempts, retry in 30 s', field: undefined },
+  { name: 'a code the page does not know', status: 400, body: { error: 'something_new' }, text: 'Could not change the password', field: undefined },
+  { name: 'a plain-text error from a proxy', status: 502, body: 'Bad gateway', text: 'Could not change the password', field: undefined },
+]) {
+  test(`shows ${refusal.name} in the page's own words`, async ({ page }) => {
+    await page.route('**/resources/auth/settings/password', route => route.fulfill({
+      status: refusal.status,
+      contentType: typeof refusal.body === 'string' ? 'text/plain' : 'application/json',
+      body: typeof refusal.body === 'string' ? refusal.body : JSON.stringify(refusal.body),
+    }));
+    await loadAccountForm(page);
+    await fillPasswordForm(page, 'OldPass1', 'NewPass1');
+    const message = page.getByRole('alert').filter({ hasText: refusal.text });
+    await expect(message).toBeVisible();
+    if (refusal.field) await expect(page.locator(refusal.field)).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.getByText('Password changed')).toHaveCount(0);
+  });
+}

@@ -111,6 +111,30 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         page <- auth.edgeAccountPage(Some(caller.accessToken))
       yield assertTrue(rename.status != Status.Unauthorized, page.status == Status.Ok)
     },
+    test("rejects a password change when the current password is wrong") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), "WrongPass1!", "NewPass-Changed-1!")
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("current_password_incorrect"))
+    },
+    test("rejects a new password the tenant's policy does not allow") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, "short")
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_not_allowed"))
+    },
+    test("rejects a reused password on change") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, s.password)
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_reused"))
+    },
     test("enrolls, renames and deletes a passkey through the full ceremony") {
       val name = "E2E Edge Key"
       for
@@ -136,6 +160,18 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(deleted.status == Status.NoContent) &&
         assertTrue(!afterDelete.exists(passkey => str(passkey, "id").contains(credential.id)))
           .label("the deleted passkey must be gone from the page")
+    },
+    test("changes the password when the current password is correct") {
+      val changed = "NewPass-Changed-1!"
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, changed)
+        restorer <- login(s.copy(password = changed), auth)
+        restored <- auth.edgeChangePassword(Some(restorer.accessToken), changed, s.password)
+      yield assertTrue(result.status == Status.NoContent) &&
+        assertTrue(restored.status == Status.NoContent)
+          .label(s"the shared user's password must be restored, got: ${restored.status} ${restored.body}")
     },
   ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
 

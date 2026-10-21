@@ -52,7 +52,7 @@ object DpopAlgorithmsSyncClientSpec extends ZIOSpecDefault:
         )
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/server-metadata/sync"),
+        request.url.path.encode.contains("edge/sync/server-metadata"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         algorithms == Set(Dpop.Algorithm.ES256, Dpop.Algorithm.RS256),
       )

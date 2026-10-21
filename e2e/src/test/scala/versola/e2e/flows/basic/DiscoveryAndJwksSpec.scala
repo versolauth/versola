@@ -190,7 +190,7 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         response <- auth.probe(Method.GET, jwksUri)
         jwkSet <- auth.jwks(jwksUri)
         published <- keys(jwkSet)
-        rsa = published.filter(_.get("kty").contains(Json.Str("RSA")))
+        ec = published.filter(_.get("kty").contains(Json.Str("EC")))
       yield assertTrue(response.status == Status.Ok)
         .label(s"jwks_uri must answer 200 with no credential, got ${response.status}") &&
         assertTrue(published.nonEmpty)
@@ -202,13 +202,13 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         ).label(s"every JWK must carry kty/use/kid/alg: ${jwkSet.toJson}") &&
         assertTrue(published.forall(_.get("kid").flatMap(_.as[String].toOption).exists(_.nonEmpty)))
           .label(s"every 'kid' must be a non-empty string: ${jwkSet.toJson}") &&
-        assertTrue(rsa.nonEmpty)
-          .label(s"auth signs with PS256, an RSA algorithm, so the set must hold an RSA key: ${jwkSet.toJson}") &&
+        assertTrue(ec.nonEmpty)
+          .label(s"auth signs with ES256, an EC algorithm, so the set must hold an EC key: ${jwkSet.toJson}") &&
         assertTrue(
-          rsa.forall(key =>
-            List("n", "e").forall(m => key.get(m).flatMap(_.as[String].toOption).exists(_.nonEmpty)),
+          ec.forall(key =>
+            List("crv", "x", "y").forall(m => key.get(m).flatMap(_.as[String].toOption).exists(_.nonEmpty)),
           ),
-        ).label(s"every RSA JWK must expose 'n' and 'e': ${jwkSet.toJson}")
+        ).label(s"every EC JWK must expose 'crv', 'x' and 'y': ${jwkSet.toJson}")
     },
     test("the published JWK Set carries no private key material") {
       for
@@ -239,8 +239,8 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         .label(s"the id_token signature must verify against the published key kid=${head.kid}") &&
         assertTrue(published.exists(_.get("kid").contains(Json.Str(head.kid))))
           .label(s"the id_token header kid='${head.kid}' must be published: ${jwkSet.toJson}") &&
-        assertTrue(head.alg == "PS256")
-          .label(s"the id_token must be signed with PS256, got ${head.alg}") &&
+        assertTrue(head.alg == "ES256")
+          .label(s"the id_token must be signed with ES256, got ${head.alg}") &&
         assertTrue(payload.iss == issuer)
           .label(s"id_token 'iss' must be the advertised issuer '$issuer', got '${payload.iss}'") &&
         assertTrue(payload.audiences.contains(s.clientId))
