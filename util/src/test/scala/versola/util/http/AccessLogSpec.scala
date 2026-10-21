@@ -66,11 +66,11 @@ object AccessLogSpec extends ZIOSpecDefault:
         val kept = (0 until 4000).count(_ => s.logReceive(200, false, 1, "00000000000000000000000000000000"))
         assertTrue(kept > 1700, kept < 2300)
       },
-      test("off logs failures only, not even a slow success") {
+      test("off logs failures and slow requests only") {
         val off = sampled.copy(mode = AccessLogMode.Off, successSampleRate = 1.0)
         assertTrue(
           !off.logReceive(200, failed = false, 1, traceId(1)),
-          !off.logReceive(200, failed = false, 60000, traceId(1)),
+          off.logReceive(200, failed = false, 60000, traceId(1)),
           off.logReceive(404, failed = false, 1, traceId(1)),
           off.logReceive(200, failed = true, 1, traceId(1)),
         )

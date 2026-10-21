@@ -614,9 +614,9 @@ object ObservabilitySpec extends ZIOSpecDefault:
           logs <- ZTestLogger.logOutput
         yield assertTrue(logs.count(_.message() == "receive-http") == 1)
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
-      test("off mode logs a failure and nothing else") {
+      test("off mode logs a failure and nothing else (nothing is slow here)") {
         for
-          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 0, 1.0)):
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
             for
               env <- tracingLayer.build
               _ <- TestClient.addRoutes(routes.provideEnvironment(env))
@@ -629,7 +629,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       test("a request that is not logged does not contribute its auth context to a later request") {
         for
-          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 0, 1.0)):
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
             for
               env <- tracingLayer.build
               _ <- TestClient.addRoutes(routes.provideEnvironment(env))

@@ -12,8 +12,7 @@ import scala.util.Try
   *
   *   - `Full`: every request.
   *   - `Sampled`: failures and slow requests always, other requests for a share of traces chosen by trace id.
-  *   - `Off`: failures only (status 400 and above, or an unhandled error). A slow success is not logged either: the
-  *     latency histogram has it.
+  *   - `Off`: failures (status 400 and above, or an unhandled error) and slow requests only.
   *
   * Metrics (`http_server_requests_total`, `http_server_request_duration_seconds`) are not affected by any mode.
   */
@@ -54,8 +53,9 @@ final case class AccessLogSettings(
     mode match
       case AccessLogMode.Full => true
       case _ if failed || status >= 400 => true
+      case _ if elapsedMillis >= slowMillis => true
       case AccessLogMode.Off => false
-      case AccessLogMode.Sampled => elapsedMillis >= slowMillis || AccessLogSettings.sampled(traceId, successSampleRate)
+      case AccessLogMode.Sampled => AccessLogSettings.sampled(traceId, successSampleRate)
 
   /** Whether a successful outbound call is written at `INFO` rather than `DEBUG`: only a slow one. */
   def isSlow(elapsedMillis: Long): Boolean = elapsedMillis >= slowMillis

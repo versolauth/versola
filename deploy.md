@@ -737,7 +737,7 @@ profile under load, almost all of it for successful requests.
   `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
   (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
   trace id is sampled at random.
-- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error). A slow success is not logged either.
+- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
