@@ -394,6 +394,33 @@ versola-auth` makes bootstrap set a fresh one. More admin users: Console → **U
 User**, **Edit Roles**, **Reset Password** — in prod the temporary password can only be delivered by
 email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 
+#### The Security page asks for a fresh sign-in
+
+On a database where `central`'s bootstrap **creates** the `auth` resource (the one that proxies the
+Security page of Account Settings), removing a passkey, starting to add one and signing another session
+out require the built-in `sensitive` ACR with a sign-in no older than 300 seconds. `sensitive` is the
+strongest factor the user has: a passkey if they have one, else their password, else a one-time code, so
+a session that only passed a one-time code cannot change who can sign in to an account that has a passkey.
+Edge answers such a call with `401`, the RFC 9470 challenge and, for a browser session, a `Location` header
+with the login that asks for what is missing; the page goes there, and the user repeats the action after
+signing in. Reading the page, renaming a passkey and finishing an enrollment ask for nothing more.
+
+A deployment that already has the `auth` resource is **not** changed: bootstrap keeps the step-up an
+operator has set (none, until now), so an upgrade alters nothing for it. To switch it on, update the
+resource with `PUT /configuration/resources` (`central/open-api/central.yaml`) and give the three endpoints
+`stepUpCondition: "true"`, `stepUpAcr: "sensitive"` and `maxAge: 300`:
+
+| Method | Path |
+|---|---|
+| `DELETE` | `/settings/sessions` |
+| `DELETE` | `/settings/passkeys` |
+| `POST` | `/settings/passkeys/register/start` |
+
+The console's resource editor offers only the ACRs of the tenant's vocabulary, so it cannot pick
+`sensitive` yet. A user whose flow can ask for none of their factors (a passkey the flow cannot ask for,
+or no password and no one-time-code destination) is refused with `unmet_authentication_requirements`
+rather than let through.
+
 ### Mutual TLS certificates
 
 `auth`'s mutual-TLS listener (`MPORT`, RFC 8705) is on by default, with its certificate machinery;

@@ -53,6 +53,18 @@ function apiBase(): string {
   return path.endsWith('/') ? path : `${path}/`;
 }
 
+// An action that asks for a stronger or fresher sign-in than the session has is answered with 401 and
+// the edge login URL that asks for exactly that (RFC 9470); the page goes there. Only a path on this
+// origin is followed, so a response can never send the browser elsewhere. The action is not resumed
+// afterwards: the sign-in returns to the page and the user repeats it.
+function followStepUp(res: Response): boolean {
+  if (res.status !== 401) return false;
+  const location = res.headers.get('Location');
+  if (!location || !location.startsWith('/') || location.startsWith('//')) return false;
+  window.location.assign(location);
+  return true;
+}
+
 function formatDate(value: string, locale: string): string {
   try {
     return new Date(value).toLocaleString(locale);
@@ -91,6 +103,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetSessionId: session.id }),
       });
+      if (followStepUp(res)) return;
       if (res.ok) {
         setSessions(sessions().filter((s) => s.id !== session.id));
       }
@@ -119,6 +132,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: id, name: trimmed || null }),
       });
+      if (followStepUp(res)) return;
       if (res.ok) {
         setPasskeys(passkeys().map((p) => (p.id === id ? { ...p, name: trimmed || undefined } : p)));
         setRenamingId(null);
@@ -137,6 +151,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: id }),
       });
+      if (followStepUp(res)) return;
       if (res.ok) setPasskeys(passkeys().filter((p) => p.id !== id));
     } finally {
       setBusyPasskeyId(null);
@@ -173,6 +188,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
+      if (followStepUp(startRes)) return;
       if (!startRes.ok) throw new Error('start failed');
       const { publicKeyOptions, ticket } = await startRes.json();
       const response = JSON.parse(await getRegistrationResponse(publicKeyOptions));
@@ -181,6 +197,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket, response, name: trimmed }),
       });
+      if (followStepUp(finishRes)) return;
       if (!finishRes.ok) throw new Error('finish failed');
       const passkey = (await finishRes.json()) as AccountPasskey;
       setPasskeys([...passkeys(), passkey]);

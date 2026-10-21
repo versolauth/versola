@@ -104,6 +104,40 @@ test('uses styled deletion confirmation and submits account actions', async ({ p
     },
   ]);
 });
+test('goes to the login an action was answered with when it needs a stronger sign-in, and changes nothing', async ({ page }) => {
+  await page.route('**/resources/auth/settings/**', async route => {
+    await route.fulfill({
+      status: 401,
+      headers: {
+        'WWW-Authenticate': 'Bearer error="insufficient_user_authentication", acr_values="sensitive", max_age="300"',
+        Location: '/login/console?acr_values=sensitive&max_age=300',
+      },
+      body: '',
+    });
+  });
+  await page.route('**/login/console**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>sign in</p>' }));
+  await loadAccountForm(page);
+
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+
+  await page.waitForURL('**/login/console?acr_values=sensitive&max_age=300');
+});
+
+test('does not follow a login URL that leaves this origin', async ({ page }) => {
+  await page.route('**/resources/auth/settings/**', async route => {
+    await route.fulfill({ status: 401, headers: { Location: 'https://evil.example/login' }, body: '' });
+  });
+  await loadAccountForm(page);
+
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByText('Old name', { exact: true })).toBeVisible();
+  expect(new URL(page.url()).hostname).not.toBe('evil.example');
+});
+
 test('a row action stays on one line when the details beside it are long', async ({ page }) => {
   await page.setViewportSize({ width: 560, height: 900 });
   await loadAccountForm(page);

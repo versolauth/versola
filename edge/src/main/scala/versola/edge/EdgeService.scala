@@ -380,16 +380,18 @@ object EdgeService:
               .addHeader(Header.Location(uri))
               .addCookie(clear),
           )
-        case Outcome.InsufficientAuthentication(acr, maxAge) =>
+        case Outcome.InsufficientAuthentication(acr, maxAge, loginUri) =>
           val params = List(
             Some("""error="insufficient_user_authentication""""),
             acr.map(v => s"""acr_values="$v""""),
             maxAge.map(v => s"""max_age="$v""""),
           ).flatten.mkString(", ")
-          ZIO.succeed(
-            Response.status(Status.Unauthorized)
-              .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params")),
-          )
+          val challenge = Response.status(Status.Unauthorized)
+            .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params"))
+          // A browser holding the session cookie cannot read the challenge and build the login URL the
+          // way an API client does: it is handed the URL that asks for what is missing, so the page
+          // only has to go there.
+          ZIO.succeed(loginUri.fold(challenge)(uri => challenge.addHeader(Header.Location(uri))))
         case Outcome.InvalidDpopProof =>
           ZIO.succeed(
             Response.status(Status.Unauthorized)
@@ -582,7 +584,7 @@ object EdgeService:
             case _ => ZIO.unit
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now, celContext)
+        _ <- checkStepUp(endpoint, typedClaims, now, celContext, authSource)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
         // `collect` inside the scope: the response this returns is handed straight back to
         // edge's own server, which streams it to the caller long after the upstream scope has
@@ -793,6 +795,7 @@ object EdgeService:
         claims: AccessTokenClaims,
         now: Instant,
         celContext: Map[String, AnyRef],
+        authSource: AuthSource,
     ): IO[Outcome, Unit] =
       def unsatisfied(required: String): Option[String] =
         val requiredSet = required.split(' ').toSet.filter(_.nonEmpty)
@@ -820,11 +823,22 @@ object EdgeService:
         requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
         acrFailed = requiredAcr.flatMap(unsatisfied)
 
+        maxAgeRequired = Option.when(maxAgeFailed)(endpoint.maxAge).flatten
         _ <- (Observability.setError("step_up_required") *> ZIO.fail(Outcome.InsufficientAuthentication(
           acr = acrFailed,
-          maxAge = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
+          maxAge = maxAgeRequired,
+          loginUri = authSource match
+            case AuthSource.Cookie(presetId) => Some(stepUpLoginUri(presetId, acrFailed, maxAgeRequired))
+            case AuthSource.Header(_) => None,
         ))).when(acrFailed.isDefined || maxAgeFailed)
       yield ()
+
+    /** The edge login of the preset the caller's session came from, asking for what the endpoint found
+      * missing: the `acr_values` and `max_age` of the challenge, which `/login` passes on to `/authorize`. */
+    private def stepUpLoginUri(presetId: PresetId, acr: Option[String], maxAge: Option[Int]): URL =
+      val login = URL(Path.root / "login" / presetId)
+      val withAcr = acr.fold(login)(login.addQueryParam("acr_values", _))
+      maxAge.fold(withAcr)(age => withAcr.addQueryParam("max_age", age.toString))
 
     private def checkRules(
         claims: Json.Obj,
@@ -1262,7 +1276,7 @@ object EdgeService:
 
     /** The token is valid but its authentication does not meet what this endpoint
       * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
-    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])
+    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int], loginUri: Option[URL])
 
     /** RFC 9449 §7.1: the token is sender-constrained and the accompanying proof of that
       * key was absent, malformed, bound elsewhere, or already used. */
