@@ -99,7 +99,7 @@ type FormPreviewDto = {
 };
 type FormLocaleDto = { code: string; name: string };
 type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string; background?: string };
-type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
+type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto; variables?: Record<string, string> };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
@@ -1388,8 +1388,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    // What central renders: for a token theme the base stylesheet, a line naming the tokens, then the theme's own CSS; for a
-    // stylesheet theme (no tokens) its CSS alone; then, when the request carries a client's overrides, a line naming them.
+    // What central renders: for a theme with tokens the base stylesheet, a line naming the tokens, then the theme's custom CSS; for a
+    // theme stored with CSS only (no tokens) its CSS alone; then, when the request carries a client's overrides, a line naming them.
     if (pathname === '/configuration/themes/css' && method === 'POST') {
       const payload = body as { tokens?: ThemeTokensDto; css?: string; overrides?: ThemeOverridesDto };
       if (state.themeRenderError !== null) {
@@ -1410,7 +1410,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
       const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
       const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode};--background:${resolved.background}}`;
-      await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? '', overridden].filter(Boolean).join('\n'), generated }));
+      const variables = Object.entries(payload.tokens.variables ?? {});
+      const own = variables.length > 0 ? `/* token overrides */:root{${variables.map(([name, value]) => `${name}:${value};`).join('')}}` : '';
+      await route.fulfill(json({ css: [baseStylesheetMock, generated, own, payload.css ?? '', overridden].filter(Boolean).join('\n'), generated: [generated, own].filter(Boolean).join('\n') }));
       return;
     }
 

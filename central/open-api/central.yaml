@@ -1749,7 +1749,7 @@ paths:
         '400':
           description: |
             Refused, with nothing stored: `tokens` name a base that is not built in, a brand colour is not `#rrggbb`,
-            a shape, surface or mode is unknown, or the theme is `default`, which is a stylesheet.
+            a shape, surface or mode is unknown.
           content:
             application/json:
               schema:
@@ -1768,7 +1768,7 @@ paths:
               $ref: '#/components/schemas/UpdateThemeRequest'
       responses:
         '204':
-          description: Theme updated. Sending no `tokens` makes it a plain stylesheet again.
+          description: Theme updated. Sending no `tokens` stores the theme with CSS only: its `css` is then the whole stylesheet.
         '400':
           description: Refused, with nothing stored, for the reasons given for creating a theme.
           content:
@@ -3229,7 +3229,7 @@ components:
             What this client changes in the theme it uses (`theme`), laid over it on the client's
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
-            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
@@ -3354,7 +3354,7 @@ components:
             What this client changes in the theme it uses (`theme`), laid over it on the client's
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
-            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
@@ -5424,18 +5424,32 @@ components:
           $ref: '#/components/schemas/ThemeTokens'
       required: [id, css]
       description: |
-        A theme is a stylesheet or, when `tokens` is set, a built-in base theme with overrides. For a token theme
-        `css` holds only the theme's own additions and may be empty: `auth` lays the current default stylesheet and
-        the CSS generated from the tokens before it. A theme without `tokens` is a whole stylesheet, as before.
+        A theme is a built-in base theme with overrides (`tokens`) and optional custom CSS (`css`, may be empty).
+        `auth` lays the current default stylesheet, then the CSS generated from the tokens, then `css`, so a custom rule
+        wins over the generated value it targets. A theme stored before tokens existed has `css` and no `tokens`: its
+        `css` is then the whole stylesheet, until the theme is saved with tokens.
     ThemeTokens:
       type: object
-      description: A built-in base theme and the values a theme sets over it.
+      description: A built-in base theme, the values a theme sets over it and the forms' CSS variables it sets one by one.
       properties:
         base:
           type: string
           description: The id of a built-in theme, from `GET /configuration/themes/presets`.
         overrides:
           $ref: '#/components/schemas/ThemeOverrides'
+        variables:
+          type: object
+          description: |
+            Token overrides: CSS variables of the forms' theming API, each with its value. Written as one `:root` block
+            after the CSS the five values generate and before the theme's `css`, so the order is base theme, five values,
+            token overrides, custom CSS, and a later one wins over an earlier one that sets the same variable. Absent
+            means none. Only these names are accepted: `--brand`, `--on-brand`, `--focus`, `--on-focus`, `--rf`, `--rb`,
+            `--rs`, `--page-light`, `--page-dark`, `--glow-light`, `--glow-dark`, `--control-h`. A value is a colour, a length
+            or another plain CSS value of at most 120 characters, made of letters, digits and `# % . , ( ) - + _ /` and
+            spaces, balanced in parentheses, without `;`, `{`, `}`, `!`, `@`, `\`, a comment, `url(` or `expression(`. An
+            unknown name or a refused value answers 400 with the reason and stores nothing.
+          additionalProperties:
+            type: string
       required: [base]
     ThemeOverrides:
       type: object
@@ -5507,8 +5521,8 @@ components:
     RenderThemeRequest:
       type: object
       description: |
-        What to render: a token theme (`tokens` present: the foundation stylesheet, what the tokens set, then `css`) or a
-        stylesheet theme (`tokens` absent: `css` alone is the stylesheet, as it replaces the foundation; with no `css` either,
+        What to render: a theme with tokens (`tokens` present: the foundation stylesheet, what the tokens set, then `css`) or a
+        theme stored with CSS only (`tokens` absent: `css` alone is the stylesheet, as it replaces the foundation; with no `css` either,
         the foundation). `overrides` are a client's own, laid after all of that exactly as the authorization server does for
         that client, so the result is the client's effective stylesheet.
       properties:
@@ -5516,7 +5530,7 @@ components:
           $ref: '#/components/schemas/ThemeTokens'
         css:
           type: string
-          description: The theme's own CSS, laid after the generated one (a stylesheet theme - the whole stylesheet); absent means none.
+          description: The theme's custom CSS, laid after the generated one (with no `tokens`: the whole stylesheet); absent means none.
         overrides:
           $ref: '#/components/schemas/ThemeOverrides'
     RenderThemeResponse:
@@ -5527,7 +5541,7 @@ components:
           description: The whole stylesheet - the current default, what the tokens set, the theme's own CSS, then the client's overrides.
         generated:
           type: string
-          description: Only what the theme's tokens set; empty for a stylesheet theme (the client's overrides are in `css` only).
+          description: Only what the theme's tokens set; empty for a theme stored with CSS only (the client's overrides are in `css` only).
       required: [css, generated]
     GetAllThemesResponse:
       type: object

@@ -235,8 +235,9 @@ object ThemeCss:
       s"/* client overrides on ${base.brand.value}, ${base.shape}, ${base.surface} page, ${base.background} background, ${base.mode} scheme */\n" +
         s":root{$brand$shape$page$plainBackground$mode}$supported"
 
-  /** The stylesheet of a theme built from tokens: the current default, then what the tokens set, then the
-    * theme's own CSS, which may be empty.
+  /** The stylesheet of a theme built from tokens: the current default, then what the five values set, then the
+    * variables the theme sets one by one, then the theme's own CSS, which may be empty. Each later part wins over the
+    * earlier ones where it sets the same thing.
     */
-  def compose(defaultCss: String, tokens: ResolvedTokens, customCss: String): String =
-    Seq(defaultCss, generate(tokens), customCss).filter(_.nonEmpty).mkString("\n")
+  def compose(defaultCss: String, tokens: ResolvedTokens, variables: Map[String, String], customCss: String): String =
+    Seq(defaultCss, generate(tokens), ThemeVariables.render(variables), customCss).filter(_.nonEmpty).mkString("\n")

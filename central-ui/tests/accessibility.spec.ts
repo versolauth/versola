@@ -268,12 +268,30 @@ for (const theme of themes) {
     await expect(page.getByRole('button', { name: 'Delete theme shop-brand' })).toBeDisabled();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByRole('button', { name: 'Discard' }).click();
-    // A stored stylesheet theme: read-only, with Delete only.
-    await page.getByRole('button', { name: 'Open theme legacy-2024', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Stylesheet (legacy)' })).toBeVisible();
+    // A theme stored with CSS only: the same editor, on the Versola base, with the Custom CSS card open.
+    await page.getByRole('button', { name: 'Open theme georgia-2024', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Advanced', exact: true }).getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
     await clean();
-
+    // Custom CSS added to a theme that had none: the collapsed card opens.
     await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Themes' }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await page.getByRole('button', { name: 'Open theme shop-brand', exact: true }).click();
+    await page.getByRole('button', { name: 'Add custom CSS' }).click();
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
+    await clean();
+    // A token override row (colour picker and hex), then one with a length, then a refused value with its message.
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await expect(page.getByRole('combobox', { name: 'Token for row 1' })).toBeVisible();
+    await clean();
+    await page.getByRole('combobox', { name: 'Token for row 1' }).selectOption('--rs');
+    await clean();
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await page.getByRole('textbox', { name: '--brand value' }).fill('url(x)');
+    await expect(page.getByRole('alert').filter({ hasText: 'Not allowed' })).toBeVisible();
+    await clean();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+
     await page.getByRole('button', { name: '+ Create theme' }).click();
     await clean();
   });

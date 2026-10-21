@@ -11,7 +11,7 @@
  *                           token (glow, linear, horizon, flat) replaces only this variable (see ThemeCss)
  *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
  *   --scheme-locked         `1` hides the visitor's Auto / Light / Dark toggle (and the page ignores the stored choice): set it
- *                           whenever the theme fixes the scheme. A theme with a fixed mode sets it itself; a stylesheet that
+ *                           whenever the theme fixes the scheme. A theme with a fixed mode sets it itself; custom CSS that
  *                           sets `color-scheme` and does not want the toggle sets `--scheme-locked: 1` too. Default 0.
  * The neutral surface and text tokens below (--ink, --sheet, --field, --line, ...) are defined per
  * colour scheme with light-dark(), so they follow color-scheme.

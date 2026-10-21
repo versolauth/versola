@@ -8,7 +8,8 @@ import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
-import { joinNames, overrideKeys, presetHint, tokenLongName, unsavedNames } from '../utils/theme-summary';
+import { joinNames, overrideKeys, presetHint, tokenLongName, unsavedNames, type ThemeEditState } from '../utils/theme-summary';
+import { PAGE_BG_VARIABLE, THEME_VARIABLES, isHexColour, pixels, valueProblem, variableByName } from '../utils/theme-variables';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { statusIcon } from './status-icon';
 import './code-editor';
@@ -19,14 +20,22 @@ import './record-header';
 import './theme-token-controls';
 import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
+/** What a rule may target on `:root`: the theming API of the login forms' common.css. */
+const CSS_TOKENS: Array<[string, string]> = [...THEME_VARIABLES.map((variable): [string, string] => [variable.name, variable.description]), [PAGE_BG_VARIABLE.name, PAGE_BG_VARIABLE.description]];
+
+/** One row of token overrides; `key` identifies it while the name or the value is edited. */
+type VariableRow = { key: number; name: string; value: string };
+
 export type ThemeSaved = { theme: ThemeRecord; created: boolean };
 
 /**
  * One theme's page, which is also its editor. A theme is a base theme (a row of pills, the preview beside
  * it shows the result) with the tokens it overrides (the Look card: each overridden token with a badge and
- * Reset, `Clear overrides`). A theme stored as a stylesheet (the API still accepts them) is shown read-only as
- * "Stylesheet (legacy)": its CSS, the preview and Delete, so an operator who has one can see it and remove it,
- * but the console neither creates nor edits one. Delete is the last card, disabled with the
+ * Reset, `Clear overrides`) and an Advanced card after Look: token overrides (single variables of the forms' theming API,
+ * each a row with a control matched to it) and optional Custom CSS (collapsed behind "Add custom CSS" while empty, open when
+ * the theme has CSS). Central lays them after the CSS generated from the values, token overrides first, so the cascade is
+ * base theme, five values, token overrides, custom CSS.
+ * A theme stored with CSS and no tokens opens on the Versola base with the CSS card open; saving stores both. Delete is the last card, disabled with the
  * clients that use the theme. A bar sticks to the bottom with Cancel and Save and names what is not
  * saved yet. The preview is a real login form drawn from the theme: a column that stays on screen
  * beside the controls, a band above them below 900px.
@@ -41,7 +50,7 @@ export class VersolaThemeRecord extends LitElement {
   @property({ type: Boolean }) isNew = false;
   @property({ type: Boolean }) canManage = false;
   @property({ type: String }) tenantId: string | null = null;
-  /** The built-in themes; empty from a central that has none, which leaves only themes written as CSS. */
+  /** The built-in themes; empty from a central that has none. */
   @property({ attribute: false }) presets: ThemePreset[] = [];
   /** Every stored form version, and the states central lists for the built-in forms: the preview renders them. */
   @property({ attribute: false }) forms: FormRecord[] = [];
@@ -55,7 +64,11 @@ export class VersolaThemeRecord extends LitElement {
   @state() private editId = '';
   @state() private editCss = '';
   @state() private scope: 'global' | 'tenant' = 'global';
-  @state() private kind: 'tokens' | 'css' = 'css';
+  /** Opened without tokens: the theme was stored before tokens existed, so what is shown is the Versola base and saving adds the values. */
+  @state() private withoutTokens = false;
+  @state() private cssOpen = false;
+  @state() private variableRows: VariableRow[] = [];
+  private rowKey = 0;
   @state() private base = '';
   @state() private overrides: ThemeOverrides = {};
   /** The colour field holds text that is not a #rrggbb colour (reported by the token controls). */
@@ -74,7 +87,7 @@ export class VersolaThemeRecord extends LitElement {
 
   @state() private saving = false;
   @state() private error = '';
-  @state() private saved = { base: '', overrides: {} as ThemeOverrides, css: '' };
+  @state() private saved: ThemeEditState = { base: '', overrides: {}, variables: {}, css: '' };
 
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   /** Bumped by every edit, so an answer to an earlier request is dropped, however it arrives. */
@@ -251,6 +264,99 @@ export class VersolaThemeRecord extends LitElement {
         font-size: var(--text-sm);
       }
 
+      .part-title {
+        margin: 0 0 var(--spacing-xs);
+        font-size: var(--text-base);
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      .part-rule {
+        border-top: 1px solid var(--border-default);
+      }
+
+      .var-rows {
+        display: grid;
+        gap: var(--spacing-md);
+        margin: 0 0 var(--spacing-sm);
+        padding: 0;
+        list-style: none;
+      }
+
+      .var-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--spacing-sm);
+      }
+
+      .var-name {
+        width: 11rem;
+      }
+
+      .var-value {
+        display: flex;
+        flex: 1;
+        align-items: center;
+        gap: var(--spacing-sm);
+        min-width: 11rem;
+      }
+
+      .value-input {
+        flex: 1;
+        min-width: 0;
+        max-width: 14rem;
+      }
+
+      .color-input {
+        flex: none;
+        width: 2.5rem;
+        height: 2.25rem;
+        padding: 0;
+        border: 1.5px solid var(--border-input);
+        border-radius: var(--radius-md);
+        background: var(--field);
+      }
+
+      .unit {
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+      }
+
+      .var-help {
+        margin-top: var(--spacing-xs);
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+      }
+
+      .tokens-title {
+        margin: var(--spacing-md) 0 var(--spacing-xs);
+        font-weight: 600;
+      }
+
+      .tokens {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+        gap: var(--spacing-xs) var(--spacing-md);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+      }
+
+      .tokens li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 var(--spacing-sm);
+        align-items: baseline;
+      }
+
+      .tokens code {
+        font-family: var(--font-mono);
+        color: var(--text-primary);
+      }
+
       .field-label {
         display: block;
         margin-bottom: var(--spacing-sm);
@@ -272,19 +378,20 @@ export class VersolaThemeRecord extends LitElement {
       this.editId = this.theme.id;
       this.editCss = this.theme.css;
       this.scope = this.theme.tenantId ? 'tenant' : 'global';
-      // A theme the console makes is always built from a base; one without tokens is a stored stylesheet, shown read-only.
-      this.kind = this.theme.tokens || this.isNew ? 'tokens' : 'css';
+      this.withoutTokens = !this.isNew && !this.theme.tokens;
+      this.cssOpen = this.editCss.trim() !== '';
+      this.variableRows = Object.entries(this.theme.tokens?.variables ?? {}).map(([name, value]) => ({ key: this.rowKey++, name, value }));
       this.base = this.theme.tokens?.base ?? this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
       this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
       this.brandInvalid = false;
       this.submitted = false;
       this.error = '';
-      this.saved = { base: this.kind === 'tokens' ? this.base : '', overrides: { ...this.overrides }, css: this.editCss };
+      this.saved = { base: this.withoutTokens ? '' : this.base, overrides: { ...this.overrides }, variables: this.variablesMap, css: this.editCss };
       this.scheduleRender();
     } else if (changed.has('presets') && this.theme) {
       // The built-in themes arrived after the theme was opened: pick the default base.
       if (this.base === '' || !this.basePreset) this.base = this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
-      this.saved = { ...this.saved, base: this.kind === 'tokens' && !this.theme.tokens ? this.base : this.saved.base };
+      this.saved = { ...this.saved, base: this.isNew ? this.base : this.saved.base };
       this.scheduleRender();
     }
     if (changed.has('forms') || changed.has('previews')) {
@@ -323,13 +430,24 @@ export class VersolaThemeRecord extends LitElement {
     return this.forms.filter(f => f.active && f.jsCompiled);
   }
 
-  private get tokensKind(): boolean {
-    return this.kind === 'tokens';
+  private get unsaved(): string[] {
+    return unsavedNames(this.saved, { base: this.base, overrides: this.overrides, variables: this.variablesMap, css: this.editCss });
   }
 
-  private get unsaved(): string[] {
-    const now = { base: this.tokensKind ? this.base : '', overrides: this.tokensKind ? this.overrides : {}, css: this.editCss };
-    return unsavedNames(this.saved, now, 'stylesheet');
+  /** The rows as the map central stores; a row without a name is not one yet. */
+  private get variablesMap(): Record<string, string> {
+    return Object.fromEntries(this.variableRows.filter(row => row.name !== '').map(row => [row.name, row.value.trim()]));
+  }
+
+  /** What each row's value is refused for, by row key. */
+  private get rowProblems(): Map<number, string> {
+    return new Map(this.variableRows.filter(row => row.name !== '').map((row): [number, string] => [row.key, valueProblem(row.value)]).filter(([, problem]) => problem !== ''));
+  }
+
+  /** The rows the preview may send: those central would not refuse. */
+  private get renderableVariables(): Record<string, string> {
+    const problems = this.rowProblems;
+    return Object.fromEntries(this.variableRows.filter(row => row.name !== '' && !problems.has(row.key)).map(row => [row.name, row.value.trim()]));
   }
 
   private get dirty(): boolean {
@@ -372,8 +490,8 @@ export class VersolaThemeRecord extends LitElement {
     // Any request still in flight is for an older state of the editor; its answer must not be applied.
     this.renderSeq++;
     // A fixed scheme has no dark preview to switch on.
-    if (this.tokensKind && (this.resolved?.mode ?? 'auto') !== 'auto') this.previewDark = false;
-    if (!this.tokensKind || !this.base) {
+    if ((this.resolved?.mode ?? 'auto') !== 'auto') this.previewDark = false;
+    if (!this.base) {
       this.renderedCss = this.editCss;
       this.renderError = '';
       this.rendering = false;
@@ -386,7 +504,7 @@ export class VersolaThemeRecord extends LitElement {
   private async renderNow() {
     const seq = this.renderSeq;
     try {
-      const rendered = await renderTheme({ base: this.base, overrides: this.overrides }, this.editCss);
+      const rendered = await renderTheme({ base: this.base, overrides: this.overrides, ...(Object.keys(this.renderableVariables).length > 0 ? { variables: this.renderableVariables } : {}) }, this.editCss);
       if (seq !== this.renderSeq) return;
       this.renderedCss = rendered.css;
       this.renderError = '';
@@ -409,7 +527,7 @@ export class VersolaThemeRecord extends LitElement {
   }
 
   private get canSave(): boolean {
-    return this.editId.trim().length > 0 && !this.brandInvalid && (!this.tokensKind || this.base !== '') && this.dirty;
+    return this.editId.trim().length > 0 && !this.brandInvalid && this.rowProblems.size === 0 && this.base !== '' && this.dirty;
   }
 
   private async save() {
@@ -420,11 +538,13 @@ export class VersolaThemeRecord extends LitElement {
     this.error = '';
     try {
       const tenantId = this.isNew ? (this.scope === 'tenant' ? this.tenantId : null) : this.theme.tenantId;
-      const tokens = this.tokensKind ? { base: this.base, ...(overrideKeys(this.overrides).length > 0 ? { overrides: this.overrides } : {}) } : null;
+      const variables = this.variablesMap;
+      const tokens = { base: this.base, ...(overrideKeys(this.overrides).length > 0 ? { overrides: this.overrides } : {}), ...(Object.keys(variables).length > 0 ? { variables } : {}) };
       const record: ThemeRecord = { id: this.editId.trim(), css: this.editCss, tenantId, tokens };
       if (this.isNew) await createTheme(record);
       else await updateTheme(record);
-      this.saved = { base: this.tokensKind ? this.base : '', overrides: { ...this.overrides }, css: this.editCss };
+      this.saved = { base: this.base, overrides: { ...this.overrides }, variables, css: this.editCss };
+      this.withoutTokens = false;
       this.dispatchEvent(new CustomEvent<ThemeSaved>('theme-saved', { detail: { theme: record, created: this.isNew }, bubbles: true, composed: true }));
     } catch (error) {
       this.error = error instanceof Error ? error.message : 'Save failed';
@@ -471,11 +591,11 @@ export class VersolaThemeRecord extends LitElement {
     const form = this.previewForm;
     if (!form) return '';
     // The preview frame follows the operator's own device scheme unless told otherwise, so Light has to be forced too: on a dark
-    // device it would otherwise show the dark card. A theme with a fixed scheme keeps it, and a stylesheet theme decides for itself.
-    const auto = this.tokensKind && (this.resolved?.mode ?? 'auto') === 'auto';
+    // device it would otherwise show the dark card. A theme with a fixed scheme keeps it.
+    const auto = (this.resolved?.mode ?? 'auto') === 'auto';
     const scheme = auto ? `:root{color-scheme:${this.previewDark ? 'dark' : 'light'}}` : this.previewDark ? ':root{color-scheme:dark}' : '';
     // Until central has answered there is no stylesheet: a frame drawn now would flash unstyled.
-    if (this.tokensKind && this.renderedCss === '') return '';
+    if (this.renderedCss === '') return '';
     return buildPreviewSrcdoc({
       formId: form.id,
       properties: form.properties,
@@ -531,6 +651,7 @@ export class VersolaThemeRecord extends LitElement {
                 <span class="dot" style=${`background:${p.tokens.brand}`} aria-hidden="true"></span>${p.title.en ?? p.id}
               </button>`)}
           </div>
+          ${this.withoutTokens ? html`<p class="preset-hint" id="without-tokens">This theme was stored with CSS only, before themes had values. It opens on Versola here; saving keeps the CSS and stores these values with it. Until then clients get the CSS alone.</p>` : nothing}
           ${base ? html`<p class="preset-hint" id="preset-hint">${base.title.en ?? base.id}: ${presetHint(base.tokens)}</p>` : nothing}
         </div>
       </section>`;
@@ -552,20 +673,108 @@ export class VersolaThemeRecord extends LitElement {
           <versola-theme-token-controls ruled .base=${base} .overrides=${this.overrides} .scheme=${this.shownScheme}
             @overrides-change=${(e: CustomEvent<OverridesChange>) => this.onOverridesChange(e.detail)}></versola-theme-token-controls>
         </div>
-        ${this.editCss.trim() !== '' ? html`
-          <p class="hint" style="margin:0;padding:var(--spacing-md) var(--spacing-lg);border-top:1px solid var(--border-default)">This theme also carries extra CSS that was stored through the API.
-            The console keeps it as it is and applies it after the generated styles; it neither shows nor edits it.</p>` : nothing}
       </section>`;
   }
 
-  private renderStylesheet(): TemplateResult {
+  private setRow(key: number, change: Partial<VariableRow>) {
+    this.variableRows = this.variableRows.map(row => (row.key === key ? { ...row, ...change } : row));
+    this.scheduleRender();
+  }
+
+  private addRow() {
+    const used = new Set(this.variableRows.map(row => row.name));
+    const next = THEME_VARIABLES.find(variable => !used.has(variable.name));
+    if (!next) return;
+    this.variableRows = [...this.variableRows, { key: this.rowKey++, name: next.name, value: next.start }];
+    this.scheduleRender();
+  }
+
+  private removeRow(key: number) {
+    this.variableRows = this.variableRows.filter(row => row.key !== key);
+    this.scheduleRender();
+  }
+
+  private pickName(row: VariableRow, name: string) {
+    const kind = variableByName(name)?.kind;
+    // A value that fits the old token's kind but not the new one's is replaced by the new token's start.
+    const fits = kind === variableByName(row.name)?.kind;
+    this.setRow(row.key, { name, value: fits ? row.value : (variableByName(name)?.start ?? row.value) });
+  }
+
+  /** The control a token's value is edited with: a colour picker and its hex, or a length in px; anything else (a value
+   *  stored through the API, such as `color-mix(...)`) is plain text. */
+  private renderValue(row: VariableRow, label: string, problem: string): TemplateResult {
+    const kind = variableByName(row.name)?.kind;
+    const describedBy = problem ? `row-problem-${row.key}` : nothing;
+    const invalid = problem ? 'true' : 'false';
+    const disabled = !this.canManage;
+    if (kind === 'colour' && (isHexColour(row.value) || row.value.trim() === '')) {
+      return html`
+        <input type="color" class="color-input" aria-label=${`${label} colour picker`} .value=${isHexColour(row.value) ? row.value : '#000000'} ?disabled=${disabled}
+          @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />
+        <input type="text" class="compact-input mono value-input" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${row.value} ?disabled=${disabled}
+          @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />`;
+    }
+    const px = pixels(row.value);
+    if (kind === 'length' && px !== null) {
+      return html`
+        <input type="number" min="0" step="1" class="compact-input mono value-input" aria-label=${`${label} value, px`} aria-invalid=${invalid} aria-describedby=${describedBy} .value=${String(px)} ?disabled=${disabled}
+          @input=${(e: Event) => this.setRow(row.key, { value: `${(e.target as HTMLInputElement).value.trim()}px` })} />
+        <span class="unit" aria-hidden="true">px</span>`;
+    }
     return html`
-      <section class="card record-card" aria-label="Stylesheet (legacy)">
-        <div class="record-card-head"><div><h2>Stylesheet (legacy)</h2>
-          <div class="record-card-sub">This theme is a CSS file stored through the API and replaces the default stylesheet. The console no longer creates or edits these:
-            it stays as it is, clients can keep using it, and it can be deleted once none does. Build a replacement from a base theme.</div></div></div>
+      <input type="text" class="compact-input mono value-input" aria-label=${`${label} value`} aria-invalid=${invalid} aria-describedby=${describedBy} spellcheck="false" maxlength="120" .value=${row.value} ?disabled=${disabled}
+        @input=${(e: Event) => this.setRow(row.key, { value: (e.target as HTMLInputElement).value })} />`;
+  }
+
+  private renderRow(row: VariableRow): TemplateResult {
+    const problems = this.rowProblems;
+    const problem = problems.get(row.key) ?? '';
+    const taken = new Set(this.variableRows.filter(other => other.key !== row.key).map(other => other.name));
+    const known = variableByName(row.name);
+    return html`
+      <li class="var-row">
+        <div class="var-line">
+          <select class="compact-input mono var-name" aria-label=${`Token for row ${this.variableRows.indexOf(row) + 1}`} ?disabled=${!this.canManage}
+            @change=${(e: Event) => this.pickName(row, (e.target as HTMLSelectElement).value)}>
+            ${known ? nothing : html`<option value=${row.name} selected>${row.name}</option>`}
+            ${THEME_VARIABLES.map(variable => html`<option value=${variable.name} ?selected=${variable.name === row.name} ?disabled=${taken.has(variable.name)}>${variable.name}</option>`)}
+          </select>
+          <div class="var-value">${this.renderValue(row, row.name, problem)}</div>
+          ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" aria-label=${`Remove ${row.name}`} @click=${() => this.removeRow(row.key)}>Remove</button>` : nothing}
+        </div>
+        <div class="var-help">${known?.description ?? 'not in the theming API'}</div>
+        ${problem ? html`<div class="error-message" id=${`row-problem-${row.key}`} role="alert">${problem}</div>` : nothing}
+      </li>`;
+  }
+
+  private renderAdvanced(): TemplateResult {
+    const open = this.cssOpen || this.editCss.trim() !== '';
+    const canAdd = this.canManage && this.variableRows.length < THEME_VARIABLES.length;
+    return html`
+      <section class="card record-card" aria-label="Advanced">
+        <div class="record-card-head">
+          <div><h2>Advanced</h2>
+            <div class="record-card-sub">Token overrides, then your own CSS, both after the values above. Later wins: the base theme, the values, token overrides, custom CSS.</div></div>
+        </div>
         <div class="card-body">
-          <versola-code-editor language="css" rows="8" label="CSS (read-only)" disabled .value=${this.editCss}></versola-code-editor>
+          <h3 class="part-title">Token overrides</h3>
+          <p class="hint">Set a single variable of the sign-in screens without writing CSS.</p>
+          ${this.variableRows.length === 0 ? html`<p class="hint" id="no-tokens">None.</p>` : html`<ul class="var-rows" aria-label="Token overrides">${this.variableRows.map(row => this.renderRow(row))}</ul>`}
+          ${canAdd ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.addRow()}>Add token</button>` : nothing}
+        </div>
+        <div class="card-body part-rule">
+          <h3 class="part-title">Custom CSS</h3>
+          ${open ? html`
+            <p class="hint" id="custom-css-hint">Applied after the colours, shape and background above, so your rules win. You are responsible for contrast and small screens.</p>
+            <versola-code-editor id="custom-css" language="css" rows="10" label="Custom CSS" ?disabled=${!this.canManage} .value=${this.editCss}
+              @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}></versola-code-editor>
+            <p class="hint tokens-title">Variables a rule may set or read</p>
+            <ul class="tokens" aria-label="Variables a rule may target">
+              ${CSS_TOKENS.map(([name, text]) => html`<li><code>${name}</code><span>${text}</span></li>`)}
+            </ul>` : html`
+            <p class="hint">None. Add your own rules on top of everything above.</p>
+            ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" aria-expanded="false" @click=${() => { this.cssOpen = true; }}>Add custom CSS</button>` : nothing}`}
         </div>
       </section>`;
   }
@@ -579,7 +788,7 @@ export class VersolaThemeRecord extends LitElement {
   private renderPreview(): TemplateResult {
     const forms = this.previewable;
     const scenarios = this.scenarios;
-    const blocked = this.tokensKind && (this.resolved?.mode ?? 'auto') !== 'auto';
+    const blocked = (this.resolved?.mode ?? 'auto') !== 'auto';
     return html`
       <versola-preview-pane heading="Preview" ?busy=${this.rendering} ?stale=${!!this.renderError} .logicalWidth=${this.previewWidth} .logicalHeight=${600}>
         <div class="preview-toolbar" slot="toolbar">
@@ -610,14 +819,15 @@ export class VersolaThemeRecord extends LitElement {
         </div>
         ${this.renderError ? html`<p class="render-error" role="alert">${this.renderError}. The preview shows the last version that rendered.</p>` : nothing}
         ${forms.length === 0 ? nothing : html`<iframe class="preview-iframe" title="Preview" .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>`}
-        <div slot="note">${this.tokensKind ? 'Rendered by central from the tokens as you change them.' : 'The stored stylesheet, drawn on the form chosen above.'} The width is the phone a client's users most likely hold.</div>
+        <div slot="note">Rendered by central from the values and the custom CSS as you change them. The width is the phone a client's users most likely hold.</div>
       </versola-preview-pane>`;
   }
 
   private renderMeta(): TemplateResult {
     const rest = this.usedBy.slice(2);
     return html`
-      <span class="chip">${this.theme.tokens ? 'Visual' : 'Stylesheet (legacy)'}</span>
+      ${Object.keys(this.theme.tokens?.variables ?? {}).length > 0 ? html`<span class="chip">Token overrides</span>` : nothing}
+      ${this.theme.css.trim() !== '' ? html`<span class="chip">Custom CSS</span>` : nothing}
       <span class="chip">${this.theme.tenantId ? 'This tenant' : 'Global'}</span>
       ${this.usedBy.length === 0 ? html`<span class="chip">No clients</span>` : html`
         <span class="muted">Used by</span>
@@ -640,7 +850,7 @@ export class VersolaThemeRecord extends LitElement {
       <div class="layout">
         <div class="controls">
           ${this.isNew ? this.renderBasics() : nothing}
-          ${this.tokensKind ? html`${this.renderBase()}${this.renderLook()}` : this.renderStylesheet()}
+          ${this.renderBase()}${this.renderLook()}${this.renderAdvanced()}
           ${!this.isNew && this.canManage ? html`
             <versola-danger-card heading="Delete theme" text="Clients that use a theme must be moved to another one before it can go."
               actionLabel="Delete theme" .actionAriaLabel=${`Delete theme ${this.theme.id}`} .disabledReason=${this.deleteReason}
@@ -649,7 +859,7 @@ export class VersolaThemeRecord extends LitElement {
         ${this.renderPreview()}
       </div>
 
-      ${this.canManage && this.tokensKind ? html`
+      ${this.canManage ? html`
         <div class="bar">
           <div class="bar-text" role="status">${this.isNew ? (unsaved.length ? `New theme: ${unsaved.join(', ')}` : 'New theme') : unsaved.length ? `Unsaved: ${unsaved.join(', ')}` : 'No unsaved changes'}</div>
           <div class="bar-actions">

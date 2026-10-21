@@ -290,8 +290,11 @@ switch in the preview toolbar picks the language the preview shows), `Style`, `S
 `?edit=<tab>`. Themes: Base theme (a wrapping row of pills, each with its brand colour as a dot, the selected one filled, and a
 one-line hint of what it sets: no thumbnails, the preview shows the result; a built-in theme is never "dark" or "light", the
 Colour scheme control and the preview's Light/Dark are the only place the scheme shows), Look (each overridden token with
-an `Overridden` badge and Reset, `Clear overrides`; no Extra CSS), a theme stored as a stylesheet is shown read-only as
-"Stylesheet (legacy)" with Delete only; "Used by" is computed in
+an `Overridden` badge and Reset, `Clear overrides`) and Custom CSS (a card after Look: collapsed behind "Add custom CSS"
+while empty, open when the theme has CSS; a `versola-code-editor` (css), the hint that it is applied after the values so
+its rules win and that contrast and small screens are the author's, and the variables a rule may target; the preview
+includes it, the unsaved bar names "custom CSS"). A theme stored with CSS and no values opens in the same editor on the
+Versola base with the CSS card open; the list shows it as "Versola + custom CSS". "Used by" is computed in
 the console from the tenant's clients (central has no usage endpoint). Lists are tables with a kind filter and
 no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
 `forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.

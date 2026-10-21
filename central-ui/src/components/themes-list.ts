@@ -6,7 +6,7 @@ import type { FormPreview, FormRecord, Locale, OAuthClient, ThemePreset, ThemeRe
 import { fetchAllClients, fetchFormPreviews, fetchForms, fetchLocales, fetchThemePresets, fetchThemes } from '../utils/central-api';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
-import { clientsUsingTheme, joinNames, overridesText, resolveTokens } from '../utils/theme-summary';
+import { clientsUsingTheme, joinNames, resolveTokens, themeDetailText } from '../utils/theme-summary';
 import { themeThumb } from './theme-thumb';
 import type { ThemeSaved } from './theme-record';
 import type { DataTableColumn, RowMenuItem } from './data-table';
@@ -22,7 +22,7 @@ type ThemeFilter = 'all' | 'tenant';
 
 /**
  * Themes: the table of the themes a tenant can use (base and overrides, the look as a thumbnail and the
- * brand colour, the clients that use it; a theme stored as a stylesheet is listed as read-only "Stylesheet (legacy)"), the theme's own page (`?view=themes&id=<id>`)
+ * brand colour, the clients that use it; a theme stored with CSS and no values is listed as "Versola + custom CSS"), the theme's own page (`?view=themes&id=<id>`)
  * which is also its editor, and the create form (`&new=1`). "Used by" is computed here from the
  * tenant's clients, which the screen loads: central has no usage endpoint, and a global theme may
  * also be used by clients of other tenants, which the delete (refused by central) reports.
@@ -185,9 +185,9 @@ export class VersolaThemesList extends LitElement {
         <button type="button" class="row-link" aria-label=${`Open theme ${record.id}`}><span class="row-title mono">${record.id}</span></button>
         <div class="muted">${record.tenantId ? 'This tenant' : 'Global'}</div>` },
       { id: 'base', label: 'Base', cell: record => {
-        if (!record.tokens) return html`<div class="cell-lines"><span class="chip value">Stylesheet (legacy)</span><span class="muted">Read-only; delete it when no client uses it</span></div>`;
+        if (!record.tokens) return html`<div class="cell-lines"><strong>Versola + custom CSS</strong><span class="muted">No values saved yet</span></div>`;
         const base = this.presets.find(preset => preset.id === record.tokens!.base);
-        return html`<div class="cell-lines"><strong>${base?.title.en ?? record.tokens.base}</strong><span class="muted">${overridesText(record.tokens.overrides)}</span></div>`;
+        return html`<div class="cell-lines"><strong>${base?.title.en ?? record.tokens.base}</strong><span class="muted">${themeDetailText(record)}</span></div>`;
       } },
       { id: 'look', label: 'Look', cell: record => {
         const tokens = resolveTokens(record, this.presets);

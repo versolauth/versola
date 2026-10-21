@@ -17,7 +17,7 @@ export class VersolaClientConsentPreview extends LitElement {
   @property({ attribute: false }) form: FormRecord | null = null;
   /** The consent scenario of the preview catalog; `null` when the catalog is not available. */
   @property({ attribute: false }) scenario: FormPreviewScenario | null = null;
-  /** The theme the client uses: its tokens (null for a stylesheet theme) and its own CSS. */
+  /** The theme the client uses: its tokens (null for a theme stored with CSS only) and its own CSS. */
   @property({ attribute: false }) tokens: ThemeTokens | null = null;
   @property({ type: String }) themeCss = '';
   @property({ attribute: false }) overrides: ThemeOverrides = {};
@@ -94,6 +94,19 @@ export class VersolaClientConsentPreview extends LitElement {
     } finally {
       if (seq === this.renderSeq) this.rendering = false;
     }
+  }
+
+  /** The scheme the frame shows now (a fixed one, else the Light / Dark switch), for the controls beside it. */
+  private get shownScheme(): 'light' | 'dark' {
+    return this.fixedMode ?? (this.dark ? 'dark' : 'light');
+  }
+
+  private announcedScheme: string | undefined;
+
+  updated() {
+    if (this.announcedScheme === this.shownScheme) return;
+    this.announcedScheme = this.shownScheme;
+    this.dispatchEvent(new CustomEvent<'light' | 'dark'>('scheme-change', { detail: this.shownScheme, bubbles: true, composed: true }));
   }
 
   private srcdoc(): string {

@@ -455,7 +455,7 @@ test.describe('preview', () => {
     await loadAdminApp(page, { path: recordPath('credential'), state: ftState() });
 
     await expect.poll(() => srcdoc(page)).toContain(baseStylesheetMock);
-    await page.getByLabel('Theme').selectOption('legacy-2024');
+    await page.getByLabel('Theme').selectOption('georgia-2024');
     await expect.poll(() => srcdoc(page)).toContain('font-family: Georgia');
 
     await expect(page.getByRole('button', { name: 'Mobile' })).toHaveAttribute('aria-pressed', 'true');
