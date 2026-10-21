@@ -32,3 +32,11 @@ CREATE TABLE edge_certificates (
     issued_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (edge_id, serial)
 );
+
+-- When the chain of certificates of an edge began: its enrollment, or the last time it was extended. An edge renews its
+-- way along a chain; central's `edge-identity.max-age` is measured from here, and either extends the chain by itself
+-- (`auto-extend`, the default) or stops renewing until an operator extends it.
+CREATE TABLE edge_identity_chains (
+    edge_id    TEXT PRIMARY KEY REFERENCES edges (id) ON DELETE CASCADE,
+    started_at TIMESTAMPTZ NOT NULL
+);

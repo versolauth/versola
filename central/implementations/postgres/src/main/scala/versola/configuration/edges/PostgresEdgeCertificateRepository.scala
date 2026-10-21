@@ -20,12 +20,6 @@ class PostgresEdgeCertificateRepository(xa: TransactorZIO) extends EdgeCertifica
       """.update.run()
     .unit
 
-  override def firstIssuedAt(edgeId: EdgeId): Task[Option[Instant]] =
-    xa.connectMeasured("first-edge-certificate-issued-at"):
-      sql"""
-        SELECT min(issued_at) FROM edge_certificates WHERE edge_id = $edgeId
-      """.query[Option[Instant]].run().headOption.flatten
-
 object PostgresEdgeCertificateRepository:
   def live: ZLayer[TransactorZIO, Nothing, EdgeCertificateRepository] =
     ZLayer.fromFunction(PostgresEdgeCertificateRepository(_))

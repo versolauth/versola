@@ -33,6 +33,7 @@ import versola.central.configuration.edges.{
   EdgeEnrollmentTokenRepository,
   EdgeGroupRepository,
   EdgeGroupService,
+  EdgeIdentityChainRepository,
   EdgeIdentityService,
   EdgeRepository,
   EdgeService,
@@ -64,6 +65,7 @@ import versola.configuration.edges.{
   PostgresEdgeCertificateRepository,
   PostgresEdgeEnrollmentTokenRepository,
   PostgresEdgeGroupRepository,
+  PostgresEdgeIdentityChainRepository,
   PostgresEdgeRepository,
 }
 import versola.configuration.forms.PostgresFormRepository
@@ -120,6 +122,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeRepository &
       EdgeGroupRepository &
       EdgeEnrollmentTokenRepository &
+      EdgeIdentityChainRepository &
       EdgeCertificateRepository &
       EdgeService &
       EdgeGroupService &
@@ -232,6 +235,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresEdgeRepository.live >++>
           PostgresEdgeGroupRepository.live >++>
           PostgresEdgeEnrollmentTokenRepository.live >++>
+          PostgresEdgeIdentityChainRepository.live >++>
           PostgresEdgeCertificateRepository.live >++>
           PostgresFormRepository.live >++>
           PostgresLocaleRepository.live >++>

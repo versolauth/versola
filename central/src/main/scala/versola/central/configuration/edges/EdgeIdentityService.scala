@@ -15,11 +15,17 @@ import java.time.{Duration as JavaDuration, Instant}
 /** What an edge is recognised by, on central's mutual-TLS listener and at auth: a certificate that names it
   * (`urn:versola:edge:<id>`) and the group it belongs to (`urn:versola:edge-group:<group>`).
   *
-  * Central issues it, through the CA behind [[ClientCertificateIssuer]], and never holds the key: the edge generates
+  * Central issues it, through the CA behind [[EdgeCertificateIssuer]], and never holds the key: the edge generates
   * the key and sends a request, which central checks says exactly those two names and nothing else, so the names an
   * edge ends up with are central's decision and not the request's. The first certificate is traded for a one-time
   * token an operator created ([[issueEnrollmentToken]], [[enroll]]); every later one is asked for over the mutual-TLS
   * listener with the certificate the edge already has ([[renew]]), with a new key each time.
+  *
+  * The certificates an edge goes through are a chain, which begins at its enrollment. `edge-identity.max-age` is how old
+  * a chain may get; at that age central extends it itself (`auto-extend`, the default, so an edge never stops for want
+  * of anyone enrolling it again) or, if the operator turned that off, stops renewing until the edge is extended
+  * ([[extend]]) or enrolled again. Either way the edge is told the date the chain ends long before it does, in the
+  * answer to every enrollment and renewal.
   */
 trait EdgeIdentityService:
   /** A token for `edgeId` to enrol with, valid for `validity` (an hour by default, at most
@@ -31,28 +37,38 @@ trait EdgeIdentityService:
       validity: Duration = EdgeIdentityService.TokenValidity,
   ): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.IssuedToken]
 
-  /** The edge's first certificate chain, for the token it was given. */
+  /** The edge's first certificate, for the token it was given. Begins its chain. */
   def enroll(
       edgeId: EdgeId,
       token: String,
       csrPem: String,
-  ): IO[EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | Throwable, String]
+  ): IO[EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | Throwable, EdgeIdentityService.Identity]
 
-  /** A new certificate chain for an edge that proved who it is on the mutual-TLS listener. `presentedSerial` is the
-    * certificate it proved it with, for the log. Refused once the chain of renewals is older than
-    * [[EdgeIdentityService.MaxChainAge]]: an identity is not good for ever on renewals alone, the operator enrols the edge
-    * again with a new token. */
-  def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String] = None): IO[EdgeIdentityService.Refused | Throwable, String]
+  /** A new certificate for an edge that proved who it is on the mutual-TLS listener. `presentedSerial` is the
+    * certificate it proved it with, for the log. Refused when the chain has reached `edge-identity.max-age` and
+    * `auto-extend` is off. */
+  def renew(
+      edgeId: EdgeId,
+      csrPem: String,
+      presentedSerial: Option[String] = None,
+  ): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.Identity]
+
+  /** Starts the edge's chain over, so that its next renewals are not refused for age. For an operator who turned
+    * `auto-extend` off. */
+  def extend(edgeId: EdgeId): IO[EdgeIdentityService.Refused | Throwable, Unit]
+
+  /** When the chain of each edge ends, for the edges whose chain does: where `auto-extend` is off. Empty where it is on. */
+  def chainEnds: Task[Map[EdgeId, Instant]]
 
 object EdgeIdentityService:
   val TokenValidity: Duration = 1.hour
 
   val MaxTokenValidity: Duration = 24.hours
 
-  /** How long an edge may renew its way from one enrollment before it has to enrol again. */
-  val MaxChainAge: Duration = 365.days
-
   case class IssuedToken(token: String, expiresAt: Instant)
+
+  /** An issued certificate chain (leaf first) and, if the chain of the edge ends, when. */
+  case class Identity(chain: String, chainEndsAt: Option[Instant])
 
   /** Central will not do what was asked: an unknown edge, a request that says something other than the edge's names.
     * A refusal rather than a fault -- retrying does not change it. */
@@ -66,20 +82,26 @@ object EdgeIdentityService:
     EdgeIdentityNames.subject(edgeId = edge.id, groupId = edge.groupId)
 
   val live: URLayer[
-    EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & EdgeCertificateIssuer & SecureRandom &
-      CentralConfig,
+    EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & EdgeIdentityChainRepository &
+      EdgeCertificateIssuer & SecureRandom & CentralConfig,
     EdgeIdentityService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   class Impl(
       edges: EdgeService,
       tokens: EdgeEnrollmentTokenRepository,
       issued: EdgeCertificateRepository,
+      chains: EdgeIdentityChainRepository,
       issuer: EdgeCertificateIssuer,
       random: SecureRandom,
       config: CentralConfig,
   ) extends EdgeIdentityService:
     private val validity: Duration = EdgeCertificateIssuer.validity(config)
+    private val policy = config.edgeIdentity
+    private val maxAge: JavaDuration = JavaDuration.ofMillis(policy.maxAge.toMillis)
+
+    /** The end of a chain that began at `started`, where chains end. */
+    private def endOf(started: Instant): Option[Instant] = Option.unless(policy.autoExtend)(started.plus(maxAge))
 
     override def issueEnrollmentToken(edgeId: EdgeId, validity: Duration): IO[Refused | Throwable, IssuedToken] =
       for
@@ -92,7 +114,7 @@ object EdgeIdentityService:
         _ <- tokens.create(hash(token), edgeId, expiresAt)
       yield IssuedToken(token, expiresAt)
 
-    override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, String] =
+    override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, Identity] =
       for
         now <- Clock.instant
         // Nothing is read or parsed on the strength of a token before the token is known good: the request comes from
@@ -108,21 +130,45 @@ object EdgeIdentityService:
         // Another caller spent it between the look and now.
         _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
         chain <- sign(edge, csrPem)
-      yield chain
+        _ <- chains.start(edgeId, now)
+      yield Identity(chain, endOf(now))
 
-    override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, String] =
+    override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
       for
         edge <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
         _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
         now <- Clock.instant
-        started <- issued.firstIssuedAt(edgeId)
-        _ <- ZIO.fail(
-          Refused(s"the identity of edge '$edgeId' has been renewed for more than ${MaxChainAge.toDays} days: enrol it again with a new token"),
-        )
-          .when(started.exists(first => JavaDuration.between(first, now).compareTo(MaxChainAge) > 0))
+        recorded <- chains.startedAt(edgeId)
+        // An edge enrolled before chains were kept has none: its chain begins now.
+        started <- recorded.fold(chains.start(edgeId, now).as(now))(ZIO.succeed(_))
+        aged = JavaDuration.between(started, now).compareTo(maxAge) > 0
+        // At the end of a chain: extend it, or stop, as the operator chose. Never a surprise: stopping happens only when the
+        // operator turned extending off, and the edge has been told the date in every answer since its enrollment.
+        begun <-
+          if !aged then ZIO.succeed(started)
+          else if policy.autoExtend then
+            ZIO.logInfo(s"the certificate chain of edge '$edgeId' reached ${policy.maxAge.toDays} days; extended") *>
+              chains.start(edgeId, now).as(now)
+          else
+            ZIO.fail(Refused(
+              s"the certificate chain of edge '$edgeId' reached its limit (${policy.maxAge.toDays} days since it was enrolled or " +
+                s"last extended): extend it with POST /configuration/edges/extend?edgeId=$edgeId, or enrol it again with a new token",
+            ))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         chain <- sign(edge, csrPem)
-      yield chain
+      yield Identity(chain, endOf(begun))
+
+    override def extend(edgeId: EdgeId): IO[Refused | Throwable, Unit] =
+      for
+        _ <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
+        now <- Clock.instant
+        _ <- chains.start(edgeId, now)
+        _ <- ZIO.logInfo(s"the certificate chain of edge '$edgeId' was extended")
+      yield ()
+
+    override def chainEnds: Task[Map[EdgeId, Instant]] =
+      if policy.autoExtend then ZIO.succeed(Map.empty)
+      else chains.all.map(_.view.mapValues(_.plus(maxAge)).toMap)
 
     private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
       val subject = subjectFor(edge)

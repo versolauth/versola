@@ -214,12 +214,12 @@ object EdgeSyncController extends Controller:
       (for
         edgeId <- authorizeEdge(request)
         body <- request.bodyAs[RenewEdgeCertificateRequest]
-        chain <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
+        identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
           edgeId,
           body.csr,
           request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
         ))
-      yield Response.json(SignEdgeCertificateResponse(chain).toJson))
+      yield Response.json(EdgeIdentityResponse(identity.chain, identity.chainEndsAt).toJson))
         .catchAll {
           case error: EdgeIdentityService.Refused =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))

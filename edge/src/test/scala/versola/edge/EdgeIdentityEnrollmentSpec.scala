@@ -92,7 +92,13 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
     * from the clock's now, and remembers what it was asked. */
   private case class Calls(enroll: Ref[List[String]], renew: Ref[List[(String, String)]])
 
-  private def central(lifetime: Duration, names: List[String] = subject.uris, status: Status = Status.Ok): ZIO[TestClient, Nothing, Calls] =
+  private def central(
+      lifetime: Duration,
+      names: List[String] = subject.uris,
+      status: Status = Status.Ok,
+      chainEndsAt: Option[Instant] = None,
+  ): ZIO[TestClient, Nothing, Calls] =
+    val ends = chainEndsAt.fold("")(at => s""","chainEndsAt":"$at"""")
     for
       enroll <- Ref.make(List.empty[String])
       renew <- Ref.make(List.empty[(String, String)])
@@ -106,7 +112,7 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
               now <- Clock.instant
             yield
               if status.isSuccess then
-                Response.json(s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(lifetime.getSeconds)).toJson}}""")
+                Response.json(s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(lifetime.getSeconds)).toJson}$ends}""")
               else Response.status(status)
           },
           Method.POST / "edge" / "certificate" / "renew" -> handler { (request: Request) =>
@@ -117,7 +123,7 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
               now <- Clock.instant
             yield
               if status.isSuccess then
-                Response.json(s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(lifetime.getSeconds)).toJson}}""")
+                Response.json(s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(lifetime.getSeconds)).toJson}$ends}""")
               else Response.status(status)
           },
         ),
@@ -258,6 +264,53 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           failure <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens).ensureCertificate.flip
           material <- holder.material
         yield assertTrue(failure.getMessage.contains("Unauthorized") || failure.getMessage.contains("401"), material.isEmpty)
+      },
+      test("what central says about the end of the chain is remembered, from the enrollment and from every renewal") {
+        val ends = Instant.parse("2027-10-21T00:00:00Z")
+        val later = Instant.parse("2028-10-21T00:00:00Z")
+        for
+          directory <- tempDirectory
+          file <- tokenFile("TOKEN")
+          calls <- central(lifetime = 14.days, chainEndsAt = Some(ends))
+          client <- ZIO.service[Client]
+          holder <- openHolder(ZLayer.succeed(config(directory, Some(file))))
+          impl = EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens)
+          before = impl.chainEndsAt
+          _ <- impl.ensureCertificate
+          afterEnrol = impl.chainEndsAt
+          generated <- CertificateSubject.generate(subject)
+          _ <- holder.install(
+            sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+            generated.privateKeyPem,
+          )
+          _ <- impl.renewIfDue
+        yield assertTrue(before.isEmpty, afterEnrol == Some(ends), impl.chainEndsAt == Some(ends))
+      },
+      test("an edge whose chain does not end is told nothing, and warns of nothing") {
+        for
+          directory <- tempDirectory
+          file <- tokenFile("TOKEN")
+          _ <- central(lifetime = 14.days)
+          client <- ZIO.service[Client]
+          holder <- openHolder(ZLayer.succeed(config(directory, Some(file))))
+          impl = EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens)
+          _ <- impl.ensureCertificate
+        yield assertTrue(impl.chainEndsAt.isEmpty)
+      },
+      test("the warning comes a month before the end, names the date and says what to do, and not before") {
+        val end = Instant.parse("2027-10-21T00:00:00Z")
+        val within = EdgeIdentityEnrollment.chainEndWarning("edge-1", end.minusSeconds(29 * 86400L), end)
+        val onTheDay = EdgeIdentityEnrollment.chainEndWarning("edge-1", end, end)
+        val early = EdgeIdentityEnrollment.chainEndWarning("edge-1", end.minusSeconds(31 * 86400L), end)
+        ZIO.succeed(
+          assertTrue(
+            early.isEmpty,
+            onTheDay.isDefined,
+            within.exists(_.contains("2027-10-21")),
+            within.exists(_.contains("/configuration/edges/extend?edgeId=edge-1")),
+            within.exists(_.contains("enrol it again")),
+          ),
+        )
       },
       test("a certificate with a third or less of its life left is renewed, with a new key") {
         for

@@ -8,6 +8,7 @@ import zio.json.*
 
 import java.nio.file.{Files, Path}
 import java.time.{Duration as JavaDuration, Instant}
+import java.util.concurrent.atomic.AtomicReference
 
 /** Gets this edge its certificate from central, and keeps it renewed, where `central.identity` says central issues it.
   *
@@ -42,13 +43,29 @@ object EdgeIdentityEnrollment:
 
   private case class EnrollRequest(edgeId: String, token: String, csr: String) derives JsonCodec
   private case class RenewRequest(csr: String) derives JsonCodec
-  private case class Issued(certificate: String) derives JsonCodec
+  private case class Issued(certificate: String, chainEndsAt: Option[Instant] = None) derives JsonCodec
+
+  /** How long before the end of its certificate chain this edge starts saying so, once a day. */
+  val ChainEndWarning: Duration = 30.days
+
+  /** What to say when the chain of this edge ends at `end`, if it is time to say it: the date, and what to do. */
+  private[edge] def chainEndWarning(edgeId: String, now: Instant, end: Instant): Option[String] =
+    Option.when(!now.plus(JavaDuration.ofMillis(ChainEndWarning.toMillis)).isBefore(end)):
+      s"the certificate chain of edge '$edgeId' ends on $end, and central will not renew after that: ask the operator to extend it " +
+        s"(POST /configuration/edges/extend?edgeId=$edgeId) or to enrol it again with a new token"
 
   /** Due when a third of the lifetime or less is left. */
   private[edge] def due(notBefore: Instant, notAfter: Instant, now: Instant): Boolean =
     JavaDuration.between(now, notAfter).compareTo(JavaDuration.between(notBefore, notAfter).dividedBy(3)) <= 0
 
   private[edge] class Impl(config: EdgeConfig, client: Client, holder: EdgeCertificateHolder, tokens: CentralSyncTokenService):
+    // Where the chain of this edge ends, as central last said, and the day it was last mentioned in the log. Read and
+    // written by the one fiber that renews, and read by tests.
+    private val chainEnd = AtomicReference(Option.empty[Instant])
+    private val warnedOn = AtomicReference(-1L)
+
+    private[edge] def chainEndsAt: Option[Instant] = chainEnd.get
+
     private val subject: CertificateSubject =
       EdgeIdentityNames.subject(
         edgeId = config.id,
@@ -83,12 +100,21 @@ object EdgeIdentityEnrollment:
           .addHeader(Header.ContentType(MediaType.application.json))
         issued <- send(request, client, "enrollment")
         _ <- holder.install(issued.certificate, generated.privateKeyPem)
+        _ = chainEnd.set(issued.chainEndsAt)
         _ <- ZIO.logInfo(s"enrolled with central as edge '${config.id}'")
       yield ()
 
     def renewing: UIO[Nothing] =
       (renewIfDue.catchAll(error => ZIO.logWarning(s"edge certificate renewal failed: ${error.getMessage}")) *>
+        warnAboutChainEnd *>
         ZIO.sleep(CheckInterval)).forever
+
+    /** Once a day, from a month before it, the date the chain of this edge ends -- where it does -- and what to do. */
+    private[edge] def warnAboutChainEnd: UIO[Unit] =
+      Clock.instant.flatMap: now =>
+        val today = now.getEpochSecond / 86400
+        ZIO.foreachDiscard(chainEnd.get.flatMap(end => chainEndWarning(config.id, now, end))): message =>
+          ZIO.when(warnedOn.getAndSet(today) != today)(ZIO.logWarning(message))
 
     private[edge] def renewIfDue: Task[Unit] =
       for
@@ -107,6 +133,7 @@ object EdgeIdentityEnrollment:
           .addHeader(Header.ContentType(MediaType.application.json))
         issued <- send(request, tokens.connection(client), "renewal")
         _ <- holder.install(issued.certificate, generated.privateKeyPem)
+        _ = chainEnd.set(issued.chainEndsAt)
         _ <- ZIO.logInfo(s"renewed the certificate of edge '${config.id}'")
       yield ()
 

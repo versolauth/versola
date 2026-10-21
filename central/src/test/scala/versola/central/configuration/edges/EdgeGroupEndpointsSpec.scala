@@ -172,6 +172,26 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.issueEnrollmentToken.calls == List((edgeId, 6.hours)))),
     ),
     testCase(
+      description = "an operator extends the certificate chain of an edge",
+      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
+      expectedStatus = Status.NoContent,
+      setup = stubs => stubs.identity.extend.succeedsWith(()),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.extend.calls == List(edgeId))),
+    ),
+    testCase(
+      description = "extending an edge that is not registered is 404",
+      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
+      expectedStatus = Status.NotFound,
+      setup = stubs => stubs.identity.extend.failsWith(EdgeIdentityService.Refused("edge 'edge-1' is not registered")),
+    ),
+    testCase(
+      description = "extending needs the admin credential",
+      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
+      authorized = false,
+      expectedStatus = Status.Unauthorized,
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.extend.calls.isEmpty)),
+    ),
+    testCase(
       description = "a token for an edge that is not registered is 404",
       request = Request.post(
         (URL.root / "configuration" / "edges" / "enrollment-tokens").addQueryParam("edgeId", edgeId.toString),

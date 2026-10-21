@@ -29,6 +29,7 @@ object EdgeController extends Controller:
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
+    extendEdgeEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -37,6 +38,7 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
+        chainEnds <- ZIO.serviceWithZIO[EdgeIdentityService](_.chainEnds)
         response = GetAllEdgesResponse(
           edges = edges.map(edge =>
             EdgeResponse(
@@ -45,6 +47,7 @@ object EdgeController extends Controller:
               requireDpopNonce = edge.requireDpopNonce,
               overloadPolicy = edge.overloadPolicy,
               groupId = edge.groupId,
+              identityChainEndsAt = chainEnds.get(edge.id),
             ),
           ).toList,
         )
@@ -85,6 +88,19 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         groups <- ZIO.serviceWithZIO[EdgeGroupService](_.getAll)
       yield Response.json(GetEdgeGroupsResponse(groups).toJson)
+    }
+
+  /** Starts the certificate chain of the edge over, for an operator who turned `edge-identity.auto-extend` off: the edge's
+    * next renewals are not refused for age. A no-op in effect where central extends chains itself. */
+  val extendEdgeEndpoint =
+    Method.POST / "configuration" / "edges" / "extend" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.extend(edgeId)).as(Response.status(Status.NoContent))
+          .catchSome:
+            case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
     }
 
   /** A one-time token for the named edge to trade for its first certificate, shown once. */
@@ -225,6 +241,8 @@ case class EdgeResponse(
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
+    identityChainEndsAt: Option[Instant] = None,
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(

@@ -7,6 +7,8 @@ import zio.http.*
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 
+import java.time.Instant
+
 /** The one route an edge reaches before it has a certificate: it trades the one-time token an operator gave it, and a
   * request for the certificate the operator's registration entitles it to, for that certificate's chain.
   *
@@ -23,8 +25,8 @@ object EdgeEnrollController extends Controller:
     Method.POST / "edge" / "enroll" -> handler { (request: Request) =>
       (for
         body <- request.bodyAs[EnrollEdgeRequest]
-        chain <- ZIO.serviceWithZIO[EdgeIdentityService](_.enroll(body.edgeId, body.token, body.csr))
-      yield Response.json(SignEdgeCertificateResponse(chain).toJson))
+        identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.enroll(body.edgeId, body.token, body.csr))
+      yield Response.json(EdgeIdentityResponse(identity.chain, identity.chainEndsAt).toJson))
         .catchAll:
           case EdgeIdentityService.InvalidToken =>
             Observability.setError("edge_enrollment_invalid_token") *> ZIO.succeed(Response.status(Status.Unauthorized))
@@ -38,4 +40,11 @@ case class EnrollEdgeRequest(
     edgeId: EdgeId,
     token: String,
     csr: String,
+) derives JsonCodec, Schema
+
+/** What an edge is given for its enrollment and for every renewal: its certificate chain (leaf first, no key: it made the
+  * key), and, where the chain of the edge ends, when -- so that the edge can warn long before. */
+case class EdgeIdentityResponse(
+    certificate: String,
+    chainEndsAt: Option[Instant] = None,
 ) derives JsonCodec, Schema

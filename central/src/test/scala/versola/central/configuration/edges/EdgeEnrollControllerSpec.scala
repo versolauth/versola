@@ -2,7 +2,6 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.ZIOStubs
-import versola.central.configuration.SignEdgeCertificateResponse
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -44,12 +43,13 @@ object EdgeEnrollControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("a valid token is answered with the certificate chain, and no credential is asked for") {
       val identity = stub[EdgeIdentityService]
       for
-        _ <- identity.enroll.succeedsWith("CHAIN")
+        _ <- identity.enroll.succeedsWith(EdgeIdentityService.Identity("CHAIN", Some(java.time.Instant.parse("2027-10-21T00:00:00Z"))))
         response <- enrol(identity)
-        answer <- response.body.asJson[SignEdgeCertificateResponse]
+        answer <- response.body.asJson[EdgeIdentityResponse]
       yield assertTrue(
         response.status == Status.Ok,
         answer.certificate == "CHAIN",
+        answer.chainEndsAt.contains(java.time.Instant.parse("2027-10-21T00:00:00Z")),
         identity.enroll.calls == List((edgeId, "TOKEN", "REQUEST")),
       )
     },
