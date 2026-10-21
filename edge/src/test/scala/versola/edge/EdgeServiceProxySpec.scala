@@ -1050,7 +1050,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         location.contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
       )
     },
-    test("asks the login only for what is missing: the acr alone, or the age alone") {
+    test("asks the login for the endpoint's acr even when only the age is too old, so the new sign-in keeps it") {
       val env = new Env
       for
         _ <- env.setupDefaults()
@@ -1073,8 +1073,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(
         wrongAcr.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive"),
-        tooOld.headers.get("Location").contains(s"/login/${presetId}?max_age=300"),
+        tooOld.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
       )
+    },
+    test("asks the login for the age alone when the endpoint requires no acr") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(maxAge = Some(300))))
+        stale <- env.signToken(authTime = Some(now.getEpochSecond - 600))
+        response <- env.buildService(client, security).proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(response.headers.get("Location").contains(s"/login/${presetId}?max_age=300"))
     },
     test("gives a bearer caller the challenge only, with no login URL to follow") {
       val env = new Env
