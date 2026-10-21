@@ -79,6 +79,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
 
+  /** Whether `HTTP_ACCESS_LOG*` (and later a policy from central) may thin out this service's `receive-http` lines.
+    * `false`: every request is logged whatever the setting; auth does this, its lines are few and it is where an
+    * investigation of a login ends up.
+    */
+  protected def accessLogConfigurable: Boolean = true
+
   /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
     * without and whose configuration it waits for at start-up (central). */
   protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
@@ -208,6 +214,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
+      _ <- ZIO.unless(accessLogConfigurable)(Observability.updateAccessLog(AccessLogSettings.default))
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]

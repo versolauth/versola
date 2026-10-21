@@ -738,6 +738,7 @@ profile under load, almost all of it for successful requests.
   (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
   trace id is sampled at random.
 - `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
+- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
