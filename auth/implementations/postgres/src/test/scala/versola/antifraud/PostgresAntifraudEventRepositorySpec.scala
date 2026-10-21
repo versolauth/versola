@@ -155,6 +155,54 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
         after <- partitions(xa)
       yield assertTrue(blocked.isFailure, during.isEmpty, after.size == 3)
     },
+    test("rolls the log up per tenant, range and minute, again without double counting, and prunes by age") {
+      val minute = Instant.parse("2026-10-21T10:05:00Z")
+      def at(second: Long, outcome: AntifraudOutcome, action: AntifraudAction = AntifraudAction.otp_request, prefix: String = "491512") =
+        event(minute.plusSeconds(second), outcome).copy(action = action, destPrefix = Some(prefix))
+      case class Stat(tenant: String, prefix: String, minute: Instant, requests: Int, sent: Int, throttled: Int, verified: Int, wrong: Int) derives DbCodec
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- repository.maintainPartitions(LocalDate.of(2026, 10, 21), 1, LocalDate.of(2026, 10, 1))
+        _ <- xa.connect(sql"DELETE FROM af_dest_stats".update.run())
+        _ <- repository.insertBatch(
+          List(
+            at(1, AntifraudOutcome.sent),
+            at(2, AntifraudOutcome.sent, prefix = "491519"),
+            at(3, AntifraudOutcome.throttled),
+            at(4, AntifraudOutcome.verified, AntifraudAction.otp_verify),
+            at(5, AntifraudOutcome.wrong_code, AntifraudAction.otp_verify),
+            at(6, AntifraudOutcome.sent, prefix = "491612"),
+            // an address, and a minute outside the window
+            event(minute.plusSeconds(7), AntifraudOutcome.sent).copy(channel = AntifraudChannel.email, destPrefix = None),
+            at(70, AntifraudOutcome.sent),
+          ),
+        )
+        ran <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4)
+        again <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4)
+        stats <- xa.connect(
+          sql"""SELECT tenant_id, dest_prefix, minute, requests, sent, throttled, verified, wrong_codes
+                FROM af_dest_stats ORDER BY dest_prefix""".query[Stat].run().toList,
+        )
+        _ <- repository.pruneStats(minute.plusSeconds(60))
+        left <- xa.connect(sql"SELECT COUNT(*) FROM af_dest_stats".query[Long].run().head)
+      yield assertTrue(
+        ran,
+        again,
+        stats == List(
+          Stat("tenant-a", "4915", minute, requests = 3, sent = 2, throttled = 1, verified = 1, wrong = 1),
+          Stat("tenant-a", "4916", minute, requests = 1, sent = 1, throttled = 0, verified = 0, wrong = 0),
+        ),
+        left == 0L,
+      )
+    },
+    test("two rollups at once: one does the work, the other leaves it to it") {
+      for
+        repository <- noPartitions
+        minute = Instant.parse("2026-10-21T10:05:00Z")
+        results <- ZIO.foreachPar(1 to 6)(_ => repository.rollupStats(minute, minute.plusSeconds(60), 4).exit)
+      yield assertTrue(results.forall(_.isSuccess))
+    },
     test("names and reads partitions by day") {
       assertTrue(
         PostgresAntifraudEventRepository.partitionName(today) == "af_event_20261021",

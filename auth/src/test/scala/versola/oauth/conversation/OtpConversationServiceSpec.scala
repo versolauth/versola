@@ -53,7 +53,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeChallengeMethod = CodeChallengeMethod.S256
 
-  class Env:
+  class Env(smsAllowed: Boolean = true):
     val otpService = stub[OtpService]
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
@@ -73,7 +73,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val antifraud = RecordingAntifraudEvents()
+    val antifraud = RecordingAntifraudEvents(smsAllowed)
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -217,6 +217,33 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0).exit
           outcomes = env.antifraud.steps.map(_.outcome)
         yield assertTrue(result.isFailure, outcomes == List(AntifraudOutcome.provider_error))
+      },
+      test("a code for a range whose budget is used up is not sent, is recorded as throttled, and denies access like any other limit") {
+        val env = Env(smsAllowed = false)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.otpService.sendOtp.calls.isEmpty,
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.throttled),
+        )
+      },
+      test("the budget is not asked about a code that stands in for an unknown user, nor about an address") {
+        val env = Env(smsAllowed = false)
+        val fake = realOtp.copy(real = None)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(fake)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+        yield assertTrue(env.antifraud.steps.map(_.outcome).forall(_ != AntifraudOutcome.throttled))
       },
       test("a request that lost the write race and sent nothing records nothing") {
         val env = Env()

@@ -426,6 +426,24 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
   optional `antifraud` block of `auth`'s config.
 
+- **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
+  minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, country code included — and minute:
+  codes asked for, sent, refused, verified), keeps 30 days of it (`antifraud.stats-retention`) and reads it for
+  nothing itself yet: it is what an operator or a report asks "which ranges send but do not convert" of. Only one
+  instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
+  next run recomputes the last `stats-lookback` (5 minutes), so nothing is lost by a missed minute. Separately,
+  `antifraud.sms-budget` closes a range for the next hour: `sent-per-hour` (codes sent to one range of one tenant) and
+  `min-volume` with `min-conversion` (a range with at least that many codes sent of which fewer than that share were
+  verified). Both are **off by default** (`0`); turning one on makes a refused request behave like any other rate
+  limit (the sign-in ends in "access denied", the event is `throttled`, and
+  `antifraud_sms_budget_refused_total{prefix}` counts it). The counts are kept in memory per instance, over the last
+  hour, so the limit holds to within the number of instances and starts again from zero after a restart; only a code
+  that is really sent counts (not the stand-in for an unknown user), and at most `max-ranges` (10000) ranges are
+  tracked, beyond which new ones are let through, so the limit cannot be turned into a way to fill memory. A range
+  that is closed by mistake (a campaign that sends to a new country) reopens as the hour passes; raise `sent-per-hour`
+  for it. Enforcement of `phoneRegions` is unchanged: a number outside the tenant's regions is refused before the
+  conversation takes it (`ConversationController` validation), whatever the budget says.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

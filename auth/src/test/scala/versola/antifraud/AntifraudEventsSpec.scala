@@ -43,6 +43,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
+      _ <- e.repository.rollupStats.succeedsWith(true)
+      _ <- e.repository.pruneStats.succeedsWith(())
       events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents])
     yield events).provideSome[Scope](
       ZLayer.succeed[AntifraudEventRepository](e.repository),
@@ -186,6 +188,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
           scope <- Scope.make
           _ <- e.repository.maintainPartitions.succeedsWith(())
           _ <- e.repository.insertBatch.succeedsWith(())
+          _ <- e.repository.rollupStats.succeedsWith(true)
+          _ <- e.repository.pruneStats.succeedsWith(())
           events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
             ZLayer.succeed[AntifraudEventRepository](e.repository),
             ZLayer.succeed(small),
@@ -238,6 +242,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
               attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
             _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.pruneStats.succeedsWith(())
             _ <- AntifraudEvents.live.build.provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
@@ -260,6 +266,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.repository.maintainPartitions.failsWith(RuntimeException("no permission"))
             _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.pruneStats.succeedsWith(())
             events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
@@ -271,6 +279,52 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- events.record(event())
             _ <- TestClock.adjust(0.seconds)
           yield assertTrue(e.repository.insertBatch.calls.size == 1)
+      },
+    ),
+    suite("the SMS budget")(
+      test("sends are counted from the events and close the range, and a request for another range is still allowed") {
+        val e = env
+        val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 2))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, limited)
+            before <- events.allowSms(clientId, phone)
+            _ <- ZIO.foreachDiscard(1 to 2)(_ => events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent))
+            sameRange <- events.allowSms(clientId, Phone("+4915199999999"))
+            otherRange <- events.allowSms(clientId, Phone("+4917112345678"))
+          yield assertTrue(before, !sameRange, otherRange)
+      },
+      test("suppressed and refused requests are not sends and do not count") {
+        val e = env
+        val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 1))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, limited)
+            _ <- ZIO.foreachDiscard(List(AntifraudOutcome.suppressed, AntifraudOutcome.throttled, AntifraudOutcome.provider_error))(outcome =>
+              events.otpRequested(authId, clientId, None, Right(phone), outcome),
+            )
+            allowed <- events.allowSms(clientId, phone)
+          yield assertTrue(allowed)
+      },
+    ),
+    suite("the statistics rollup")(
+      test("recomputes the last minutes every interval, and removes what is older than the retention") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
+            _ <- build(e, small.copy(statsRetention = 30.days))
+            _ <- TestClock.adjust(1.minute)
+            rolled = e.repository.rollupStats.calls
+            pruned = e.repository.pruneStats.calls
+          yield assertTrue(
+            rolled == List((Instant.parse("2026-10-21T09:56:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
+            pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
+          )
       },
     ),
     suite("describing a step")(

@@ -318,29 +318,40 @@ object ConversationService:
                 clientId = conversation.clientId,
                 isRegistering = conversation.isRegistering,
               )
-              now <- Clock.instant
-              sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
-              updatedConversation = conversation.copy(
-                userId = effectiveUserId,
-                // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
-                credential = Some(credential),
-                step = sentStep,
-                userEmail = conversation.userEmail,
-                userPhone = conversation.userPhone,
-                userLogin = conversation.userLogin,
-                userClaims = conversation.userClaims,
-              )
-              written <- conversationRepository.overwrite(authId, updatedConversation)
-              result2 <- if written then
-                otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
-                  .tapBoth(
-                    _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
-                    _ =>
-                      otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
-                  )
-                  .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
-              else
-                Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+              // Only a code that is really going out is counted against the range: one that stands in for an unknown
+              // user costs nothing, and counting it would let anyone close a range by trying numbers.
+              allowed <- credential match
+                case Right(phone) if otp.real.isDefined => antifraudEvents.allowSms(conversation.clientId, phone)
+                case _ => ZIO.succeed(true)
+              result2 <-
+                if !allowed then
+                  otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *> accessDenied(authId, conversation)
+                else
+                  for
+                    now <- Clock.instant
+                    sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
+                    updatedConversation = conversation.copy(
+                      userId = effectiveUserId,
+                      // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
+                      credential = Some(credential),
+                      step = sentStep,
+                      userEmail = conversation.userEmail,
+                      userPhone = conversation.userPhone,
+                      userLogin = conversation.userLogin,
+                      userClaims = conversation.userClaims,
+                    )
+                    written <- conversationRepository.overwrite(authId, updatedConversation)
+                    sentResult <- if written then
+                      otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
+                        .tapBoth(
+                          _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
+                          _ =>
+                            otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
+                        )
+                        .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
+                    else
+                      Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                  yield sentResult
             yield result2
       yield result
 

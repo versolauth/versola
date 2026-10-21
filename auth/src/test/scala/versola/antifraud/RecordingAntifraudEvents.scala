@@ -16,7 +16,7 @@ object RecordingAntifraudEvents:
   )
 
 /** An [[AntifraudEvents]] that keeps what the sign-in steps told it, for the specs of those steps. */
-final class RecordingAntifraudEvents extends AntifraudEvents:
+final class RecordingAntifraudEvents(smsAllowed: Boolean = true) extends AntifraudEvents:
   import RecordingAntifraudEvents.Step
 
   private val told = scala.collection.mutable.ListBuffer.empty[Step]
@@ -24,6 +24,8 @@ final class RecordingAntifraudEvents extends AntifraudEvents:
   def steps: List[Step] = synchronized(told.toList)
 
   override def record(event: AntifraudEvent): UIO[Unit] = zio.ZIO.unit
+
+  override def allowSms(clientId: ClientId, phone: Phone): UIO[Boolean] = zio.ZIO.succeed(smsAllowed)
 
   override def otpRequested(
       authId: AuthId,
