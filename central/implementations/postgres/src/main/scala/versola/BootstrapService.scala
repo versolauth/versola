@@ -37,7 +37,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -1493,7 +1493,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the

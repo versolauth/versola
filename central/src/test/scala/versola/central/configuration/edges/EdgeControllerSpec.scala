@@ -53,11 +53,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -67,6 +71,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- tenantRepository.getAll.succeedsWith(Vector.empty)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
         verifyResult <- verify(response, edgeService)
@@ -90,11 +95,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -103,6 +112,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- tenantRepository.getAll.succeedsWith(tenants)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
         // `token` stubs `find` for `authorizeInternal`; a case that wants a particular record
         // back from it sets its own afterwards, so its setup runs second.
         raw <- token(edgeService)
@@ -190,7 +200,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, service) =>
         for body <- response.body.asJson[versola.central.configuration.edges.ServiceKeyResponse]
         yield assertTrue(
-          service.registerEdge.calls == List(edgeId),
+          service.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId)),
           body.keyId == testKeyPair.keyId,
         ),
     ),

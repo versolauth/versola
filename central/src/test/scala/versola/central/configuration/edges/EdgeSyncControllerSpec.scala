@@ -36,6 +36,7 @@ import versola.central.configuration.{
   GetResourcesSyncResponse,
   GetRolesSyncResponse,
   ResourceUri,
+  SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
@@ -85,6 +86,12 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val edgeCertificate = TestCertificates.generate(uri = Some(EdgeCertificate.uriFor(edgeId)))
   private val otherEdgeCertificate = TestCertificates.generate(uri = Some(EdgeCertificate.uriFor(EdgeId("edge-b"))))
   private val unnamedCertificate = TestCertificates.generate(subject = "CN=edge-a,O=Versola")
+  private val groupedCertificate = TestCertificates.generate(
+    uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroup.DefaultId)),
+  )
+  private val otherGroupCertificate = TestCertificates.generate(
+    uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroupId("partner-acme"))),
+  )
 
   private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true)
 
@@ -224,6 +231,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       jwks: Stub[JwksService],
       metadata: Stub[ServerMetadataService],
       edges: Stub[EdgeService],
+      identity: Stub[EdgeIdentityService],
       security: SecurityService,
   )
 
@@ -280,6 +288,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           jwks = stub[JwksService],
           metadata = stub[ServerMetadataService],
           edges = stub[EdgeService],
+          identity = stub[EdgeIdentityService],
           security = security,
         )
         certificates = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config)
@@ -296,6 +305,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[JwksService](services.jwks) ++
                 ZEnvironment[ServerMetadataService](services.metadata) ++
                 ZEnvironment[EdgeService](services.edges) ++
+                ZEnvironment[EdgeIdentityService](services.identity) ++
                 ZEnvironment[SecurityService](security) ++
                 ZEnvironment[CentralConfig](config) ++
                 tracing,
@@ -549,6 +559,52 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificate = Some(unnamedCertificate.certificate),
         expectedStatus = Status.Unauthorized,
         verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a certificate that also names the edge's own group is accepted",
+        request = Request.get(sync("clients")),
+        certificate = Some(groupedCertificate.certificate),
+        expectedStatus = Status.Ok,
+      ),
+      testCase(
+        description = "a certificate that names a group other than the edge's own is refused",
+        request = Request.get(sync("clients")),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      testCase(
+        description = "an edge of a partner group is refused the configuration, certificate and token notwithstanding",
+        request = Request.get(sync("clients")),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      testCase(
+        description = "certificate renewal: the edge's own request is answered with a new chain",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.Ok,
+        setup = services => services.identity.renew.succeedsWith("CHAIN"),
+        verify = (response, services) =>
+          for body <- decodeBody[SignEdgeCertificateResponse](response)
+          yield assertTrue(body.certificate == "CHAIN", services.identity.renew.calls == List((edgeId, "REQUEST"))),
+      ),
+      testCase(
+        description = "certificate renewal: a request that names something else is 422",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.UnprocessableEntity,
+        setup = services => services.identity.renew.failsWith(EdgeIdentityService.Refused("not the edge's names")),
+      ),
+      testCase(
+        description = "certificate renewal: 401 without a certificate, and nothing is signed",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        certificate = None,
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.isEmpty)),
       ),
       testCase(
         description = "edge-certificate signing: 401 without a certificate",
