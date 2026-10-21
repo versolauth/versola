@@ -180,6 +180,25 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(1.second)
           yield assertTrue(!e.repository.insertBatch.calls.flatten.contains(shed))
       },
+      test("keeps writing after the fiber that built it has ended") {
+        val e = env
+        for
+          scope <- Scope.make
+          _ <- e.repository.maintainPartitions.succeedsWith(())
+          _ <- e.repository.insertBatch.succeedsWith(())
+          events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
+            ZLayer.succeed[AntifraudEventRepository](e.repository),
+            ZLayer.succeed(small),
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed[OAuthConfigurationService](e.configService),
+            SecureRandom.live,
+            SecureRandom.live >>> SecurityService.live,
+          ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
+          _ <- events.record(event())
+          _ <- TestClock.adjust(0.seconds)
+          _ <- scope.close(Exit.unit)
+        yield assertTrue(e.repository.insertBatch.calls.nonEmpty)
+      },
       test("writes what is still queued when it stops") {
         val e = env
         for

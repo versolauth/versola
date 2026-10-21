@@ -230,7 +230,8 @@ object AntifraudEvents:
     val run: URIO[Scope, Unit] =
       for
         failing <- Ref.make(false)
-        fiber <- loop(failing).fork
+        // Not `fork`: that would tie the writer to the fiber that builds the layer, which ends once it is built.
+        fiber <- loop(failing).forkDaemon
         _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
       yield ()
 
