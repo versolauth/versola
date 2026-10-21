@@ -204,6 +204,17 @@ test('does not follow a login URL that leaves this origin', async ({ page }) => 
   expect(new URL(page.url()).hostname).not.toBe('evil.example');
 });
 
+test('the heading stays reachable when the content is taller than the card', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 560 });
+  await page.addInitScript(() => sessionStorage.setItem('versola.account.pending', JSON.stringify({ kind: 'passkey', id: 'passkey-1', at: Date.now() })));
+  await loadAccountForm(page);
+  const card = (await page.locator('.account-container').boundingBox())!;
+  const heading = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
+  expect(heading.y).toBeGreaterThanOrEqual(card.y);
+  const overflows = await page.locator('.account-container').evaluate(el => el.scrollHeight > el.clientHeight);
+  expect(overflows).toBe(true);
+});
+
 test('a row action stays on one line when the details beside it are long', async ({ page }) => {
   await page.setViewportSize({ width: 560, height: 900 });
   await loadAccountForm(page);
