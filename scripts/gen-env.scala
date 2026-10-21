@@ -537,6 +537,11 @@ enum SecretType(val json: String):
     * be 3072 or 4096, so the modulus is not a promise about every value the store may hold. */
   case RsaPrivateKey extends SecretType("rsa-private-key")
 
+  /** A signing private key, PKCS#8 DER in standard base64, RSA or EC: gen-env generates an EC P-256
+    * key, an existing deployment may still hold an RSA one, and `SecretConfig.signingPrivateKey`
+    * accepts both. No `size` for the same reason as [[RsaPrivateKey]]. */
+  case SigningPrivateKey extends SecretType("signing-private-key")
+
   /** `{"keys":[...]}`: public JWKs, wrapped the way central's bootstrap.jwks expects. */
   case JwkSet extends SecretType("jwk-set")
 
@@ -712,9 +717,10 @@ object SecretSchema:
     base64Url("PAR_REQUESTS_SECRET", List("auth"), 32),
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
     // The signing key auth holds and the public JWKS central serves for it: auth matches the
-    // key to its JWKS entry by RSA modulus, and the entry needs a usable `alg`.
+    // key to its JWKS entry (RSA modulus, or proof of possession for EC), and the entry needs a
+    // usable `alg`. EC P-256 (ES256) from gen-env; an older deployment may still hold an RSA key.
     // (a fresh pair next to the real one leaves two kids in play -- develop.md, "Onboarding")
-    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
+    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.SigningPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
     // central
     // central decodes it as a plain `Secret` (any length), and keeps the stored one once the
@@ -948,7 +954,7 @@ def defaultServerMetadata(authUrl: String): String =
      |  "code_challenge_methods_supported": ["S256"],
      |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
      |  "subject_types_supported": ["public"],
-     |  "id_token_signing_alg_values_supported": ["PS256"],
+     |  "id_token_signing_alg_values_supported": ["ES256"],
      |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
      |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
      |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
@@ -961,74 +967,78 @@ def defaultServerMetadata(authUrl: String): String =
      |  "authorization_response_iss_parameter_supported": true
      |}""".stripMargin
 
+case class RsaKey(privateB64: String, jwk: String, kid: String)
+
+/** `alg` only changes the JWK's own claim about itself -- an RSA key pair signs the same
+  * way under RS256 or PS256, so this is what decides which one a deployment publishes.
+  */
+def genRsaKey(rng: SecureRandom, kid: String, alg: String = "RS256"): RsaKey =
+  val kpg = KeyPairGenerator.getInstance("RSA")
+  kpg.initialize(2048, rng)
+  val kp = kpg.generateKeyPair()
+  val privKey = kp.getPrivate.asInstanceOf[RSAPrivateCrtKey]
+  val pubKey = kp.getPublic.asInstanceOf[RSAPublicKey]
+  val n = b64url(pubKey.getModulus)
+  val e = b64url(pubKey.getPublicExponent)
+  val jwk = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
+  RsaKey(b64std(privKey.getEncoded), jwk, kid)
+
+/** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
+  * from a JWK rather than PKCS#8 -- loadgen's `provision.provisioner-private-key`. */
+case class EcKey(privateB64: String, jwk: String, kid: String, privateJwk: String)
+
+/** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
+  * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
+  * strip a genuine leading zero byte instead, so coordinates get their own encoding.
+  */
+def genEcKey(rng: SecureRandom, kid: String): EcKey =
+  val kpg = KeyPairGenerator.getInstance("EC")
+  kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
+  val kp = kpg.generateKeyPair()
+  val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+  val pubKey = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+  def coordinate(value: java.math.BigInteger): String =
+    val raw = value.toByteArray
+    val fixed =
+      if raw.length == 32 then raw
+      else if raw.length > 32 then raw.takeRight(32)
+      else Array.fill[Byte](32 - raw.length)(0) ++ raw
+    Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
+  val x = coordinate(pubKey.getW.getAffineX)
+  val y = coordinate(pubKey.getW.getAffineY)
+  val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
+  val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
+  EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
+
+/** The deployment's JWT signing key: an EC P-256 key under ES256, with a `jwt-es256-<date>` kid. */
+def genJwtSigningKey(rng: SecureRandom, today: String): EcKey = genEcKey(rng, s"jwt-es256-$today")
+
+/** The JWKS central is bootstrapped with: only the public half of the key auth holds. */
+def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
+
 @main def genEnv(args: String*): Unit =
   cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
 
   // ── Key pairs ─────────────────────────────────────────────────────────────────
-  println("Generating RSA-2048 and EC (P-256) key pairs...")
-
-  case class RsaKey(privateB64: String, jwk: String, kid: String)
-
-  /** `alg` only changes the JWK's own claim about itself -- an RSA key pair signs the same
-    * way under RS256 or PS256, so this is what decides which one a deployment publishes.
-    */
-  def genRsaKey(kid: String, alg: String = "RS256"): RsaKey =
-    val kpg = KeyPairGenerator.getInstance("RSA")
-    kpg.initialize(2048, rng)
-    val kp = kpg.generateKeyPair()
-    val privKey = kp.getPrivate.asInstanceOf[RSAPrivateCrtKey]
-    val pubKey = kp.getPublic.asInstanceOf[RSAPublicKey]
-    val n = b64url(pubKey.getModulus)
-    val e = b64url(pubKey.getPublicExponent)
-    val jwk = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
-    RsaKey(b64std(privKey.getEncoded), jwk, kid)
-
-  /** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
-    * from a JWK rather than PKCS#8 -- loadgen's `provision.provisioner-private-key`. */
-  case class EcKey(privateB64: String, jwk: String, kid: String, privateJwk: String)
-
-  /** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
-    * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
-    * strip a genuine leading zero byte instead, so coordinates get their own encoding.
-    */
-  def genEcKey(kid: String): EcKey =
-    val kpg = KeyPairGenerator.getInstance("EC")
-    kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
-    val kp = kpg.generateKeyPair()
-    val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
-    val pubKey = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
-    def coordinate(value: java.math.BigInteger): String =
-      val raw = value.toByteArray
-      val fixed =
-        if raw.length == 32 then raw
-        else if raw.length > 32 then raw.takeRight(32)
-        else Array.fill[Byte](32 - raw.length)(0) ++ raw
-      Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
-    val x = coordinate(pubKey.getW.getAffineX)
-    val y = coordinate(pubKey.getW.getAffineY)
-    val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
-    val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
-    EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
+  println("Generating EC (P-256) and RSA-2048 key pairs...")
 
   val today = java.time.LocalDate.now.toString
-  // JWT signing key: auth signs access tokens with the private half; central serves the
-  // public half in the JWKS so auth/edge/admin-console can verify those tokens. PS256, not
-  // RS256: FAPI 1.0 Advanced §8.6 and FAPI 2.0 both require PS256 or ES256 and disallow
-  // RS256's PKCS#1 v1.5 padding, and there is no reason a fresh deployment should start out
-  // non-compliant with that. The key itself is still RSA -- PS256 is the same key, read with
-  // RSASSA-PSS padding instead of PKCS#1 v1.5.
-  val jwtKey = genRsaKey(s"jwt-$today", "PS256")
-  // A second, EC signing key published alongside it: FAPI's other permitted algorithm, so a
-  // fresh deployment demonstrates verifying both rather than only the one it happens to sign
-  // with. Verify-only from central's perspective -- see `BootstrapService.seedJwks` -- same as
-  // `jwtKey`; nothing here is `bootstrap.jwks`'s private half, only auth's own `JWT_PRIVATE_KEY`
-  // is, so this key can be rotated in for real signing later without this script's involvement.
-  val esKey = genEcKey(s"jwt-es256-$today")
+  // JWT signing key: auth signs access tokens and ID tokens with the private half; central serves
+  // the public half in the JWKS so auth/edge/admin-console can verify those tokens. ES256, the
+  // product's default (`JwksRecord.algorithmPreference`): FAPI 1.0 Advanced §8.6 and FAPI 2.0
+  // permit ES256 or PS256, and with the native crypto provider ES256 costs ~14% fewer cores per
+  // request. It is an EC P-256 key: auth matches its `jwt.private-key` to this JWKS entry by
+  // proof of possession (`JwksService.resolveSigningKey`), and central stores the entry
+  // verify-only (`BootstrapService.seedJwks`).
+  // Only this key is published: an extra verify-only key whose private half nobody holds would
+  // be confusing (develop.md, "Onboarding"). An operator who wants PS256 generates a key in
+  // central and selects it for the tenant, which publishes it then.
+  val jwtKey = genJwtSigningKey(rng, today)
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
-  val edgeKey = genRsaKey(s"edge-$today")
-  val jwks = s"""{"keys":[${jwtKey.jwk}, ${esKey.jwk}]}"""
+  val edgeKey = genRsaKey(rng, s"edge-$today")
+  val jwks = jwtJwks(jwtKey)
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
@@ -1058,7 +1068,7 @@ def defaultServerMetadata(authUrl: String): String =
     rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
   // central: seeds bootstrap.utility-client with the public half; the private half is loadgen's
   // provision.provisioner-private-key. See `utilityKey`'s use below for where each half goes.
-  val utilityKey = genEcKey("utils")
+  val utilityKey = genEcKey(rng, "utils")
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")

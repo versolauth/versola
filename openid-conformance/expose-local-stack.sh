@@ -7,7 +7,7 @@
 #                                    prints the issuer URL on its last line. The deployment serves one
 #                                    discovery document for all its tenants (versola#553), so the
 #                                    profile of the suite about to run picks it: `fapi2` (default) is
-#                                    the generated PS256-only document; `standard` also lists RS256,
+#                                    the generated ES256-only document; `standard` also lists RS256,
 #                                    which OpenID Connect requires and the Basic and Config plans check.
 #   ./expose-local-stack.sh down     puts the stack's config back and stops the tunnel
 #
@@ -53,7 +53,7 @@ case "${1:-}" in
       sed -e "s|$LOCAL|$url|g" -e "s|rp-id = \"localhost\"|rp-id = \"$host\"|" "$BACKUP/$f" >"$BUNDLE/$f"
     done
     if [[ "$profile" == standard ]]; then
-      sed -i.bak -e 's|"id_token_signing_alg_values_supported": \["PS256"\]|"id_token_signing_alg_values_supported": ["RS256", "PS256"]|' \
+      sed -i.bak -e 's|"id_token_signing_alg_values_supported": \["ES256"\]|"id_token_signing_alg_values_supported": ["RS256", "ES256", "PS256"]|' \
                  -e 's|"request_object_signing_alg_values_supported": \["ES256", "PS256"\]|"request_object_signing_alg_values_supported": ["RS256", "ES256", "PS256"]|' "$BUNDLE/central.conf"
       rm -f "$BUNDLE/central.conf.bak"
     fi

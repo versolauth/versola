@@ -315,7 +315,18 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           SecretSchema.problems(List(rsa)) == Nil,
           SecretSchema.problems(List(rsa.copy(size = Some(2048)))).exists(_.contains("takes no size")),
           SecretSchema.specs.filter(_.tpe == SecretType.RsaPrivateKey).map(s => (s.name, s.size)) ==
-            List(("JWT_PRIVATE_KEY", None), ("EDGE_PRIVATE_KEY", None)),
+            List(("EDGE_PRIVATE_KEY", None)),
+        )
+      },
+      // JWT_PRIVATE_KEY is EC from gen-env but may still be RSA in an existing store, so its type
+      // promises neither; the edge key stays RSA because central encrypts to it.
+      test("JWT_PRIVATE_KEY is a signing private key of either kind, with no size") {
+        val signing = sound.copy(tpe = SecretType.SigningPrivateKey, size = None)
+        assertTrue(
+          SecretSchema.problems(List(signing)) == Nil,
+          SecretSchema.problems(List(signing.copy(size = Some(256)))).exists(_.contains("takes no size")),
+          SecretSchema.specs.filter(_.tpe == SecretType.SigningPrivateKey).map(s => (s.name, s.size)) ==
+            List(("JWT_PRIVATE_KEY", None)),
         )
       },
       test("a file that doesn't match who holds the value") {
