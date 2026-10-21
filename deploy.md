@@ -50,7 +50,7 @@ decide, and nothing else inbound.
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (`EPORT`, 8094, loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 8082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
@@ -346,7 +346,7 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
   `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
   `server.next.crt` and `central-server.crt` + `central-server.next.crt`.
 - `central`'s `MPORT` is bound to `127.0.0.1` (`MBIND_HOST`); it was open on all interfaces. A
-  remote edge needs `--central-mtls-domain` (above) and the CLI's proxy. `EPORT=8094`, the
+  remote edge needs `--central-mtls-domain` (above) and the CLI's proxy. central's `APORT=8094` (not auth's 8082), the
   enrollment listener, is new and also loopback.
 - `ca.crt` (root plus client intermediate) is still written, for anything that pinned it; nothing
   generated reads it any more.

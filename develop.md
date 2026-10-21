@@ -296,7 +296,7 @@ certificate (from the **client** intermediate) does not complete the handshake, 
 requires a chain to `mutual-tls.edge-trusted-certificates` (`/app/mtls/edge-ca.crt`). The listener
 leaves come from the **server** intermediate (90 days), the edge identity from the edge
 intermediate (30 days). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
-`EPORT` is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
+central's `APORT` (8094, not auth's 8082) is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
 an external client reaches them only through public names that are opt-in
 (`versola configure vps --mtls-domain`, `--central-mtls-domain`, `--central-domain`), which
 `versola-cli`'s proxy forwards; the first two are added to the leaf's SAN by `mtls-init` through
