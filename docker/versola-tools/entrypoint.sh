@@ -132,7 +132,10 @@ echo "versola-tools ${VERSION}: generating configs for $TARGET..."
 # (expands to every jar in lib/, including gen-env.scala's compiled
 # classes and the Scala runtime it needs) -- not a shell glob, so the
 # quotes are required to stop the shell from expanding it first.
-printf '%s\n' "$TARGET" | java -cp 'lib/*' genEnv
+#
+# "$@": gen-env.scala's own flags (--central-mutual-tls-url=..., see its
+# parseCliArgs), which versola-cli passes as this image's arguments.
+printf '%s\n' "$TARGET" | java -cp 'lib/*' genEnv "$@"
 
 cp .local/env/"$TARGET"/auth.conf    "$OUT_DIR"/auth.conf
 cp .local/env/"$TARGET"/central.conf "$OUT_DIR"/central.conf

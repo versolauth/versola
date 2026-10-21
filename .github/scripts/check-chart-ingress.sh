@@ -99,6 +99,74 @@ native_routes_reach_edge() {
   return 0
 }
 
+central_mtls_is_unpublished_by_default() {
+  local out
+  out="$(render)" || { fail "default render failed: $(cat /tmp/chart-ingress-err.txt)"; return; }
+  if grep -q 'central-mtls$' <<<"$out" && grep -q 'ssl-passthrough' <<<"$out"; then fail "central's mutual-TLS port is published with no mutualTlsExposure"; fi
+  if grep -q '^kind: TLSRoute$' <<<"$out"; then fail "a TLSRoute rendered by default"; fi
+  return 0
+}
+
+central_mtls_load_balancer() {
+  local out
+  out="$(render --set services.central.mutualTlsExposure.type=loadBalancer \
+                --set 'services.central.mutualTlsExposure.sourceRanges={203.0.113.0/24}')" || {
+    fail "loadBalancer failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  grep -q 'type: LoadBalancer' <<<"$out" || fail "no LoadBalancer Service rendered"
+  grep -q '203.0.113.0/24' <<<"$out" || fail "sourceRanges did not reach the Service"
+  return 0
+}
+
+central_mtls_passthrough_never_terminates() {
+  local out
+  out="$(render --set services.central.mutualTlsExposure.type=ingressPassthrough \
+                --set services.central.mutualTlsExposure.host=central.example.com \
+                --set services.central.mutualTlsExposure.className=nginx)" || {
+    fail "ingressPassthrough failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  grep -q 'ssl-passthrough: "true"' <<<"$out" || fail "the Ingress does not ask for TLS passthrough"
+  # A `tls:` block would have the controller terminate the handshake: central would never see the edge's certificate.
+  # The document is picked out by its annotation, then searched for the block.
+  if awk 'BEGIN{RS="---\n"} /ssl-passthrough/' <<<"$out" | grep -q '^  tls:'; then fail "the passthrough Ingress carries a tls block"; fi
+  awk '/central.example.com/{f=1} f && /number:/{print; exit}' <<<"$out" | grep -q '8093' || fail "the Ingress does not lead to central's mutual-TLS port"
+  return 0
+}
+
+central_mtls_passthrough_needs_a_host_and_class() {
+  if render --set services.central.mutualTlsExposure.type=ingressPassthrough --set services.central.mutualTlsExposure.className=nginx >/dev/null; then
+    fail "ingressPassthrough without host rendered; it must fail"
+  fi
+  if render --set services.central.mutualTlsExposure.type=ingressPassthrough --set services.central.mutualTlsExposure.host=central.example.com >/dev/null; then
+    fail "ingressPassthrough without className rendered; it must fail"
+  fi
+  return 0
+}
+
+central_mtls_tls_route() {
+  local out
+  out="$(render --set services.central.mutualTlsExposure.type=gatewayTLSRoute \
+                --set services.central.mutualTlsExposure.host=central.example.com \
+                --set services.central.mutualTlsExposure.parentRefs[0].name=public-gateway)" || {
+    fail "gatewayTLSRoute failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  grep -q '^kind: TLSRoute$' <<<"$out" || fail "no TLSRoute rendered"
+  if render --set services.central.mutualTlsExposure.type=gatewayTLSRoute --set services.central.mutualTlsExposure.host=central.example.com >/dev/null; then
+    fail "gatewayTLSRoute without parentRefs rendered; it must fail"
+  fi
+  return 0
+}
+
+central_mtls_unknown_type_is_refused() {
+  if render --set services.central.mutualTlsExposure.type=nodePort >/dev/null; then
+    fail "an unknown exposure type rendered; it must fail"
+  fi
+  return 0
+}
+
 check() {
   local name="$1" before="$errors"
   checked=$((checked + 1))
@@ -111,6 +179,12 @@ check "a named className reaches the rendered Ingress" named_class_reaches_the_i
 check "a disabled ingress needs no className" disabled_ingress_needs_no_class
 check "the Gateway API path renders without a className" gateway_api_needs_no_class
 check "the native route group routes /native/ to edge" native_routes_reach_edge
+check "central's mutual-TLS port is unpublished by default" central_mtls_is_unpublished_by_default
+check "central's mutual-TLS port can be a LoadBalancer" central_mtls_load_balancer
+check "central's mutual-TLS Ingress passes TLS through and never terminates it" central_mtls_passthrough_never_terminates
+check "central's mutual-TLS Ingress needs a host and a class" central_mtls_passthrough_needs_a_host_and_class
+check "central's mutual-TLS port can be a Gateway TLSRoute" central_mtls_tls_route
+check "an unknown mutual-TLS exposure type is refused" central_mtls_unknown_type_is_refused
 
 rm -f /tmp/chart-ingress-err.txt
 

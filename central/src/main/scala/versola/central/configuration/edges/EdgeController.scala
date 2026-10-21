@@ -23,9 +23,7 @@ object EdgeController extends Controller:
     deleteEdgeEndpoint,
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
-    edgeDpopSyncEndpoint,
     setEdgeOverloadEndpoint,
-    edgeOverloadSyncEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -107,25 +105,6 @@ object EdgeController extends Controller:
       yield response
     }
 
-  /** What the named edge is to do about RFC 9449 §9 on the calls it proxies, for the edge
-    * itself -- the resource-server half of the same decision a tenant's `require_dpop_nonce`
-    * makes for `auth`'s endpoints.
-    *
-    * Restricted to edges, and an edge is served only its own row: an edge has no use for a
-    * peer's policy, and `authorizeInternal` has already proven which edge is asking by the key
-    * it signed the call with, so the id is not taken from the request.
-    */
-  val edgeDpopSyncEndpoint =
-    Method.GET / "configuration" / "edges" / "dpop" / "sync" -> handler { (request: Request) =>
-      for
-        callerEdgeId <- authorizeInternal(request)
-        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
-        service <- ZIO.service[EdgeService]
-        edge <- service.find(edgeId).someOrFail(Unauthorized)
-        response = EdgeDpopSyncResponse(requireDpopNonce = edge.requireDpopNonce)
-      yield Response.json(response.toJson)
-    }
-
   /** Sets what the named edge does when asked for more than it can do (see [[OverloadPolicy]]); an empty policy returns it
     * to its deployment's own values. Refused with `400` and the first thing wrong when the policy does not validate: the
     * edge would not apply it either, and a console that reported success for it would leave an operator believing a limit
@@ -146,19 +125,6 @@ object EdgeController extends Controller:
               case InvalidOverloadPolicy(message) =>
                 ZIO.succeed(Response.json(OverloadPolicyError(message).toJson).status(Status.BadRequest))
       yield response
-    }
-
-  /** The overload policy of the calling edge, for the edge itself; served like [[edgeDpopSyncEndpoint]], its own row only.
-    * `overloadPolicy` is `null` when none is set. */
-  val edgeOverloadSyncEndpoint =
-    Method.GET / "configuration" / "edges" / "overload" / "sync" -> handler { (request: Request) =>
-      for
-        callerEdgeId <- authorizeInternal(request)
-        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
-        service <- ZIO.service[EdgeService]
-        edge <- service.find(edgeId).someOrFail(Unauthorized)
-        response = EdgeOverloadSyncResponse(overloadPolicy = edge.overloadPolicy)
-      yield Response.json(response.toJson)
     }
 
   /** The registered signing keys of every edge, for auth to authenticate the edges that call

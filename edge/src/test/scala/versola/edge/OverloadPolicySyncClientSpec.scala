@@ -51,7 +51,7 @@ object OverloadPolicySyncClientSpec extends ZIOSpecDefault:
       for (got, request) <- served(s"""{"overloadPolicy": ${policy.toJson}}""")
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/edges/overload/sync"),
+        request.url.path.encode.contains("edge/sync/overload"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         got == EdgeOverloadPolicy(Some(policy)),
       )

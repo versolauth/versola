@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.configuration.clients.{ClientId, MutualTlsAuth, MutualTlsSubjectType}
+import versola.central.configuration.edges.EdgeCertificate
 import versola.central.configuration.tenants.TenantId
 import versola.util.CertificateSubject
 import zio.*
@@ -51,6 +52,11 @@ object ClientCertificateRequests:
               )
           case MutualTlsSubjectType.san_dns =>
             Right(CertificateSubject(own, clientId, dnsNames = List(value), uris = Nil, emailAddresses = Nil, ipAddresses = Nil))
+          // `urn:versola:edge:<id>` is what makes a certificate an edge's on central's mutual-TLS
+          // listener (`EdgeCertificate`); the CA that signs here may be one that listener trusts,
+          // so a client must not be issued a certificate carrying it.
+          case MutualTlsSubjectType.san_uri if value.startsWith(EdgeCertificate.NamePrefix) =>
+            Left(s"san_uri '$value' is in the namespace that names an edge to central, and is not issued to a client")
           case MutualTlsSubjectType.san_uri =>
             Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = List(value), emailAddresses = Nil, ipAddresses = Nil))
           case MutualTlsSubjectType.san_email =>

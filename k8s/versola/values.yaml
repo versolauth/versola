@@ -294,6 +294,32 @@ services:
     replicaCount: 1
     port: 8090
     diagnosticsPort: 8091
+    # MPORT -- central's mutual-TLS listener (VersolaApp.mutualTlsPort), the only place the edge
+    # surface (`/edge/*`, #554) is served. Served only when central's env.conf has a `mutual-tls`
+    # block; see the `pki` block below for the certificate files this chart mounts for it. Edge's
+    # `central { url, mutual-tls }` reaches it through this Service port. The Service is a
+    # ClusterIP: to reach it from outside the cluster put a TCP/TLS-passthrough in front of
+    # it (the handshake and the edge's certificate must reach this pod untouched) -- k8s/README.md.
+    mutualTlsPort: 8093
+    # Publishing `mutualTlsPort` outside the cluster, for edges that run elsewhere (#554). Off by
+    # default. Whatever carries it must pass the handshake through untouched, never terminate it:
+    # central demands the edge's client certificate in that handshake. Add the public name to
+    # `pki.centralServer.dnsNames`. The name edges use is `central.<domain>`, next to auth's
+    # `id.<domain>`.
+    #   none               -> reachable in-cluster only (the central Service)
+    #   loadBalancer       -> a LoadBalancer Service on `port` (443), point DNS at it; restrict with sourceRanges
+    #   ingressPassthrough -> an Ingress for `host` with ssl-passthrough (ingress-nginx started with
+    #                         --enable-ssl-passthrough); needs `className`
+    #   gatewayTLSRoute    -> a Gateway API TLSRoute for `host` on a Gateway listener in Passthrough mode
+    mutualTlsExposure:
+      type: none
+      host: "" # central.example.com; required for ingressPassthrough and gatewayTLSRoute
+      port: 443 # loadBalancer only
+      annotations: {} # on the Service / Ingress, e.g. cloud load balancer settings
+      sourceRanges: [] # loadBalancer only: CIDRs allowed to connect
+      className: "" # ingressPassthrough only
+      parentRefs: [] # gatewayTLSRoute only, e.g. [{name: public-gateway, sectionName: central-mtls}]
+      apiVersion: gateway.networking.k8s.io/v1alpha2 # gatewayTLSRoute only
     # Same budget and same reasoning as auth's, from docker/Dockerfile.central.
     resources:
       requests:
@@ -426,6 +452,10 @@ services:
 #         /app/mtls/trust/ca.crt               -> mutual-tls.trusted-certificates
 #   edge: /app/mtls/auth-pin/tls.crt           -> native.trusted-certificates = ["..."]
 #                                                  (and versola-internal-trusted-certificates)
+#   central: /app/central-mtls/server/{tls.crt,tls.key} -> mutual-tls.certificate / .private-key
+#            /app/central-mtls/trust/ca.crt            -> mutual-tls.trusted-certificates
+#   edge: /app/central-mtls/client/{tls.crt,tls.key}   -> central.mutual-tls.certificate / .private-key
+#         /app/central-mtls/server-pin/tls.crt         -> central.mutual-tls.trusted-certificates = ["..."]
 # Rotating the client CA with `trustBundle`: add the incoming CA's Secret to `sources` alongside
 # the outgoing one, reissue every client (cert-manager does, or delete the Secrets), then drop the
 # outgoing source. See k8s/README.md.
@@ -445,6 +475,23 @@ pki:
   authServer:
     secretName: "" # defaults to <fullname>-auth-mtls
     dnsNames: [] # in addition to the Service's own names
+    duration: 2160h
+    renewBefore: 720h
+    privateKey: {algorithm: ECDSA, size: 256}
+  # (4) central's listener for the edge surface (#554) and the certificate an edge presents to it.
+  # Central trusts the issuer's CA and then requires the certificate to carry the URI name
+  # `urn:versola:edge:<edgeId>` for the edge the token names, so `edgeId` must be the `id` in the
+  # edge's env.conf (`edge-default` from scripts/gen-env.scala). Both are renewed by cert-manager;
+  # the files are read at startup, so `reloader` (below) restarts the pods that mount them.
+  centralServer:
+    secretName: "" # defaults to <fullname>-central-mtls
+    dnsNames: [] # in addition to the Service's own names; add the public name edges connect to
+    duration: 2160h
+    renewBefore: 720h
+    privateKey: {algorithm: ECDSA, size: 256}
+  edgeCentral:
+    edgeId: edge-default
+    secretName: "" # defaults to <fullname>-edge-central-client
     duration: 2160h
     renewBefore: 720h
     privateKey: {algorithm: ECDSA, size: 256}

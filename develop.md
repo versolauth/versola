@@ -41,13 +41,15 @@ on `PATH` (macOS's LibreSSL lacks `-copy_extensions`; e.g. `PATH=/opt/homebrew/o
    Postgres: without it a service only *validates* its schema on startup (deliberate for real
    deployments, see [`RUN_MIGRATIONS`](deploy.md#run_migrations)) and fails at once.
    ```bash
-   PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
+   PORT=9001 DPORT=9002 MPORT=9011 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
    PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
    nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"      # TLS terminator in front of auth; start it before edge
    PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
    ```
-   `MPORT` does anything only when `auth/dev/env.conf` has a `mutual-tls` block (the `local` target
-   writes it).
+   `MPORT` does anything only when the service's `env.conf` has a `mutual-tls` block (the `local`
+   target writes one for auth and one for central). Central's is required: it is the only listener
+   the edge surface is served on, and edge, which syncs from it, refuses to start without
+   `central.mutual-tls`.
 5. **Log in** at <http://localhost:9005/login/central-admin> with `admin` / `Admin1234!`, OTP `123456`.
 
 **Why the nginx terminator is not optional.** `central-admin` is registered as `tls_client_auth` by
@@ -223,7 +225,9 @@ Metrics, liveness, and readiness probes are served on the diagnostics port (`DPO
 
 The application API is served on the main port (`PORT`, default 8080). Services may expose a
 separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
-Auth alone may also expose a third surface on `MPORT` (default 8083): RFC 8705 §5's mutual-TLS
+Auth and central may also expose a third surface on `MPORT` (default 8083); `MBIND_HOST` sets where it
+binds, `BIND_HOST` unless set, since it is the one listener a deployment may need to reach from outside
+the host or cluster. Central's is the edge surface, described under "The edge surface" below. Auth's is RFC 8705 §5's mutual-TLS
 listener, terminating TLS itself and demanding a client certificate on the handshake, rather
 than reading one from a header a proxy forwarded. It is served only when `auth/dev/env.conf`
 carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
@@ -253,6 +257,37 @@ terminator's -- as the listener's `trusted-certificates`, so one issued certific
 edge-fronted web client through nginx and a native one on `MPORT`. Without a
 `client-certificate-authority`, central refuses such a registration.
 
+### The edge surface on central (#554)
+
+Central serves what an edge reads (`GET /edge/sync/*`) and the certificate signing an edge enrols
+through (`POST /edge/clients/edge-certificate/sign`) on one listener only: its `MPORT` mutual-TLS
+listener, configured by `mutual-tls { certificate, private-key, trusted-certificates }`. Every other
+central route, and auth's `/configuration/*` reads, stay on the main listener, which refuses an edge
+token.
+
+The listener is meant to be reachable from wherever an edge runs, so it is not left to network
+placement. Two things are required of every call: the TLS handshake presents a certificate that
+chains to `trusted-certificates`, and that certificate carries the URI name
+`urn:versola:edge:<edge id>` for the same edge the signed token names (`authorizeEdge`). The first
+keeps strangers off the port; the second means a certificate issued to one edge cannot be used with
+another's token, and a stolen token is useless without a certificate. `trusted-certificates` must
+therefore vouch for **edge certificates only** -- a dedicated CA or issuer, not the one that signs
+auth's clients' certificates, and not a public CA.
+
+On the edge, `central { url = "https://...", mutual-tls { certificate, private-key,
+trusted-certificates = [...] } }`: the certificate it presents and a **pin** on central's own leaf
+(a list, for the overlap-window rotation under (2) below; a CA is refused at startup). Edge refuses to
+start without it. The certificate files are read at startup, so renewing them -- cert-manager
+rewrites the mounted Secret, step-ca's renewal rewrites the file -- takes effect on the next
+restart; issue edge certificates with a lifetime comfortably longer than the interval between
+restarts you can guarantee. Nothing is registered in central when an edge certificate is renewed:
+the URI name is the only link, which is why it is a name and not a pinned fingerprint.
+
+`local` writes `central/dev/mtls/{ca,server,edge-client}.{crt,key}` (a CA of its own, central's
+leaf, and `edge-default`'s certificate) for both services and e2e's `EdgeSyncSurfaceSpec`.
+`MPORT=9011` there. docker-local/vps: `mtls-init` issues `central-server.*` and `edge-client.*`
+into the shared `/app/mtls` volume; k8s: the chart's `pki` block (cert-manager).
+
 ### Certificate storage and rotation (#440)
 
 Three certificate relationships exist in the mTLS work, with different rotation properties:
@@ -261,6 +296,7 @@ Three certificate relationships exist in the mTLS work, with different rotation 
 |---|---|---|---|
 | 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
 | 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
+| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the same CA and restarts the edge -- no registration in central; a CA change follows (1) |
 | 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
 
 **(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
@@ -291,7 +327,7 @@ Central stores **neither a certificate nor a key** -- only that the client is en
 (`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
 replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
 what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
-`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
+`POST /edge/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
 syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
 is enrolled and that the request is signed by its own key and names exactly the registered subject and
 alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and

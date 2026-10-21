@@ -291,16 +291,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
     ),
-    internalTestCase(
-      description = "an edge syncing its DPoP policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(requireDpopNonce = false))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeDpopSyncResponse]
-        yield assertTrue(!body.requireDpopNonce),
-    ),
     controllerTestCase(
       description = "setting a valid overload policy returns 204 and records it for the named edge",
       request = Request(
@@ -338,41 +328,5 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
-    ),
-    internalTestCase(
-      description = "an edge syncing its overload policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(overloadPolicy = Some(overloadPolicy)))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeOverloadSyncResponse]
-        yield assertTrue(body.overloadPolicy == Some(overloadPolicy)),
-    ),
-    internalTestCase(
-      description = "an edge with no overload policy set is served null",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
-      verify = response =>
-        for body <- response.body.asJson[EdgeOverloadSyncResponse]
-        yield assertTrue(body.overloadPolicy.isEmpty),
-    ),
-    internalTestCase(
-      description = "overload policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
-    ),
-    // auth has no proxied calls to check proofs on, and an edge id is how this route knows
-    // whose policy to answer with -- a caller that is not an edge has no answer here.
-    internalTestCase(
-      description = "DPoP policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
     ),
   )

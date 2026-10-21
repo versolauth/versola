@@ -2,7 +2,6 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
-import versola.central.CentralConfig
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -26,7 +25,7 @@ import versola.central.configuration.clients.{
   OAuthClientService,
 }
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
-import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
+import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService, EdgeSyncController}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
@@ -40,6 +39,7 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
+import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
   PostgresAuthorizationPresetRepository,
@@ -130,7 +130,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       JwksService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
-    List(
+    // #554: an edge reaches central through `EdgeSyncController`, on the mutual-TLS listener,
+    // and nothing else. Every other
+    // controller is auth's or the admin console's and refuses an edge token here, as a group,
+    // so a controller added to this list is auth-only without doing anything about it.
+    val authOnly = List(
       TenantController.routes,
       PermissionController.routes,
       ResourceController.routes,
@@ -150,6 +154,31 @@ object PostgresCentralApp extends VersolaApp("central"):
       ServerMetadataController.routes,
       ServiceController.routes,
     ).reduce(_ ++ _)
+    authOnly @@ refuseEdgeCallers
+
+  /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
+    * authenticated by the certificate it presents in the handshake as well as by its token. */
+  override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(EdgeSyncController.routes)
+
+  /** `ClientAuth.Required` for the reasons given on `PostgresOAuthApp.mutualTlsServerConfig`:
+    * `Optional` with `includeClientCert` drops the connection of a client that sends no
+    * certificate, and no edge route is reachable without one anyway. */
+  override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
+    ZIO.serviceWith[CentralConfig](
+      _.mutualTls.map(mtls =>
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+          SSLConfig.fromFile(
+            behaviour = SSLConfig.HttpBehaviour.Fail,
+            certPath = mtls.certificate,
+            keyPath = mtls.privateKey,
+            clientAuth = Some(ClientAuth.Required),
+            trustCertCollectionPath = Some(mtls.trustedCertificates),
+            includeClientCert = true,
+          ),
+        ),
+      ),
+    )
 
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>

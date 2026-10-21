@@ -373,6 +373,15 @@ Name of the Secret holding auth's mutual-TLS listener certificate (values.yaml's
 {{- default (printf "%s-auth-mtls" (include "versola.fullname" .)) .Values.pki.authServer.secretName -}}
 {{- end -}}
 
+{{/* Secrets of central's mutual-TLS listener certificate and of the edge's certificate for it (#554). */}}
+{{- define "versola.pki.centralServerSecret" -}}
+{{- default (printf "%s-central-mtls" (include "versola.fullname" .)) .Values.pki.centralServer.secretName -}}
+{{- end -}}
+
+{{- define "versola.pki.edgeCentralSecret" -}}
+{{- default (printf "%s-edge-central-client" (include "versola.fullname" .)) .Values.pki.edgeCentral.secretName -}}
+{{- end -}}
+
 {{/*
 Name of the ConfigMap trust-manager writes the unioned client-CA bundle to.
 */}}
@@ -398,9 +407,10 @@ group: cert-manager.io
 
 {{/*
 pki volumes / mounts / reload annotations for one service's Deployment. Expects a dict:
-{root: $, service: "auth"|"central"|"edge"}. Empty unless `pki.enabled`, and only auth and edge
-get anything: auth presents the server certificate and trusts the client-CA bundle, edge pins the
-server certificate's leaf (and nothing else from that Secret -- not its key).
+{root: $, service: "auth"|"central"|"edge"}. Empty unless `pki.enabled`. Auth presents the server
+certificate and trusts the client-CA bundle, edge pins that certificate's leaf (and nothing else from
+that Secret -- not its key). Central presents its own listener certificate for the edge surface and
+trusts the issuing CA for it; edge presents its certificate there and pins central's leaf (#554).
 */}}
 {{- define "versola.pki.volumes" -}}
 {{- $root := .root -}}
@@ -428,10 +438,41 @@ server certificate's leaf (and nothing else from that Secret -- not its key).
       - key: ca.crt
         path: ca.crt
   {{- end }}
+{{- else if eq .service "central" -}}
+- name: central-mtls-server
+  secret:
+    secretName: {{ include "versola.pki.centralServerSecret" $root }}
+    items:
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+# The issuing CA, which is what the listener's handshake validates an edge's chain against.
+- name: central-mtls-trust
+  secret:
+    secretName: {{ include "versola.pki.centralServerSecret" $root }}
+    items:
+      - key: ca.crt
+        path: ca.crt
 {{- else if eq .service "edge" -}}
 - name: mtls-auth-pin
   secret:
     secretName: {{ include "versola.pki.serverSecret" $root }}
+    items:
+      - key: tls.crt
+        path: tls.crt
+- name: central-mtls-client
+  secret:
+    secretName: {{ include "versola.pki.edgeCentralSecret" $root }}
+    items:
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+# Central's leaf only, as edge pins auth's: never its key.
+- name: central-mtls-server-pin
+  secret:
+    secretName: {{ include "versola.pki.centralServerSecret" $root }}
     items:
       - key: tls.crt
         path: tls.crt
@@ -448,18 +489,35 @@ server certificate's leaf (and nothing else from that Secret -- not its key).
 - name: mtls-trust
   mountPath: /app/mtls/trust
   readOnly: true
+{{- else if eq .service "central" -}}
+- name: central-mtls-server
+  mountPath: /app/central-mtls/server
+  readOnly: true
+- name: central-mtls-trust
+  mountPath: /app/central-mtls/trust
+  readOnly: true
 {{- else if eq .service "edge" -}}
 - name: mtls-auth-pin
   mountPath: /app/mtls/auth-pin
+  readOnly: true
+- name: central-mtls-client
+  mountPath: /app/central-mtls/client
+  readOnly: true
+- name: central-mtls-server-pin
+  mountPath: /app/central-mtls/server-pin
   readOnly: true
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "versola.pki.annotations" -}}
-{{- if and .root.Values.pki.enabled .root.Values.pki.reloader (has .service (list "auth" "edge")) -}}
+{{- if and .root.Values.pki.enabled .root.Values.pki.reloader (has .service (list "auth" "central" "edge")) -}}
+{{- if eq .service "central" -}}
+secret.reloader.stakater.com/reload: {{ include "versola.pki.centralServerSecret" .root | quote }}
+{{- else if eq .service "edge" -}}
+secret.reloader.stakater.com/reload: {{ printf "%s,%s,%s" (include "versola.pki.serverSecret" .root) (include "versola.pki.centralServerSecret" .root) (include "versola.pki.edgeCentralSecret" .root) | quote }}
+{{- else -}}
 secret.reloader.stakater.com/reload: {{ include "versola.pki.serverSecret" .root | quote }}
-{{- if eq .service "auth" }}
 configmap.reloader.stakater.com/reload: {{ include "versola.pki.trustBundle" .root | quote }}
 {{- end -}}
 {{- end -}}

@@ -12,7 +12,7 @@ import versola.edge.model.{
   State,
   TokenResponse,
 }
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
+import versola.util.{Base64, ClientAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
 import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
@@ -135,13 +135,14 @@ object SSOClient:
       @jsonField("error_description") errorDescription: Option[String] = None,
   ) derives JsonCodec
 
-  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles, SSOClient] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, SSOClient] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
       certificateFiles: ClientCertificateFiles,
+      identity: EdgeIdentity,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
     // versolaUrl (public-facing), never internalUrl. tokenUrl and
@@ -449,16 +450,11 @@ object SSOClient:
       for
         // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
         // own: the client's key signed the one edge already checked, and edge does not hold
-        // that key to mint another. The assertion is how auth tells this call apart from the
-        // `Bearer` downgrade of a key-bound token -- minted only when the token is bound to a
-        // key, since nothing else needs such an exemption, and per call because it is bound to the token
-        // below: one captured elsewhere buys nothing for any other token.
-        assertion <- EdgeAssertion.issue(
-          edgeId = config.id,
-          keyId = config.keyId,
-          privateKey = config.privateKey,
-          accessToken = accessToken.toString,
-        ).when(binding == SSOClient.TokenBinding.Key)
+        // that key to mint another. What this edge sends instead to tell the call apart from
+        // the `Bearer` downgrade of a key-bound token is the identity's business
+        // (`EdgeIdentity`, an `EdgeAssertion` for a first-party edge) -- asked for only when
+        // the token is bound to a key, since nothing else needs such an exemption.
+        identification <- identity.headersFor(accessToken).when(binding == SSOClient.TokenBinding.Key)
 
         // RFC 8705 §3: the other binding is answered by the connection rather than by a
         // header -- auth hashes the certificate this handshake presents and refuses the token
@@ -480,7 +476,7 @@ object SSOClient:
         request = Request
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
-          .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
+          .addHeaders(identification.getOrElse(Headers.empty))
 
         response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
 
