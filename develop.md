@@ -292,8 +292,8 @@ vps (the compose bundle that `versola-cli` deploys) splits the roles across thre
 step-ca root, so the rule above is enforced by the handshake and not only by the name: `central`
 trusts `/app/mtls/edge-ca.crt`, which holds the **edge** intermediate and nothing else, so a client
 certificate (from the **client** intermediate) does not complete the handshake, and `auth` trusts
-`/app/mtls/auth-trust.crt` (client + edge) and, for names in the `urn:versola:edge:*` space,
-requires a chain to `mutual-tls.edge-trusted-certificates` (`/app/mtls/edge-ca.crt`). The listener
+`/app/mtls/auth-trust.crt` (client + edge; auth accepts no edge certificate for anything yet, so
+the name check on that side comes with the step that does). The listener
 leaves come from the **server** intermediate (90 days), the edge identity from the edge
 intermediate (30 days). **`central` signs edge identities itself** (`/edge/enroll`,
 `/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that

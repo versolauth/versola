@@ -339,8 +339,7 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
   all of them on the first run (and says why in its output); the pins on `edge` follow because it
   restarts with them.
 - `auth.conf`: `mutual-tls.trusted-certificates` is `/app/mtls/auth-trust.crt` (client and edge
-  intermediates, never the root) and `mutual-tls.edge-trusted-certificates` is new
-  (`/app/mtls/edge-ca.crt`: an `urn:versola:edge:*` name must chain to it). `central.conf`:
+  intermediates, never the root; auth accepts no edge certificate for anything yet). `central.conf`:
   `mutual-tls.trusted-certificates` is `/app/mtls/edge-ca.crt` (edge identities only; a client
   certificate no longer completes the handshake). `edge.conf`: `native.trusted-certificates` and
   `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
@@ -518,7 +517,19 @@ and the signed token names the same edge as the certificate's `urn:versola:edge:
 additionally requires an `urn:versola:edge:*` name to chain to the edge intermediate, so a client
 certificate cannot pass for an edge.
 
+**Edge identity certificates.** An edge's identity certificate lives 30 days (vps) and the edge renews it
+itself when a third of its life is left, so an outage of about twenty days is survived. The chain of renewals
+ends a year after the enrollment: central refuses to renew after that, and the operator enrols the edge
+again with a new token (`versola edge add <id> --existing`; a token lasts an hour unless it is asked to last
+longer, up to 24 hours, with `validityHours`). A revoked edge is cut off at once by deleting it or rotating
+its signing key (central needs certificate and token); a list of revoked serials will come with the step
+where auth accepts an edge certificate. Central signs these certificates with the edge intermediate (above);
+the local edge's first certificate, issued by `mtls-init`, follows the same 30 days.
+
 **Renewal and the pin overlap.** `edge` pins the two server leaves, and reads certificates at startup.
+In 0.8.0 the pins of an edge on another host are updated by the operator: central does not publish them.
+The overlap above (current + next pin) is what `versola certs renew` prepares, and the CLI's bootstrap bundle
+carries both.
 `versola certs renew` (run it on a schedule: a daily cron or systemd timer; it does nothing until a leaf
 has a third of its life or less left) drives `mtls-init` through `MTLS_INIT_PHASE`:
 
