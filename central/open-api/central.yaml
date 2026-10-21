@@ -718,7 +718,7 @@ paths:
         '201':
           description: Permission created.
         '400':
-          description: The body is malformed, or the permission ID contains `.` (new IDs are colon-separated only).
+          description: The body is malformed, or the permission ID does not match the `Permission` pattern (for example it contains `.`).
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -734,6 +734,8 @@ paths:
       responses:
         '204':
           description: Permission updated.
+        '400':
+          description: The body is malformed, or the permission ID does not match the `Permission` pattern (for example it contains `.`).
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -750,6 +752,8 @@ paths:
       responses:
         '204':
           description: Permission deleted.
+        '400':
+          description: The `permission` query parameter does not match the `Permission` pattern (for example it contains `.`).
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2456,19 +2460,12 @@ components:
       examples: [given_name]
     Permission:
       type: string
-      pattern: '^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$'
+      pattern: '^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)*$'
       description: |
-        Segments of lowercase letters, digits and underscores, separated by `:` (or, in IDs created
-        before the colon-only rule, `.`). Existing IDs containing `.` stay valid everywhere they are
-        referenced; only creating a permission refuses them (see `NewPermission`).
-      examples: ['billing:invoice_read']
-    NewPermission:
-      type: string
-      pattern: '^[a-z][a-z0-9_]*(:[a-z][a-z0-9_]*)*$'
-      description: |
-        The ID of a permission being created: segments of lowercase letters, digits and underscores,
-        separated by `:`. A `.` is refused with 400.
-      examples: ['billing:invoice_read']
+        Segments of lowercase letters, digits, underscores and hyphens, each starting with a letter,
+        joined by `:`. A `.` is never allowed: a body that carries a permission ID with one, whether
+        creating or updating a permission or naming it in a role or a client, is refused with 400.
+      examples: ['billing:invoice_read', 'auth-settings:manage']
     AuthorizationDetailType:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -4266,7 +4263,7 @@ components:
         tenantId:
           $ref: '#/components/schemas/TenantId'
         permission:
-          $ref: '#/components/schemas/NewPermission'
+          $ref: '#/components/schemas/Permission'
         description:
           $ref: '#/components/schemas/LocalizedText'
         endpointIds:

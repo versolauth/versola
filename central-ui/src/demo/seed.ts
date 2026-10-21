@@ -22,12 +22,12 @@ const scopes = [
 ];
 
 const permissions = [
-  { permission: 'orders.read', description: { en: 'Read orders' }, endpointIds: [301, 303] },
-  { permission: 'orders.write', description: { en: 'Create and change orders' }, endpointIds: [302] },
-  { permission: 'orders.refund', description: { en: 'Refund an order' }, endpointIds: [304] },
-  { permission: 'catalog.read', description: { en: 'Browse the catalog' }, endpointIds: [311] },
-  { permission: 'catalog.write', description: { en: 'Edit products and prices' }, endpointIds: [312, 313] },
-  { permission: 'customers.read', description: { en: 'Read customer profiles' }, endpointIds: [321] },
+  { permission: 'orders:read', description: { en: 'Read orders' }, endpointIds: [301, 303] },
+  { permission: 'orders:write', description: { en: 'Create and change orders' }, endpointIds: [302] },
+  { permission: 'orders:refund', description: { en: 'Refund an order' }, endpointIds: [304] },
+  { permission: 'catalog:read', description: { en: 'Browse the catalog' }, endpointIds: [311] },
+  { permission: 'catalog:write', description: { en: 'Edit products and prices' }, endpointIds: [312, 313] },
+  { permission: 'customers:read', description: { en: 'Read customer profiles' }, endpointIds: [321] },
 ];
 
 const ordersApi: ResourceDto = {
@@ -36,11 +36,11 @@ const ordersApi: ResourceDto = {
   audience: ['https://api.acme.example/orders'],
   endpoints: [
     { id: 301, method: 'GET', path: '/orders', fetchUserInfo: false, allow: 'true', inject: [{ target: 'header', name: 'X-Customer-Id', expression: 'token.sub' }] },
-    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders.write' in token.scope", inject: [{ target: 'header', name: 'X-Customer-Id', expression: 'token.sub' }] },
+    { id: 302, method: 'POST', path: '/orders', fetchUserInfo: false, allow: "'orders:write' in token.scope", inject: [{ target: 'header', name: 'X-Customer-Id', expression: 'token.sub' }] },
     { id: 303, method: 'GET', path: '/orders/{id}', fetchUserInfo: false, allow: 'true', inject: [] },
     {
       id: 304, method: 'POST', path: '/orders/{id}/refund', fetchUserInfo: true,
-      allow: "'orders.refund' in token.scope && userinfo.email_verified",
+      allow: "'orders:refund' in token.scope && userinfo.email_verified",
       inject: [],
       stepUpCondition: 'request.query.amount > 100', stepUpAcr: 'sensitive', maxAge: 300,
     },
@@ -55,8 +55,8 @@ const catalogApi: ResourceDto = {
   audience: ['https://api.acme.example/catalog'],
   endpoints: [
     { id: 311, method: 'GET', path: '/products', fetchUserInfo: false, allow: 'true', inject: [] },
-    { id: 312, method: 'PUT', path: '/products/{id}', fetchUserInfo: false, allow: "'catalog.write' in token.scope", inject: [] },
-    { id: 313, method: 'POST', path: '/products/{id}/price', fetchUserInfo: false, allow: "'catalog.write' in token.scope", inject: [], stepUpCondition: 'true', stepUpAcr: 'sensitive', maxAge: 600 },
+    { id: 312, method: 'PUT', path: '/products/{id}', fetchUserInfo: false, allow: "'catalog:write' in token.scope", inject: [] },
+    { id: 313, method: 'POST', path: '/products/{id}/price', fetchUserInfo: false, allow: "'catalog:write' in token.scope", inject: [], stepUpCondition: 'true', stepUpAcr: 'sensitive', maxAge: 600 },
   ],
   internal: false,
   secretRotation: false,
@@ -66,7 +66,7 @@ const customersApi: ResourceDto = {
   resourceId: 'customers-api',
   resource: 'http://customers.acme.svc.cluster.local:8080',
   audience: ['https://api.acme.example/customers'],
-  endpoints: [{ id: 321, method: 'GET', path: '/customers/{id}', fetchUserInfo: true, allow: "'customers.read' in token.scope", inject: [{ target: 'query', name: 'region', expression: 'userinfo.region' }] }],
+  endpoints: [{ id: 321, method: 'GET', path: '/customers/{id}', fetchUserInfo: true, allow: "'customers:read' in token.scope", inject: [{ target: 'query', name: 'region', expression: 'userinfo.region' }] }],
   internal: true,
   secretRotation: false,
 };
@@ -90,7 +90,7 @@ const clients: ClientDto[] = [
     clientName: { en: 'Storefront Web', ru: 'Магазин' },
     redirectUris: ['https://shop.acme.example/callback'],
     scope: ['openid', 'profile', 'email', 'phone', 'orders'],
-    permissions: ['orders.read', 'orders.write', 'catalog.read'],
+    permissions: ['orders:read', 'orders:write', 'catalog:read'],
     secretRotation: false,
     authMethod: 'client_secret' as const,
     refreshTokenTtl: 30 * 24 * 60 * 60,
@@ -106,7 +106,7 @@ const clients: ClientDto[] = [
     clientName: { en: 'Acme Mobile App', ru: 'Мобильное приложение' },
     redirectUris: ['kz.acme.app:/callback'],
     scope: ['openid', 'profile', 'offline_access', 'orders'],
-    permissions: ['orders.read', 'orders.write', 'catalog.read'],
+    permissions: ['orders:read', 'orders:write', 'catalog:read'],
     secretRotation: false,
     authMethod: 'none' as const,
     refreshTokenTtl: 180 * 24 * 60 * 60,
@@ -119,7 +119,7 @@ const clients: ClientDto[] = [
     clientName: { en: 'Back Office', ru: 'Бэк-офис' },
     redirectUris: ['https://backoffice.acme.example/complete'],
     scope: ['openid', 'profile', 'email'],
-    permissions: ['orders.read', 'orders.refund', 'catalog.read', 'catalog.write', 'customers.read'],
+    permissions: ['orders:read', 'orders:refund', 'catalog:read', 'catalog:write', 'customers:read'],
     secretRotation: true,
     authMethod: 'private_key_jwt' as const,
     refreshTokenTtl: 24 * 60 * 60,
@@ -132,7 +132,7 @@ const clients: ClientDto[] = [
     clientName: { en: 'Fulfilment Worker' },
     redirectUris: [],
     scope: [],
-    permissions: ['orders.read', 'customers.read'],
+    permissions: ['orders:read', 'customers:read'],
     secretRotation: false,
     authMethod: 'client_secret' as const,
     createdAt: daysAgo(12),
@@ -140,11 +140,11 @@ const clients: ClientDto[] = [
 ];
 
 const roles: RoleDto[] = [
-  { id: 'customer', description: { en: 'Shopper', ru: 'Покупатель' }, permissions: ['orders.read', 'orders.write', 'catalog.read'], active: true },
-  { id: 'support', description: { en: 'Customer support' }, permissions: ['orders.read', 'customers.read', 'catalog.read'], active: true },
-  { id: 'catalog-manager', description: { en: 'Catalog manager' }, permissions: ['catalog.read', 'catalog.write'], active: true },
-  { id: 'finance', description: { en: 'Finance: can refund' }, permissions: ['orders.read', 'orders.refund'], active: true },
-  { id: 'legacy-partner', description: { en: 'Retired partner access' }, permissions: ['catalog.read'], active: false },
+  { id: 'customer', description: { en: 'Shopper', ru: 'Покупатель' }, permissions: ['orders:read', 'orders:write', 'catalog:read'], active: true },
+  { id: 'support', description: { en: 'Customer support' }, permissions: ['orders:read', 'customers:read', 'catalog:read'], active: true },
+  { id: 'catalog-manager', description: { en: 'Catalog manager' }, permissions: ['catalog:read', 'catalog:write'], active: true },
+  { id: 'finance', description: { en: 'Finance: can refund' }, permissions: ['orders:read', 'orders:refund'], active: true },
+  { id: 'legacy-partner', description: { en: 'Retired partner access' }, permissions: ['catalog:read'], active: false },
 ];
 
 const passkey = (name: string, lastUsedMinutes: number, createdDays: number) => ({

@@ -166,7 +166,10 @@ describe('identifier validators match the server patterns', () => {
     expect(validatePermission('orders.read')).toBe(false);
     expect(validatePermission('billing:invoice.read')).toBe(false);
     expect(validatePermission('billing:')).toBe(false);
-    expect(validatePermission('billing-invoice')).toBe(false);
+    expect(validatePermission('billing-invoice')).toBe(true);
+    expect(validatePermission('auth-settings:manage')).toBe(true);
+    expect(validatePermission('-billing')).toBe(false);
+    expect(validatePermission('Billing')).toBe(false);
   });
 });
 

@@ -541,6 +541,27 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("permissions are matched literally against endpoint grants, so the alphabet is fixed")
     },
+    test("a service client referencing a permission with a dot is refused on create and on update") {
+      def service(id: String, permissions: Json.Arr) =
+        Json.Obj(
+          "tenantId" -> Json.Str(Fixtures.suiteTenant),
+          "id" -> Json.Str(id),
+          "clientName" -> Fixtures.text("Service"),
+          "allowedScopes" -> Json.Arr(),
+          "permissions" -> permissions,
+          "accessTokenTtl" -> Json.Num(3600),
+          "authMethod" -> Json.Str("client_secret"),
+        )
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        created <- central.post(s"$path/service", service(id, Json.Arr(Json.Str("probe.orders"))))
+        registered <- central.post(s"$path/service", service(id, Json.Arr()))
+        updated <- central.put(path, Fixtures.clientUpdate(id, "permissions" -> Fixtures.patch(add = Set("probe.orders"))))
+        _ <- central.delete(path, "clientId" -> id)
+      yield assertTrue(created.status == Status.BadRequest, registered.status == Status.Created, updated.status == Status.BadRequest)
+        .label("permissions are matched literally against endpoint grants, and a dotted ID cannot exist")
+    },
     test("a body missing a required member is refused") {
       for
         central <- api
