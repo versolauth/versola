@@ -2158,7 +2158,8 @@ paths:
         An edge whose certificate central issues renews it by itself, over the mutual-TLS listener. Those
         renewals are a chain that began at the edge's enrollment, and `edge-identity.max-age` (a year by default)
         is how old the chain may get. With `edge-identity.auto-extend` on, the default, central extends the chain
-        itself at that age and the edge never stops. With it off, central stops renewing at that age until this is
+        itself at that age and the edge never stops. With it off, central stops renewing the edges of **partner** groups
+        (the operator's own edges are always extended) at that age until this is
         called (or the edge is enrolled again with a new token): the edge keeps working on the certificate it has
         and is told the date in every answer, warns in its log from a month before, and the date is in
         `identityChainEndsAt` of `GET /configuration/edges`. Calling this starts the chain over; the partner does
@@ -5625,8 +5626,8 @@ components:
           type: string
           format: date-time
           description: |
-            When central stops renewing the certificate of this edge, if it will: only where
-            `edge-identity.auto-extend` is off. Absent otherwise. Extend it with
+            When central stops renewing the certificate of this edge, if it will: only for an edge of a
+            partner group, where `edge-identity.auto-extend` is off. Absent otherwise. Extend it with
             `POST /configuration/edges/extend` before then.
       required: [id, hasOldKey, requireDpopNonce]
     OverloadPolicy:

@@ -24,7 +24,8 @@ import java.time.{Duration as JavaDuration, Instant}
   * The certificates an edge goes through are a chain, which begins at its enrollment. `edge-identity.max-age` is how old
   * a chain may get; at that age central extends it itself (`auto-extend`, the default, so an edge never stops for want
   * of anyone enrolling it again) or, if the operator turned that off, stops renewing until the edge is extended
-  * ([[extend]]) or enrolled again. Either way the edge is told the date the chain ends long before it does, in the
+  * ([[extend]]) or enrolled again. The operator's own (first-party) edges are always extended; turning it off is for
+  * the edges of partners. Either way the edge is told the date the chain ends long before it does, in the
   * answer to every enrollment and renewal.
   */
 trait EdgeIdentityService:
@@ -57,7 +58,7 @@ trait EdgeIdentityService:
     * `auto-extend` off. */
   def extend(edgeId: EdgeId): IO[EdgeIdentityService.Refused | Throwable, Unit]
 
-  /** When the chain of each edge ends, for the edges whose chain does: where `auto-extend` is off. Empty where it is on. */
+  /** When the chain of each edge ends, for the edges whose chain does: a partner's, where `auto-extend` is off. */
   def chainEnds: Task[Map[EdgeId, Instant]]
 
 object EdgeIdentityService:
@@ -100,8 +101,13 @@ object EdgeIdentityService:
     private val policy = config.edgeIdentity
     private val maxAge: JavaDuration = JavaDuration.ofMillis(policy.maxAge.toMillis)
 
+    /** Whether the chain of `edge` is extended by central itself. Always for the operator's own edges: they are not
+      * someone whose approval is to be renewed, so `auto-extend = false` is about a partner's edges only. */
+    private def extendsItself(edge: EdgeRecord): Boolean = policy.autoExtend || edge.groupKind == EdgeGroupKind.FirstParty
+
     /** The end of a chain that began at `started`, where chains end. */
-    private def endOf(started: Instant): Option[Instant] = Option.unless(policy.autoExtend)(started.plus(maxAge))
+    private def endOf(edge: EdgeRecord, started: Instant): Option[Instant] =
+      Option.unless(extendsItself(edge))(started.plus(maxAge))
 
     override def issueEnrollmentToken(edgeId: EdgeId, validity: Duration): IO[Refused | Throwable, IssuedToken] =
       for
@@ -131,7 +137,7 @@ object EdgeIdentityService:
         _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
         chain <- sign(edge, csrPem)
         _ <- chains.start(edgeId, now)
-      yield Identity(chain, endOf(now))
+      yield Identity(chain, endOf(edge, now))
 
     override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
       for
@@ -146,7 +152,7 @@ object EdgeIdentityService:
         // operator turned extending off, and the edge has been told the date in every answer since its enrollment.
         begun <-
           if !aged then ZIO.succeed(started)
-          else if policy.autoExtend then
+          else if extendsItself(edge) then
             ZIO.logInfo(s"the certificate chain of edge '$edgeId' reached ${policy.maxAge.toDays} days; extended") *>
               chains.start(edgeId, now).as(now)
           else
@@ -156,7 +162,7 @@ object EdgeIdentityService:
             ))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         chain <- sign(edge, csrPem)
-      yield Identity(chain, endOf(begun))
+      yield Identity(chain, endOf(edge, begun))
 
     override def extend(edgeId: EdgeId): IO[Refused | Throwable, Unit] =
       for
@@ -168,7 +174,11 @@ object EdgeIdentityService:
 
     override def chainEnds: Task[Map[EdgeId, Instant]] =
       if policy.autoExtend then ZIO.succeed(Map.empty)
-      else chains.all.map(_.view.mapValues(_.plus(maxAge)).toMap)
+      else
+        for
+          started <- chains.all
+          partners <- edges.getAllEdges.map(_.filter(_.groupKind == EdgeGroupKind.Partner).map(_.id).toSet)
+        yield started.view.filterKeys(partners).mapValues(_.plus(maxAge)).toMap
 
     private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
       val subject = subjectFor(edge)

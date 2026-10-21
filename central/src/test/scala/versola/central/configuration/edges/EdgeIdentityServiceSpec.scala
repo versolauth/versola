@@ -77,6 +77,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val service: URIO[SecureRandom, EdgeIdentityService] =
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
+        _ <- edgeService.getAllEdges.succeedsWith(edges.toVector)
         random <- ZIO.service[SecureRandom]
       yield EdgeIdentityService.Impl(
         edgeService,
@@ -87,6 +88,8 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         random,
         TestCentralConfig.config.copy(edgeIdentity = policy),
       )
+
+  private def partnerEdge(id: EdgeId) = edgeRecord(id, partnerGroup, EdgeGroupKind.Partner)
 
   private def csrFor(edge: EdgeRecord): UIO[String] =
     CertificateSubject.generate(EdgeIdentityService.subjectFor(edge)).orDie.map(_.csrPem)
@@ -224,9 +227,21 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ends.isEmpty,
       )
     },
-    suite("with auto-extend off")(
-      test("the edge is told when its chain ends, in the answer to the enrollment and to every renewal") {
+    suite("with auto-extend off, for a partner's edge")(
+      test("the operator's own edges are extended whatever the setting says") {
         val edge = edgeRecord(edgeId)
+        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+          enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
+          _ <- TestClock.adjust(400.days)
+          late <- csrFor(edge).flatMap(service.renew(edgeId, _))
+          ends <- service.chainEnds
+        yield assertTrue(enrolled.chainEndsAt.isEmpty, late.chain.contains("BEGIN CERTIFICATE"), late.chainEndsAt.isEmpty, ends.isEmpty)
+      },
+      test("the edge is told when its chain ends, in the answer to the enrollment and to every renewal") {
+        val edge = partnerEdge(edgeId)
         val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
         for
           service <- env.service
@@ -243,7 +258,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
       test("at the maximum age renewal stops, with what to do, and an operator's extension makes it go on") {
-        val edge = edgeRecord(edgeId)
+        val edge = partnerEdge(edgeId)
         val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
         for
           service <- env.service
@@ -272,7 +287,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     test("an edge that has no chain recorded, enrolled before chains were kept, starts one with its first renewal") {
-      val edge = edgeRecord(edgeId)
+      val edge = partnerEdge(edgeId)
       val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
       for
         service <- env.service

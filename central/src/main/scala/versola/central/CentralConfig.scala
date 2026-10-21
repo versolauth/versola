@@ -80,8 +80,8 @@ object CentralConfig:
     *
     * @param maxAge how old a chain may get before it needs more than a renewal.
     * @param autoExtend what happens then. On (the default), central extends the chain itself and says so in its log: an
-    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing at `maxAge` until an operator
-    *   extends the edge (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
+    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing the edges of **partner**
+    *   groups at `maxAge` until an operator extends the edge (the operator's own edges are always extended) (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
     *   edge to be re-approved on a schedule. The edge is told the date long before, and so is the console.
     */
   case class EdgeIdentityConfig(
