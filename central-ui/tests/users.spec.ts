@@ -641,16 +641,28 @@ test.describe('phone layout of devices and passkeys', () => {
   test('a passkey is a card: name, chips, dates, then Rename and Delete side by side', async ({ page }) => {
     await openRecord(page);
     const passkey = card(page, 'Passkeys').locator('[data-passkey="cred-icloud"]');
-    const name = await passkey.locator('.passkey-name').boundingBox();
-    const chips = await passkey.locator('.passkey-chips').boundingBox();
-    const when = await passkey.locator('.passkey-when').boundingBox();
-    expect(chips!.y).toBeGreaterThan(name!.y);
-    expect(when!.y).toBeGreaterThan(chips!.y);
-    const rename = await passkey.getByRole('button', { name: /^Rename/ }).boundingBox();
-    const del = await passkey.getByRole('button', { name: /^Delete/ }).boundingBox();
-    expect(rename!.y).toBeGreaterThan(when!.y);
-    expect(del!.y).toBe(rename!.y);
-    expect(del!.x).toBeGreaterThan(rename!.x + rename!.width);
+    // Every box is read in one task. Separate boundingBox() calls are separate round trips, and the
+    // cards above this one finish loading while they run: a shift between the Rename read and the
+    // Delete read made two buttons of one grid row differ by a line (3155.5 vs 3176 on CI).
+    const { name, chips, when, rename, del } = await passkey.evaluate(node => {
+      const box = (selector: string, text?: RegExp) => {
+        const element = [...node.querySelectorAll(selector)].find(e => !text || text.test(e.getAttribute('aria-label') ?? ''))!;
+        const { x, y, width } = element.getBoundingClientRect();
+        return { x, y, width };
+      };
+      return {
+        name: box('.passkey-name'),
+        chips: box('.passkey-chips'),
+        when: box('.passkey-when'),
+        rename: box('button', /^Rename/),
+        del: box('button', /^Delete/),
+      };
+    });
+    expect(chips.y).toBeGreaterThan(name.y);
+    expect(when.y).toBeGreaterThan(chips.y);
+    expect(rename.y).toBeGreaterThan(when.y);
+    expect(del.y).toBe(rename.y);
+    expect(del.x).toBeGreaterThan(rename.x + rename.width);
   });
 });
 
