@@ -130,6 +130,9 @@ spec:
             # Which issuer signs the certificates central issues to edge-fronted clients
             # (central.conf's `client-certificates.cert-manager`).
             {{- include "versola.pki.issuerEnv" $ | nindent 12 }}
+            # And the issuer for edges' identity certificates (`edge-certificates.cert-manager`):
+            # the edge CA, which is what central's mutual-TLS listener trusts.
+            {{- include "versola.pki.edgeIssuerEnv" $ | nindent 12 }}
             {{- end }}
             {{- include "versola.secretEnv" (dict "root" $ "service" $name) | nindent 12 }}
             {{- with $svc.extraEnv }}

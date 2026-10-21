@@ -146,6 +146,21 @@ mtls_passthrough_never_terminates() {
   return 0
 }
 
+# Edges are signed by their own CA: central is told the edge issuer, and the client one stays the clients'.
+central_signs_edges_with_the_edge_issuer() {
+  local out doc
+  out="$(render)" || { fail "default render failed: $(cat /tmp/chart-ingress-err.txt)"; return; }
+  doc="$(central_doc "$out")"
+  grep -A1 'name: EDGE_CERT_ISSUER_NAME' <<<"$doc" | grep -q 'versola-edge-ca' || fail "central is not told the edge issuer"
+  grep -A1 'name: CLIENT_CERT_ISSUER_NAME' <<<"$doc" | grep -q 'versola-client-ca' || fail "central's client issuer changed"
+  out="$(render --set pki.issuerRefs.edge.name=org-edge --set 'pki.trustBundle.edgeSources[0].secret.name=org-edge' --set 'pki.trustBundle.edgeSources[0].secret.key=tls.crt')" || {
+    fail "an operator's edge issuer failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  central_doc "$out" | grep -A1 'name: EDGE_CERT_ISSUER_NAME' | grep -q 'org-edge' || fail "the operator's edge issuer did not reach central"
+  return 0
+}
+
 mtls_passthrough_needs_a_class() {
   if render "${MTLS_AUTH[@]}" --set 'exposure.mtls.limits.enforcedBy=x' >/dev/null; then
     fail "ingressPassthrough without className rendered; it must fail"
@@ -286,6 +301,7 @@ check "the Gateway API path renders without a className" gateway_api_needs_no_cl
 check "the native route group routes /native/ to edge" native_routes_reach_edge
 check "nothing is published by default" exposure_is_off_by_default
 check "mutual-TLS hosts are passed through, never terminated, with no limit annotation" mtls_passthrough_never_terminates
+check "central signs edges with the edge issuer" central_signs_edges_with_the_edge_issuer
 check "a passthrough host needs a class" mtls_passthrough_needs_a_class
 check "mutual-TLS hosts can be LoadBalancers" mtls_load_balancer
 check "mutual-TLS hosts can be Gateway TLSRoutes" mtls_tls_route

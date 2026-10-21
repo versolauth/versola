@@ -430,6 +430,8 @@ services:
 #   server -- signs the listener certificates of auth and central (leaves: edges pin them);
 #   edge   -- signs edge identities (`urn:versola:edge:<id>`, `urn:versola:edge-group:<group>`);
 #   client -- signs client certificates (edge-fronted clients, external `tls_client_auth` clients).
+# Central is told both: CLIENT_CERT_ISSUER_NAME for the clients it issues for, EDGE_CERT_ISSUER_NAME for
+# edges' identities (`edge-certificates.cert-manager`), so an identity is signed by the edge CA.
 # Each is a cert-manager ClusterIssuer (`<release>-versola-{server,edge,client}-ca`) whose CA
 # certificate is itself issued by the root (`<release>-versola-root-ca`).
 #

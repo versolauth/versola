@@ -600,6 +600,26 @@ client role's issuer, the one that signs the certificates central issues to edge
 {{- end -}}
 
 {{/*
+The same for the certificates central issues to edges (`edge-certificates.cert-manager` in central.conf):
+the edge role's issuer, so that an identity is signed by the CA central's mutual-TLS listener trusts
+and not by the client CA. Without these central falls back to the client issuer.
+*/}}
+{{- define "versola.pki.edgeIssuerEnv" -}}
+{{- $own := include "versola.pki.operatorRef" (dict "root" . "role" "edge") | fromYaml -}}
+{{- if $own.name -}}
+- name: EDGE_CERT_ISSUER_NAME
+  value: {{ $own.name | quote }}
+- name: EDGE_CERT_ISSUER_KIND
+  value: {{ $own.kind | quote }}
+- name: EDGE_CERT_ISSUER_GROUP
+  value: {{ $own.group | quote }}
+{{- else -}}
+- name: EDGE_CERT_ISSUER_NAME
+  value: {{ printf "%s-edge-ca" (include "versola.fullname" .) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 How many replicas a service runs at least: `autoscaling.minReplicas` when its HPA is on, the Deployment's
 `replicaCount` otherwise. A PodDisruptionBudget only means something above one (see pdb.yaml).
 */}}

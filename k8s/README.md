@@ -549,6 +549,13 @@ a listener trusts is the *intermediate* — never the root, which would admit ev
 | auth's check of an edge's name | edge CA alone: a certificate may carry `urn:versola:edge:*` only if it chains to it | `<release>-versola-edge-ca` |
 | central's handshake | edge CA alone, so a client certificate fails the handshake, not just an application check | `<release>-versola-edge-ca` |
 
+Central signs the certificates it issues to edges (`POST /edge/enroll`, `/edge/certificate/renew`) with the
+`edge` issuer, not the client one: the chart sets `EDGE_CERT_ISSUER_NAME` (and `_KIND`, `_GROUP` for an
+operator's issuer) next to `CLIENT_CERT_ISSUER_NAME`, for central's `edge-certificates { cert-manager { } }`
+block, which has the shape of `client-certificates`. Central's Role may create `CertificateRequest`s against any
+issuer in the namespace, so it needs no change; an approver policy of your own must allow the edge issuer too.
+Where that block is absent central uses the client issuer, whose certificates the listener's handshake refuses.
+
 Edges pin the *leaf* of auth's and central's listener certificates, as before. Without trust-manager
 (`pki.trustBundle.enabled: false`) the chart mounts each leaf Secret's `ca.crt` instead, which is the
 root: everything still connects, but nothing is split. Chains were checked against a cert-manager
