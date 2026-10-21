@@ -25,7 +25,7 @@ Two ways to put Versola on 80/443, chosen with `--proxy` (it must be given on ev
 |---|---|---|
 | PostgreSQL 18 | managed cluster, private address only, `:6432` (the provider's pooler), TLS verified against the provider's CA | the cloud provider (backups, failover) |
 | `auth`, `central`, `edge` | Docker, Compose project `versola-vps`, `network_mode: host`, bound to `127.0.0.1` | `versola-cli` |
-| `step-ca`, `mtls-init` | Docker, same project: internal CA for client certificates ([mutual TLS](#mutual-tls-certificates)); `mtls-init` is a one-shot | `versola-cli` |
+| `step-ca`, `mtls-init` | Docker, same project: internal CA (one root, three intermediates) for client, edge and listener certificates ([mutual TLS](#mutual-tls-certificates)); `mtls-init` is a one-shot | `versola-cli` |
 | `versola-proxy` | Docker, `nginx:1.30-alpine`, same project | `versola-cli` (config generated) |
 | OpenBao (`versola-openbao-vps`) | Docker, same project, `127.0.0.1:8200` | `versola-cli` |
 
@@ -50,7 +50,7 @@ decide, and nothing else inbound.
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093), the only place edges reach it, and unlike every other port it is bound on all interfaces (`MBIND_HOST`) -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (`EPORT`, 8094, loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
@@ -87,13 +87,23 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - A DNS record for the `--auth-url` host pointing at the host's public IP **before `versola up`**
   (Let's Encrypt validates over port 80). Behind Cloudflare it must be *DNS only* while the
   certificate is issued.
-- **Extra DNS names only for an edge that is not on this host.** While every edge runs on this host,
-  `id.<domain>` (auth: browsers, `--auth-url`, behind the proxy and Let's Encrypt) is the only name,
-  and an edge reaches `central` and `auth` on `127.0.0.1`. A remote first-party edge also needs
-  `central-mtls.<domain>` (routed to central's mutual-TLS port `8093`), `id-mtls.<domain>` (routed to
-  auth's `8083`) and `central.<domain>` (ordinary TLS, enrollment only). Which name serves which case
-  is in [Remote and partner edges](#remote-and-partner-edges-and-the-public-domains). Create a name
-  only for a case you have.
+- **Optional DNS names for remote edges and external mutual-TLS clients**, all pointing at the same
+  host and all off by default. Without them every mutual-TLS port stays on loopback and an edge
+  runs on the same host (`https://127.0.0.1:8083` and `:8093`). Each one is a flag of
+  `versola configure vps` and is routed by the proxy `versola-cli` writes (its own repository):
+
+  | Name (example) | Flag | What it reaches | TLS |
+  |---|---|---|---|
+  | `id-mtls.<domain>` | `--mtls-domain` | `auth`'s mutual-TLS listener, `127.0.0.1:8083` (remote edges, external RFC 8705 clients) | forwarded by SNI **without terminating**; the handshake and the client certificate reach `auth` |
+  | `central-mtls.<domain>` | `--central-mtls-domain` | `central`'s mutual-TLS listener, `127.0.0.1:8093` (the edge surface, #554, for edges on another host) | forwarded by SNI without terminating |
+  | `central.<domain>` | `--central-domain` | `central`'s enrollment listener, `127.0.0.1:8094`, `POST /edge/enroll` only | terminated by the proxy with a public certificate |
+
+  The two mutual-TLS names are added to the SAN of the listener's certificate (`mtls-init`), and
+  `id-mtls.<domain>` becomes `mutual-tls.external-url` in `auth.conf`; an edge **on the same host
+  keeps the loopback addresses** whatever is configured. A remote edge authenticates the listener
+  by pinning its leaf certificate, so no public certificate is needed for those two names. Set a
+  name on a deployment that exists already and the next `mtls-init` run re-issues the leaf that
+  lacks it (see [Mutual TLS certificates](#mutual-tls-certificates)).
 - `versola-cli`: `curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh`,
   then `export PATH="$HOME/.local/bin:$PATH"`. `versola upgrade` updates it later.
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
@@ -310,10 +320,39 @@ cluster, so open its port deliberately (see [Mutual TLS certificates](#mutual-tl
   against an older central cannot connect.
 - The bundle's `mtls-init` issues the new certificates when it next runs; the Helm chart's `pki`
   block does (`pki.centralServer`, `pki.edgeCentral`), with `services.central.mutualTlsPort: 8093`.
-- `MBIND_HOST` (new, defaults to `BIND_HOST`) sets where the mutual-TLS listeners bind.
+- `MBIND_HOST` (new, defaults to `BIND_HOST`) sets where the mutual-TLS listeners bind. The vps bundle
+  binds central's to `127.0.0.1` (see below); it used to bind `0.0.0.0` in earlier builds of this branch.
 - Central refuses to issue a client certificate whose `san_uri` is in the `urn:versola:edge:`
   namespace, so a client cannot be given a certificate that passes for an edge.
 - No schema change, no data migration.
+
+#### Behaviour change (vps bundle): three intermediates, pin pairs, loopback `MPORT`
+
+The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Breaking, and
+`versola configure` plus `versola up` migrate it:
+
+- `step-ca` gets two more intermediates under the same root, **server** and **edge**, next to the
+  existing **client** one (the CA step-ca signs clients with; client issuance does not change).
+  `auth`'s and `central`'s listener certificates now come from the server intermediate (90 days, was
+  two years) and `edge-client` from the edge intermediate (30 days, was two years). The leaves of the
+  single-intermediate layout do not verify against their new intermediate, so `mtls-init` re-issues
+  all of them on the first run (and says why in its output); the pins on `edge` follow because it
+  restarts with them.
+- `auth.conf`: `mutual-tls.trusted-certificates` is `/app/mtls/auth-trust.crt` (client and edge
+  intermediates, never the root) and `mutual-tls.edge-trusted-certificates` is new
+  (`/app/mtls/edge-ca.crt`: an `urn:versola:edge:*` name must chain to it). `central.conf`:
+  `mutual-tls.trusted-certificates` is `/app/mtls/edge-ca.crt` (edge identities only; a client
+  certificate no longer completes the handshake). `edge.conf`: `native.trusted-certificates` and
+  `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
+  `server.next.crt` and `central-server.crt` + `central-server.next.crt`.
+- `central`'s `MPORT` is bound to `127.0.0.1` (`MBIND_HOST`); it was open on all interfaces. A
+  remote edge needs `--central-mtls-domain` (above) and the CLI's proxy. `EPORT=8094`, the
+  enrollment listener, is new and also loopback.
+- `ca.crt` (root plus client intermediate) is still written, for anything that pinned it; nothing
+  generated reads it any more.
+- **Existing deployments:** upgrade `versola-tools`, run `versola configure`, then `versola up` (or
+  `versola rollout`). Roll `central`, `auth` and `edge` together: an old `edge.conf` against the new
+  leaves, or the other way round, fails the pin check.
 
 ### `RUN_MIGRATIONS`
 
@@ -436,37 +475,62 @@ email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 ### Mutual TLS certificates
 
 `auth`'s mutual-TLS listener (`MPORT`, RFC 8705) is on by default, with its certificate machinery;
-three certificates are involved, each with its own rotation, described in
+the certificate relationships are described in
 [`develop.md`](develop.md#certificate-storage-and-rotation-440). The generated compose file runs:
 
-- `step-ca` — the internal "Versola Client CA" (state in `versola-step-ca-*`), with a `central` JWK
-  provisioner (14-day maximum lifetime) that `central` uses to issue and renew edge-fronted clients'
-  certificates. To get one, register the client with `issueEdgeClientCertificate: true` and any
-  `mtlsAuth`. Its first start prints the generated password of an unused `versola` provisioner once
-  to `docker logs versola-step-ca`; keep that log private or remove the provisioner.
-- `mtls-init` — one-shot: signs `auth`'s listener certificate, `central`'s listener certificate and the
-  certificate `edge` presents to `central` into `versola-mtls-*`. A restart leaves the files alone
-  (re-issuing would change the leaf `edge` pins). `central`, `auth` and `edge` start after it;
-  `auth.conf`'s `mutual-tls`, `central.conf`'s `mutual-tls` and `edge.conf`'s `native` and
-  `central.mutual-tls` blocks already point at the volume.
+- `step-ca` — the internal CA (state in `versola-step-ca-*`): one root and **three intermediates**, so
+  each listener trusts exactly the roles it should (a trust anchor that is the root would accept all
+  of them). **client** ("Versola Client CA", created by the image) is what `step-ca` signs with and
+  what edge-fronted clients' certificates come from, through a `central` JWK provisioner (14-day
+  maximum lifetime); to get one, register the client with `issueEdgeClientCertificate: true` and any
+  `mtlsAuth`. **server** signs the listener certificates of `auth` and `central`, **edge** signs the
+  identity of an edge. The two extra intermediates are created once, when missing, and only ever used
+  offline by `mtls-init`. Its first start prints the generated password of an unused `versola`
+  provisioner once to `docker logs versola-step-ca`; keep that log private or remove the provisioner.
+- `mtls-init` — one-shot (`mtls-init.sh` in the bundle; its header is the contract). It writes into
+  `versola-mtls-*`:
 
-`auth`'s listener stays on loopback (`127.0.0.1:8083`). **`central`'s listener (`8093`) is public by
-design**: an edge connects from wherever it runs. It answers only a handshake whose certificate
-chains to the internal CA, and then only a call whose signed token names the same edge the
-certificate's `urn:versola:edge:<id>` name does. Open `8093` to the edges that need it and, where
-you can, to nothing else; an edge on the same host reaches it on `127.0.0.1` and needs no opening.
-The three leaves `mtls-init` issues (`server` for `auth`'s listener, `central-server`, `edge-client`) are
-valid two years and are **renewed by running `versola certs renew` on a schedule** (a daily cron or
-systemd timer is plenty; the command does nothing until a leaf has a third of its lifetime or less left).
-It re-runs `mtls-init`, which re-issues only the leaves that are due, and when it changed any it restarts
-`central`, `auth` and `edge`: they read their certificates at startup. Central keeps nothing registered
-for the edge's certificate (an edge is recognised by the name in it), so renewing `edge-client` needs no
-other step. Replacing `central-server` or `server` changes the leaf `edge` pins; `edge` reads the same
-volume and is restarted with them, so the pin follows, with a short gap in which syncs fail and `edge`
-keeps serving the configuration it last loaded. For a rotation with no gap use the two-pin procedure in
-`develop.md`. Without the schedule nothing renews: the first leaf expires two years after install. A step-ca volume
-from before its client template existed keeps issuing certificates with the subject rewritten to the
-bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` volume to lift it.
+  | File | What | Signed by | Lifetime |
+  |---|---|---|---|
+  | `server.{crt,key}` | `auth`'s listener | server | 90 days |
+  | `central-server.{crt,key}` | `central`'s listener | server | 90 days |
+  | `edge-client.{crt,key}` | identity of the edge on this host (`urn:versola:edge:edge-default`) | edge | 30 days |
+  | `server.next.crt`, `central-server.next.crt` | pin copies, see below | | |
+  | `client-ca.crt`, `edge-ca.crt`, `server-ca.crt` | one intermediate each | | |
+  | `auth-trust.crt` | client + edge intermediates: what `auth`'s handshake accepts | | |
+  | `ca.crt` | root + client intermediate, as before the split | | |
+
+  A leaf is replaced only when it is missing, a third of its life or less is left, it does not verify
+  against its intermediate (certificates of the single-CA layout) or it lacks a public name that is
+  now configured. `central`, `auth` and `edge` start after it.
+
+`auth`'s and `central`'s listeners stay on loopback (`127.0.0.1:8083`, `:8093`); an edge on the same
+host needs nothing opened. For remote edges and external mutual-TLS clients, configure
+`--mtls-domain` / `--central-mtls-domain` (see [First-time setup](#2-first-time-setup)): the names go
+into the leaf's SAN, and the proxy forwards them to the loopback ports. A call to `central`'s
+listener is answered only when the handshake presented a certificate from the **edge** intermediate
+and the signed token names the same edge as the certificate's `urn:versola:edge:<id>` name; `auth`
+additionally requires an `urn:versola:edge:*` name to chain to the edge intermediate, so a client
+certificate cannot pass for an edge.
+
+**Renewal and the pin overlap.** `edge` pins the two server leaves, and reads certificates at startup.
+`versola certs renew` (run it on a schedule: a daily cron or systemd timer; it does nothing until a leaf
+has a third of its life or less left) drives `mtls-init` through `MTLS_INIT_PHASE`:
+
+| Phase | Effect | Output the CLI reads |
+|---|---|---|
+| `all` (default) | issue what is missing or due, in place; `<name>.next.crt` is a copy of the current certificate | `mtls-init: issued <name>`, `mtls-init: changed` |
+| `prepare` | stage each due server leaf as `<name>.next.crt` + `<name>.next.key`, current pair untouched; repeatable | `mtls-init: staged <name>`, `mtls-init: changed` |
+| `commit` | move each staged pair into place; nothing staged prints nothing | `mtls-init: committed <name>`, `mtls-init: changed` |
+| `identity` | issue or renew `edge-client` only | `mtls-init: issued edge-client`, `mtls-init: changed` |
+| `report` | change nothing | one `mtls-init: cert <file> notBefore=... notAfter=... subject=...` line per certificate |
+
+The order for a server leaf is `prepare`, restart `edge` (it now pins the old and the staged
+certificate), `commit`, restart `auth` or `central`; no handshake fails at any point. `edge-client` is
+not pinned by anyone and is renewed with `identity`. Without the schedule nothing renews: a leaf
+expires 90 days (`edge-client` 30) after it was issued. A step-ca volume from before its client template
+existed keeps issuing certificates with the subject rewritten to the bare CN, which `central` refuses
+when longer; recreate the `versola-step-ca-*` volume to lift it.
 
 ### Remote and partner edges, and the public domains
 
@@ -474,6 +538,8 @@ bare CN, which `central` refuses when longer; recreate the `versola-step-ca-*` v
 > can be planned. Nothing here is released yet and nothing is certified. The user-facing version, with
 > the same facts, is "Network, domains and certificates" and "Partner edge" in the documentation
 > (versolauth/versola-website, in the pull request versolauth/versola-website#144).
+
+Ports, to avoid mixing them up: `central` has `PORT` (internal), `MPORT` (the edges' mutual TLS) and `APORT` (public; there it serves the enrollment route `POST /edge/enroll` behind a TLS terminator, and it binds only where `APORT` is set). `auth` has its own `APORT`, a different service and a different port.
 
 The default deployment is one host: every edge is local and reaches `central` and `auth` on `127.0.0.1`
 (`8093`, `8083`). Two things add public names: an edge in another network (**remote first-party

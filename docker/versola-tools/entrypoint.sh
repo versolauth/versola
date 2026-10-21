@@ -82,6 +82,47 @@ if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   exit 1
 fi
 
+# MTLS_DOMAIN / CENTRAL_MTLS_DOMAIN (vps only, optional): the public DNS names of auth's and
+# central's mutual-TLS listeners, e.g. id-mtls.example.com. They end up in the SAN of the listeners'
+# certificates (the `mtls-init` service) and, for auth, in `mutual-tls.external-url` (gen-env.scala).
+# Both are substituted into the compose fragment with sed below and `mtls-init` hands them to
+# `step` as arguments, so what is accepted here is only what is certainly a DNS name: lowercase
+# letters, digits, '.' and '-', labels of 1-63 characters that neither start nor end with '-',
+# 253 characters in all. Anything else fails here, before it reaches a shell, sed or a certificate.
+valid_dns_name() {
+  name=$1
+  case "$name" in
+    ''|*[!a-z0-9.-]*|.*|*.|*..*) return 1 ;;
+  esac
+  [ "${#name}" -le 253 ] || return 1
+  old_ifs=$IFS
+  IFS=.
+  # Safe to split unquoted: the name has no glob characters (checked above).
+  set -- $name
+  IFS=$old_ifs
+  for label in "$@"; do
+    [ "${#label}" -ge 1 ] && [ "${#label}" -le 63 ] || return 1
+    case "$label" in
+      -*|*-) return 1 ;;
+    esac
+  done
+}
+MTLS_DOMAIN="${MTLS_DOMAIN:-}"
+CENTRAL_MTLS_DOMAIN="${CENTRAL_MTLS_DOMAIN:-}"
+for var in MTLS_DOMAIN CENTRAL_MTLS_DOMAIN; do
+  eval "value=\$$var"
+  [ -n "$value" ] || continue
+  if [ "$TARGET" != "vps" ]; then
+    echo "versola-tools: $var is only supported when TARGET=vps" >&2
+    exit 1
+  fi
+  if ! valid_dns_name "$value"; then
+    echo "versola-tools: $var is not a valid DNS name (lowercase letters, digits, '.' and '-'; labels of 1-63 characters not starting or ending with '-'; at most 253 characters)" >&2
+    exit 1
+  fi
+done
+export MTLS_DOMAIN CENTRAL_MTLS_DOMAIN
+
 # POSTGRES_DB (vps only; gen-env.scala validates the name and defaults to `auth`).
 export POSTGRES_DB="${POSTGRES_DB:-}"
 # POSTGRES_CA_FILE (vps only): a CA bundle versola-cli mounted into this container (its
@@ -191,7 +232,13 @@ if [ "$TARGET" = "vps" ]; then
 else
   COMPOSE_TEMPLATE=compose.fragment.yml.template
 fi
-sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
+if [ "$TARGET" = "vps" ]; then
+  # The validated public names (possibly empty) become `mtls-init`'s environment.
+  sed -e "s/\${VERSION}/$VERSION/g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" \
+    "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
+else
+  sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
+fi
 
 # Same split as the compose template just above, same reason: vps's
 # listener binds 127.0.0.1 instead of 0.0.0.0, since network_mode: host
@@ -200,6 +247,10 @@ sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment
 # "127.0.0.1:8200:8200" does -- see openbao.hcl.vps.template's own comment.
 if [ "$TARGET" = "vps" ]; then
   cp openbao.hcl.vps.template "$OUT_DIR"/openbao.hcl
+  # What the compose fragment mounts into `step-ca` and `mtls-init` (they run in the step-ca
+  # image, which has neither). Read by other users than ours, hence 644.
+  cp mtls-init.sh step-ca-intermediates.sh "$OUT_DIR"/
+  chmod 644 "$OUT_DIR"/mtls-init.sh "$OUT_DIR"/step-ca-intermediates.sh
 else
   cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 fi
@@ -221,5 +272,5 @@ if [ "$TARGET" != "vps" ]; then
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
   echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, openbao.hcl, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, openbao.hcl, mtls-init.sh, step-ca-intermediates.sh, central-ui/ to $OUT_DIR"
 fi
