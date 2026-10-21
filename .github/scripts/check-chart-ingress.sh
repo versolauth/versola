@@ -99,71 +99,191 @@ native_routes_reach_edge() {
   return 0
 }
 
-central_mtls_is_unpublished_by_default() {
+# Everything under `exposure` (design-edge-network.md, H2-H4, H10). The contract:
+#   - nothing is published by default, and the enrollment listener is not even bound;
+#   - a mutual-TLS host is carried by passthrough, never terminated: no `tls:` block on its Ingress;
+#   - a host needs pki.enabled and a limit, or the render is refused;
+#   - the chart renders no ingress-nginx limit annotation for a passthrough, because none would
+#     apply -- a limit annotation there would be a claim the controller does not honour;
+#   - the enrollment Ingress terminates TLS and leads to the enrollment port, on one path.
+MTLS_AUTH=(--set exposure.mtls.auth.host=id-mtls.example.com)
+MTLS_BOTH=("${MTLS_AUTH[@]}" --set exposure.mtls.central.host=central-mtls.example.com)
+MTLS_PASSTHROUGH=(--set exposure.mtls.className=nginx --set 'exposure.mtls.limits.enforcedBy=NLB security group sg-0abc')
+ENROLL=(--set exposure.central.host=central.example.com --set exposure.central.className=nginx --set exposure.central.limits.connectionsPerIP=10)
+
+# Central's Deployment only: auth has an APORT of its own (additionalPort).
+central_doc() { awk 'BEGIN{RS="---\n"} /kind: Deployment/ && /component: central/' <<<"$1"; }
+
+exposure_is_off_by_default() {
   local out
   out="$(render)" || { fail "default render failed: $(cat /tmp/chart-ingress-err.txt)"; return; }
-  if grep -q 'central-mtls$' <<<"$out" && grep -q 'ssl-passthrough' <<<"$out"; then fail "central's mutual-TLS port is published with no mutualTlsExposure"; fi
+  if grep -q 'ssl-passthrough' <<<"$out"; then fail "a passthrough Ingress rendered by default"; fi
   if grep -q '^kind: TLSRoute$' <<<"$out"; then fail "a TLSRoute rendered by default"; fi
+  if grep -q 'type: LoadBalancer' <<<"$out"; then fail "a LoadBalancer Service rendered by default"; fi
+  if central_doc "$out" | grep -q 'name: APORT'; then fail "central binds the enrollment listener by default"; fi
+  if grep -q '/edge/enroll' <<<"$out"; then fail "the enrollment route is exposed by default"; fi
   return 0
 }
 
-central_mtls_load_balancer() {
+mtls_passthrough_never_terminates() {
   local out
-  out="$(render --set services.central.mutualTlsExposure.type=loadBalancer \
-                --set 'services.central.mutualTlsExposure.sourceRanges={203.0.113.0/24}')" || {
-    fail "loadBalancer failed: $(cat /tmp/chart-ingress-err.txt)"
-    return
-  }
-  grep -q 'type: LoadBalancer' <<<"$out" || fail "no LoadBalancer Service rendered"
-  grep -q '203.0.113.0/24' <<<"$out" || fail "sourceRanges did not reach the Service"
-  return 0
-}
-
-central_mtls_passthrough_never_terminates() {
-  local out
-  out="$(render --set services.central.mutualTlsExposure.type=ingressPassthrough \
-                --set services.central.mutualTlsExposure.host=central.example.com \
-                --set services.central.mutualTlsExposure.className=nginx)" || {
+  out="$(render "${MTLS_BOTH[@]}" "${MTLS_PASSTHROUGH[@]}")" || {
     fail "ingressPassthrough failed: $(cat /tmp/chart-ingress-err.txt)"
     return
   }
-  grep -q 'ssl-passthrough: "true"' <<<"$out" || fail "the Ingress does not ask for TLS passthrough"
-  # A `tls:` block would have the controller terminate the handshake: central would never see the edge's certificate.
-  # The document is picked out by its annotation, then searched for the block.
-  if awk 'BEGIN{RS="---\n"} /ssl-passthrough/' <<<"$out" | grep -q '^  tls:'; then fail "the passthrough Ingress carries a tls block"; fi
-  awk '/central.example.com/{f=1} f && /number:/{print; exit}' <<<"$out" | grep -q '8093' || fail "the Ingress does not lead to central's mutual-TLS port"
+  [ "$(grep -c 'ssl-passthrough: "true"' <<<"$out")" -eq 2 ] || fail "expected one passthrough Ingress per host"
+  # A `tls:` block would have the controller terminate the handshake: the pod would never see the client's certificate.
+  if awk 'BEGIN{RS="---\n"} /ssl-passthrough/' <<<"$out" | grep -q '^  tls:'; then fail "a passthrough Ingress carries a tls block"; fi
+  # No limit annotation: ingress-nginx's act in the HTTP stage, which a passthrough never reaches.
+  if awk 'BEGIN{RS="---\n"} /ssl-passthrough/' <<<"$out" | grep -Eq 'limit-connections|limit-rps|whitelist-source-range'; then
+    fail "a passthrough Ingress carries a limit annotation that cannot apply"
+  fi
+  awk '/id-mtls.example.com/{f=1} f && /number:/{print; exit}' <<<"$out" | grep -q '8083' || fail "id-mtls does not lead to auth's mutual-TLS port"
+  awk '/central-mtls.example.com/{f=1} f && /number:/{print; exit}' <<<"$out" | grep -q '8093' || fail "central-mtls does not lead to central's mutual-TLS port"
+  # The public names are in the listener certificates' names, or the pin and the client's check could not succeed.
+  grep -q '"id-mtls.example.com"' <<<"$out" || fail "id-mtls is not among auth's certificate names"
+  grep -q '"central-mtls.example.com"' <<<"$out" || fail "central-mtls is not among central's certificate names"
   return 0
 }
 
-central_mtls_passthrough_needs_a_host_and_class() {
-  if render --set services.central.mutualTlsExposure.type=ingressPassthrough --set services.central.mutualTlsExposure.className=nginx >/dev/null; then
-    fail "ingressPassthrough without host rendered; it must fail"
-  fi
-  if render --set services.central.mutualTlsExposure.type=ingressPassthrough --set services.central.mutualTlsExposure.host=central.example.com >/dev/null; then
+# Edges are signed by their own CA: central is told the edge issuer, and the client one stays the clients'.
+central_signs_edges_with_the_edge_issuer() {
+  local out doc
+  out="$(render)" || { fail "default render failed: $(cat /tmp/chart-ingress-err.txt)"; return; }
+  doc="$(central_doc "$out")"
+  grep -A1 'name: EDGE_CERT_ISSUER_NAME' <<<"$doc" | grep -q 'versola-edge-ca' || fail "central is not told the edge issuer"
+  grep -A1 'name: CLIENT_CERT_ISSUER_NAME' <<<"$doc" | grep -q 'versola-client-ca' || fail "central's client issuer changed"
+  out="$(render --set pki.issuerRefs.edge.name=org-edge --set 'pki.trustBundle.edgeSources[0].secret.name=org-edge' --set 'pki.trustBundle.edgeSources[0].secret.key=tls.crt')" || {
+    fail "an operator's edge issuer failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  central_doc "$out" | grep -A1 'name: EDGE_CERT_ISSUER_NAME' | grep -q 'org-edge' || fail "the operator's edge issuer did not reach central"
+  return 0
+}
+
+mtls_passthrough_needs_a_class() {
+  if render "${MTLS_AUTH[@]}" --set 'exposure.mtls.limits.enforcedBy=x' >/dev/null; then
     fail "ingressPassthrough without className rendered; it must fail"
   fi
   return 0
 }
 
-central_mtls_tls_route() {
+mtls_load_balancer() {
   local out
-  out="$(render --set services.central.mutualTlsExposure.type=gatewayTLSRoute \
-                --set services.central.mutualTlsExposure.host=central.example.com \
-                --set services.central.mutualTlsExposure.parentRefs[0].name=public-gateway)" || {
+  out="$(render --set exposure.mtls.type=loadBalancer "${MTLS_BOTH[@]}" \
+                --set 'exposure.mtls.limits.sourceRanges={203.0.113.0/24}')" || {
+    fail "loadBalancer failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  [ "$(grep -c 'type: LoadBalancer' <<<"$out")" -eq 2 ] || fail "expected one LoadBalancer Service per host"
+  grep -q '203.0.113.0/24' <<<"$out" || fail "sourceRanges did not reach the Service"
+  return 0
+}
+
+mtls_tls_route() {
+  local out
+  out="$(render --set exposure.mtls.type=gatewayTLSRoute "${MTLS_BOTH[@]}" \
+                --set 'exposure.mtls.parentRefs[0].name=public-gateway' \
+                --set 'exposure.mtls.limits.enforcedBy=gateway policy')" || {
     fail "gatewayTLSRoute failed: $(cat /tmp/chart-ingress-err.txt)"
     return
   }
-  grep -q '^kind: TLSRoute$' <<<"$out" || fail "no TLSRoute rendered"
-  if render --set services.central.mutualTlsExposure.type=gatewayTLSRoute --set services.central.mutualTlsExposure.host=central.example.com >/dev/null; then
+  [ "$(grep -c '^kind: TLSRoute$' <<<"$out")" -eq 2 ] || fail "expected one TLSRoute per host"
+  if render --set exposure.mtls.type=gatewayTLSRoute "${MTLS_AUTH[@]}" --set 'exposure.mtls.limits.enforcedBy=x' >/dev/null; then
     fail "gatewayTLSRoute without parentRefs rendered; it must fail"
   fi
   return 0
 }
 
-central_mtls_unknown_type_is_refused() {
-  if render --set services.central.mutualTlsExposure.type=nodePort >/dev/null; then
+mtls_unknown_type_is_refused() {
+  if render --set exposure.mtls.type=nodePort >/dev/null; then
     fail "an unknown exposure type rendered; it must fail"
   fi
+  return 0
+}
+
+# H10: a public host without a limit, or without pki, is refused -- by values.schema.json, before a template runs.
+mtls_host_without_a_limit_is_refused() {
+  local variant
+  if render "${MTLS_AUTH[@]}" --set exposure.mtls.className=nginx >/dev/null; then
+    fail "a mutual-TLS host with no limit rendered; it must fail"
+  fi
+  grep -q 'exposure' /tmp/chart-ingress-err.txt || fail "refused, but not naming exposure: $(cat /tmp/chart-ingress-err.txt)"
+  if render --set exposure.mtls.type=loadBalancer "${MTLS_AUTH[@]}" >/dev/null; then
+    fail "a LoadBalancer host with no sourceRanges and no enforcedBy rendered; it must fail"
+  fi
+  # sourceRanges on a passthrough would look like a limit and enforce nothing.
+  if render "${MTLS_AUTH[@]}" --set exposure.mtls.className=nginx --set 'exposure.mtls.limits.sourceRanges={10.0.0.0/8}' --set exposure.mtls.limits.enforcedBy=x >/dev/null; then
+    fail "sourceRanges with a passthrough type rendered; it must fail, nothing would enforce it"
+  fi
+  return 0
+}
+
+exposure_without_pki_is_refused() {
+  local args
+  for args in "exposure.mtls.auth.host=id-mtls.example.com" "exposure.mtls.central.host=central-mtls.example.com" "exposure.central.host=central.example.com"; do
+    if render --set pki.enabled=false --set "$args" --set exposure.mtls.className=nginx --set exposure.central.className=nginx \
+              --set exposure.mtls.limits.enforcedBy=x --set exposure.central.limits.enforcedBy=x >/dev/null; then
+      fail "${args} rendered with pki.enabled=false; it must fail"
+    fi
+  done
+  return 0
+}
+
+enrollment_ingress_terminates_and_serves_one_route() {
+  local out
+  out="$(render "${ENROLL[@]}" --set 'exposure.central.tls[0].secretName=central-tls' --set 'exposure.central.tls[0].hosts={central.example.com}')" || {
+    fail "the enrollment host failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  local doc
+  doc="$(awk 'BEGIN{RS="---\n"} /central-enroll/ && /kind: Ingress/' <<<"$out")"
+  [ -n "$doc" ] || { fail "no enrollment Ingress rendered"; return; }
+  grep -q '^  tls:' <<<"$doc" || fail "the enrollment Ingress carries no tls block: it must terminate TLS"
+  if grep -q 'ssl-passthrough' <<<"$doc"; then fail "the enrollment Ingress passes TLS through"; fi
+  grep -q 'path: /edge/enroll' <<<"$doc" || fail "the enrollment Ingress does not name /edge/enroll"
+  grep -q 'pathType: Exact' <<<"$doc" || fail "the enrollment path is not Exact"
+  [ "$(grep -c 'path:' <<<"$doc")" -eq 1 ] || fail "the enrollment Ingress carries more than one path"
+  grep -q 'number: 8094' <<<"$doc" || fail "the enrollment Ingress does not lead to the enrollment port"
+  grep -q 'limit-connections: "10"' <<<"$doc" || fail "limit-connections did not reach the enrollment Ingress"
+  # The pod binds and the Service carries the port only because a host asked.
+  central_doc "$out" | grep -q 'name: APORT' || fail "central is not told APORT"
+  return 0
+}
+
+enrollment_host_needs_a_limit_and_a_class() {
+  if render --set exposure.central.host=central.example.com --set exposure.central.className=nginx >/dev/null; then
+    fail "an enrollment host with no limit rendered; it must fail"
+  fi
+  if render --set exposure.central.host=central.example.com --set exposure.central.limits.enforcedBy=waf >/dev/null; then
+    fail "an enrollment host with no className rendered; it must fail"
+  fi
+  # gatewayAPI has no per-IP annotation here, so a count alone is not a limit.
+  if render --set exposure.central.type=gatewayAPI --set exposure.central.host=central.example.com \
+            --set 'exposure.central.parentRefs[0].name=gw' --set exposure.central.limits.connectionsPerIP=10 >/dev/null; then
+    fail "a gatewayAPI enrollment host limited only by connectionsPerIP rendered; it must fail"
+  fi
+  local out
+  out="$(render --set exposure.central.type=gatewayAPI --set exposure.central.host=central.example.com \
+                --set 'exposure.central.parentRefs[0].name=gw' --set exposure.central.limits.enforcedBy=waf)" || {
+    fail "gatewayAPI enrollment host failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  grep -q '^kind: HTTPRoute$' <<<"$out" || fail "no HTTPRoute rendered for the enrollment host"
+  return 0
+}
+
+network_policy_names_the_controller() {
+  local out
+  if render --set networkPolicy.enabled=true "${MTLS_BOTH[@]}" "${MTLS_PASSTHROUGH[@]}" >/dev/null; then
+    fail "networkPolicy with a published host and no ingressControllerSelector rendered; it would cut the route off"
+  fi
+  out="$(render --set networkPolicy.enabled=true "${MTLS_BOTH[@]}" "${MTLS_PASSTHROUGH[@]}" \
+                --set 'networkPolicy.ingressControllerSelector.namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=ingress-nginx')" || {
+    fail "networkPolicy failed: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  [ "$(grep -c '^kind: NetworkPolicy$' <<<"$out")" -eq 2 ] || fail "expected a NetworkPolicy for auth and one for central"
   return 0
 }
 
@@ -179,12 +299,18 @@ check "a named className reaches the rendered Ingress" named_class_reaches_the_i
 check "a disabled ingress needs no className" disabled_ingress_needs_no_class
 check "the Gateway API path renders without a className" gateway_api_needs_no_class
 check "the native route group routes /native/ to edge" native_routes_reach_edge
-check "central's mutual-TLS port is unpublished by default" central_mtls_is_unpublished_by_default
-check "central's mutual-TLS port can be a LoadBalancer" central_mtls_load_balancer
-check "central's mutual-TLS Ingress passes TLS through and never terminates it" central_mtls_passthrough_never_terminates
-check "central's mutual-TLS Ingress needs a host and a class" central_mtls_passthrough_needs_a_host_and_class
-check "central's mutual-TLS port can be a Gateway TLSRoute" central_mtls_tls_route
-check "an unknown mutual-TLS exposure type is refused" central_mtls_unknown_type_is_refused
+check "nothing is published by default" exposure_is_off_by_default
+check "mutual-TLS hosts are passed through, never terminated, with no limit annotation" mtls_passthrough_never_terminates
+check "central signs edges with the edge issuer" central_signs_edges_with_the_edge_issuer
+check "a passthrough host needs a class" mtls_passthrough_needs_a_class
+check "mutual-TLS hosts can be LoadBalancers" mtls_load_balancer
+check "mutual-TLS hosts can be Gateway TLSRoutes" mtls_tls_route
+check "an unknown mutual-TLS exposure type is refused" mtls_unknown_type_is_refused
+check "a mutual-TLS host without a limit is refused" mtls_host_without_a_limit_is_refused
+check "a public host without pki.enabled is refused" exposure_without_pki_is_refused
+check "the enrollment host terminates TLS and serves /edge/enroll only" enrollment_ingress_terminates_and_serves_one_route
+check "the enrollment host needs a limit and a class" enrollment_host_needs_a_limit_and_a_class
+check "networkPolicy needs the ingress controller named" network_policy_names_the_controller
 
 rm -f /tmp/chart-ingress-err.txt
 

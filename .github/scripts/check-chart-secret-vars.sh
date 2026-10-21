@@ -86,6 +86,24 @@ injected_vars() {
   | sort -u
 }
 
+# The same extraction over k8s/versola-edge, whose single workload is an edge and so must inject what
+# the generator writes for `edge`.
+REMOTE_EDGE_CHART="k8s/versola-edge"
+remote_edge_vars() {
+  helm template check "$repo_root/$REMOTE_EDGE_CHART" \
+    --set secrets.existingSecret=ci-check \
+    --set config.existingSecret=ci-config \
+    --set central.mtlsUrl=https://central-mtls.ci.invalid \
+    --set central.enrollment.url=https://central.ci.invalid \
+    --set central.enrollment.token=ci-token \
+    --set 'central.pins[0]=-----BEGIN CERTIFICATE-----' \
+  | awk '
+      /^[[:space:]]*-[[:space:]]*name:[[:space:]]*[A-Z_]+[[:space:]]*$/ { candidate = $NF; next }
+      /^[[:space:]]*name:[[:space:]]*ci-check[[:space:]]*$/ { if (candidate != "") { print candidate; candidate = "" } }
+    ' \
+  | sort -u
+}
+
 generated_vars() {
   cut -d= -f1 "$work/.local/env/vps/$1.generated-secrets.env" | sort -u
 }
@@ -117,6 +135,21 @@ for svc in "${SERVICES[@]}"; do
   [ -n "$extra" ] && echo "    ${svc}: injected by the chart but NOT generated: $(echo "$extra" | tr '\n' ' ')" >&2
 done
 
+generated="$(generated_vars edge)"
+injected="$(remote_edge_vars)"
+missing="$(comm -23 <(echo "$generated") <(echo "$injected"))"
+extra="$(comm -13 <(echo "$generated") <(echo "$injected"))"
+if [ -z "$injected" ]; then
+  echo "    ${REMOTE_EDGE_CHART}: injected no secret env vars -- check the chart or this script's parsing" >&2
+  failed=1
+elif [ -z "$missing" ] && [ -z "$extra" ]; then
+  echo "    ok      ${REMOTE_EDGE_CHART} ($(echo "$generated" | wc -l | tr -d ' ') vars)"
+else
+  failed=1
+  [ -n "$missing" ] && echo "    ${REMOTE_EDGE_CHART}: generated but NOT injected by the chart: $(echo "$missing" | tr '\n' ' ')" >&2
+  [ -n "$extra" ] && echo "    ${REMOTE_EDGE_CHART}: injected by the chart but NOT generated: $(echo "$extra" | tr '\n' ' ')" >&2
+fi
+
 # A key added after a release shipped must not stop that release's pods: its own Secret
 # (secrets.existingSecret) lacks the key, and a required secretKeyRef then fails the pod with
 # CreateContainerConfigError. ANTIFRAUD_SUBJECT_SECRET is optional (auth falls back on
@@ -134,10 +167,11 @@ fi
 echo
 if [ "$failed" -ne 0 ]; then
   cat >&2 <<'MSG'
-FAIL: k8s/versola and scripts/gen-env.scala disagree about a service's secrets.
+FAIL: k8s/versola, k8s/versola-edge and scripts/gen-env.scala disagree about a service's secrets.
 
 Update `versola.requiredSecretVars` in k8s/versola/templates/_helpers.tpl to
-match what the generator writes. Check the key naming too: versola.secretKeyFor
+match what the generator writes (and `versola-edge.secretVars` in k8s/versola-edge/templates/_helpers.tpl,
+which must equal the `edge` list). Check the key naming too: versola.secretKeyFor
 prefixes a var with its service unless the kebab-cased name already starts with
 it, and leaves CENTRAL_SECRET_KEY / CLIENT_SECRETS_SECRET bare because auth and
 central must read the identical value.
@@ -145,4 +179,4 @@ MSG
   exit 1
 fi
 
-echo "OK: chart and generator agree for ${#SERVICES[@]} services."
+echo "OK: charts and generator agree for ${#SERVICES[@]} services and the remote edge."
