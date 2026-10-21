@@ -50,7 +50,7 @@ decide, and nothing else inbound.
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (`EPORT`, 8094, loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 8082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
@@ -333,23 +333,27 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
 
 - `step-ca` gets two more intermediates under the same root, **server** and **edge**, next to the
   existing **client** one (the CA step-ca signs clients with; client issuance does not change).
-  `auth`'s and `central`'s listener certificates now come from the server intermediate (90 days, was
-  two years) and `edge-client` from the edge intermediate (30 days, was two years). The leaves of the
+  `auth`'s and `central`'s listener certificates now come from the server intermediate (365 days, was
+  two years) and `edge-client` from the edge intermediate (365 days, was two years). The leaves of the
   single-intermediate layout do not verify against their new intermediate, so `mtls-init` re-issues
   all of them on the first run (and says why in its output); the pins on `edge` follow because it
   restarts with them.
 - `auth.conf`: `mutual-tls.trusted-certificates` is `/app/mtls/auth-trust.crt` (client and edge
-  intermediates, never the root) and `mutual-tls.edge-trusted-certificates` is new
-  (`/app/mtls/edge-ca.crt`: an `urn:versola:edge:*` name must chain to it). `central.conf`:
+  intermediates, never the root; auth accepts no edge certificate for anything yet). `central.conf`:
   `mutual-tls.trusted-certificates` is `/app/mtls/edge-ca.crt` (edge identities only; a client
   certificate no longer completes the handshake). `edge.conf`: `native.trusted-certificates` and
   `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
   `server.next.crt` and `central-server.crt` + `central-server.next.crt`.
 - `central`'s `MPORT` is bound to `127.0.0.1` (`MBIND_HOST`); it was open on all interfaces. A
-  remote edge needs `--central-mtls-domain` (above) and the CLI's proxy. `EPORT=8094`, the
+  remote edge needs `--central-mtls-domain` (above) and the CLI's proxy. central's `APORT=8094` (not auth's 8082), the
   enrollment listener, is new and also loopback.
 - `ca.crt` (root plus client intermediate) is still written, for anything that pinned it; nothing
   generated reads it any more.
+- `central` signs edge identities with the **edge intermediate**, whose key `mtls-init` copies (unencrypted
+  PKCS#8, mode 0600) into the central-only volume `versola-central-ca-*` as `edge-ca.key` (`edge-ca.crt`
+  beside it); `central.conf` gets `edge-certificate-authority`. Central already is the authority on which
+  edges exist, so holding that key adds no new party. Clients' certificates are still signed by the client
+  intermediate through step-ca.
 - **Existing deployments:** upgrade `versola-tools`, run `versola configure`, then `versola up` (or
   `versola rollout`). Roll `central`, `auth` and `edge` together: an old `edge.conf` against the new
   leaves, or the other way round, fails the pin check.
@@ -492,9 +496,9 @@ the certificate relationships are described in
 
   | File | What | Signed by | Lifetime |
   |---|---|---|---|
-  | `server.{crt,key}` | `auth`'s listener | server | 90 days |
-  | `central-server.{crt,key}` | `central`'s listener | server | 90 days |
-  | `edge-client.{crt,key}` | identity of the edge on this host (`urn:versola:edge:edge-default`) | edge | 30 days |
+  | `server.{crt,key}` | `auth`'s listener | server | 365 days |
+  | `central-server.{crt,key}` | `central`'s listener | server | 365 days |
+  | `edge-client.{crt,key}` | identity of the edge on this host (`urn:versola:edge:edge-default`) | edge | 365 days |
   | `server.next.crt`, `central-server.next.crt` | pin copies, see below | | |
   | `client-ca.crt`, `edge-ca.crt`, `server-ca.crt` | one intermediate each | | |
   | `auth-trust.crt` | client + edge intermediates: what `auth`'s handshake accepts | | |
@@ -513,7 +517,27 @@ and the signed token names the same edge as the certificate's `urn:versola:edge:
 additionally requires an `urn:versola:edge:*` name to chain to the edge intermediate, so a client
 certificate cannot pass for an edge.
 
+**Edge identity certificates.** An edge's identity certificate lives 30 days (vps) and the edge renews it
+itself when a third of its life is left, so an outage of about twenty days is survived. The chain of renewals
+ends a year after the enrollment: central refuses to renew after that, and the operator enrols the edge
+again with a new token (`versola edge add <id> --existing`; a token lasts an hour unless it is asked to last
+longer, up to 24 hours, with `validityHours`). A revoked edge is cut off at once by deleting it or rotating
+its signing key (central needs certificate and token); a list of revoked serials will come with the step
+where auth accepts an edge certificate. Central signs these certificates with the edge intermediate (above);
+the certificate `mtls-init` writes for the edge on this host is a different thing: it is a file renewed by `versola certs renew`, and lives 365 days (see below).
+
+**Lifetime of the files `mtls-init` writes.** The server leaves and the identity of the edge on the same host live
+365 days by default; renewal is at a third of the life left, so with the timer running it happens months before
+expiry. `MTLS_CERT_DAYS` (versola-tools; `versola configure vps --cert-lifetime-days N`) sets another number of days,
+and `0` means unlimited: a notAfter 100 years away, so the files never need renewing. Unlimited gives up the expiry as
+a limit on what a leaked key can do, and the renewal timer is then not installed (with a finite lifetime it is
+required). The intermediates and the root keep their own lifetimes; a leaf of another lifetime than the configured one
+is replaced at the next `mtls-init` run. The edges central issues renew in-process and are not affected.
+
 **Renewal and the pin overlap.** `edge` pins the two server leaves, and reads certificates at startup.
+In 0.8.0 the pins of an edge on another host are updated by the operator: central does not publish them.
+The overlap above (current + next pin) is what `versola certs renew` prepares, and the CLI's bootstrap bundle
+carries both.
 `versola certs renew` (run it on a schedule: a daily cron or systemd timer; it does nothing until a leaf
 has a third of its life or less left) drives `mtls-init` through `MTLS_INIT_PHASE`:
 
@@ -528,7 +552,7 @@ has a third of its life or less left) drives `mtls-init` through `MTLS_INIT_PHAS
 The order for a server leaf is `prepare`, restart `edge` (it now pins the old and the staged
 certificate), `commit`, restart `auth` or `central`; no handshake fails at any point. `edge-client` is
 not pinned by anyone and is renewed with `identity`. Without the schedule nothing renews: a leaf
-expires 90 days (`edge-client` 30) after it was issued. A step-ca volume from before its client template
+expires 365 days (by default, see below) after it was issued. A step-ca volume from before its client template
 existed keeps issuing certificates with the subject rewritten to the bare CN, which `central` refuses
 when longer; recreate the `versola-step-ca-*` volume to lift it.
 

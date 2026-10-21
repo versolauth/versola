@@ -18,7 +18,8 @@ fi
 
 scripts=$(cd "$here/.." && pwd)
 work=$(mktemp -d)
-export STEP_HOME=/home/step MTLS_DIR="$work/mtls"
+export STEP_HOME=/home/step MTLS_DIR="$work/mtls" CENTRAL_CA_DIR="$work/central-ca"
+mkdir -p "$CENTRAL_CA_DIR"
 failures=0
 
 pass() { echo "ok   $1"; }
@@ -84,6 +85,13 @@ for n in server central-server edge-client; do assert "all: issued $n" contains 
 assert "all: reports a change" contains "$o" "mtls-init: changed"
 for f in server.crt server.key server.next.crt central-server.crt central-server.key central-server.next.crt edge-client.crt edge-client.key \
   client-ca.crt edge-ca.crt server-ca.crt auth-trust.crt ca.crt; do assert "all: wrote $f" test -f "$MTLS_DIR/$f"; done
+# central signs edge identities with the edge intermediate: its certificate and key, in the volume
+# only central mounts, never in the shared one
+assert "all: central gets edge-ca.crt" same "$CENTRAL_CA_DIR/edge-ca.crt" "$edge_ca"
+assert "all: central's edge key is PKCS#8, unencrypted" grep -q "BEGIN PRIVATE KEY" "$CENTRAL_CA_DIR/edge-ca.key"
+assert "all: central's edge key is private" test "$(stat -c %a "$CENTRAL_CA_DIR/edge-ca.key")" = 600
+refute "all: the edge key is not in the shared volume" test -f "$MTLS_DIR/edge-ca.key"
+assert "all: the exported key signs a certificate that verifies against edge-ca.crt" sh -c "step certificate create urn:versola:edge:t $work/t.crt $work/t.key --ca $CENTRAL_CA_DIR/edge-ca.crt --ca-key $CENTRAL_CA_DIR/edge-ca.key --no-password --insecure --force && step certificate verify $work/t.crt --roots $MTLS_DIR/edge-ca.crt"
 refute "all: edge-client has no pin copy" test -f "$MTLS_DIR/edge-client.next.crt"
 assert "server verifies against server-ca.crt" verifies "$MTLS_DIR/server.crt" "$MTLS_DIR/server-ca.crt"
 assert "central-server verifies against server-ca.crt" verifies "$MTLS_DIR/central-server.crt" "$MTLS_DIR/server-ca.crt"
@@ -114,9 +122,9 @@ refute "server does not carry central's public name" sh -c "step certificate ins
 assert "central-server carries central's public name" sh -c "step certificate inspect '$MTLS_DIR/central-server.crt' --format json | grep -qF '\"central-mtls.example.com\"'"
 assert "server keeps the internal names" sh -c "step certificate inspect '$MTLS_DIR/server.crt' --format json | grep -qF '\"auth\"'"
 assert "edge-client carries the edge URI" sh -c "step certificate inspect '$MTLS_DIR/edge-client.crt' --format json | grep -qF 'urn:versola:edge:edge-default'"
-assert "server lives 90 days" lifetime_is "$MTLS_DIR/server.crt" 7776000
-assert "central-server lives 90 days" lifetime_is "$MTLS_DIR/central-server.crt" 7776000
-assert "edge-client lives 30 days" lifetime_is "$MTLS_DIR/edge-client.crt" 2592000
+assert "server lives 365 days" lifetime_is "$MTLS_DIR/server.crt" 31536000
+assert "central-server lives 365 days" lifetime_is "$MTLS_DIR/central-server.crt" 31536000
+assert "edge-client lives 365 days" lifetime_is "$MTLS_DIR/edge-client.crt" 31536000
 assert "keys are PKCS#8" sh -c "head -1 '$MTLS_DIR/server.key' | grep -qx -- '-----BEGIN PRIVATE KEY-----'"
 assert "keys are 0600" test "$(stat -c %a "$MTLS_DIR/server.key")" = 600
 refute "no output ever contains key material" grep -rq "PRIVATE KEY" "$work"/out.*
@@ -253,6 +261,25 @@ refute "an unknown phase is refused" run_init "$work/out.bad" MTLS_INIT_PHASE=no
 assert "an unknown phase says so" contains "$work/out.bad" "unknown MTLS_INIT_PHASE"
 refute "a public name with a shell metacharacter is refused" run_init "$work/out.bad" 'MTLS_DOMAIN=a.example.com;touch$IFS/tmp/x'
 refute "an uppercase public name is refused" run_init "$work/out.bad" MTLS_DOMAIN=ID.example.com
+
+# --- the lifetime is configurable, and unlimited is a hundred years --------------------------------
+init all MTLS_CERT_DAYS=0
+for n in server central-server edge-client; do
+  assert "unlimited: $n is replaced" contains "$work/out.all" "mtls-init: issued $n"
+done
+assert "unlimited: server lives 100 years" lifetime_is "$MTLS_DIR/server.crt" $((36500 * 86400))
+assert "unlimited: edge-client lives 100 years" lifetime_is "$MTLS_DIR/edge-client.crt" $((36500 * 86400))
+init all MTLS_CERT_DAYS=0
+refute "unlimited: nothing is ever due" contains "$work/out.all" "mtls-init: issued"
+init all MTLS_CERT_DAYS=200
+assert "a custom lifetime replaces the unlimited ones" contains "$work/out.all" "mtls-init: issued server"
+assert "custom: server lives 200 days" lifetime_is "$MTLS_DIR/server.crt" $((200 * 86400))
+assert "custom: edge-client lives 200 days" lifetime_is "$MTLS_DIR/edge-client.crt" $((200 * 86400))
+init all MTLS_CERT_DAYS=200
+refute "custom: a second run issues nothing" contains "$work/out.all" "mtls-init: issued"
+refute "a lifetime that is not a number is refused" run_init "$work/out.bad" MTLS_CERT_DAYS=abc
+assert "a lifetime that is not a number says so" contains "$work/out.bad" "not a number of days"
+refute "more than a hundred years is refused" run_init "$work/out.bad2" MTLS_CERT_DAYS=40000
 
 rm -rf "${work:?}"
 if [ "$failures" -ne 0 ]; then echo "$failures check(s) failed" >&2; exit 1; fi

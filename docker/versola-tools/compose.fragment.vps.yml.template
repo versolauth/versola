@@ -114,11 +114,11 @@ services:
       # authorizeEdge a name for the edge the token names.
       MPORT: 8093
       MBIND_HOST: "127.0.0.1"
-      # The enrollment listener: serves POST /edge/enroll and nothing else, so an edge that has no
+      # Central's APORT (not auth's, 8082: another container): the enrollment listener, which serves POST /edge/enroll and nothing else, so an edge that has no
       # certificate yet can get its first one with a one-time token. Plain HTTP on loopback
       # (BIND_HOST below); the TLS for `central.<domain>` is terminated by versola-cli's proxy in
       # front of it, and only when that name is configured.
-      EPORT: 8094
+      APORT: 8094
       # With `network_mode: host`, VersolaApp's own bind address IS the
       # VPS's bind, directly -- there's no Compose port-publish step to
       # restrict exposure the way docker-local's "127.0.0.1:PORT:PORT"
@@ -143,6 +143,7 @@ services:
       - ./central.conf:/app/config/env.conf:ro
       - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-central-diagnostics-vps:/diagnostics
+      # Also edge-ca.{crt,key}: central signs edge identities with the edge intermediate.
       - versola-central-ca-vps:/app/ca:ro
       # #554: central's listener certificate and the edge intermediate that vouches for edge certificates.
       - versola-mtls-vps:/app/mtls:ro
@@ -300,6 +301,8 @@ services:
     environment:
       MTLS_DOMAIN: "@MTLS_DOMAIN@"
       CENTRAL_MTLS_DOMAIN: "@CENTRAL_MTLS_DOMAIN@"
+      # Days the leaves live (365 when empty; 0 = unlimited, 100 years).
+      MTLS_CERT_DAYS: "@MTLS_CERT_DAYS@"
     volumes:
       - versola-step-ca-vps:/home/step:ro
       - versola-mtls-vps:/mtls

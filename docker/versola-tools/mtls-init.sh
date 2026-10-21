@@ -6,16 +6,16 @@
 # `versola` (the CLI) drives through MTLS_INIT_PHASE.
 #
 # Leaves, by the intermediate that signs them (step-ca-intermediates.sh made all three):
-#   server          auth's listener             server intermediate  90 days  pinned by edge
-#   central-server  central's listener          server intermediate  90 days  pinned by edge
-#   edge-client     identity of the local edge  edge intermediate     30 days  not pinned
+#   server          auth's listener             server intermediate  365 days pinned by edge
+#   central-server  central's listener          server intermediate  365 days pinned by edge
+#   edge-client     identity of the local edge  edge intermediate    365 days not pinned
 # `client` (intermediate_ca.crt) is the CA step-ca itself signs with, for central's provisioner.
 #
 # Trust files, each holding exactly one intermediate and never the root, because a trust anchor
 # that is the root accepts every intermediate and the split would mean nothing:
 #   client-ca.crt, edge-ca.crt, server-ca.crt, and auth-trust.crt = client + edge (auth's
-#   handshake takes client certificates and edge identities; the application layer then insists
-#   that an urn:versola:edge:* name chains to edge-ca.crt).
+#   handshake takes client certificates and edge identities; auth accepts no edge certificate for
+#   anything yet).
 # `ca.crt` (root + client intermediate) is still written for whatever pinned it before the split.
 #
 # Pinned leaves have two pin files, <name>.crt and <name>.next.crt. edge trusts both, so a leaf can
@@ -35,6 +35,17 @@
 # `mtls-init: changed` (something was written that a service has to be restarted for) and
 # the report lines. Key material is never printed.
 #
+# Central signs edge identities (enrollment and renewal) with the edge intermediate, so central, and
+# only central, gets its certificate and key: $CENTRAL_CA_DIR (the `versola-central-ca-vps` volume,
+# /app/ca in central alone) holds edge-ca.crt and edge-ca.key (unencrypted PKCS#8, mode 0600). The key
+# never goes into $MTLS_DIR, which auth and edge mount too.
+#
+# MTLS_CERT_DAYS: how long the three leaves live (default 365; renewal is still at a third of the
+# life left). 0 means unlimited: a notAfter 100 years away, so the files never need renewing -- which
+# gives up the expiry as a damage limit for a leaked key. A leaf whose lifetime differs from the
+# configured one is due, so changing the setting takes effect at the next prepare/all. The
+# intermediates and the root keep their own lifetimes.
+#
 # MTLS_DOMAIN / CENTRAL_MTLS_DOMAIN: public names added to the SAN of auth's and central's leaf
 # (opt-in, `versola configure vps --mtls-domain/--central-mtls-domain`). A leaf that lacks the
 # configured name is due, so setting one takes effect at the next prepare/all. STEP_HOME and
@@ -43,9 +54,18 @@ set -eu
 
 STEP_HOME="${STEP_HOME:-/home/step}"
 MTLS_DIR="${MTLS_DIR:-/mtls}"
+CENTRAL_CA_DIR="${CENTRAL_CA_DIR:-/central-ca}"
 PHASE="${MTLS_INIT_PHASE:-all}"
 MTLS_DOMAIN="${MTLS_DOMAIN:-}"
 CENTRAL_MTLS_DOMAIN="${CENTRAL_MTLS_DOMAIN:-}"
+CERT_DAYS="${MTLS_CERT_DAYS:-365}"
+case "$CERT_DAYS" in
+  ''|*[!0-9]*) echo "mtls-init: MTLS_CERT_DAYS '$CERT_DAYS' is not a number of days" >&2; exit 1 ;;
+esac
+# 0 = unlimited: 100 years.
+if [ "$CERT_DAYS" -eq 0 ]; then CERT_DAYS=36500; fi
+if [ "$CERT_DAYS" -gt 36500 ]; then echo "mtls-init: MTLS_CERT_DAYS $CERT_DAYS is more than 100 years" >&2; exit 1; fi
+LEAF_HOURS=$((CERT_DAYS * 24))h
 
 case "$PHASE" in
   all|prepare|commit|identity|report) ;;
@@ -85,12 +105,12 @@ mint() {
   name=$1 prefix=$2
   case "$name" in
     server)
-      cn=localhost hours=2160h; set -- --san auth --san localhost --san 127.0.0.1 ;;
+      cn=localhost hours=$LEAF_HOURS; set -- --san auth --san localhost --san 127.0.0.1 ;;
     central-server)
-      cn=central hours=2160h; set -- --san central --san localhost --san 127.0.0.1 ;;
+      cn=central hours=$LEAF_HOURS; set -- --san central --san localhost --san 127.0.0.1 ;;
     edge-client)
       # The URI name is what central checks against the edge the token names (`authorizeEdge`).
-      cn=edge-default hours=720h; set -- --san urn:versola:edge:edge-default ;;
+      cn=edge-default hours=$LEAF_HOURS; set -- --san urn:versola:edge:edge-default ;;
   esac
   domain=$(leaf_domain "$name")
   if [ -n "$domain" ]; then set -- "$@" --san "$domain"; fi
@@ -124,9 +144,16 @@ due() {
   # `step certificate needs-renewal`: exit 0 = due, 1 = not due, anything else is an error.
   rc=0
   step certificate needs-renewal "$crt" --expires-in 33% >/dev/null 2>&1 || rc=$?
-  if [ "$rc" -eq 1 ]; then echo "mtls-init: $name is valid, leaving it"; return 1; fi
-  if [ "$rc" -ne 0 ]; then echo "mtls-init: cannot read $crt (step exit $rc)" >&2; exit 1; fi
-  echo "mtls-init: $name is due for renewal"; return 0
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then echo "mtls-init: cannot read $crt (step exit $rc)" >&2; exit 1; fi
+  if [ "$rc" -eq 0 ]; then echo "mtls-init: $name is due for renewal"; return 0; fi
+  # The setting was changed: a certificate of another lifetime is replaced, so that going unlimited
+  # (or back) takes effect without waiting for the old one to run out.
+  length=$(step certificate inspect "$crt" --format json | sed -n 's/.*"length": \([0-9]*\).*/\1/p' | head -1)
+  want=$((CERT_DAYS * 86400))
+  if [ -n "$length" ] && [ "$length" -ne "$want" ] && [ $((length - want)) -gt 7200 -o $((want - length)) -gt 7200 ]; then
+    echo "mtls-init: $name lives $((length / 86400)) days, not the configured $CERT_DAYS"; return 0
+  fi
+  echo "mtls-init: $name is valid, leaving it"; return 1
 }
 
 # --- moving files around --------------------------------------------------------------------------
@@ -218,6 +245,25 @@ write_trust() {
   mv "$MTLS_DIR/.$dest.new" "$MTLS_DIR/$dest"
 }
 
+# The edge intermediate's certificate and key for central. The key file of step-ca is encrypted;
+# central reads PKCS#8 PEM without a password. Written beside and moved, the key first, only when
+# it differs from what is there (the intermediate never changes, so this is a one-off).
+export_edge_ca() {
+  [ -d "$CENTRAL_CA_DIR" ] || return 0
+  tmp=$CENTRAL_CA_DIR/.edge-ca.key.new
+  (umask 077; step crypto key format --pkcs8 --pem --insecure --no-password \
+    --password-file "$STEP_HOME/secrets/password" --force "$(ca_key edge)" > "$tmp")
+  chmod 600 "$tmp"
+  if [ -f "$CENTRAL_CA_DIR/edge-ca.key" ] && cmp -s "$tmp" "$CENTRAL_CA_DIR/edge-ca.key"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$CENTRAL_CA_DIR/edge-ca.key"
+  fi
+  cp "$(ca_crt edge)" "$CENTRAL_CA_DIR/.edge-ca.crt.new"
+  chmod 644 "$CENTRAL_CA_DIR/.edge-ca.crt.new"
+  mv "$CENTRAL_CA_DIR/.edge-ca.crt.new" "$CENTRAL_CA_DIR/edge-ca.crt"
+}
+
 # --- report ---------------------------------------------------------------------------------------
 
 # report_file <name>: one line per certificate in the file (a bundle holds several).
@@ -279,6 +325,7 @@ case "$PHASE" in
     ;;
 esac
 
+export_edge_ca
 write_trust client-ca.crt "$(ca_crt client)"
 write_trust edge-ca.crt "$(ca_crt edge)"
 write_trust server-ca.crt "$(ca_crt server)"

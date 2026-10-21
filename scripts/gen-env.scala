@@ -1355,8 +1355,8 @@ def defaultServerMetadata(authUrl: String): String =
   val mtlsServerKey = if isKubernetes then "/app/mtls/server/tls.key" else "/app/mtls/server.key"
   // vps: auth's handshake accepts client certificates (client intermediate) and edge identities
   // (edge intermediate) -- one file holding both, never the root, which would accept every
-  // intermediate. The application layer additionally requires `urn:versola:edge:*` names to chain
-  // to `edge-trusted-certificates`, so a client certificate cannot carry one.
+  // intermediate. (Auth does not accept an edge certificate for anything yet: it is trusted so
+  // that the handshake is the same once it does.)
   val mtlsTrustedCertificates =
     if isKubernetes then "/app/mtls/trust/ca.crt" else if isVps then "/app/mtls/auth-trust.crt" else "/app/mtls/ca.crt"
   // Pins are lists: `.next.crt` is the certificate that replaces the leaf at the next rotation (a
@@ -1382,9 +1382,6 @@ def defaultServerMetadata(authUrl: String): String =
   // central issues edge client certificates from (`centralClientCertificateAuthorityBlock`). One
   // PEM bundle: the trust manager loads every certificate in it.
   val authMutualTlsTrustedClients = File(authMutualTlsDir, "trusted-clients.crt")
-  // vps: the anchor an `urn:versola:edge:*` name must chain to (see `mtlsTrustedCertificates`).
-  val authEdgeTrustedLine =
-    if isVps then "\n         |  edge-trusted-certificates = \"/app/mtls/edge-ca.crt\"" else ""
   val authMutualTlsBlock =
     if isLocal then
       s"""
@@ -1403,7 +1400,7 @@ def defaultServerMetadata(authUrl: String): String =
          |mutual-tls {
          |  certificate            = "$mtlsServerCertificate"
          |  private-key            = "$mtlsServerKey"
-         |  trusted-certificates   = "$mtlsTrustedCertificates"$authEdgeTrustedLine
+         |  trusted-certificates   = "$mtlsTrustedCertificates"
          |  external-url           = "$mtlsAdvertisedUrl"
          |}
          |""".stripMargin
@@ -1892,13 +1889,45 @@ def defaultServerMetadata(authUrl: String): String =
          |}
          |""".stripMargin
 
+  // vps: central signs edge identities (/edge/enroll, /edge/certificate/renew) with the edge
+  // intermediate, which its listener trusts, and not through step-ca's client intermediate. `mtls-init`
+  // puts the certificate and its key into the volume only central mounts (/app/ca).
+  // k8s: the chart's EDGE_CERT_ISSUER_NAME/_KIND/_GROUP (the `edge` cert-manager issuer, kept apart
+  // from the clients' one) name the issuer, and the block is written only where the name is given
+  // here; without it central falls back to the client issuer.
+  val edgeCertificateAuthorityBlock =
+    if isKubernetes && sys.env.get("EDGE_CERT_ISSUER_NAME").exists(_.nonEmpty) then
+      """
+        |# Edge identities (`/edge/enroll`, `/edge/certificate/renew`) are issued by cert-manager with the
+        |# `edge` issuer; the edge renews them itself at a third of their life left.
+        |edge-certificates {
+        |  validity     = "30 days"
+        |  renew-before = "10 days"
+        |  cert-manager {
+        |    issuer-name  = ${EDGE_CERT_ISSUER_NAME}
+        |    issuer-kind  = ${?EDGE_CERT_ISSUER_KIND}
+        |    issuer-group = ${?EDGE_CERT_ISSUER_GROUP}
+        |  }
+        |}
+        |""".stripMargin
+    else if isVps then
+      """
+        |# The CA edge identities are signed with: the edge intermediate (develop.md, "Certificate
+        |# storage and rotation"). Clients' certificates stay with the client CA above.
+        |edge-certificate-authority {
+        |  certificate = "/app/ca/edge-ca.crt"
+        |  private-key = "/app/ca/edge-ca.key"
+        |}
+        |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"

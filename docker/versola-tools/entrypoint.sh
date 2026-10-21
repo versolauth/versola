@@ -123,6 +123,24 @@ for var in MTLS_DOMAIN CENTRAL_MTLS_DOMAIN; do
 done
 export MTLS_DOMAIN CENTRAL_MTLS_DOMAIN
 
+# MTLS_CERT_DAYS (vps only, optional): how long the mutual-TLS leaves written by `mtls-init` live, in
+# days; unset = 365, 0 = unlimited (100 years). Digits only, because it goes into the compose file with sed.
+MTLS_CERT_DAYS="${MTLS_CERT_DAYS:-}"
+if [ -n "$MTLS_CERT_DAYS" ]; then
+  if [ "$TARGET" != "vps" ]; then
+    echo "versola-tools: MTLS_CERT_DAYS is only supported when TARGET=vps" >&2
+    exit 1
+  fi
+  case "$MTLS_CERT_DAYS" in
+    *[!0-9]*) echo "versola-tools: MTLS_CERT_DAYS must be a number of days (0 = unlimited)" >&2; exit 1 ;;
+  esac
+  if [ "${#MTLS_CERT_DAYS}" -gt 5 ] || [ "$MTLS_CERT_DAYS" -gt 36500 ]; then
+    echo "versola-tools: MTLS_CERT_DAYS is at most 36500 (100 years)" >&2
+    exit 1
+  fi
+fi
+export MTLS_CERT_DAYS
+
 # POSTGRES_DB (vps only; gen-env.scala validates the name and defaults to `auth`).
 export POSTGRES_DB="${POSTGRES_DB:-}"
 # POSTGRES_CA_FILE (vps only): a CA bundle versola-cli mounted into this container (its
@@ -234,7 +252,7 @@ else
 fi
 if [ "$TARGET" = "vps" ]; then
   # The validated public names (possibly empty) become `mtls-init`'s environment.
-  sed -e "s/\${VERSION}/$VERSION/g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" \
+  sed -e "s/\${VERSION}/$VERSION/g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
     "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 else
   sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
