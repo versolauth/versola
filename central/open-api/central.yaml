@@ -18,13 +18,20 @@ info:
       and `POST /users/registrations`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`) and `POST /edge/clients/edge-certificate/sign`,
+      `auth-request-presets`, `server-metadata`, `overload`), `POST /edge/clients/edge-certificate/sign`
+      and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener),
       the surface an edge reads with the key it was registered with. It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
       is served only the tenants bound to it; the admin credential and auth's token are refused there
-      (`401`).
+      (`401`). An edge of a `partner` group is refused all of `/edge/sync/*` (`401`): it is
+      issued a certificate that names its group and is given no configuration.
+    * `POST /edge/enroll`, which an edge reaches before it has a certificate: it trades a one-time
+      token (`POST /configuration/edges/enrollment-tokens`) and a certificate request for its first
+      certificate. It is served alone on central's additional listener (`APORT`, plain HTTP meant to
+      sit behind the TLS terminator of the public name for central), with no client certificate;
+      an unknown, spent, expired or other-edge token is one and the same `401`.
 
     ## Authentication
 
@@ -2065,7 +2072,8 @@ paths:
       summary: Register an edge
       description: |
         Central generates the key pair, keeps the public half and returns the private half
-        once. The edge signs its `/sync` requests with it.
+        once. The edge signs its `/sync` requests with it. The edge joins `groupId` (the
+        `default` group when absent) and never leaves it.
       operationId: registerEdge
       requestBody:
         required: true
@@ -2082,6 +2090,8 @@ paths:
                 $ref: '#/components/schemas/ServiceKeyResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: The group named does not exist.
     delete:
       tags: [Edges]
       summary: Delete an edge
@@ -2093,6 +2103,111 @@ paths:
           description: Edge deleted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /configuration/edge-groups:
+    get:
+      tags: [Edges]
+      summary: List edge groups
+      operationId: getEdgeGroups
+      responses:
+        '200':
+          description: The groups of edges and the kind of each.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetEdgeGroupsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Edges]
+      summary: Create a group of edges
+      description: |
+        A group holds the edges that serve a set of clients together (several edges can serve one
+        client, for geo-routing). Its `kind` is the operator's decision and cannot be changed
+        afterwards, by anyone: `first_party` groups hold the operator's own edges, which read
+        their configuration from central; `partner` groups hold a partner's edges, which are
+        issued a certificate that names their group (it is what authenticates the partner's
+        clients to auth) and are given no configuration. A `default` first-party group exists
+        from the start and holds every edge registered before groups.
+      operationId: createEdgeGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeGroup'
+      responses:
+        '201':
+          description: Group created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgeGroup'
+        '400':
+          description: The kind is not `first_party` or `partner`, or the id is not a valid identifier.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A group with this id exists; it is left as it was.
+
+  /configuration/edges/extend:
+    post:
+      tags: [Edges]
+      summary: Extend the certificate chain of an edge
+      description: |
+        An edge whose certificate central issues renews it by itself, over the mutual-TLS listener. Those
+        renewals are a chain that began at the edge's enrollment, and `edge-identity.max-age` (a year by default)
+        is how old the chain may get. With `edge-identity.auto-extend` on, the default, central extends the chain
+        itself at that age and the edge never stops. With it off, central stops renewing the edges of **partner** groups
+        (the operator's own edges are always extended) at that age until this is
+        called (or the edge is enrolled again with a new token): the edge keeps working on the certificate it has
+        and is told the date in every answer, warns in its log from a month before, and the date is in
+        `identityChainEndsAt` of `GET /configuration/edges`. Calling this starts the chain over; the partner does
+        nothing, the edge's next renewal goes through.
+      operationId: extendEdgeIdentity
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '204':
+          description: The chain starts over now.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
+  /configuration/edges/enrollment-tokens:
+    post:
+      tags: [Edges]
+      summary: Create a one-time token for an edge to enrol with
+      description: |
+        The edge trades the token, once and within an hour (`validityHours` asks for longer, up
+        to 24: a bundle handed to someone far away may need it), together with a certificate
+        request, for its first certificate (`POST /edge/enroll` on the enrollment listener). Only a
+        hash of the token is kept: it is shown here and never again. The certificate is renewed by
+        the edge itself over the mutual-TLS listener (see `POST /configuration/edges/extend` for
+        how long, and what happens at the end).
+      operationId: createEdgeEnrollmentToken
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+        - name: validityHours
+          in: query
+          required: false
+          description: How long the token is good for, in hours; 1 when absent, at most 24.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 24
+      responses:
+        '201':
+          description: Token created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id, or the validity asked for is out of range.
 
   /configuration/edges/dpop:
     put:
@@ -5459,7 +5574,39 @@ components:
       properties:
         id:
           $ref: '#/components/schemas/EdgeId'
+        groupId:
+          type: string
+          description: The group the edge joins and never leaves. `default` when absent.
       required: [id]
+    EdgeGroup:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z][a-z0-9-]*$'
+        kind:
+          type: string
+          enum: [first_party, partner]
+          description: Who runs the edges of the group. Set once, by the operator, never changed.
+      required: [id, kind]
+    GetEdgeGroupsResponse:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeGroup'
+      required: [groups]
+    EnrollmentTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Shown once; only its hash is stored.
+        expiresAt:
+          type: string
+          format: date-time
+      required: [token, expiresAt]
     EdgeResponse:
       type: object
       properties:
@@ -5477,6 +5624,16 @@ components:
         overloadPolicy:
           $ref: '#/components/schemas/OverloadPolicy'
           description: The edge's overload policy; absent when none is set.
+        groupId:
+          type: string
+          description: The group of edges this edge belongs to.
+        identityChainEndsAt:
+          type: string
+          format: date-time
+          description: |
+            When central stops renewing the certificate of this edge, if it will: only for an edge of a
+            partner group, where `edge-identity.auto-extend` is off. Absent otherwise. Extend it with
+            `POST /configuration/edges/extend` before then.
       required: [id, hasOldKey, requireDpopNonce]
     OverloadPolicy:
       type: object

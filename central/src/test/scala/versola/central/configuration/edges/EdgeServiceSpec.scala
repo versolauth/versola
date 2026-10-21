@@ -44,7 +44,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.security.generateRsaKeyPair.succeedsWith(testKeyPair)
         _ <- env.repository.createEdge.succeedsWith(())
-        keyPair <- env.service.registerEdge(edgeId)
+        keyPair <- env.service.registerEdge(edgeId, EdgeGroup.DefaultId)
       yield
         val createCalls = env.repository.createEdge.calls
         assertTrue(
@@ -53,6 +53,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           keyPair.publicKey == testKeyPair.publicKey,
           createCalls.length == 1,
           createCalls.head._1 == edgeId,
+          createCalls.head._4 == EdgeGroup.DefaultId,
         )
     },
     test("rotateEdgeKey updates keys and keeps old key") {
