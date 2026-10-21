@@ -25,6 +25,17 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** How central issues the certificates of edges (`POST /edge/enroll`, `/edge/certificate/renew`), when that is not
+      * the CA that issues clients' certificates. Edge certificates are what central's mutual-TLS listener and auth
+      * trust for edges, clients' what auth trusts for clients, so the two are signed by different CAs. Same shape as
+      * [[clientCertificates]]. */
+    edgeCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** The same, for a deployment where central holds the edge CA's own key (certificate and PKCS#8 key files), the
+      * way `client-certificate-authority` does for clients. Central is the one authority on which edges exist --
+      * registering one and enrolling it are both its admin API -- so the key gives it no power it lacks. */
+    edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
+    /** How long the certificate chain of an edge may run, and what happens at the end of it. */
+    edgeIdentity: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
     /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
       * central has no such listener and no edge can sync from it -- there is deliberately no
       * fallback to the main listener, which is the admin console's and auth's. */
@@ -35,6 +46,10 @@ case class CentralConfig(
     * absent, not as a block with no backend. */
   def certificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
     clientCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
+
+  /** `edge-certificates` only where it names a CA, for the reason given on [[certificateBackends]]. */
+  def edgeCertificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
+    edgeCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
 object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")
@@ -58,6 +73,20 @@ object CentralConfig:
       certificate: String,
       privateKey: String,
       trustedCertificates: String,
+  )
+
+  /** An edge whose certificate central issues renews it by itself, over the mutual-TLS listener, for as long as it is
+    * registered. That is a chain, and it begins at the edge's enrollment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. On (the default), central extends the chain itself and says so in its log: an
+    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing the edges of **partner**
+    *   groups at `maxAge` until an operator extends the edge (the operator's own edges are always extended) (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
+    *   edge to be re-approved on a schedule. The edge is told the date long before, and so is the console.
+    */
+  case class EdgeIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = true,
   )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge

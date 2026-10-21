@@ -356,7 +356,7 @@ object SSOClientSpec extends ZIOSpecDefault:
             )
             for
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, unpinned, certificateFiles)
+              sso = SSOClient.Impl(client, unpinned, certificateFiles, EdgeIdentity.Registered(unpinned))
             yield assertTrue(
               sso.endpoint(mutualTls, "par") == listener / "par",
               sso.endpoint(mutualTls, "token") == listener / "token",
@@ -371,14 +371,14 @@ object SSOClientSpec extends ZIOSpecDefault:
             )
             for
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, terminated, certificateFiles)
+              sso = SSOClient.Impl(client, terminated, certificateFiles, EdgeIdentity.Registered(terminated))
             yield assertTrue(sso.endpoint(mutualTls, "par") == publicName / "par")
           },
           test("with no pins and no native back channel the call is still refused, not made unauthenticated") {
             val bare = config.copy(versolaInternalUrl = Some(publicName), versolaInternalTrustedCertificates = Set.empty, native = None)
             for
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, bare, certificateFiles)
+              sso = SSOClient.Impl(client, bare, certificateFiles, EdgeIdentity.Registered(bare))
               error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls).flip
             yield assertTrue(error == SSOClient.CredentialNeedsTrustedServer(clientId, publicName / "token"))
           },

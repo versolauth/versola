@@ -25,7 +25,20 @@ import versola.central.configuration.clients.{
   OAuthClientService,
 }
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
-import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService, EdgeSyncController}
+import versola.central.configuration.edges.{
+  EdgeCertificateIssuer,
+  EdgeCertificateRepository,
+  EdgeController,
+  EdgeEnrollController,
+  EdgeEnrollmentTokenRepository,
+  EdgeGroupRepository,
+  EdgeGroupService,
+  EdgeIdentityChainRepository,
+  EdgeIdentityService,
+  EdgeRepository,
+  EdgeService,
+  EdgeSyncController,
+}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
@@ -48,7 +61,13 @@ import versola.configuration.clients.{
   PostgresOAuthClientRepository,
 }
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
-import versola.configuration.edges.PostgresEdgeRepository
+import versola.configuration.edges.{
+  PostgresEdgeCertificateRepository,
+  PostgresEdgeEnrollmentTokenRepository,
+  PostgresEdgeGroupRepository,
+  PostgresEdgeIdentityChainRepository,
+  PostgresEdgeRepository,
+}
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
@@ -74,6 +93,7 @@ import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.lang.System as JavaSystem
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -100,7 +120,14 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleRepository &
       RoleService &
       EdgeRepository &
+      EdgeGroupRepository &
+      EdgeEnrollmentTokenRepository &
+      EdgeIdentityChainRepository &
+      EdgeCertificateRepository &
       EdgeService &
+      EdgeGroupService &
+      EdgeCertificateIssuer &
+      EdgeIdentityService &
       FormRepository &
       FormService &
       LocaleRepository &
@@ -156,6 +183,17 @@ object PostgresCentralApp extends VersolaApp("central"):
     ).reduce(_ ++ _)
     authOnly @@ refuseEdgeCallers
 
+  /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
+    * (`APORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central, which makes it the
+    * public one of central's three ports (`PORT` is internal, `MPORT` is the edges' mutual TLS). Nothing else is
+    * served there.
+    *
+    * Only where `APORT` is set. Unlike auth, which has always served its additional listener on the default, central
+    * has none unless asked: binding 8082 by default would take a port another service uses on a host where central
+    * and auth share the network (vps), and an edge that is not remote has no use for enrollment at all. */
+  override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Option.when(JavaSystem.getenv("APORT") != null)(EdgeEnrollController.routes)
+
   /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
     * authenticated by the certificate it presents in the handshake as well as by its token. */
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
@@ -195,6 +233,10 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresAuthorizationDetailTypeRepository.live >++>
           PostgresRoleRepository.live >++>
           PostgresEdgeRepository.live >++>
+          PostgresEdgeGroupRepository.live >++>
+          PostgresEdgeEnrollmentTokenRepository.live >++>
+          PostgresEdgeIdentityChainRepository.live >++>
+          PostgresEdgeCertificateRepository.live >++>
           PostgresFormRepository.live >++>
           PostgresLocaleRepository.live >++>
           PostgresThemeRepository.live >++>
@@ -220,6 +262,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateAuthority.live >++>
       OAuthClientService.live >++>
       ClientCertificateIssuer.live >++>
+      EdgeCertificateIssuer.live >++>
       ClientCertificateService.live >++>
       BootstrapService.live >++>
       TenantService.live >++>
@@ -231,6 +274,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeService.live >++>
       RoleService.live >++>
       EdgeService.live >++>
+      EdgeGroupService.live >++>
+      EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>
       FormService.live >++>
