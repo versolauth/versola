@@ -118,11 +118,11 @@ object SensitiveStepUpSpec extends E2ESpec:
       yield assertTrue(noCode.isFailure).label("no authorization code") &&
         assertTrue(again.step.contains(ConversationStep.Credential), again.html.contains("\"passkeyOnly\":true"))
     },
-    test("a user with no passkey whom the flow cannot ask for anything else is refused") {
+    test("a user with no passkey is asked for the password their flow takes inline, and the token carries the class") {
       for
         (s, auth) <- freshUser
-        // An id token of this user from a plain sign-in. Their flow takes the password inline on the
-        // credential card, which a step-up for a known user skips, and no one-time code is reachable.
+        // An id token of this user from a plain sign-in; no passkey is enrolled. The password lives on the
+        // credential card of their flow, which a step-up for a known user skips, so it is asked for on its own.
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
@@ -135,14 +135,22 @@ object SensitiveStepUpSpec extends E2ESpec:
           redirectUri = Some(s.redirectUri),
         ).success
         idToken <- ZIO.fromOption(token.idToken).orElseFail(RuntimeException("no id_token"))
-        _ <- auth.authorizeRaw(
-          clientId = s.clientId,
-          redirectUri = s.redirectUri,
-          prompt = Some("login"),
-          acrValues = Some(Acr.Sensitive),
-          idTokenHint = Some(idToken),
-        ).assertErrorRedirect("unmet_authentication_requirements")
-      yield assertCompletes
+        (cookie2, step, verifier) <- startStepUp(s, auth, idToken)
+        wrong <- auth.submitPassword(cookie2, "not-the-password", step.csrf)
+        noCode <- wrong.assertRedirect.exit
+        again <- auth.getChallenge(cookie2)
+        code2 <- auth.submitPassword(cookie2, s.password, again.csrf).assertRedirect
+        token2 <- auth.token(
+          code2,
+          verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+        claims <- claimsOf(token2.idToken.get)
+      yield assertTrue(step.step.contains(ConversationStep.Password)).label("the password step, not a credential card") &&
+        assertTrue(noCode.isFailure).label("a wrong password yields no code") &&
+        assertTrue(claims.contains(s""""acr":"${Acr.Sensitive}"""")).label(s"acr claim in $claims")
     },
     test("a session that passed only a password does not satisfy it for a user who has a passkey: the passkey is asked for") {
       for

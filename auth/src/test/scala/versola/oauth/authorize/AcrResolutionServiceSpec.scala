@@ -302,6 +302,16 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
           result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, flow)
         yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.otp)))
       },
+      test("asks for the password when the flow takes it on the credential card") {
+        val env = makeEnv
+        val inlineFlow = flow.copy(primary = flow.primary.copy(inlinePassword = true, factors = Nil))
+        for
+          _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.passwordService.hasPassword.succeedsWith(true)
+          result <- env.service.builtInFactors(clientId, AcrResolutionService.Sensitive, userId, inlineFlow)
+        yield assertTrue(result == Some(NonEmptyList(PassedAuthFactor.password)))
+      },
       test("has nothing to ask a user who has no factor the flow offers") {
         val env = makeEnv
         for

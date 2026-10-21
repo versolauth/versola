@@ -969,6 +969,53 @@ object ConversationRouterSpec extends UnitSpecBase:
           preparePasswordTimes == 1,
         )
       },
+      test("asks the known user for the password step when the class needs a password the flow takes inline") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(
+          authFlow = inlineFlow,
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.password)),
+          userId = Some(testUserId),
+        )
+        val passwordResult = ConversationResult.RenderStep(ConversationStep.Password(0, None, 0, false, false))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.preparePasswordStep.succeedsWith(passwordResult)
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+          finishTimes = env.otpConversationService.finish.times
+        yield assertTrue(passwordTimes == 1, finishTimes == 0)
+      },
+      test("finishes, rather than asking again, once the password was passed in an inline-password flow") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(
+          authFlow = inlineFlow,
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.password)),
+          userId = Some(testUserId),
+          amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.now(), Set(AuthMethodRef.pwd))),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+          finishTimes = env.otpConversationService.finish.times
+        yield assertTrue(passwordTimes == 0, finishTimes == 1)
+      },
+      test("does not ask for a password in an inline-password flow when the class does not need one") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(authFlow = inlineFlow, targetAcr = None, userId = Some(testUserId))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+        yield assertTrue(passwordTimes == 0)
+      },
       test("routes to set-password before passkey enrollment when a password change is required") {
         val env = Env()
         val flow = loginFlow.copy(

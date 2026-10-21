@@ -84,7 +84,9 @@ object AcrResolutionService:
       )
 
     /** Fails closed: a user who has a passkey the flow cannot ask for gets nothing, not a weaker
-      * factor, so a tenant cannot be talked into accepting a one-time code in its place. */
+      * factor, so a tenant cannot be talked into accepting a one-time code in its place. A flow whose
+      * password is entered on the credential card lists no password factor, but can still ask for it:
+      * the step-up of a user it already knows asks with the password step. */
     private def sensitiveFactors(facts: UserFacts, flow: AuthFlow): Task[Option[NonEmptyList[PassedAuthFactor]]] =
       def offers(factorType: AuthFactorType): Boolean = flow.primary.factors.exists(_.`type` == factorType)
 
@@ -92,7 +94,8 @@ object AcrResolutionService:
         case true => ZIO.succeed(Option.when(flow.passkey.isDefined)(NonEmptyList(PassedAuthFactor.passkey)))
         case false =>
           facts.hasPassword.flatMap:
-            case true if offers(AuthFactorType.password) => ZIO.some(NonEmptyList(PassedAuthFactor.password))
+            case true if offers(AuthFactorType.password) || flow.primary.inlinePassword =>
+              ZIO.some(NonEmptyList(PassedAuthFactor.password))
             case _ => facts.hasOtp.map(hasOtp => Option.when(hasOtp && offers(AuthFactorType.otp))(NonEmptyList(PassedAuthFactor.otp)))
 
     override def builtInFactors(
