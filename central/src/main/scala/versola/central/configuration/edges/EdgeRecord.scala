@@ -23,6 +23,10 @@ import java.security.interfaces.RSAPublicKey
  * accepted across one edge's resources buys an attacker nothing that splitting the space would
  * deny. Distinct from a tenant's `require_dpop_nonce`, which governs `auth`'s own endpoints.
  *
+ * `groupId` and `groupKind` say which group of edges this one belongs to and who runs that group; the kind is
+ * the group's, copied here so the edge cache answers it without a lookup per call. Neither changes after
+ * the edge is registered.
+ *
  * `overloadPolicy` is what the edge does when asked for more than it can do: a patch over the settings the edge starts
  * with, `None` meaning none set (the deployment's own values). See [[OverloadPolicy]].
  */
@@ -32,6 +36,8 @@ case class EdgeRecord(
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
+    groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

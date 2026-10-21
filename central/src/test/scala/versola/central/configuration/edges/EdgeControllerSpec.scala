@@ -53,11 +53,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -67,6 +71,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- tenantRepository.getAll.succeedsWith(Vector.empty)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
+        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
         verifyResult <- verify(response, edgeService)
@@ -90,11 +96,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -103,6 +113,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- tenantRepository.getAll.succeedsWith(tenants)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
+        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         // `token` stubs `find` for `authorizeInternal`; a case that wants a particular record
         // back from it sets its own afterwards, so its setup runs second.
         raw <- token(edgeService)
@@ -190,7 +202,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, service) =>
         for body <- response.body.asJson[versola.central.configuration.edges.ServiceKeyResponse]
         yield assertTrue(
-          service.registerEdge.calls == List(edgeId),
+          service.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId)),
           body.keyId == testKeyPair.keyId,
         ),
     ),
@@ -291,16 +303,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
     ),
-    internalTestCase(
-      description = "an edge syncing its DPoP policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(requireDpopNonce = false))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeDpopSyncResponse]
-        yield assertTrue(!body.requireDpopNonce),
-    ),
     controllerTestCase(
       description = "setting a valid overload policy returns 204 and records it for the named edge",
       request = Request(
@@ -338,41 +340,5 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
-    ),
-    internalTestCase(
-      description = "an edge syncing its overload policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(overloadPolicy = Some(overloadPolicy)))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeOverloadSyncResponse]
-        yield assertTrue(body.overloadPolicy == Some(overloadPolicy)),
-    ),
-    internalTestCase(
-      description = "an edge with no overload policy set is served null",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
-      verify = response =>
-        for body <- response.body.asJson[EdgeOverloadSyncResponse]
-        yield assertTrue(body.overloadPolicy.isEmpty),
-    ),
-    internalTestCase(
-      description = "overload policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "overload" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
-    ),
-    // auth has no proxied calls to check proofs on, and an edge id is how this route knows
-    // whose policy to answer with -- a caller that is not an edge has no answer here.
-    internalTestCase(
-      description = "DPoP policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
     ),
   )

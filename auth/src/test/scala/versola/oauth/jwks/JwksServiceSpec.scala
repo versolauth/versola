@@ -18,8 +18,9 @@ import java.security.{KeyPair, KeyPairGenerator, PrivateKey}
   * reports as [[JWT.PublicKeys.active]] -- that's just the first element of an unordered
   * list, and it can drift ahead of this instance's own static private key across a
   * rotation. Signing goes by the key the tenant selected in central, and where nothing was
-  * selected by [[JwksService.resolveSigningKey]], which picks the entry whose public modulus
-  * matches the private key this instance actually holds, regardless of position.
+  * selected by [[JwksService.resolveSigningKey]], which picks the entry that belongs to the
+  * private key this instance actually holds (RSA modulus, or proof of possession for EC),
+  * regardless of position.
   */
 object JwksServiceSpec extends UnitSpecBase:
   private val tenantId = TenantId("tenant-a")
@@ -218,14 +219,71 @@ object JwksServiceSpec extends UnitSpecBase:
 
         assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate.nn, publicKeysOf(noAlgJwk)).isEmpty)
       },
-      // The legacy fallback only ever had one key to find: the configured `jwt.private-key`
-      // is RSA, so an EC key set has nothing in it this instance can sign with and the
-      // tenant's own selection is the only route to ES256.
-      test("returns None for an EC private key, which the legacy match cannot resolve") {
+      // gen-env's deployment: auth holds an EC key and the JWKS publishes only its public half.
+      test("resolves an EC private key to the ES256 entry it belongs to") {
         val ownKeyPair = ecKeyPair
-        val privateKey: PrivateKey = ownKeyPair.getPrivate.nn
-
-        assertTrue(JwksService.resolveSigningKey(privateKey, publicKeysOf(ecJwk(ownKeyPair, "own-kid"))).isEmpty)
+        val resolved = JwksService.resolveSigningKey(ownKeyPair.getPrivate.nn, publicKeysOf(ecJwk(ownKeyPair, "own-kid")))
+        assertTrue(
+          resolved.map(_.keyId).contains("own-kid"),
+          resolved.map(_.algorithm).contains(JWT.Algorithm.ES256),
+        )
+      },
+      test("returns None when no EC entry belongs to the EC private key") {
+        assertTrue(
+          JwksService.resolveSigningKey(ecKeyPair.getPrivate.nn, publicKeysOf(ecJwk(ecKeyPair, "other-kid"))).isEmpty,
+        )
+      },
+      test("returns None for an EC private key when the key set holds only RSA entries") {
+        assertTrue(
+          JwksService.resolveSigningKey(ecKeyPair.getPrivate.nn, publicKeysOf(rsaJwk(rsaKeyPair, "rsa-kid"))).isEmpty,
+        )
+      },
+      test("returns None for an RSA private key when the key set holds only EC entries") {
+        val ownKeyPair = rsaKeyPair
+        assertTrue(
+          JwksService.resolveSigningKey(ownKeyPair.getPrivate.nn, publicKeysOf(ecJwk(ecKeyPair, "ec-kid"))).isEmpty,
+        )
+      },
+      test("returns None when the matching EC entry carries no alg") {
+        val ownKeyPair = ecKeyPair
+        val noAlgJwk = new ECKey.Builder(com.nimbusds.jose.jwk.Curve.P_256, ownKeyPair.getPublic.asInstanceOf[ECPublicKey])
+          .keyID("own-kid")
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+        assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate.nn, publicKeysOf(noAlgJwk)).isEmpty)
+      },
+      test("an EC key set with entries of both types resolves each private key to its own entry") {
+        val rsaPair = rsaKeyPair
+        val ecPair = ecKeyPair
+        val otherRsa = rsaKeyPair
+        val otherEc = ecKeyPair
+        val publicKeys = publicKeysOf(
+          rsaJwk(otherRsa, "other-rsa", JWSAlgorithm.PS256),
+          ecJwk(otherEc, "other-ec"),
+          rsaJwk(rsaPair, "own-rsa", JWSAlgorithm.PS256),
+          ecJwk(ecPair, "own-ec"),
+        )
+        val rsa = JwksService.resolveSigningKey(rsaPair.getPrivate.nn, publicKeys)
+        val ec = JwksService.resolveSigningKey(ecPair.getPrivate.nn, publicKeys)
+        assertTrue(
+          rsa.map(_.keyId).contains("own-rsa"),
+          rsa.map(_.algorithm).contains(JWT.Algorithm.PS256),
+          ec.map(_.keyId).contains("own-ec"),
+          ec.map(_.algorithm).contains(JWT.Algorithm.ES256),
+        )
+      },
+      // The resolved signature must actually sign: the matching proves the entry, this proves the
+      // private key is usable under the algorithm taken from it.
+      test("an ES256 token signed with the resolved EC key verifies against the entry") {
+        val ownKeyPair = ecKeyPair
+        val jwk = ecJwk(ownKeyPair, "own-kid")
+        val resolved = JwksService.resolveSigningKey(ownKeyPair.getPrivate.nn, publicKeysOf(jwk)).get
+        val jws = new com.nimbusds.jose.JWSObject(
+          new com.nimbusds.jose.JWSHeader.Builder(resolved.algorithm.jwsAlgorithm).keyID(resolved.keyId).build(),
+          new com.nimbusds.jose.Payload("x"),
+        )
+        jws.sign(new com.nimbusds.jose.crypto.ECDSASigner(resolved.privateKey.asInstanceOf[java.security.interfaces.ECPrivateKey]))
+        assertTrue(jws.verify(new com.nimbusds.jose.crypto.ECDSAVerifier(jwk)))
       },
     ),
   )

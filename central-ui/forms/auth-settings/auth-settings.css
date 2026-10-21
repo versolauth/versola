@@ -96,6 +96,21 @@
 .account-enroll-error {
   font-size: 0.85rem;
 }
+.account-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.account-password-form .btn {
+  align-self: flex-start;
+  width: auto;
+  margin-top: 8px;
+}
+.account-password-done {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 .account-go-back {
   margin-top: 28px;
 }

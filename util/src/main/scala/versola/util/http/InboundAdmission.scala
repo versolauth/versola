@@ -75,13 +75,14 @@ object InboundAdmissionSettings:
 /** Admission control at the entry of a service: bounded calls in flight, refused above the tier's share of the limit, at once
   * and without a queue. A queue in front of a pod that cannot serve is where overload turns into latency for everyone.
   *
-  * The settings are replaced as a whole while the process runs ([[update]]). With `adaptive.enabled` the limit is not
-  * `maxInFlight` but a value [[AdaptiveLimit]] keeps inside `[minLimit, maxLimit]` from the call times it observes and from
-  * the lag of the executor; `maxInFlight` then only matters while adaptation is off.
+  * The settings are replaced as a whole while the process runs ([[update]]). While the mode is not `off` the limit is a value
+  * [[AdaptiveLimit]] keeps inside `[minLimit, maxLimit]` from the call times it observes and from the lag of the executor;
+  * `maxInFlight` is where it starts (clamped into those bounds). `shadow` learns and counts what `enforce` would refuse;
+  * `enforce` refuses above the learned limit.
   *
   * Metrics: `http_admission_in_flight`, `http_admission_in_flight_peak` (the highest value since the previous sample: a stall
   * is over before a 10 s scrape sees its top), `http_admission_limit`, and `http_admission_refused_total` by `tier` and `mode`
-  * (in `shadow`: what `enforce` would have refused). With adaptation also `http_admission_adaptive_limit_ratio` (the learned limit over its ceiling), `http_admission_rtt_seconds` by `tier` and
+  * (in `shadow`: what `enforce` would have refused). Also `http_admission_adaptive_limit_ratio` (the learned limit over its ceiling), `http_admission_rtt_seconds` by `tier` and
   * `http_executor_lag_seconds` (the worst lateness of a 10 ms timer in the last second).
   */
 final class InboundAdmission private (settings: AtomicReference[InboundAdmissionSettings]):
@@ -90,7 +91,7 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
   private val inFlight = new AtomicInteger(0)
   private val peak = new AtomicInteger(0)
 
-  // the limit adaptation has arrived at; read only while `adaptive.enabled`
+  // the limit adaptation has arrived at
   private val adaptation = new AtomicReference(AdaptiveLimit.initial(settings.get.adaptive, Classes, settings.get.maxInFlight))
   private val learned = new AtomicInteger(adaptation.get.limit.toInt)
   // what the window being collected has seen, per class: summed call time (ns) and calls completed
@@ -100,18 +101,17 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
   private val lagMax = new AtomicLong(0)
 
   /** The number of places in force now. */
-  def limit: Int =
-    val s = settings.get
-    if s.adaptive.enabled then learned.get else s.maxInFlight
+  def limit: Int = learned.get
 
   def current: InboundAdmissionSettings = settings.get
   def update(next: InboundAdmissionSettings): UIO[Unit] =
     ZIO.succeed:
       val before = settings.getAndSet(next)
-      // Switched on: start from the limit the operator has been running with. Already on: what was learned stays if it is
-      // still inside the new bounds, and is brought inside them if not.
+      // Switched on, or a new starting value: start from `maxInFlight`. Otherwise what was learned stays if it is still
+      // inside the new bounds, and is brought inside them if not.
       val state =
-        if !before.adaptive.enabled && next.adaptive.enabled then AdaptiveLimit.initial(next.adaptive, Classes, next.maxInFlight)
+        if (before.mode == GuardMode.Off && next.mode != GuardMode.Off) || before.maxInFlight != next.maxInFlight then
+          AdaptiveLimit.initial(next.adaptive, Classes, next.maxInFlight)
         else AdaptiveLimit.rebound(adaptation.get, next.adaptive)
       adaptation.set(state)
       learned.set(state.limit.toInt)
@@ -119,7 +119,7 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
 
   /** Takes a place if there is one for `tier`. */
   private def tryEnter(tier: Tier, s: InboundAdmissionSettings): Boolean =
-    val limit = s.threshold(tier, if s.adaptive.enabled then learned.get else s.maxInFlight)
+    val limit = s.threshold(tier, learned.get)
     var entered = false
     var done = false
     while !done do
@@ -172,7 +172,7 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
     Clock.nanoTime.flatMap: started =>
       restore(handler(request)).onExit: exit =>
         ZIO.succeed(inFlight.decrementAndGet()) *>
-          ZIO.when(!exit.isInterrupted && settings.get.adaptive.enabled)(
+          ZIO.when(!exit.isInterrupted && settings.get.mode != GuardMode.Off)(
             Clock.nanoTime.map(now => record(tier, now - started)),
           )
 
@@ -191,7 +191,7 @@ final class InboundAdmission private (settings: AtomicReference[InboundAdmission
         RttWindow(if n > 0 then sum.toDouble / n else 0.0, n.toInt)
       val lag = Duration.fromNanos(lagMax.getAndSet(0))
       val peakInWindow = windowPeak.getAndSet(inFlight.get)
-      if s.enabled then
+      if settings.get.mode != GuardMode.Off then
         val next = AdaptiveLimit.step(s, adaptation.get, windows, peakInWindow, lag)
         adaptation.set(next)
         learned.set(next.limit.toInt)

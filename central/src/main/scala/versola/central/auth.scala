@@ -1,11 +1,11 @@
 package versola.central
 
-import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupKind, EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.Unauthorized
+import versola.util.http.{Observability, Unauthorized}
 import versola.util.{JWT, Secret}
 import zio.ZIO
-import zio.http.{Header, Request}
+import zio.http.{Handler, Header, Middleware, Request, Response, Routes}
 import zio.json.{JsonCodec, jsonField}
 
 /** Verifies the central resource secret via HTTP Basic. */
@@ -47,6 +47,54 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
 
     case _ =>
       ZIO.fail(Unauthorized)
+
+/** The edge-facing surface's check (#554): the caller is a registered edge, proven twice. The key
+  * it signed the token with says which edge it claims to be; the client certificate the TLS
+  * handshake presented, on central's mutual-TLS listener, must have been issued to that same edge
+  * ([[EdgeCertificate.isIssuedTo]]). A certificate for another edge is therefore not enough to
+  * use a token that names this one, and a stolen token is not enough without a certificate. The
+  * caller is served as that edge and no other. Auth's token names no edge and is refused: what auth
+  * needs, it reads under `/configuration`.
+  */
+def authorizeEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeId] =
+  for
+    edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
+    edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
+    presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
+    _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId, edge.groupId))
+    // What a partner's edge may do is decided by the operator's registration of its group, not by anything the edge
+    // presents: it gets a certificate that names its group and nothing from central's configuration.
+    _ <- (Observability.setError("edge_group_partner") *> ZIO.fail(Unauthorized))
+      .when(edge.groupKind != EdgeGroupKind.FirstParty)
+  yield edgeId
+
+/** Refuses an edge token on every route it wraps (#554). The edge-facing surface is
+  * `EdgeSyncController` alone; everything else central serves belongs to auth or to the admin
+  * console, so an edge is turned away once, here, rather than in each controller -- an endpoint
+  * added later cannot forget to. A token that names an edge is checked the way
+  * `authorizeInternal` would: a genuine one is refused as forbidden, a forged one as
+  * unauthenticated. A token that names no edge, or no bearer token at all, is the route's own
+  * business.
+  */
+val refuseEdgeCallers: Middleware[CentralConfig & EdgeService] = new Middleware[CentralConfig & EdgeService]:
+  def apply[Env1 <: CentralConfig & EdgeService, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
+    Routes.fromIterable(routes.routes.map(_.transform(refuse)))
+
+  private def refuse[Env1 <: CentralConfig & EdgeService](
+      handler: Handler[Env1, Response, Request, Response],
+  ): Handler[Env1, Response, Request, Response] =
+    Handler.scoped[Env1]:
+      Handler.fromFunctionZIO[Request]: request =>
+        request.header(Header.Authorization) match
+          case Some(Header.Authorization.Bearer(token)) =>
+            JWT.parseHeader[InternalAuthHeader](token.stringValue).map(_.edgeId.isDefined).orElseSucceed(false).flatMap:
+              case false => handler(request)
+              case true =>
+                authorizeInternal(request).foldZIO(
+                  _ => ZIO.fail(Response.unauthorized),
+                  _ => Observability.setError("edge_caller_refused") *> ZIO.fail(Response.forbidden),
+                )
+          case _ => handler(request)
 
 case class InternalAuthHeader(
     @jsonField("edge_id") edgeId: Option[String],

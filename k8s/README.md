@@ -374,7 +374,7 @@ service under `services.<name>` (or `global` for the spread).
 
 **Do not scale these services on memory, and be careful with CPU.** The JVMs run a fixed heap
 (`-Xms512m -Xmx512m`), so memory use is flat in load and says nothing about demand. CPU is a weak signal
-too: RSA signing and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
+too: token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
 under load CPU saturates at what those admit instead of rising with demand, and a utilisation target can
 sit below its threshold while requests queue. The default metric is CPU utilisation of the request
 (`targetCPUUtilizationPercentage: 70`, which needs `resources.requests.cpu`); `autoscaling.metrics`
@@ -565,6 +565,10 @@ The chart generates no `env.conf`, so point yours at the files it mounts:
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
 | `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the trust-manager bundle if enabled, else the issuing CA) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
+| `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
+| `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the issuing CA) |
+| `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` |
+| `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
 
 Both auth and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A
@@ -573,6 +577,30 @@ certificate use the two-pin procedure (publish the next leaf on every edge befor
 instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add the incoming CA's
 Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
 clients, then remove the outgoing source.
+
+**The edge surface on central (#554).** Central serves what an edge reads (`/edge/*`) on its own
+mutual-TLS listener, `services.central.mutualTlsPort` (`8093`, MPORT), and nowhere else; edge's
+`central.url` is `https://<release>-versola-central:8093`. Every call carries two proofs: the
+handshake's certificate chains to the issuing CA, and carries the URI name
+`urn:versola:edge:<id>` -- `pki.edgeCentral.edgeId`, which must equal the `id` in edge's
+`env.conf` -- for the same edge the signed token names. cert-manager issues both certificates
+(`pki.centralServer`, `pki.edgeCentral`) and renews them; nothing is registered in central when it
+does, so a renewal needs only the restart Reloader gives edge and central. The chart's Service is
+a ClusterIP by default. To let edges outside the cluster in, set
+`services.central.mutualTlsExposure.type`: `loadBalancer` (a LoadBalancer Service on port 443, with
+`sourceRanges` to restrict who may connect), `ingressPassthrough` (an Ingress for `host` with
+`ssl-passthrough`; the controller must support it, e.g. ingress-nginx started with
+`--enable-ssl-passthrough`) or `gatewayTLSRoute` (a Gateway API `TLSRoute` on a listener in
+`Passthrough` mode). All of them carry the handshake through untouched -- a terminating route would
+swallow the certificate, so the chart renders none. Put the public name in
+`pki.centralServer.dnsNames` and point DNS at the entry point. A deployment is therefore addressed by
+two hostnames: `id.<domain>` for auth (the ingress) and `central.<domain>` routed (TLS passthrough, by
+SNI) to central's mutual-TLS port, which edges outside the cluster use as
+`central.url = https://central.<domain>`; inside the cluster edge uses
+`https://<release>-versola-central:8093` (`scripts/gen-env.scala`'s default for `k8s`). With
+`pki.issuerRef` left empty the issuing CA also signs edge-fronted clients' certificates; central
+refuses to issue one carrying an edge's URI name, but a CA used for nothing else is the cleaner setup
+(`pki.issuerRef`).
 
 A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs
 the same listener, and edge uses it by itself: with `versola-internal-url` plaintext (the chart's `http://versola-auth:8080`)
