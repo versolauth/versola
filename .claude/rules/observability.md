@@ -8,6 +8,11 @@ Request logging is built around `Observability` (`util/.../http/Observability.sc
 middleware emits **one `receive-http` line per request** (logger `versola.http.HttpServer`) with the
 request, response, timing, and two accumulated annotations. Enrich that line; do not add more lines.
 
+The line is not guaranteed for a successful request: `HTTP_ACCESS_LOG=sampled|off` (`AccessLogSettings`) drops
+most of them. A request with status 400 or above, or an unhandled error, is always logged, so everything above about
+`setError` still holds; never rely on a successful request's line being in the log, use metrics for that. Successful
+`send-http` lines are `DEBUG`.
+
 ## The request log context
 
 - `auth` annotation (`AuthDetails`): who and what the request is about. Fill it in as soon as a
