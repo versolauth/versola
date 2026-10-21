@@ -2,44 +2,36 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZLayer}
+import zio.{Task, ZIO, ZLayer}
 
-import java.sql.Types
 import java.time.format.DateTimeFormatter
-import java.time.{LocalDate, ZoneOffset}
+import java.time.{Instant, LocalDate}
 
 class PostgresAntifraudEventRepository(xa: TransactorZIO) extends AntifraudEventRepository, BasicCodecs:
+  import PgCodec.SeqCodec
   import PostgresAntifraudEventRepository.*
+  import SqlArrayCodec.StringSqlArrayCodec
+
+  private given DbCodec[Instant] = DbCodec.InstantCodec
 
   override def insertBatch(events: List[AntifraudEvent]): Task[Unit] =
-    xa.connectMeasured("insert-antifraud-events"):
-      val connection = summon[DbCon].connection
-      val statement = connection.prepareStatement(
-        """INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
-          |                      subject_hash, dest_prefix, user_agent, decision, score, rules)
-          |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin,
-      )
-      try
-        events.foreach: event =>
-          statement.setObject(1, event.id)
-          statement.setObject(2, event.at.atOffset(ZoneOffset.UTC))
-          statement.setString(3, event.tenantId.map(identity[String]).orNull)
-          statement.setString(4, event.clientId)
-          statement.setObject(5, event.conversationId)
-          statement.setString(6, event.action.toString)
-          statement.setString(7, event.outcome.toString)
-          statement.setString(8, event.channel.toString)
-          statement.setString(9, event.subjectHash)
-          statement.setString(10, event.destPrefix.orNull)
-          statement.setString(11, event.userAgent.orNull)
-          statement.setString(12, event.decision.orNull)
-          event.score.fold(statement.setNull(13, Types.INTEGER))(score => statement.setInt(13, score))
-          statement.setArray(14, connection.createArrayOf("text", event.rules.toArray[Object]))
-          statement.addBatch()
-        statement.executeBatch()
-      finally statement.close()
-    .unit
+    if events.isEmpty then ZIO.unit
+    else
+      xa.transactMeasured("insert-antifraud-events"):
+        batchUpdate(events): event =>
+          sql"""
+            INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
+                                  subject_hash, dest_prefix, user_agent, decision, score, rules)
+            VALUES (
+              ${event.id}, ${event.at}, ${event.tenantId.map(identity[String])}, ${event.clientId: String},
+              ${event.conversationId}, ${event.action.toString}, ${event.outcome.toString},
+              ${event.channel.toString}, ${event.subjectHash}, ${event.destPrefix}, ${event.userAgent},
+              ${event.decision}, ${event.score}, ${event.rules}
+            )
+          """.update
+      .unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Unit] =
     xa.transactMeasured("maintain-antifraud-partitions"):
