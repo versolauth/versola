@@ -137,6 +137,24 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
         names <- partitions(xa)
       yield assertTrue(results.forall(_.isSuccess), names.size == 3)
     },
+    test("gives up on a lock it cannot get in time and leaves no partition behind, then succeeds once it is free") {
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        impatient = PostgresAntifraudEventRepository(xa, lockTimeout = 200.millis)
+        // A reader that holds the table for a while, as a long statistics query would.
+        reader <- xa.transact:
+          sql"LOCK TABLE af_event IN ACCESS SHARE MODE".update.run()
+          Thread.sleep(2000)
+        .fork
+        _ <- Live.live(ZIO.sleep(500.millis))
+        blocked <- impatient.maintainPartitions(today, 3, today.minusDays(30)).exit
+        during <- partitions(xa)
+        _ <- reader.join
+        _ <- impatient.maintainPartitions(today, 3, today.minusDays(30))
+        after <- partitions(xa)
+      yield assertTrue(blocked.isFailure, during.isEmpty, after.size == 3)
+    },
     test("names and reads partitions by day") {
       assertTrue(
         PostgresAntifraudEventRepository.partitionName(today) == "af_event_20261021",

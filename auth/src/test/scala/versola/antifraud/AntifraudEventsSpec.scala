@@ -151,6 +151,35 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(1.second)
           yield assertTrue(e.repository.insertBatch.calls.map(_.size) == List(1, 2, 2))
       },
+      test("a database that is down is tried about once an interval, however full the queue, and its failure is logged once") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.repository.insertBatch.failsWith(RuntimeException("database is down"))
+            events <- build(e, small.copy(queueCapacity = 100, batchSize = 2))
+            _ <- ZIO.foreachDiscard(List.fill(50)(event()))(events.record)
+            _ <- TestClock.adjust(1.second)
+            calls <- ZIO.succeed(e.repository.insertBatch.calls.size)
+            warnings <- ZTestLogger.logOutput.map(_.count(_.logLevel == LogLevel.Warning))
+          yield assertTrue(calls <= 3, warnings <= 1)
+      },
+      test("locked requests give way like refused ones") {
+        val e = env
+        ZIO.scoped:
+          for
+            started <- Promise.make[Nothing, Unit]
+            release <- Promise.make[Nothing, Unit]
+            _ <- e.repository.insertBatch.returnsZIO(_ => started.succeed(()) *> release.await)
+            events <- build(e, small)
+            _ <- events.record(event())
+            _ <- started.await
+            _ <- ZIO.foreachDiscard(List(event(), event()))(events.record)
+            shed = event(AntifraudOutcome.locked)
+            _ <- events.record(shed)
+            _ <- release.succeed(())
+            _ <- TestClock.adjust(1.second)
+          yield assertTrue(!e.repository.insertBatch.calls.flatten.contains(shed))
+      },
       test("writes what is still queued when it stops") {
         val e = env
         for

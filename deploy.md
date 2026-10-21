@@ -411,7 +411,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   and once the days ahead are used up the events are dropped (`antifraud_events_dropped_total{reason="write_failed"}`).
   Events are queued in memory and written in batches: a full queue or a failed write drops events and counts them,
   never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
-  estimate: requests that were refused (`throttled`) give way first once the queue is half full
+  estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
   (`reason="throttled_shed"`), and what is still dropped is counted, so read statistics together with that counter.
   Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
   (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
@@ -419,7 +419,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   such key and falls back on `security.sessions-secret`, so an upgrade needs no change, but rotating the sessions
   secret then changes the hashes too. `versola configure` generates the secret for a deployment that wants its own;
   the Helm chart reads it from the release's Secret as an optional key, so a release whose Secret predates it keeps
-  starting. **The hash is pseudonymous, not anonymous:** the space of phone numbers is small enough to be tried
+  starting (an `env.conf` regenerated to reference `${ANTIFRAUD_SUBJECT_SECRET}` needs the key in the Secret too: add the
+  key together with the new config). **The hash is pseudonymous, not anonymous:** the space of phone numbers is small enough to be tried
   against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
   Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the

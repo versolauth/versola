@@ -115,9 +115,9 @@ object AntifraudEvents:
   ) extends AntifraudEvents:
 
     override def record(event: AntifraudEvent): UIO[Unit] =
-      // A refused request is logged at the pace its sender sets, so once the queue is half full they give way: what
+      // A refused request (`throttled`, `locked`) is logged at the pace its sender sets, so once the queue is half full they give way: what
       // is left is for the requests that were let through, which the statistics are made of.
-      val shed = event.outcome == AntifraudOutcome.throttled
+      val shed = AntifraudEvents.shedFirst.contains(event.outcome)
       queue.size.flatMap: size =>
         if shed && size > queueCapacity / 2 then AntifraudMetrics.dropped("throttled_shed")
         else
@@ -181,41 +181,58 @@ object AntifraudEvents:
 
   val userAgentLength = 256
 
+  /** Outcomes of requests that were turned away, at the pace the sender sets: they give way first when the queue
+    * fills up. */
+  private val shedFirst: Set[AntifraudOutcome] = Set(AntifraudOutcome.throttled, AntifraudOutcome.locked)
+
   private class Writer(queue: Queue[AntifraudEvent], repository: AntifraudEventRepository, settings: Settings):
 
-    /** Takes what has gathered, writes it, rests, and again. A failed write drops that batch, counted and logged
-      * once, and the loop goes on: the next batch may well succeed. */
-    private val loop: UIO[Nothing] =
+    /** Takes what has gathered, writes it, rests, and again. A failed write drops that batch and the loop goes on:
+      * the next batch may well succeed. It rests after a batch that did not fill, and after a failed one, so a
+      * database that is down is tried once per interval and not as fast as the queue can be emptied. */
+    private def loop(failing: Ref[Boolean]): UIO[Nothing] =
       (for
         first <- queue.take
         rest <- queue.takeUpTo(settings.batchSize - 1)
         batch = (first +: rest).toList
         _ <- AntifraudMetrics.queueSize(queue)
-        _ <- write(batch)
-        // Rest only when the queue was not full to the brim: a backlog (which is what an attack makes) is
-        // written back to back, so the write rate is not capped at one batch per interval when it matters.
-        _ <- ZIO.sleep(settings.flushInterval).when(batch.size < settings.batchSize)
+        ok <- write(batch, failing).onInterrupt(AntifraudMetrics.dropped("shutdown", batch.size))
+        // A backlog (which is what an attack makes) is written back to back, so the write rate is not capped at
+        // one batch per interval when it matters.
+        _ <- ZIO.sleep(settings.flushInterval).when(!ok || batch.size < settings.batchSize)
       yield ()).forever
 
-    private def write(batch: List[AntifraudEvent]): UIO[Unit] =
+    /** Whether the batch was written. The warning, with its stack, is logged once when writes start failing and
+      * once more when they recover, not for every batch in between. */
+    private def write(batch: List[AntifraudEvent], failing: Ref[Boolean]): UIO[Boolean] =
       repository.insertBatch(batch).foldCauseZIO(
         cause =>
           AntifraudMetrics.dropped("write_failed", batch.size) *>
-            ZIO.logWarningCause(s"dropped ${batch.size} antifraud events: they could not be written", cause),
-        _ => AntifraudMetrics.written(batch.size),
+            failing.getAndSet(true).flatMap(was =>
+              ZIO.logWarningCause(s"dropped ${batch.size} antifraud events: they could not be written", cause).unless(was),
+            ).as(false),
+        _ =>
+          AntifraudMetrics.written(batch.size) *>
+            failing.getAndSet(false).flatMap(was => ZIO.logInfo("antifraud events are being written again").when(was)).as(true),
       )
 
     /** The final write is bounded: a database that is down must not hold the shutdown up. */
-    private val drain: UIO[Unit] =
+    private def drain(failing: Ref[Boolean]): UIO[Unit] =
       queue.takeAll.flatMap: events =>
         ZIO.when(events.nonEmpty)(
-          write(events.toList).timeout(5.seconds).flatMap:
+          write(events.toList, failing).timeout(5.seconds).flatMap:
             case None => AntifraudMetrics.dropped("shutdown", events.size)
             case Some(_) => ZIO.unit,
         ).unit
 
+    /** The loop is stopped before the last write, so that nothing is writing while it is made; the batch it was
+      * in the middle of is counted as dropped. */
     val run: URIO[Scope, Unit] =
-      loop.forkScoped.unit *> ZIO.addFinalizer(drain).unit
+      for
+        failing <- Ref.make(false)
+        fiber <- loop(failing).fork
+        _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
+      yield ()
 
   private class Maintenance(repository: AntifraudEventRepository, settings: Settings):
 

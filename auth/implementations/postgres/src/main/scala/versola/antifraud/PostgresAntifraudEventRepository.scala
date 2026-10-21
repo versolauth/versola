@@ -4,12 +4,12 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZIO, ZLayer}
+import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, LocalDate}
 
-class PostgresAntifraudEventRepository(xa: TransactorZIO) extends AntifraudEventRepository, BasicCodecs:
+class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration = 5.seconds) extends AntifraudEventRepository, BasicCodecs:
   import PgCodec.SeqCodec
   import PostgresAntifraudEventRepository.*
   import SqlArrayCodec.StringSqlArrayCodec
@@ -39,7 +39,8 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO) extends AntifraudEvent
       // catalog, so they take turns.
       // Creating or dropping a partition takes an exclusive lock on `af_event`; behind a long read it would hold up
       // every insert of the writer. Better to give up (the next run tries again soon) than to queue them.
-      sql"SET LOCAL lock_timeout = '5s'".update.run()
+      val timeout = SqlLiteral(s"'${lockTimeout.toMillis}ms'")
+      sql"SET LOCAL lock_timeout = $timeout".update.run()
       sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
       (0 until days).map(from.plusDays(_)).foreach: day =>
         val partition = SqlLiteral(partitionName(day))
