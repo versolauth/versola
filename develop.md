@@ -295,7 +295,14 @@ certificate (from the **client** intermediate) does not complete the handshake, 
 `/app/mtls/auth-trust.crt` (client + edge) and, for names in the `urn:versola:edge:*` space,
 requires a chain to `mutual-tls.edge-trusted-certificates` (`/app/mtls/edge-ca.crt`). The listener
 leaves come from the **server** intermediate (90 days), the edge identity from the edge
-intermediate (30 days). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
+intermediate (30 days). **`central` signs edge identities itself** (`/edge/enroll`,
+`/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that
+intermediate, accepts them: `mtls-init` puts `edge-ca.crt` and `edge-ca.key` (unencrypted PKCS#8, 0600)
+into `versola-central-ca-*` -- the volume only central mounts, `/app/ca`, never the shared
+`/app/mtls` -- and `central.conf` gets `edge-certificate-authority { certificate, private-key }`. That
+is acceptable because central already decides which edges exist (registering one and enrolling it are
+both its admin API). Clients' certificates are still signed by the client intermediate through
+step-ca's `central` provisioner (`client-certificates`). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
 central's `APORT` (8094, not auth's 8082) is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
 an external client reaches them only through public names that are opt-in
 (`versola configure vps --mtls-domain`, `--central-mtls-domain`, `--central-domain`), which

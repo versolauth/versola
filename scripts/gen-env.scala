@@ -1892,13 +1892,28 @@ def defaultServerMetadata(authUrl: String): String =
          |}
          |""".stripMargin
 
+  // vps: central signs edge identities (/edge/enroll, /edge/certificate/renew) with the edge
+  // intermediate, which its listener trusts, and not through step-ca's client intermediate. `mtls-init`
+  // puts the certificate and its key into the volume only central mounts (/app/ca).
+  val edgeCertificateAuthorityBlock =
+    if isVps then
+      """
+        |# The CA edge identities are signed with: the edge intermediate (develop.md, "Certificate
+        |# storage and rotation"). Clients' certificates stay with the client CA above.
+        |edge-certificate-authority {
+        |  certificate = "/app/ca/edge-ca.crt"
+        |  private-key = "/app/ca/edge-ca.key"
+        |}
+        |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"

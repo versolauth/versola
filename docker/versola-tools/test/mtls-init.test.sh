@@ -18,7 +18,8 @@ fi
 
 scripts=$(cd "$here/.." && pwd)
 work=$(mktemp -d)
-export STEP_HOME=/home/step MTLS_DIR="$work/mtls"
+export STEP_HOME=/home/step MTLS_DIR="$work/mtls" CENTRAL_CA_DIR="$work/central-ca"
+mkdir -p "$CENTRAL_CA_DIR"
 failures=0
 
 pass() { echo "ok   $1"; }
@@ -84,6 +85,13 @@ for n in server central-server edge-client; do assert "all: issued $n" contains 
 assert "all: reports a change" contains "$o" "mtls-init: changed"
 for f in server.crt server.key server.next.crt central-server.crt central-server.key central-server.next.crt edge-client.crt edge-client.key \
   client-ca.crt edge-ca.crt server-ca.crt auth-trust.crt ca.crt; do assert "all: wrote $f" test -f "$MTLS_DIR/$f"; done
+# central signs edge identities with the edge intermediate: its certificate and key, in the volume
+# only central mounts, never in the shared one
+assert "all: central gets edge-ca.crt" same "$CENTRAL_CA_DIR/edge-ca.crt" "$edge_ca"
+assert "all: central's edge key is PKCS#8, unencrypted" grep -q "BEGIN PRIVATE KEY" "$CENTRAL_CA_DIR/edge-ca.key"
+assert "all: central's edge key is private" test "$(stat -c %a "$CENTRAL_CA_DIR/edge-ca.key")" = 600
+refute "all: the edge key is not in the shared volume" test -f "$MTLS_DIR/edge-ca.key"
+assert "all: the exported key signs a certificate that verifies against edge-ca.crt" sh -c "step certificate create urn:versola:edge:t $work/t.crt $work/t.key --ca $CENTRAL_CA_DIR/edge-ca.crt --ca-key $CENTRAL_CA_DIR/edge-ca.key --no-password --insecure --force && step certificate verify $work/t.crt --roots $MTLS_DIR/edge-ca.crt"
 refute "all: edge-client has no pin copy" test -f "$MTLS_DIR/edge-client.next.crt"
 assert "server verifies against server-ca.crt" verifies "$MTLS_DIR/server.crt" "$MTLS_DIR/server-ca.crt"
 assert "central-server verifies against server-ca.crt" verifies "$MTLS_DIR/central-server.crt" "$MTLS_DIR/server-ca.crt"

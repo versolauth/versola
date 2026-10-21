@@ -35,6 +35,11 @@
 # `mtls-init: changed` (something was written that a service has to be restarted for) and
 # the report lines. Key material is never printed.
 #
+# Central signs edge identities (enrollment and renewal) with the edge intermediate, so central, and
+# only central, gets its certificate and key: $CENTRAL_CA_DIR (the `versola-central-ca-vps` volume,
+# /app/ca in central alone) holds edge-ca.crt and edge-ca.key (unencrypted PKCS#8, mode 0600). The key
+# never goes into $MTLS_DIR, which auth and edge mount too.
+#
 # MTLS_DOMAIN / CENTRAL_MTLS_DOMAIN: public names added to the SAN of auth's and central's leaf
 # (opt-in, `versola configure vps --mtls-domain/--central-mtls-domain`). A leaf that lacks the
 # configured name is due, so setting one takes effect at the next prepare/all. STEP_HOME and
@@ -43,6 +48,7 @@ set -eu
 
 STEP_HOME="${STEP_HOME:-/home/step}"
 MTLS_DIR="${MTLS_DIR:-/mtls}"
+CENTRAL_CA_DIR="${CENTRAL_CA_DIR:-/central-ca}"
 PHASE="${MTLS_INIT_PHASE:-all}"
 MTLS_DOMAIN="${MTLS_DOMAIN:-}"
 CENTRAL_MTLS_DOMAIN="${CENTRAL_MTLS_DOMAIN:-}"
@@ -218,6 +224,25 @@ write_trust() {
   mv "$MTLS_DIR/.$dest.new" "$MTLS_DIR/$dest"
 }
 
+# The edge intermediate's certificate and key for central. The key file of step-ca is encrypted;
+# central reads PKCS#8 PEM without a password. Written beside and moved, the key first, only when
+# it differs from what is there (the intermediate never changes, so this is a one-off).
+export_edge_ca() {
+  [ -d "$CENTRAL_CA_DIR" ] || return 0
+  tmp=$CENTRAL_CA_DIR/.edge-ca.key.new
+  (umask 077; step crypto key format --pkcs8 --pem --insecure --no-password \
+    --password-file "$STEP_HOME/secrets/password" --force "$(ca_key edge)" > "$tmp")
+  chmod 600 "$tmp"
+  if [ -f "$CENTRAL_CA_DIR/edge-ca.key" ] && cmp -s "$tmp" "$CENTRAL_CA_DIR/edge-ca.key"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$CENTRAL_CA_DIR/edge-ca.key"
+  fi
+  cp "$(ca_crt edge)" "$CENTRAL_CA_DIR/.edge-ca.crt.new"
+  chmod 644 "$CENTRAL_CA_DIR/.edge-ca.crt.new"
+  mv "$CENTRAL_CA_DIR/.edge-ca.crt.new" "$CENTRAL_CA_DIR/edge-ca.crt"
+}
+
 # --- report ---------------------------------------------------------------------------------------
 
 # report_file <name>: one line per certificate in the file (a bundle holds several).
@@ -279,6 +304,7 @@ case "$PHASE" in
     ;;
 esac
 
+export_edge_ca
 write_trust client-ca.crt "$(ca_crt client)"
 write_trust edge-ca.crt "$(ca_crt edge)"
 write_trust server-ca.crt "$(ca_crt server)"

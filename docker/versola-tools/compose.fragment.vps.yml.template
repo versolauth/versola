@@ -143,6 +143,7 @@ services:
       - ./central.conf:/app/config/env.conf:ro
       - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-central-diagnostics-vps:/diagnostics
+      # Also edge-ca.{crt,key}: central signs edge identities with the edge intermediate.
       - versola-central-ca-vps:/app/ca:ro
       # #554: central's listener certificate and the edge intermediate that vouches for edge certificates.
       - versola-mtls-vps:/app/mtls:ro

@@ -350,6 +350,11 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
   enrollment listener, is new and also loopback.
 - `ca.crt` (root plus client intermediate) is still written, for anything that pinned it; nothing
   generated reads it any more.
+- `central` signs edge identities with the **edge intermediate**, whose key `mtls-init` copies (unencrypted
+  PKCS#8, mode 0600) into the central-only volume `versola-central-ca-*` as `edge-ca.key` (`edge-ca.crt`
+  beside it); `central.conf` gets `edge-certificate-authority`. Central already is the authority on which
+  edges exist, so holding that key adds no new party. Clients' certificates are still signed by the client
+  intermediate through step-ca.
 - **Existing deployments:** upgrade `versola-tools`, run `versola configure`, then `versola up` (or
   `versola rollout`). Roll `central`, `auth` and `edge` together: an old `edge.conf` against the new
   leaves, or the other way round, fails the pin check.
