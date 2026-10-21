@@ -399,6 +399,16 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
+  the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
+  `antifraud.retention` (14 days). The migration creates the parent only, so the role `auth` connects as needs
+  `CREATE` and `DROP` on its own tables, which it already has for its migrations. Events are queued in memory
+  and written in batches: a full queue or a failed write drops events and counts them
+  (`antifraud_events_dropped_total`), never delays a sign-in. A restart loses what was queued and unwritten.
+  Phone numbers and addresses are stored as a keyed hash derived from `security.sessions-secret`: rotating that
+  secret breaks the match between old and new events of the same destination. Rows are not under `cleanup`
+  (the table has no `expires_at`). Its keys are the optional `antifraud` block of `auth`'s config.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
