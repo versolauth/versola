@@ -404,8 +404,9 @@ a session that only passed a one-time code cannot change who can sign in to an a
 Edge answers such a call with `401`, the RFC 9470 challenge and, for a browser session, a `Location` header
 with the login that asks for what is missing; the page goes there, asking to be sent back to itself (`return_to`,
 a path of the preset's own origin; edge keeps it in `pending_logins.return_to`, migration `V2007`). Back on the
-page the user is offered to continue the action the sign-in interrupted, and a sign-in that ends in an error
-(for example `unmet_authentication_requirements`) is reported on the page. Reading the page, renaming a
+page the action the user had already confirmed is carried out at once (within ten minutes; adding a passkey
+leaves the name in its field if the browser wants a click of its own), and a sign-in that ends in an error (for
+example `unmet_authentication_requirements`) is reported on the page. Reading the page, renaming a
 passkey and finishing an enrollment ask for nothing more.
 
 A deployment that already has the `auth` resource is **not** changed: bootstrap keeps the step-up an

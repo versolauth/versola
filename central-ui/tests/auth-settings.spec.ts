@@ -20,9 +20,7 @@ const formConfig = {
     delete_button: 'Delete', delete_passkey_confirm: 'Remove this passkey?', save_button: 'Save', cancel_button: 'Cancel',
     confirm_button: 'Confirm', name_placeholder: 'Passkey name', name_required: 'Enter a passkey name',
     add_passkey_button: 'Add a passkey', enroll_failed: 'Could not add the passkey',
-    resume_title: 'You signed in again', resume_session: 'Continue signing out the session?',
-    resume_passkey: 'Continue removing the passkey?', resume_enroll: 'Continue adding the passkey “{name}”?',
-    resume_continue: 'Continue', step_up_unavailable: 'This action is not available for your account right now',
+    step_up_unavailable: 'This action is not available for your account right now',
     step_up_failed: 'We could not confirm your sign-in',
   },
   locales: ['en'],
@@ -137,7 +135,7 @@ async function rememberPending(page: Page, pending: Record<string, unknown>, at 
   await page.addInitScript(([value]) => sessionStorage.setItem('versola.account.pending', value), [JSON.stringify({ ...pending, at })]);
 }
 
-test('offers to continue the action the sign-in interrupted, and carries it out on the click', async ({ page }) => {
+test('carries out the action the sign-in interrupted, without asking again', async ({ page }) => {
   const requests: Array<{ method: string; body: string }> = [];
   await page.route('**/resources/auth/settings/**', async route => {
     requests.push({ method: route.request().method(), body: route.request().postData() ?? '' });
@@ -146,38 +144,71 @@ test('offers to continue the action the sign-in interrupted, and carries it out 
   await rememberPending(page, { kind: 'passkey', id: 'passkey-1' });
   await loadAccountForm(page);
 
-  await expect(page.getByRole('status')).toContainText('Continue removing the passkey?');
-  expect(requests).toEqual([]);
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-
   await expect(page.getByText('Old name', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(requests).toEqual([{ method: 'DELETE', body: JSON.stringify({ credentialId: 'passkey-1' }) }]);
   expect(await page.evaluate(() => sessionStorage.getItem('versola.account.pending'))).toBeNull();
 });
 
-test('drops the interrupted action on cancel, and ignores one that is too old or not ours', async ({ page }) => {
+test('signs the other session out the same way, and starts an enrollment with the name that was typed', async ({ page }) => {
+  const requests: Array<{ method: string; url: string; body: string }> = [];
+  await page.route('**/resources/auth/settings/**', async route => {
+    requests.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() ?? '' });
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await rememberPending(page, { kind: 'session', id: 'other-session' });
+  await loadAccountForm(page);
+  await expect(page.getByText('Firefox · Linux', { exact: true })).toHaveCount(0);
+  expect(requests.map(r => r.method)).toEqual(['DELETE']);
+  expect(requests[0].body).toBe(JSON.stringify({ targetSessionId: 'other-session' }));
+
+  const enrol = await page.context().newPage();
+  const enrolRequests: string[] = [];
+  await enrol.route('**/resources/auth/settings/**', async route => {
+    enrolRequests.push(route.request().url());
+    await route.fulfill({ status: 500, body: '' });
+  });
+  await rememberPending(enrol, { kind: 'enroll', name: 'Work laptop' });
+  await loadAccountForm(enrol);
+  await expect(enrol.getByPlaceholder('Passkey name')).toHaveValue('Work laptop');
+  expect(enrolRequests.some(url => url.endsWith('/passkeys/register/start'))).toBe(true);
+});
+
+test('does not go round again when the action is still refused right after the sign-in', async ({ page }) => {
+  let calls = 0;
+  await page.route('**/resources/auth/settings/**', async route => {
+    calls += 1;
+    await route.fulfill({ status: 401, headers: { Location: '/login/console?acr_values=sensitive' }, body: '' });
+  });
+  await page.route('**/login/console**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>sign in</p>' }));
+  await rememberPending(page, { kind: 'passkey', id: 'passkey-1' });
+  await loadAccountForm(page);
+
+  await expect(page.getByRole('alert')).toHaveText('We could not confirm your sign-in');
+  expect(calls).toBe(1);
+  expect(new URL(page.url()).pathname).toBe(accountUrl);
+  expect(await page.evaluate(() => sessionStorage.getItem('versola.account.pending'))).toBeNull();
+});
+
+test('ignores an interrupted action that is too old or not one this page wrote', async ({ page }) => {
   const requests: string[] = [];
   await page.route('**/resources/auth/settings/**', async route => {
     requests.push(route.request().method());
     await route.fulfill({ status: 204, body: '' });
   });
-  await rememberPending(page, { kind: 'session', id: 'other-session' });
+  await rememberPending(page, { kind: 'session', id: 'other-session' }, Date.now() - 11 * 60 * 1000);
   await loadAccountForm(page);
-  await expect(page.getByRole('status')).toContainText('Continue signing out the session?');
-  await page.getByRole('button', { name: 'Cancel', exact: true }).first().click();
-  await expect(page.getByRole('status')).toHaveCount(0);
-  expect(requests).toEqual([]);
-
-  const stale = await page.context().newPage();
-  await rememberPending(stale, { kind: 'session', id: 'other-session' }, Date.now() - 11 * 60 * 1000);
-  await loadAccountForm(stale);
-  await expect(stale.getByRole('status')).toHaveCount(0);
+  await expect(page.getByText('Firefox · Linux', { exact: true })).toBeVisible();
 
   const foreign = await page.context().newPage();
+  await foreign.route('**/resources/auth/settings/**', async route => {
+    requests.push(route.request().method());
+    await route.fulfill({ status: 204, body: '' });
+  });
   await foreign.addInitScript(() => sessionStorage.setItem('versola.account.pending', '{"kind":"transfer","id":"x","at":' + Date.now() + '}'));
   await loadAccountForm(foreign);
-  await expect(foreign.getByRole('status')).toHaveCount(0);
+  await expect(foreign.getByText('Firefox · Linux', { exact: true })).toBeVisible();
+  expect(requests).toEqual([]);
 });
 
 test('says so when the sign-in ended with an error, forgets the action and takes the error off the address', async ({ page }) => {
@@ -205,8 +236,7 @@ test('does not follow a login URL that leaves this origin', async ({ page }) => 
 });
 
 test('the heading stays reachable when the content is taller than the card', async ({ page }) => {
-  await page.setViewportSize({ width: 760, height: 560 });
-  await page.addInitScript(() => sessionStorage.setItem('versola.account.pending', JSON.stringify({ kind: 'passkey', id: 'passkey-1', at: Date.now() })));
+  await page.setViewportSize({ width: 760, height: 420 });
   await loadAccountForm(page);
   const card = (await page.locator('.account-container').boundingBox())!;
   const heading = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
