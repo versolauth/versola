@@ -274,11 +274,16 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
-        run: scala-cli run .github/scripts/coverage-badge.scala
+        run: scala-cli run --server=false .github/scripts/coverage-badge.scala
 
+      # `--server=false`: with scala-cli's bloop compile server, Scala 3.8.1's sbt-bridge and
+      # repl artifacts are first looked up on repo.scala-lang.org's maven-nightlies. When that
+      # host accepts connections and never answers, every lookup waits ~2.5 min before falling
+      # back to Maven Central, which turned a 30 s step into 25 min. Compiling in-process never
+      # touches that repository.
       - name: Generate dev configs
         if: github.event_name != 'release'
-        run: echo "local" | scala-cli run scripts/gen-env.scala
+        run: echo "local" | scala-cli run --server=false scripts/gen-env.scala
 
       # For the fresh-start check after edge comes up (see
       # check-fresh-start-login.sh): with the dev default (1 minute) a slow
