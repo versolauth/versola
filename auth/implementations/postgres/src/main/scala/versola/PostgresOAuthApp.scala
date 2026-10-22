@@ -1,7 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.antifraud.{AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository}
+import versola.antifraud.{AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository, PostgresVelocityRepository, VelocityCounters, VelocityRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -104,6 +104,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService &
       AntifraudEvents &
       AntifraudEventRepository &
+      VelocityRepository &
+      VelocityCounters &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -216,6 +218,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
+      PostgresVelocityRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -297,6 +300,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConsentService.live >++>
       antifraudSettings >++>
       AntifraudEvents.live >++>
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
+      VelocityCounters.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>

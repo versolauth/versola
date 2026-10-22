@@ -526,6 +526,31 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
 
+- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per phone (the keyed hash), IP address,
+  device, ASN and range of numbers over the last minute, 10 minutes, hour and day, for the antifraud rules. They are
+  **off by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no
+  rule fires. The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind: a
+  new key beyond it is not counted, the rule on it does not fire, `antifraud_velocity_untracked_total` counts them,
+  **alert on it increasing**, since it is what an attacker with many addresses does), `stripes` (8), `flush-interval`
+  (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000), `max-load-rows` (200000) and
+  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (50): the
+  most requests a key may have in the window, 0 for no limit; a rule fires above it and adds its `weight` to the score
+  the `antifraud` thresholds turn into a decision. Memory is bounded by `max-keys` times five kinds times at most 11.5 KB
+  (a key seen every minute of the day), usually a few dozen bytes per key.
+  Counts live in memory per instance and each instance writes its changed minutes to `af_velocity` every
+  `flush-interval` and reads the others' every `load-interval`, so a count is the instance's own exactly plus the
+  others' as of the last load: **stale by up to `flush-interval + load-interval`, accurate to within
+  `(instances - 1) * (the key's requests per second at one instance) * (flush-interval + load-interval)`**, and
+  by up to `share-from - 1` further requests per instance for a key too quiet to be shared. A restart keeps the
+  counts the instance had written (they are read back as the others'); what it had not written yet is lost. A
+  database that is down leaves per-instance counts and never slows a request: failures count in
+  `antifraud_velocity_failed_total{what="flush"|"load"}` and are logged once per outage. A load reads every
+  shared minute of the day (at most `max-load-rows`), so on a large deployment raise `share-from` to share fewer keys.
+  **The table holds IP addresses, which are personal data:** rows are deleted a day and an hour after their minute,
+  by the service. A key of a phone number is a keyed hash, as in `af_event`. The service takes the address from
+  `X-Forwarded-For`, then `X-Real-IP`, as the conversation does, so it is the client's only when the proxy in front
+  sets them and nothing else can reach `auth`.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
