@@ -82,6 +82,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   override protected def guardExemptPeers =
     ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
+  override protected def internalPeers =
+    ZIO.serviceWith[EdgeConfig]: config =>
+      import versola.util.http.OutboundGuard.peerOf
+      Set(config.central.url, config.internalUrl, config.versolaUrl).map(peerOf)
+
   /** The surface every mode serves. The internal one is added by [[mountedRoutes]], which is
     * where the mode is known. */
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =

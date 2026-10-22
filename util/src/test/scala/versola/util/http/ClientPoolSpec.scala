@@ -31,28 +31,34 @@ object ClientPoolSpec extends ZIOSpecDefault:
     yield Duration.fromNanos(done - started)).provideSome[Scope](Server.defaultWith(_.port(0))))
 
   def spec = suite("Observability client pool")(
-    test("the default is 128 connections per target, not zio-http's 10") {
+    test("the default maximum is 128 connections per target, not zio-http's 10") {
       assertTrue(
         Observability.defaultClientPoolSize == 128,
+        Observability.defaultClientPoolMin == 0,
         // The value the layer is built with. It was 0 once: the default was declared below the val that reads it.
         Observability.clientPoolSize == 128,
+        Observability.clientPoolConfig == ConnectionPoolConfig.Dynamic(0, 128, 30.seconds),
         Observability.clientConfig(Observability.defaultClientPoolSize).connectionPool == ConnectionPoolConfig.Fixed(128),
         Observability.clientConfig(7).connectionPool == ConnectionPoolConfig.Fixed(7),
       )
     },
-    test("no environment means the old Fixed(128); an unknown kind or invalid values fall back") {
+    test("no environment means Dynamic(0, 128, 30s); fixed stays selectable; an unknown kind means the default") {
       def pool(kind: String = null, size: String = null, min: String = null, ttl: String = null) =
         Observability.poolConfig(Option(kind), Option(size), Option(min), Option(ttl))
       assertTrue(
-        pool() == ConnectionPoolConfig.Fixed(128),
+        pool() == ConnectionPoolConfig.Dynamic(0, 128, 30.seconds),
+        pool(kind = "fixed") == ConnectionPoolConfig.Fixed(128),
         pool(kind = "fixed", size = "16") == ConnectionPoolConfig.Fixed(16),
         pool(kind = " FIXED ") == ConnectionPoolConfig.Fixed(128),
         // min and ttl only concern dynamic pools
-        pool(size = "16", min = "4", ttl = "5s") == ConnectionPoolConfig.Fixed(16),
-        pool(kind = "per-host", size = "16") == ConnectionPoolConfig.Fixed(16),
-        pool(size = "abc") == ConnectionPoolConfig.Fixed(128),
-        pool(size = "0") == ConnectionPoolConfig.Fixed(128),
-        pool(size = "-3") == ConnectionPoolConfig.Fixed(128),
+        pool(kind = "fixed", size = "16", min = "4", ttl = "5s") == ConnectionPoolConfig.Fixed(16),
+        pool(kind = "per-host", size = "16") == ConnectionPoolConfig.Dynamic(0, 16, 30.seconds),
+        pool(size = "16") == ConnectionPoolConfig.Dynamic(0, 16, 30.seconds),
+        pool(kind = "fixed", size = "abc") == ConnectionPoolConfig.Fixed(128),
+        pool(kind = "fixed", size = "0") == ConnectionPoolConfig.Fixed(128),
+        pool(kind = "fixed", size = "-3") == ConnectionPoolConfig.Fixed(128),
+        pool(size = "abc") == ConnectionPoolConfig.Dynamic(0, 128, 30.seconds),
+        pool(size = "-3") == ConnectionPoolConfig.Dynamic(0, 128, 30.seconds),
       )
     },
     test("dynamic: size is the maximum, minimum defaults to 0, ttl to 30s") {

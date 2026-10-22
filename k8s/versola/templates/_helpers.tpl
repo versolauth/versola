@@ -77,7 +77,7 @@ in the single shared Secret (values.yaml's `secrets.existingSecret`).
 */}}
 {{- define "versola.requiredSecretVars" -}}
 {{- $vars := dict
-  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
+  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "ANTIFRAUD_SUBJECT_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
   "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD" "CENTRAL_RESOURCE_SECRET" "UTILITY_CLIENT_PUBLIC_JWK")
   "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "EDGE_INTERNAL_SECRET" "EDGE_DPOP_NONCE_SALT" "EDGE_NATIVE_BLOB_KEY" "POSTGRES_PASSWORD")
  -}}
@@ -114,9 +114,12 @@ Renders the `env:` entries pulling one service's required secret values
 from values.yaml's `secrets.existingSecret` via secretKeyRef. Expects a
 dict: {root: $, service: "auth"|"central"|"edge"}. Fails at template time
 (not a confusing "secret \"\" not found" at Pod-start) if
-secrets.existingSecret is unset.
+secrets.existingSecret is unset. A variable listed in $optional is rendered
+with `optional: true`: a release whose own Secret predates the key keeps
+starting (its config does not reference the variable either).
 */}}
 {{- define "versola.secretEnv" -}}
+{{- $optional := list "ANTIFRAUD_SUBJECT_SECRET" -}}
 {{- $svc := .service -}}
 {{- $root := .root -}}
 {{- $secretName := $root.Values.secrets.existingSecret -}}
@@ -129,6 +132,9 @@ secrets.existingSecret is unset.
     secretKeyRef:
       name: {{ $secretName }}
       key: {{ include "versola.secretKeyFor" (dict "service" $svc "var" $var) }}
+{{- if has $var $optional }}
+      optional: true
+{{- end }}
 {{ end -}}
 {{- end -}}
 

@@ -94,6 +94,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      versola.antifraud.AntifraudEvents.noop,
     )
 
   val credentialStep = ConversationStep.Credential(

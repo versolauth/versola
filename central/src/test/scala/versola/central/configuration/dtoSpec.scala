@@ -22,29 +22,59 @@ object dtoSpec extends ZIOSpecDefault:
     s"""{"tenantId":"t","permission":"$id","description":{},"endpointIds":[]}""".fromJson[CreatePermissionRequest]
 
   def spec = suite("DTO JSON Codecs")(
-    suite("CreatePermissionRequest permission ID")(
-      test("colon-separated IDs are accepted") {
+    suite("permission ID rule")(
+      test("colon-separated IDs, with hyphens and underscores, are accepted") {
         assertTrue(
           createPermission("users:read").map(_.permission) == Right(Permission("users:read")),
           createPermission("billing:invoice:read_all").isRight,
+          createPermission("auth-settings:manage").isRight,
           createPermission("admin").isRight,
         )
       },
-      test("an ID with a dot is refused with the colon-only reason") {
+      test("create refuses an ID with a dot, naming the rule") {
         val result = createPermission("orders.read_all")
         assertTrue(result.isLeft, result.left.exists(_.contains("separated by ':'")))
       },
-      test("an ID outside the alphabet is refused") {
+      test("create refuses an ID outside the alphabet") {
         assertTrue(
           createPermission("Users:read").isLeft,
           createPermission("users:1read").isLeft,
+          createPermission("-users:read").isLeft,
           createPermission("users:").isLeft,
-          createPermission("users-read").isLeft,
+          createPermission(":read").isLeft,
+          createPermission("users::read").isLeft,
+          createPermission("").isLeft,
         )
       },
-      test("a stored ID with a dot still decodes where it is referenced, e.g. in an update") {
-        val update = """{"tenantId":"t","permission":"legacy.read","description":{"add":{},"delete":[]},"endpointIds":null}"""
-        assertTrue(update.fromJson[UpdatePermissionRequest].map(_.permission) == Right(Permission("legacy.read")))
+      test("update refuses an ID with a dot and accepts a colon one") {
+        def update(id: String) =
+          s"""{"tenantId":"t","permission":"$id","description":{"add":{},"delete":[]},"endpointIds":null}""".fromJson[UpdatePermissionRequest]
+        assertTrue(update("legacy.read").isLeft, update("legacy:read").map(_.permission) == Right(Permission("legacy:read")))
+      },
+      test("a role refuses a dotted permission reference on create and on patch") {
+        def create(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{},"permissions":["$id"]}""".fromJson[CreateRoleRequest]
+        def patch(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{"add":{},"delete":[]},"permissions":{"add":["$id"],"remove":[]}}"""
+            .fromJson[UpdateRoleRequest]
+        def remove(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{"add":{},"delete":[]},"permissions":{"add":[],"remove":["$id"]}}"""
+            .fromJson[UpdateRoleRequest]
+        assertTrue(
+          create("users.read").isLeft,
+          create("users:read").isRight,
+          patch("users.read").isLeft,
+          patch("users:read").isRight,
+          remove("users.read").isLeft,
+        )
+      },
+      test("a client refuses a dotted permission reference in a patch") {
+        def patch(id: String) =
+          decodeUpdate("").flatMap(_ =>
+            ("""{"clientId":"web-app","redirectUris":{"add":[],"remove":[]},"scope":{"add":[],"remove":[]},""" +
+              s""""permissions":{"add":["$id"],"remove":[]}}""").fromJson[UpdateClientRequest],
+          )
+        assertTrue(patch("orders.read").isLeft, patch("orders:read").isRight)
       },
     ),
     suite("UpdateClientRequest nullable fields distinguish absent from null")(

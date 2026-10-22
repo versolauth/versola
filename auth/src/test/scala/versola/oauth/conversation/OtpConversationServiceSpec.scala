@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.antifraud.{AntifraudAction, AntifraudOutcome, RecordingAntifraudEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
@@ -72,6 +73,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
+    val antifraud = RecordingAntifraudEvents()
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -92,6 +94,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      antifraud,
     )
 
   val initialConversation = ConversationRecord(
@@ -139,6 +142,151 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val submittedOtp = realOtp.copy(timesRequested = 1)
 
   val spec = suite("OtpConversationService")(
+    suite("antifraud events")(
+      test("a request that sent a code is recorded as sent, with the destination, client and user agent") {
+        val env = Env()
+        val conversation = initialConversation.copy(userAgent = Some("Mozilla/5.0"))
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, conversation, Left(email), factorIndex = 0)
+          steps = env.antifraud.steps
+        yield assertTrue(
+          steps == List(
+            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent),
+          ),
+        )
+      },
+      test("a request that sent nothing because the destination is not a user is recorded as suppressed") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          outcomes = env.antifraud.steps.map(_.outcome)
+        yield assertTrue(outcomes == List(AntifraudOutcome.suppressed))
+      },
+      test("a request refused by a ban, a rate limit or a submit ban is recorded as throttled") {
+        for
+          banned <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+              _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Banned)
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+          limited <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+              _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.RateLimited(30L))
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+          submitBan <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+        yield assertTrue(
+          banned == List(AntifraudOutcome.throttled),
+          limited == List(AntifraudOutcome.throttled),
+          submitBan == List(AntifraudOutcome.throttled),
+        )
+      },
+      test("a provider that fails is recorded as provider_error, and the failure still reaches the caller") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.failsWith(RuntimeException("OTP provider responded with 503"))
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0).exit
+          outcomes = env.antifraud.steps.map(_.outcome)
+        yield assertTrue(result.isFailure, outcomes == List(AntifraudOutcome.provider_error))
+      },
+      test("a request that lost the write race and sent nothing records nothing") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          steps = env.antifraud.steps
+        yield assertTrue(steps.isEmpty)
+      },
+      test("a correct code whose step could not be stored records nothing, so a retry cannot count a second verification") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
+          result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          steps = env.antifraud.steps
+        yield assertTrue(result == ConversationResult.WriteConflict, steps.isEmpty)
+      },
+      test("a correct code is recorded as verified, a wrong one as wrong_code, and a locked destination as locked") {
+        for
+          verified <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+              _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
+              _ <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+            yield env.antifraud.steps
+          }
+          wrong <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+              _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+              _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+          banned <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+          limited <- {
+            val env = Env()
+            for
+              _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
+              _ <- env.conversationRepository.overwrite.succeedsWith(true)
+              _ <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+            yield env.antifraud.steps.map(_.outcome)
+          }
+        yield assertTrue(
+          verified.map(_.outcome) == List(AntifraudOutcome.verified),
+          verified.head.action == AntifraudAction.otp_verify,
+          wrong == List(AntifraudOutcome.wrong_code),
+          banned == List(AntifraudOutcome.locked),
+          limited == List(AntifraudOutcome.locked),
+        )
+      },
+    ),
     suite("prepareInitialOtp")(
       test("create conversation record and send OTP") {
         val env = Env()

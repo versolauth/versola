@@ -399,6 +399,33 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
+  the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
+  `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
+  only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
+  read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
+  different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
+  keep the partitions and every write fails. The service takes at most 5 seconds for the lock the change needs
+  (a long query on `af_event` makes it give up, not queue the writes behind it) and tries again after a minute.
+  **Alert on `antifraud_partition_maintenance_failed_total` increasing**: a failed run is only a warning in the log,
+  and once the days ahead are used up the events are dropped (`antifraud_events_dropped_total{reason="write_failed"}`).
+  Events are queued in memory and written in batches: a full queue or a failed write drops events and counts them,
+  never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
+  estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
+  (`reason="throttled_shed"`), and what is still dropped is counted, so read statistics together with that counter.
+  Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
+  (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
+  the match between events before and after it, nothing else. A config written before the secret existed has no
+  such key and falls back on `security.sessions-secret`, so an upgrade needs no change, but rotating the sessions
+  secret then changes the hashes too. `versola configure` generates the secret for a deployment that wants its own;
+  the Helm chart reads it from the release's Secret as an optional key, so a release whose Secret predates it keeps
+  starting (an `env.conf` regenerated to reference `${ANTIFRAUD_SUBJECT_SECRET}` needs the key in the Secret too: add the
+  key together with the new config). **The hash is pseudonymous, not anonymous:** the space of phone numbers is small enough to be tried
+  against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
+  Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
+  retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
+  optional `antifraud` block of `auth`'s config.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
@@ -737,7 +764,7 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 | Outbound field | Default | Environment base |
 |---|---|---|
 | `mode` | `shadow` | `HTTP_CLIENT_GUARD_MODE` |
-| `maxConcurrent` | the connection pool size (128) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
+| `maxConcurrent` | the connection pool size (128, the maximum of the default `dynamic` pool; `HTTP_CLIENT_POOL_*` in k8s/README.md) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
 | `maxQueue` / `queueTimeoutMillis` / `requestTimeoutMillis` | 256 / 1000 / 10000 | `HTTP_CLIENT_GUARD_MAX_QUEUE`, `_QUEUE_TIMEOUT`, `_REQUEST_TIMEOUT` |
 | `breaker` | off; failureRatio 0.5, minCalls 20, window 10 s, open 5 s, probeCalls 3 | policy only |
 | `retryBudget` | ratio 0.1, minPerSecond 5 | policy only |
@@ -783,6 +810,34 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
+### Access log
+
+Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are
+the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
+profile under load, almost all of it for successful requests.
+
+- `HTTP_ACCESS_LOG=full` (default): every request, as before.
+- `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
+  against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
+  `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
+  (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
+  trace id is sampled at random.
+- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
+- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
+- A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
+
+`http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
+error ratios and latency do not change; only a search for one successful request in the log can come up empty.
+
+`send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
+upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+`LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
+`debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
+is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
+
+Invalid values fall back to the defaults.
+
 ### Configuration reference
 
 | Variable | Default | Meaning |
@@ -792,6 +847,10 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
+| `HTTP_ACCESS_LOG` | `full` | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
+| `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
+| `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
+| `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
