@@ -1,0 +1,182 @@
+{
+  "label" : "off",
+  "startedAt" : "2026-10-22T20:07:17.561313Z",
+  "scenarios" : [
+    {
+      "scenario" : "normal",
+      "seconds" : 120.006500583,
+      "arrivals" : 2400,
+      "waited" : 0,
+      "latencies" : {
+        "otp-request" : {
+          "count" : 2400,
+          "errors" : 0,
+          "p50Ms" : 3.209,
+          "p99Ms" : 6.399,
+          "maxMs" : 16.095
+        },
+        "otp-verify" : {
+          "count" : 2062,
+          "errors" : 0,
+          "p50Ms" : 8.019,
+          "p99Ms" : 14.479,
+          "maxMs" : 24.767
+        },
+        "refresh" : {
+          "count" : 15426,
+          "errors" : 0,
+          "p50Ms" : 2.979,
+          "p99Ms" : 5.603,
+          "maxMs" : 26.911
+        },
+        "token" : {
+          "count" : 2062,
+          "errors" : 0,
+          "p50Ms" : 3.263,
+          "p99Ms" : 6.043,
+          "maxMs" : 8.903
+        }
+      },
+      "otp" : {
+        "requested" : 2400,
+        "sent" : 2400,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 2062,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 338
+      },
+      "failures" : {},
+      "smsSent" : 2400,
+      "smsRanges" : 110,
+      "smsBusiestRange" : 34,
+      "auth" : {
+        "enqueued" : 4484.0,
+        "written" : 4600.0,
+        "dropped" : {},
+        "smsRefused" : 0.0,
+        "smsBudgetFull" : 0.0,
+        "queueSize" : 1.0
+      }
+    },
+    {
+      "scenario" : "token-control",
+      "seconds" : 63.329908625,
+      "arrivals" : 3000,
+      "waited" : 0,
+      "latencies" : {
+        "refresh" : {
+          "count" : 3000,
+          "errors" : 0,
+          "p50Ms" : 7.075,
+          "p99Ms" : 12.543,
+          "maxMs" : 91.839
+        },
+        "token" : {
+          "count" : 1000,
+          "errors" : 0,
+          "p50Ms" : 5.019,
+          "p99Ms" : 9.031,
+          "maxMs" : 18.335
+        }
+      },
+      "otp" : {
+        "requested" : 1000,
+        "sent" : 1000,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 1000,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 0
+      },
+      "failures" : {},
+      "smsSent" : 1000,
+      "smsRanges" : 110,
+      "smsBusiestRange" : 20,
+      "auth" : {
+        "enqueued" : 2006.0,
+        "written" : 2042.0,
+        "dropped" : {},
+        "smsRefused" : 0.0,
+        "smsBudgetFull" : 0.0,
+        "queueSize" : 0.0
+      }
+    },
+    {
+      "scenario" : "prefix-attack",
+      "seconds" : 119.977936042,
+      "arrivals" : 2400,
+      "waited" : 0,
+      "latencies" : {
+        "otp-request" : {
+          "count" : 2400,
+          "errors" : 0,
+          "p50Ms" : 5.223,
+          "p99Ms" : 9.639,
+          "maxMs" : 14.327
+        }
+      },
+      "otp" : {
+        "requested" : 2400,
+        "sent" : 2400,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 0,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 0
+      },
+      "failures" : {},
+      "smsSent" : 2400,
+      "smsRanges" : 1,
+      "smsBusiestRange" : 2400,
+      "auth" : {
+        "enqueued" : 2400.0,
+        "written" : 2400.0,
+        "dropped" : {},
+        "smsRefused" : 0.0,
+        "smsBudgetFull" : 0.0,
+        "queueSize" : 0.0
+      }
+    },
+    {
+      "scenario" : "device-attack",
+      "seconds" : 119.965087375,
+      "arrivals" : 2400,
+      "waited" : 0,
+      "latencies" : {
+        "otp-request" : {
+          "count" : 2400,
+          "errors" : 0,
+          "p50Ms" : 5.223,
+          "p99Ms" : 8.967,
+          "maxMs" : 21.999
+        }
+      },
+      "otp" : {
+        "requested" : 2400,
+        "sent" : 2400,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 0,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 0
+      },
+      "failures" : {},
+      "smsSent" : 2400,
+      "smsRanges" : 110,
+      "smsBusiestRange" : 31,
+      "auth" : {
+        "enqueued" : 2399.0,
+        "written" : 2379.0,
+        "dropped" : {},
+        "smsRefused" : 0.0,
+        "smsBudgetFull" : 0.0,
+        "queueSize" : 0.0
+      }
+    }
+  ]
+}

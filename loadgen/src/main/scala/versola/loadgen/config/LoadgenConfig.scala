@@ -1,5 +1,6 @@
 package versola.loadgen.config
 
+import versola.loadgen.antifraud.AntifraudConfig
 import versola.util.postgres.PostgresConfig
 import versola.util.postgres.given
 import versola.util.{Dpop, Secret, SecretConfig}
@@ -43,6 +44,7 @@ case class LoadgenConfig(
     poolerStats: Option[PoolerStatsConfig],
     dpop: Option[DpopConfig],
     environment: Option[EnvironmentConfig] = None,
+    antifraud: Option[AntifraudConfig] = None,
 )
 
 /** Where the coordinator reads the SUT's resource use for the report (CPU, memory, network, request
@@ -118,6 +120,7 @@ enum LoadgenRole(val configValue: String):
   case Seed extends LoadgenRole("seed")
   case Provision extends LoadgenRole("provision")
   case Calibrate extends LoadgenRole("calibrate")
+  case Antifraud extends LoadgenRole("antifraud")
 
 object LoadgenRole:
   private val byValue: Map[String, LoadgenRole] = values.map(r => r.configValue -> r).toMap
