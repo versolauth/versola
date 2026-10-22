@@ -7,7 +7,7 @@ import zio.test.*
 
 object AntifraudSpec extends UnitSpecBase:
 
-  private val ctx = AntifraudContext(None, ClientId("c"), AntifraudAction.otp_request, ip = Some("1.2.3.4"))
+  private val ctx = AntifraudContext(None, ClientId("c"), AntifraudAction.otp_request, None, None, None, Some("1.2.3.4"), None, None, None, Map.empty)
 
   private def rule(name: String, weight: Int, forces: Option[DecisionAction] = None, hit: Boolean = true) =
     AntifraudRule(name, weight, forces, _ => hit)
