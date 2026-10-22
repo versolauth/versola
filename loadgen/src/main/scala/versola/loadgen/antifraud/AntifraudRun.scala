@@ -58,13 +58,13 @@ object AntifraudRun:
       comparisons = Comparison.compare(
         report = report,
         baseline = baseline,
-        ceilingMs = settings.addedP99Ceiling.toMillis.toDouble,
+        ceilingMs = settings.addedLatencyCeiling.toMillis.toDouble,
         toleranceMs = settings.controlTolerance.toMillis.toDouble,
       )
       text = ReportText.render(
         report = report,
         comparisons = comparisons,
-        ceilingMs = settings.addedP99Ceiling.toMillis.toDouble,
+        ceilingMs = settings.addedLatencyCeiling.toMillis.toDouble,
         toleranceMs = settings.controlTolerance.toMillis.toDouble,
       )
       _ <- write(Path.of(settings.reportPath), report.toJsonPretty)

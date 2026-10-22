@@ -20,7 +20,7 @@ Per scenario and per call (`otp-request`, `otp-verify`, `token`, `refresh`): cou
 scenario: codes the SMS stub was asked to send (the stub counts them, per range), requests refused ("access
 denied") and `auth`'s `antifraud_*` metrics over the run (events enqueued, written, dropped by reason, requests
 refused by the budget, the event queue's largest size). With a baseline report: the **added p99** of each call and
-a verdict, against `added-p99-ceiling` (10 ms) for `otp-request` and `otp-verify` and `control-tolerance` (5 ms,
+a verdict, against `added-latency-ceiling` (10 ms) for `otp-request` and `otp-verify` and `control-tolerance` (5 ms,
 the noise of a run) for `token` and `refresh`.
 
 Arrivals are on a schedule (open loop): a slow system does not slow the offered load, and `waited` counts the

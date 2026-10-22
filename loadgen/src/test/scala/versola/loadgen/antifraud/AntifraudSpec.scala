@@ -1,10 +1,12 @@
 package versola.loadgen.antifraud
 
+import zio.Config
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
 import zio.{Duration, durationInt}
 
+import java.nio.file.{Files, Path}
 import java.util.SplittableRandom
 
 object AntifraudSpec extends ZIOSpecDefault:
@@ -157,7 +159,7 @@ object AntifraudSpec extends ZIOSpecDefault:
       },
     ),
     suite("AntifraudConfig")(
-      test("decodes the block with the defaults for what it leaves out") {
+      test("decodes the block, and leaves the optional keys out as None") {
         val hocon =
           """label = off
             |client-id = mobile-otp
@@ -165,20 +167,38 @@ object AntifraudSpec extends ZIOSpecDefault:
             |scope = "openid offline_access"
             |auth-metrics-url = "http://localhost:9004/metrics"
             |report-path = "r.json"
-            |otp { source = stub }
-            |sms-stub { port = 9100 }
+            |otp { source = stub, length = 6 }
+            |sms-stub { bind-host = "0.0.0.0", port = 9100, response-delay = 0s }
             |scenarios = ["normal", "prefix-attack"]
-            |normal { rate = 5.0 }
+            |numbers { dial-code = "+49", national-length = 11, leads = ["151"], range-length = 6 }
+            |normal { rate = 5.0, duration = 10s, conversion = 0.85, refreshes-min = 5, refreshes-max = 10 }
+            |prefix-attack { rate = 1.0, duration = 10s }
+            |device-attack { rate = 1.0, duration = 10s }
+            |token-control { sessions = 10, rate = 1.0, duration = 10s }
+            |max-in-flight = 256
+            |warmup-sessions = 1
+            |queue-sample-every = 250ms
+            |control-tolerance = 5ms
+            |added-latency-ceiling = 10ms
             |""".stripMargin
         for config <- TypesafeConfigProvider.fromHoconString(hocon).kebabCase.load(deriveConfig[AntifraudConfig])
         yield assertTrue(
           config.selected == List(AntifraudScenario.Normal, AntifraudScenario.PrefixAttack),
-          config.otp == OtpDeliveryConfig(OtpSource.Stub, 6),
+          config.otp == OtpDeliveryConfig(source = OtpSource.Stub, length = 6),
           config.normal.rate == 5.0,
           config.normal.refreshesMin == 5 && config.normal.refreshesMax == 10,
           config.baselinePath.isEmpty,
-          config.addedP99Ceiling == 10.millis,
+          config.seed.isEmpty,
+          config.addedLatencyCeiling == 10.millis,
         )
+      },
+      test("the antifraud block of loadgen/antifraud/loadgen.conf decodes whole, every key stated") {
+        val file = List("loadgen/antifraud/loadgen.conf", "antifraud/loadgen.conf").map(Path.of(_)).find(Files.exists(_)).get
+        for config <- TypesafeConfigProvider
+            .fromHoconFile(file.toFile)
+            .kebabCase
+            .load(Config.Nested("antifraud", deriveConfig[AntifraudConfig]))
+        yield assertTrue(config.selected.size == 4, config.addedLatencyCeiling == 10.millis, config.tokenControl.sessions == 1000)
       },
       test("an empty list of scenarios means all of them, the attacks last") {
         val config = AntifraudConfig(
@@ -188,8 +208,21 @@ object AntifraudSpec extends ZIOSpecDefault:
           scope = "s",
           authMetricsUrl = "u",
           reportPath = "p",
-          otp = OtpDeliveryConfig(OtpSource.Fixed),
-          smsStub = SmsStubConfig(),
+          baselinePath = None,
+          scenarios = Nil,
+          otp = OtpDeliveryConfig(source = OtpSource.Fixed, length = 6),
+          smsStub = SmsStubConfig(bindHost = "0.0.0.0", port = 9100, responseDelay = Duration.Zero),
+          numbers = plan,
+          normal = NormalTrafficConfig(rate = 1.0, duration = 1.second, conversion = 1.0, refreshesMin = 1, refreshesMax = 1),
+          prefixAttack = AttackConfig(rate = 1.0, duration = 1.second),
+          deviceAttack = AttackConfig(rate = 1.0, duration = 1.second),
+          tokenControl = TokenControlConfig(sessions = 1, rate = 1.0, duration = 1.second),
+          maxInFlight = 1,
+          warmupSessions = 0,
+          queueSampleEvery = 250.millis,
+          controlTolerance = 5.millis,
+          addedLatencyCeiling = 10.millis,
+          seed = None,
         )
         assertTrue(
           config.selected == AntifraudScenario.values.toList,

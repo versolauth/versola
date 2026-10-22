@@ -1,7 +1,7 @@
 package versola.loadgen.antifraud
 
 import zio.config.magnolia.DeriveConfig
-import zio.{Config, Duration, durationInt}
+import zio.{Config, Duration}
 
 /** What `role = antifraud` needs beyond the blocks every role shares: the OTP flow driven with and
   * without antifraud (#771, P0-7).
@@ -31,21 +31,21 @@ case class AntifraudConfig(
     scope: String,
     authMetricsUrl: String,
     reportPath: String,
-    baselinePath: Option[String] = None,
-    scenarios: List[AntifraudScenario] = Nil,
+    baselinePath: Option[String],
+    scenarios: List[AntifraudScenario],
     otp: OtpDeliveryConfig,
     smsStub: SmsStubConfig,
-    numbers: NumberPlanConfig = NumberPlanConfig(),
-    normal: NormalTrafficConfig = NormalTrafficConfig(),
-    prefixAttack: AttackConfig = AttackConfig(),
-    deviceAttack: AttackConfig = AttackConfig(),
-    tokenControl: TokenControlConfig = TokenControlConfig(),
-    maxInFlight: Int = 256,
-    warmupSessions: Int = 30,
-    queueSampleEvery: Duration = 250.millis,
-    controlTolerance: Duration = 5.millis,
-    addedP99Ceiling: Duration = 10.millis,
-    seed: Option[Long] = None,
+    numbers: NumberPlanConfig,
+    normal: NormalTrafficConfig,
+    prefixAttack: AttackConfig,
+    deviceAttack: AttackConfig,
+    tokenControl: TokenControlConfig,
+    maxInFlight: Int,
+    warmupSessions: Int,
+    queueSampleEvery: Duration,
+    controlTolerance: Duration,
+    addedLatencyCeiling: Duration,
+    seed: Option[Long],
 ):
   def selected: List[AntifraudScenario] = if scenarios.isEmpty then AntifraudScenario.values.toList else scenarios
 
@@ -55,7 +55,7 @@ case class AntifraudConfig(
   * points at [[SmsStubConfig]]; the code is read from what the stub received, as a phone would. `fixed`: a
   * non-prod `auth` generates the same code every time and sends nothing (so no send is ever counted).
   */
-case class OtpDeliveryConfig(source: OtpSource, length: Int = 6)
+case class OtpDeliveryConfig(source: OtpSource, length: Int)
 
 enum OtpSource(val wire: String):
   case Stub extends OtpSource("stub")
@@ -66,7 +66,7 @@ object OtpSource:
     values.find(_.wire == value).toRight(Config.Error.InvalidData(message = s"unknown otp source: $value; expected stub or fixed"))
 
 /** The SMS provider `auth` is configured with, which counts what it is asked to send. */
-case class SmsStubConfig(bindHost: String = "0.0.0.0", port: Int = 9100, responseDelay: Duration = Duration.Zero)
+case class SmsStubConfig(bindHost: String, port: Int, responseDelay: Duration)
 
 /** The numbers the scenarios dial: `dialCode` plus a national number of `nationalLength` digits that starts with
   * one of `leads`. They have to be numbers the tenant's `phoneRegions` accept (the blueprint's: `+49`, 11 digits,
@@ -76,10 +76,10 @@ case class SmsStubConfig(bindHost: String = "0.0.0.0", port: Int = 9100, respons
   *                    (`antifraud.sms-budget.prefix-length`); the report groups sends by it
   */
 case class NumberPlanConfig(
-    dialCode: String = "+49",
-    nationalLength: Int = 11,
-    leads: List[String] = List("150", "151", "152", "155", "156", "157", "158", "159", "160", "162", "163"),
-    rangeLength: Int = 6,
+    dialCode: String,
+    nationalLength: Int,
+    leads: List[String],
+    rangeLength: Int,
 )
 
 /** Ordinary users: a code is requested and, for `conversion` of them, entered; a verified login exchanges its
@@ -87,18 +87,18 @@ case class NumberPlanConfig(
   * code exchange).
   */
 case class NormalTrafficConfig(
-    rate: Double = 20.0,
-    duration: Duration = 2.minutes,
-    conversion: Double = 0.85,
-    refreshesMin: Int = 5,
-    refreshesMax: Int = 10,
+    rate: Double,
+    duration: Duration,
+    conversion: Double,
+    refreshesMin: Int,
+    refreshesMax: Int,
 )
 
 /** `rate` codes requested per second for `duration`, none of them verified. */
-case class AttackConfig(rate: Double = 20.0, duration: Duration = 2.minutes)
+case class AttackConfig(rate: Double, duration: Duration)
 
 /** The control: `sessions` logins made unmeasured, then `rate` refreshes per second for `duration` over them. */
-case class TokenControlConfig(sessions: Int = 200, rate: Double = 50.0, duration: Duration = 1.minute)
+case class TokenControlConfig(sessions: Int, rate: Double, duration: Duration)
 
 enum AntifraudScenario(val wire: String):
   /** Ordinary traffic: a code requested, mostly entered, then tokens. */
