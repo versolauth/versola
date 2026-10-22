@@ -22,7 +22,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 # Each run in its own scratch directory: gen-env writes .local/env/<target>/ relative to it.
-# `--server=false` keeps scala-cli from depending on a bloop server being healthy.
+# `--server=false` keeps scala-cli from depending on a bloop server being healthy -- or on
+# repo.scala-lang.org, which the bloop path asks first (see ci-cd.yml "Generate dev configs").
 generate() {
   local dir="$1"; shift
   mkdir -p "$work/$dir"

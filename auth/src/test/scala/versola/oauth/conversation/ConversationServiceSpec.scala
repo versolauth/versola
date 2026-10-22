@@ -130,6 +130,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      versola.antifraud.AntifraudEvents.noop,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -241,6 +242,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.secureRandom),
             ZLayer.succeed(env.userService),
             ZLayer.succeed(env.consentService),
+            ZLayer.succeed[versola.antifraud.AntifraudEvents](versola.antifraud.AntifraudEvents.noop),
             ConversationService.live,
           )
           _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))

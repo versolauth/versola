@@ -1,6 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.antifraud.{AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -99,6 +100,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizationResponseService &
       ConversationRouter &
       ConversationService &
+      AntifraudEvents &
+      AntifraudEventRepository &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -199,6 +202,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasswordRepository.live >++>
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
+      PostgresAntifraudEventRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -209,6 +213,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.service[CoreConfig].flatMap { env =>
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
+
+  /** The `antifraud` block of the config, every key of which is optional; without it the defaults apply. */
+  private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
+      )
 
   /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
   private val configSnapshot: ZLayer[TransactorZIO & CoreConfig, Nothing, ConfigSnapshot] =
@@ -268,6 +279,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserRegistrationSyncClient.live >++>
       UserService.live >++>
       ConsentService.live >++>
+      antifraudSettings >++>
+      AntifraudEvents.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>

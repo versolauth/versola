@@ -77,7 +77,7 @@ in the single shared Secret (values.yaml's `secrets.existingSecret`).
 */}}
 {{- define "versola.requiredSecretVars" -}}
 {{- $vars := dict
-  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
+  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "ANTIFRAUD_SUBJECT_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
   "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD" "CENTRAL_RESOURCE_SECRET" "UTILITY_CLIENT_PUBLIC_JWK")
   "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "EDGE_INTERNAL_SECRET" "EDGE_DPOP_NONCE_SALT" "EDGE_NATIVE_BLOB_KEY" "POSTGRES_PASSWORD")
  -}}
@@ -114,9 +114,12 @@ Renders the `env:` entries pulling one service's required secret values
 from values.yaml's `secrets.existingSecret` via secretKeyRef. Expects a
 dict: {root: $, service: "auth"|"central"|"edge"}. Fails at template time
 (not a confusing "secret \"\" not found" at Pod-start) if
-secrets.existingSecret is unset.
+secrets.existingSecret is unset. A variable listed in $optional is rendered
+with `optional: true`: a release whose own Secret predates the key keeps
+starting (its config does not reference the variable either).
 */}}
 {{- define "versola.secretEnv" -}}
+{{- $optional := list "ANTIFRAUD_SUBJECT_SECRET" -}}
 {{- $svc := .service -}}
 {{- $root := .root -}}
 {{- $secretName := $root.Values.secrets.existingSecret -}}
@@ -129,6 +132,9 @@ secrets.existingSecret is unset.
     secretKeyRef:
       name: {{ $secretName }}
       key: {{ include "versola.secretKeyFor" (dict "service" $svc "var" $var) }}
+{{- if has $var $optional }}
+      optional: true
+{{- end }}
 {{ end -}}
 {{- end -}}
 
@@ -383,23 +389,45 @@ Name of the Secret holding auth's mutual-TLS listener certificate (values.yaml's
 {{- end -}}
 
 {{/*
-Name of the ConfigMap trust-manager writes the unioned client-CA bundle to.
+Names of the ConfigMaps trust-manager writes the trust anchors to: auth's handshake anchors (client
+and edge intermediates) and the edge anchors alone (central's handshake; auth's edge names).
 */}}
 {{- define "versola.pki.trustBundle" -}}
 {{- printf "%s-client-ca" (include "versola.fullname" .) -}}
 {{- end -}}
 
+{{- define "versola.pki.edgeTrustBundle" -}}
+{{- printf "%s-edge-ca" (include "versola.fullname" .) -}}
+{{- end -}}
+
 {{/*
-The cert-manager issuerRef everything under `pki` is issued from: the operator's own when
-`pki.issuerRef.name` is set, otherwise the CA Issuer this chart bootstraps (templates/pki.yaml).
+The issuer the operator named for a role ("server", "edge" or "client"): `pki.issuerRefs.<role>`, else
+`pki.issuerRef`. Expects {root: $, role: "..."}. Renders the issuerRef's fields, or nothing when this
+chart bootstraps that role's CA itself (templates/pki.yaml).
+*/}}
+{{- define "versola.pki.operatorRef" -}}
+{{- $pki := .root.Values.pki -}}
+{{- $ref := index (default dict $pki.issuerRefs) .role | default dict -}}
+{{- if not $ref.name -}}
+{{- $ref = default dict $pki.issuerRef -}}
+{{- end -}}
+{{- if $ref.name -}}
+name: {{ $ref.name }}
+kind: {{ default "ClusterIssuer" $ref.kind }}
+group: {{ default "cert-manager.io" $ref.group }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The cert-manager issuerRef a role's certificates are issued from: the operator's when one is named,
+otherwise the role's ClusterIssuer this chart bootstraps. Expects {root: $, role: "..."}.
 */}}
 {{- define "versola.pki.issuerRef" -}}
-{{- if .Values.pki.issuerRef.name -}}
-name: {{ .Values.pki.issuerRef.name }}
-kind: {{ default "ClusterIssuer" .Values.pki.issuerRef.kind }}
-group: {{ default "cert-manager.io" .Values.pki.issuerRef.group }}
+{{- $own := include "versola.pki.operatorRef" . -}}
+{{- if $own -}}
+{{- $own -}}
 {{- else -}}
-name: {{ include "versola.fullname" . }}-client-ca
+name: {{ include "versola.fullname" .root }}-{{ .role }}-ca
 kind: ClusterIssuer
 group: cert-manager.io
 {{- end -}}
@@ -408,13 +436,16 @@ group: cert-manager.io
 {{/*
 pki volumes / mounts / reload annotations for one service's Deployment. Expects a dict:
 {root: $, service: "auth"|"central"|"edge"}. Empty unless `pki.enabled`. Auth presents the server
-certificate and trusts the client-CA bundle, edge pins that certificate's leaf (and nothing else from
-that Secret -- not its key). Central presents its own listener certificate for the edge surface and
-trusts the issuing CA for it; edge presents its certificate there and pins central's leaf (#554).
+certificate and trusts the client and edge intermediates (an edge presents its identity to it, too),
+and is told separately which of them is the edge's; edge pins the leaf of auth's and of central's
+listener certificate (and nothing else from those Secrets -- not their keys). Central presents its own
+listener certificate for the edge surface and trusts the edge CA alone for it; edge presents its
+identity there (#554). Without trust-manager the trust files are the leaf Secret's `ca.crt`.
 */}}
 {{- define "versola.pki.volumes" -}}
 {{- $root := .root -}}
 {{- if $root.Values.pki.enabled -}}
+{{- $bundles := $root.Values.pki.trustBundle.enabled -}}
 {{- if eq .service "auth" -}}
 - name: mtls-server
   secret:
@@ -425,9 +456,24 @@ trusts the issuing CA for it; edge presents its certificate there and pins centr
       - key: tls.key
         path: tls.key
 - name: mtls-trust
-  {{- if $root.Values.pki.trustBundle.enabled }}
+  {{- if $bundles }}
   configMap:
     name: {{ include "versola.pki.trustBundle" $root }}
+    items:
+      - key: ca-bundle.crt
+        path: ca.crt
+  {{- else }}
+  secret:
+    secretName: {{ include "versola.pki.serverSecret" $root }}
+    items:
+      - key: ca.crt
+        path: ca.crt
+  {{- end }}
+# The edge anchor on its own: a certificate may carry an edge's `urn:versola:edge:*` name only if it chains to this.
+- name: mtls-edge-trust
+  {{- if $bundles }}
+  configMap:
+    name: {{ include "versola.pki.edgeTrustBundle" $root }}
     items:
       - key: ca-bundle.crt
         path: ca.crt
@@ -447,13 +493,21 @@ trusts the issuing CA for it; edge presents its certificate there and pins centr
         path: tls.crt
       - key: tls.key
         path: tls.key
-# The issuing CA, which is what the listener's handshake validates an edge's chain against.
+# The edge CA alone, which is what the listener's handshake validates an edge's chain against.
 - name: central-mtls-trust
+  {{- if $bundles }}
+  configMap:
+    name: {{ include "versola.pki.edgeTrustBundle" $root }}
+    items:
+      - key: ca-bundle.crt
+        path: ca.crt
+  {{- else }}
   secret:
     secretName: {{ include "versola.pki.centralServerSecret" $root }}
     items:
       - key: ca.crt
         path: ca.crt
+  {{- end }}
 {{- else if eq .service "edge" -}}
 - name: mtls-auth-pin
   secret:
@@ -489,6 +543,9 @@ trusts the issuing CA for it; edge presents its certificate there and pins centr
 - name: mtls-trust
   mountPath: /app/mtls/trust
   readOnly: true
+- name: mtls-edge-trust
+  mountPath: /app/mtls/edge-trust
+  readOnly: true
 {{- else if eq .service "central" -}}
 - name: central-mtls-server
   mountPath: /app/central-mtls/server
@@ -512,31 +569,59 @@ trusts the issuing CA for it; edge presents its certificate there and pins centr
 
 {{- define "versola.pki.annotations" -}}
 {{- if and .root.Values.pki.enabled .root.Values.pki.reloader (has .service (list "auth" "central" "edge")) -}}
+{{- $bundles := .root.Values.pki.trustBundle.enabled -}}
 {{- if eq .service "central" -}}
 secret.reloader.stakater.com/reload: {{ include "versola.pki.centralServerSecret" .root | quote }}
+{{- if $bundles }}
+configmap.reloader.stakater.com/reload: {{ include "versola.pki.edgeTrustBundle" .root | quote }}
+{{- end }}
 {{- else if eq .service "edge" -}}
 secret.reloader.stakater.com/reload: {{ printf "%s,%s,%s" (include "versola.pki.serverSecret" .root) (include "versola.pki.centralServerSecret" .root) (include "versola.pki.edgeCentralSecret" .root) | quote }}
 {{- else -}}
 secret.reloader.stakater.com/reload: {{ include "versola.pki.serverSecret" .root | quote }}
-configmap.reloader.stakater.com/reload: {{ include "versola.pki.trustBundle" .root | quote }}
+{{- if $bundles }}
+configmap.reloader.stakater.com/reload: {{ printf "%s,%s" (include "versola.pki.trustBundle" .root) (include "versola.pki.edgeTrustBundle" .root) | quote }}
+{{- end }}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-The env central.conf's `client-certificates.cert-manager` block reads (scripts/gen-env.scala).
+The env central.conf's `client-certificates.cert-manager` block reads (scripts/gen-env.scala): the
+client role's issuer, the one that signs the certificates central issues to edge-fronted clients.
 */}}
 {{- define "versola.pki.issuerEnv" -}}
-{{- if .Values.pki.issuerRef.name -}}
+{{- $own := include "versola.pki.operatorRef" (dict "root" . "role" "client") | fromYaml -}}
+{{- if $own.name -}}
 - name: CLIENT_CERT_ISSUER_NAME
-  value: {{ .Values.pki.issuerRef.name | quote }}
+  value: {{ $own.name | quote }}
 - name: CLIENT_CERT_ISSUER_KIND
-  value: {{ default "ClusterIssuer" .Values.pki.issuerRef.kind | quote }}
+  value: {{ $own.kind | quote }}
 - name: CLIENT_CERT_ISSUER_GROUP
-  value: {{ default "cert-manager.io" .Values.pki.issuerRef.group | quote }}
+  value: {{ $own.group | quote }}
 {{- else -}}
 - name: CLIENT_CERT_ISSUER_NAME
   value: {{ printf "%s-client-ca" (include "versola.fullname" .) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The same for the certificates central issues to edges (`edge-certificates.cert-manager` in central.conf):
+the edge role's issuer, so that an identity is signed by the CA central's mutual-TLS listener trusts
+and not by the client CA. Without these central falls back to the client issuer.
+*/}}
+{{- define "versola.pki.edgeIssuerEnv" -}}
+{{- $own := include "versola.pki.operatorRef" (dict "root" . "role" "edge") | fromYaml -}}
+{{- if $own.name -}}
+- name: EDGE_CERT_ISSUER_NAME
+  value: {{ $own.name | quote }}
+- name: EDGE_CERT_ISSUER_KIND
+  value: {{ $own.kind | quote }}
+- name: EDGE_CERT_ISSUER_GROUP
+  value: {{ $own.group | quote }}
+{{- else -}}
+- name: EDGE_CERT_ISSUER_NAME
+  value: {{ printf "%s-edge-ca" (include "versola.fullname" .) | quote }}
 {{- end -}}
 {{- end -}}
 

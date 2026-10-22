@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.antifraud.{AntifraudEvents, AntifraudOutcome}
 import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
@@ -205,7 +206,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -227,8 +228,21 @@ object ConversationService:
       secureRandom: SecureRandom,
       userService: UserService,
       consentService: ConsentService,
+      antifraudEvents: AntifraudEvents,
   ) extends ConversationService:
     export conversationRepository.find
+
+    private def otpRequested(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+    ): UIO[Unit] =
+      antifraudEvents.otpRequested(authId, conversation.clientId, conversation.userAgent, credential, outcome)
+
+    private def otpChecked(authId: AuthId, conversation: ConversationRecord, outcome: AntifraudOutcome): UIO[Unit] =
+      ZIO.foreachDiscard(conversation.credential): credential =>
+        antifraudEvents.otpChecked(authId, conversation.clientId, conversation.userAgent, credential, outcome)
 
     override def accessDenied(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversationRepository.overwrite(authId, conversation.copy(step = ConversationStep.AccessDenied))
@@ -292,7 +306,8 @@ object ConversationService:
           case denied => ZIO.succeed(denied)
         result <- requestStatus match
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
-            accessDenied(authId, conversation)
+            otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *>
+              accessDenied(authId, conversation)
           case LimitStatus.Allowed =>
             for
               effectiveUserId = conversation.userId
@@ -318,6 +333,11 @@ object ConversationService:
               written <- conversationRepository.overwrite(authId, updatedConversation)
               result2 <- if written then
                 otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
+                  .tapBoth(
+                    _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
+                    _ =>
+                      otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
+                  )
                   .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
               else
                 Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
@@ -377,37 +397,44 @@ object ConversationService:
       val subject = conversation.credential.map(_.merge).getOrElse("")
       submissionLimiter.isBanned(conversation.clientId, subject, ChallengeType.OtpSubmit).flatMap:
         case LimitStatus.Banned =>
-          accessDenied(authId, conversation)
+          otpChecked(authId, conversation, AntifraudOutcome.locked) *>
+            accessDenied(authId, conversation)
         case LimitStatus.RateLimited(retryAfter) =>
-          renderStep(authId, conversation, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
+          otpChecked(authId, conversation, AntifraudOutcome.locked) *>
+            renderStep(authId, conversation, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
         case LimitStatus.Allowed =>
           otpService.checkOtp(otp, submittedCode).flatMap:
             case SubmitOtpResult.Failure =>
-              recordLimitAndRender(authId, conversation, subject, ChallengeType.OtpSubmit): retryAfter =>
-                otp.copy(
-                  timesSubmitted = otp.timesSubmitted + 1,
-                  rateLimitExceeded = retryAfter.isDefined,
-                  lockedSeconds = retryAfter.fold(0)(_.toInt),
-                )
+              otpChecked(authId, conversation, AntifraudOutcome.wrong_code) *>
+                recordLimitAndRender(authId, conversation, subject, ChallengeType.OtpSubmit): retryAfter =>
+                  otp.copy(
+                    timesSubmitted = otp.timesSubmitted + 1,
+                    rateLimitExceeded = retryAfter.isDefined,
+                    lockedSeconds = retryAfter.fold(0)(_.toInt),
+                  )
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
-                val otpType = conversation.authFlow.otpType
-                val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
-                for
-                  // Before the overwrite: the flag records that the OTP passed, and a lost write race on
-                  // the conversation does not unmake that. The conversation then carries the fresh claims.
-                  fresh <- ZIO.foreach(conversation.userId.zip(conversation.credential)):
-                    case (uid, cred) => userRepository.markVerified(uid, cred)
-                  updated = conversation.copy(
-                    amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
-                    userClaims = fresh.flatten.orElse(conversation.userClaims),
-                  )
-                  written <- conversationRepository.overwrite(authId, updated)
-                  result <-
-                    if written then ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                    else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
-                yield result
+                  val otpType = conversation.authFlow.otpType
+                  val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
+                  for
+                    // Before the overwrite: the flag records that the OTP passed, and a lost write race on
+                    // the conversation does not unmake that. The conversation then carries the fresh claims.
+                    fresh <- ZIO.foreach(conversation.userId.zip(conversation.credential)):
+                      case (uid, cred) => userRepository.markVerified(uid, cred)
+                    updated = conversation.copy(
+                      amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
+                      userClaims = fresh.flatten.orElse(conversation.userClaims),
+                    )
+                    written <- conversationRepository.overwrite(authId, updated)
+                    // Recorded once the step is stored: a retry after a lost write race submits the same code
+                    // again, and a second `verified` for one conversation would count a conversion twice.
+                    result <-
+                      if written then
+                        otpChecked(authId, conversation, AntifraudOutcome.verified)
+                          .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                      else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                  yield result
 
     override def preparePasswordStep(
         authId: AuthId,
