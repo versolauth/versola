@@ -403,7 +403,7 @@ object ConversationService:
             otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *>
               accessDenied(authId, conversation)
           case LimitStatus.Allowed =>
-            antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, None, credential).flatMap: decision =>
+            antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential).flatMap: decision =>
               if decision.action == DecisionAction.Block then
                 otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
               else sendInitialOtp(authId, conversation, credential, factorIndex, decision)

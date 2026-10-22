@@ -3,6 +3,8 @@ package versola.antifraud
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
+import versola.util.http.Observability
+import versola.util.http.Observability.AntifraudDetails
 import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -30,12 +32,12 @@ trait AntifraudEvents:
   /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
-  /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]). Never fails; always
+  /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
+    * request's log context carries. Never fails; always
     * [[Decision.allow]] while the decision engine is off. */
   def decideOtpRequest(
       clientId: ClientId,
       userAgent: Option[String],
-      ip: Option[String],
       credential: Either[Email, Phone],
   ): UIO[Decision]
 
@@ -112,7 +114,7 @@ object AntifraudEvents:
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
-    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], ip: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
+    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
       ZIO.succeed(Decision.allow)
 
     override def hold(decision: Decision): UIO[Unit] = ZIO.unit
@@ -201,7 +203,6 @@ object AntifraudEvents:
     override def decideOtpRequest(
         clientId: ClientId,
         userAgent: Option[String],
-        ip: Option[String],
         credential: Either[Email, Phone],
     ): UIO[Decision] =
       if !settings.decision.enabled then ZIO.succeed(Decision.allow)
@@ -209,6 +210,7 @@ object AntifraudEvents:
         (for
           client <- configService.find(clientId)
           hash <- subjectHash(credential)
+          ip <- Observability.currentIp
           decision <- antifraud.evaluate(
             AntifraudContext(
               tenantId = client.map(_.tenantId),
@@ -216,14 +218,25 @@ object AntifraudEvents:
               action = AntifraudAction.otp_request,
               subjectHash = Some(hash),
               destPrefix = credential.toOption.map(destPrefix),
+              deviceId = None,
               ip = ip,
+              asn = None,
               userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+              ja4 = None,
+              signals = Map.empty,
             ),
           )
           _ <- AntifraudMetrics.decided(decision.action)
+          // The check goes on the `receive-http` line of the request, not into a line of its own.
+          _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
+            _.copy(decision = decision.action.toString, score = decision.score, rules = decision.firedRules),
+          )
         yield decision).catchAllCause: cause =>
           ZIO.logDebugCause("could not build the antifraud context", cause) *>
             AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List("antifraud_error")))
+
+    private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
+      AntifraudDetails(action.toString, DecisionAction.Allow.toString, 0, Nil, credential.toOption.map(destPrefix), None)
 
     override def hold(decision: Decision): UIO[Unit] =
       decision.action match
@@ -296,6 +309,8 @@ object AntifraudEvents:
         outcome: AntifraudOutcome,
         decision: Option[Decision] = None,
     ): UIO[Unit] =
+      // How the step ended goes on the `receive-http` line of the request too.
+      Observability.updateAntifraud(details(action, credential))(_.copy(outcome = Some(outcome.toString))) *>
       // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
       (for
         id <- secureRandom.nextUUIDv7

@@ -224,7 +224,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           steps = env.antifraud.steps
         yield assertTrue(
           steps == List(
-            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent),
+            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent, None),
           ),
         )
       },
