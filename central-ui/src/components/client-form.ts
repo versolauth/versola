@@ -49,6 +49,7 @@ import {
   describeJwks,
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
+import { estStateSummary } from '../utils/est-state';
 import './theme-token-controls';
 import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
@@ -3567,8 +3568,10 @@ export class VersolaClientForm extends LitElement {
         return this.clientType === 'native'
           ? 'tls_client_auth · certificate enrolled by edge'
           : 'tls_client_auth · certificate issued by central for edge';
-      case 'mtls':
-        return `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+      case 'mtls': {
+        const summary = `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+        return this.client?.est ? `${summary} · ${estStateSummary(this.client.est)}` : summary;
+      }
       case 'mtls-self-signed':
         return 'self_signed_tls_client_auth · matched against the registered key set';
       case 'private-key-jwt':

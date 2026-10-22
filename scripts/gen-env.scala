@@ -1344,6 +1344,37 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |}
          |""".stripMargin
     else ""
+  // RFC 7030 EST under /.well-known/est/: a client registered with `estEnrollment` gets and renews its mTLS
+  // client certificate from auth, which central issues. Needs the `mutual-tls` block above (renewal is
+  // served on that listener only), so it is written wherever that is. `local` has it on, for e2e; elsewhere
+  // it is opt-in with EST_ENABLED=true, because it opens a route on the public listener.
+  val estEnabled =
+    sys.env.get("EST_ENABLED").map(_.trim).filter(_.nonEmpty) match
+      case None => isLocal
+      case Some("true") => true
+      case Some("false") => false
+      case Some(other) => throw RuntimeException(s"EST_ENABLED must be true or false, not '$other'")
+  val authEstBlock =
+    if estEnabled then
+      """
+        |# RFC 7030 EST (/.well-known/est/): `simpleenroll` on the main listener, `simplereenroll` on the
+        |# mutual-TLS listener. `cacerts` hands out `mutual-tls.trusted-certificates` unless `ca-certificates`
+        |# names a file with the client CA alone.
+        |est {
+        |  enabled = true
+        |}
+        |""".stripMargin
+    else ""
+  // The chain of a client certificate obtained through EST is short here, so that e2e can watch it end and
+  // be extended; every other target keeps central's default (a year, re-approved by an operator).
+  val centralClientIdentityBlock =
+    if isLocal then
+      """
+        |client-identity {
+        |  max-age = "20 seconds"
+        |}
+        |""".stripMargin
+    else ""
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
@@ -1765,7 +1796,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
        |}
-       |$authMutualTlsBlock
+       |$authMutualTlsBlock$authEstBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
@@ -1983,7 +2014,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |auth {
        |  url = "$authInternalUrl"
        |}
-       |$centralClientCertificateAuthorityBlock$centralMutualTlsBlock
+       |$centralClientCertificateAuthorityBlock$centralClientIdentityBlock$centralMutualTlsBlock
        |user-outbox {
        |  poll-interval = 1 second
        |  batch-size = 32

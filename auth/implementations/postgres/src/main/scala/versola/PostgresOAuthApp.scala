@@ -31,6 +31,7 @@ import versola.oauth.conversation.{
   PostgresConversationRepository,
 }
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
+import versola.oauth.est.{EstCentralClient, EstController, EstService}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -111,7 +112,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
-      UserRegistrationSyncClient
+      UserRegistrationSyncClient &
+      EstCentralClient &
+      EstService
 
   // central is the one peer auth cannot work without and waits for at start-up
   override protected def guardExemptPeers =
@@ -131,6 +134,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserController.routes,
       ServiceController.routes,
       LogoutController.routes,
+      EstController.routes,
     ).reduce(_ ++ _)
 
   override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
@@ -139,7 +143,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** RFC 8705 §5: the endpoints a client certificate is relevant to, served a second time on
     * the listener that demands one.
     *
-    * Exactly the five the metadata advertises as aliases, and not the whole route set: the
+    * Exactly the five the metadata advertises as aliases, and EST's `simplereenroll` (RFC 7030), which
+    * is authenticated by the certificate this listener validated and so can be served nowhere else.
+    * Not the whole route set: the
     * rest either authenticate nobody (`/jwks` and the discovery documents) or are the
     * browser's (`/authorize`, the conversation pages), and a browser arriving here is
     * answered with a certificate prompt before it ever sends a request.
@@ -152,6 +158,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         RevocationController.routes,
         PushedAuthorizationController.routes,
         UserInfoController.routes,
+        EstController.reenrollmentRoutes,
       ).reduce(_ ++ _),
     )
 
@@ -266,6 +273,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
+      EstCentralClient.live >++>
+      EstService.live >++>
       UserService.live >++>
       ConsentService.live >++>
       ConversationService.live >++>

@@ -36,6 +36,9 @@ case class CentralConfig(
     edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
     /** How long the certificate chain of an edge may run, and what happens at the end of it. */
     edgeIdentity: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
+    /** How long the certificate chain of a client that gets its certificate through EST may run, and what happens at the
+      * end of it. */
+    clientIdentity: CentralConfig.ClientIdentityConfig = CentralConfig.ClientIdentityConfig(),
     /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
       * central has no such listener and no edge can sync from it -- there is deliberately no
       * fallback to the main listener, which is the admin console's and auth's. */
@@ -87,6 +90,21 @@ object CentralConfig:
   case class EdgeIdentityConfig(
       maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
       autoExtend: Boolean = true,
+  )
+
+  /** A client whose certificate is obtained through EST (`estEnrollment`) renews it by itself, with the certificate it
+    * has, for as long as it is registered. That is a chain, and it begins at the client's enrolment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. Off (the default), central stops renewing the client's certificate at `maxAge`
+    *   until an operator extends it (`POST /configuration/clients/est/extend`) or enrols it again with a new token: every
+    *   client is re-approved on a schedule, which is what a partner relationship asks for. On, central extends the chain
+    *   itself and the client never stops for want of anyone approving it. The client is told the date in every answer, and
+    *   so is the console.
+    */
+  case class ClientIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = false,
   )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge

@@ -336,6 +336,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service = stub[OAuthClientService]
         resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[versola.central.configuration.edges.EdgeService]
+        estService = stub[versola.central.configuration.clients.est.ClientEstService]
+        _ <- estService.states.succeedsWith(Map.empty)
         tracing <- tracingLayer.build
         security <- securityLayer.build
         securityService = security.get[SecurityService]
@@ -345,7 +347,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
                 versola.central.configuration.resources.ResourceService,
               ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
+                ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService),
             ),
           ),
         )

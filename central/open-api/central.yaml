@@ -33,6 +33,12 @@ info:
       sit behind the TLS terminator of the public name for central), with no client certificate;
       an unknown, spent, expired or other-edge token is one and the same `401`.
 
+    * `POST /est/enroll` and `POST /est/renew`, which auth calls after it has authenticated an EST
+      (RFC 7030) request of a client registered with `estEnrollment`: central checks the request
+      against the registration and has the CA behind `client-certificates` issue. Auth's token
+      alone reaches them (an edge's is refused); they are not served on the mutual-TLS listener.
+      Auth holds no CA credentials.
+
     ## Authentication
 
     Every operation below is called with HTTP Basic: the fixed username `central` and the
@@ -430,6 +436,69 @@ paths:
           description: Previous secret removed.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/est/enrollment-tokens:
+    post:
+      tags: [Clients]
+      summary: Create a one-time token for a client to enrol with through EST
+      description: |
+        For a client registered with `estEnrollment`. The client trades the token, once and within 24 hours
+        (`validityHours` asks for another time, at most 168), at `POST /.well-known/est/simpleenroll` on auth
+        (RFC 7030; HTTP Basic with the client id as user name, or Bearer) together with a PKCS#10 request
+        made with a key it generated, for its first certificate. Only a hash of the token is kept: it is
+        shown here and never again. `subject` is what the request must say: the certificate carries
+        exactly that subject, and a request that says another is refused (RFC 7030 §4.2.2 asks the same of
+        a renewal). The certificate is renewed by the client itself on auth's mutual-TLS listener (see
+        `POST /configuration/clients/est/extend` for how long, and what happens at the end).
+      operationId: createClientEstEnrollmentToken
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+        - name: validityHours
+          in: query
+          required: false
+          description: How long the token is good for, in hours; 24 when absent, at most 168.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 168
+      responses:
+        '201':
+          description: Token created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstEnrollmentTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The client is not registered with `estEnrollment`, or does not exist.
+        '400':
+          description: The validity asked for is out of range.
+
+  /configuration/clients/est/extend:
+    post:
+      tags: [Clients]
+      summary: Extend the certificate chain of a client that gets its certificate through EST
+      description: |
+        A client's certificates are short-lived (`client-certificates.validity`) and renewed by the client
+        itself, with the certificate it has. Those renewals are a chain that began at the client's
+        enrolment, and `client-identity.max-age` (a year by default) is how old the chain may get. With
+        `client-identity.auto-extend` off, the default, central stops renewing at that age until this is
+        called (or the client is enrolled again with a new token): the client keeps working on the
+        certificate it has until it expires and is told the date in every answer
+        (`Versola-Chain-Ends-At` of the EST response), and the date is in `est.chainEndsAt` of
+        `GET /configuration/clients`. Calling this starts the chain over. With `auto-extend` on, central
+        extends the chain itself and this has no effect on anything the client sees.
+      operationId: extendClientEstChain
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: The chain starts over now.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The client is not registered with `estEnrollment`, or does not exist.
 
   /configuration/clients/edge-certificate/renew:
     post:
@@ -3030,6 +3099,13 @@ components:
           description: |
             What this client changes in the theme it uses, laid over it on its sign-in pages.
             `null` (or absent) when it changes nothing.
+        est:
+          oneOf:
+            - $ref: '#/components/schemas/ClientEstState'
+            - type: 'null'
+          description: |
+            Where the client stands when it obtains its certificate through EST (`estEnrollment`);
+            `null` (or absent) when it does not.
       required:
         - id
         - clientName
@@ -3232,6 +3308,17 @@ components:
             nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
+        estEnrollment:
+          type: boolean
+          description: |
+            The client obtains and renews its mTLS client certificate through EST (RFC 7030), served by auth
+            under `/.well-known/est/` and issued by central from the CA behind `client-certificates` with the key
+            the client generated: it holds no certificate at registration. Needs `authMethod`
+            `tls_client_auth`; the client is registered by `mtlsAuth`, or by `CN=<client>,OU=<tenant>,O=Versola`
+            where it names none, and its tenant has to set `mtlsCertificateHeader`. Create a token with
+            `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
+            `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
+            supplying a certificate.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateNativeClientRequest:
       type: object
@@ -3455,6 +3542,17 @@ components:
             Mutually exclusive with `jwks`, and refused for any method other than
             `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
             certificate a generated pair would not come with.
+        estEnrollment:
+          type: boolean
+          description: |
+            The client obtains and renews its mTLS client certificate through EST (RFC 7030), served by auth
+            under `/.well-known/est/` and issued by central from the CA behind `client-certificates` with the key
+            the client generated: it holds no certificate at registration. Needs `authMethod`
+            `tls_client_auth`; the client is registered by `mtlsAuth`, or by `CN=<client>,OU=<tenant>,O=Versola`
+            where it names none, and its tenant has to set `mtlsCertificateHeader`. Create a token with
+            `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
+            `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
+            supplying a certificate.
       required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
     UpdateWebClientRequest:
       type: object
@@ -5597,6 +5695,37 @@ components:
           items:
             $ref: '#/components/schemas/EdgeGroup'
       required: [groups]
+    EstEnrollmentTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Shown once; only its hash is stored.
+        expiresAt:
+          type: string
+          format: date-time
+        subject:
+          type: string
+          description: |
+            The subject (RFC 4514) the certificate request must say, and the certificate will carry.
+      required: [token, expiresAt, subject]
+    ClientEstState:
+      type: object
+      properties:
+        pending:
+          type: boolean
+          description: 'No certificate has been issued yet: the client has not enrolled.'
+        certificateExpiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: When the latest certificate issued to the client expires.
+        chainEndsAt:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            When the chain of renewals ends and renewing is refused until an operator extends it; `null` where
+            `client-identity.auto-extend` is on, or the client has not enrolled.
+      required: [pending]
     EnrollmentTokenResponse:
       type: object
       properties:

@@ -15,4 +15,4 @@
 # directory is added. That is why edge is absent -- the seeder writes no edge table yet.
 
 auth/implementations/postgres/migrations 8e3331bb3d6969d5656b3558ec61b56c4d6bb8ab4b9a56f0a3038e056456d7cb
-central/implementations/postgres/migrations 34ecc55a449cf80b7fad726eadf05b5e374b6476e15d99c593ab286772d09835
+central/implementations/postgres/migrations f568a403f61037563be991ec9105b53b8186ff6cab071ecac700963944f04d91

@@ -1,0 +1,211 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Enrolment over Secure Transport (EST)
+  version: 1.0.0
+  description: |
+    RFC 7030 EST, so that an OAuth client registered with `estEnrollment` (central's admin API;
+    `authMethod` `tls_client_auth`, kinds `web` and `service`) obtains and renews its mTLS client
+    certificate by itself, with a key it generated: the client sends a PKCS#10 request and is
+    answered with a certs-only PKCS#7. The certificate is then the credential it authenticates with
+    at `/token` on the mutual-TLS listener (RFC 8705), and the certificate its tokens are bound to.
+
+    The endpoints are under `/.well-known/est/` and are served only where the deployment's `est`
+    block enables them; otherwise every one answers `404`. Which listener serves what is part of
+    the design:
+
+    * **`simpleenroll`** (the first certificate, for a client that has none) is on the main listener
+      and is authenticated by a **one-time enrolment token** an operator creates in central
+      (`POST /configuration/clients/est/enrollment-tokens`), sent as HTTP Basic (the client id as
+      user name, the token as password) or as a Bearer token (RFC 7030 §3.2.3).
+    * **`simplereenroll`** (a new certificate, before the old one expires) is on the **mutual-TLS
+      listener** (`MPORT`, the origin the metadata document publishes under `mtls_endpoint_aliases`)
+      and nowhere else. It is authenticated by the client's current certificate, which that listener's
+      handshake validated against `mutual-tls.trusted-certificates`; a certificate in a request header is
+      never read. An expired certificate is not renewed with itself: an operator enrols the client again.
+    * **`cacerts`** and **`csrattrs`** are on both and need no credentials (RFC 7030 §4.1.2, §4.5).
+
+    What is issued is central's decision, and auth holds no CA credentials. The certificate carries
+    the subject the client is **registered** by (`mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola`
+    when it names none), never one the request names: a request for another subject, or a request
+    whose key is not EC P-256 or RSA of at least 2048 bits, is refused with `400` and the reason, and
+    so is a renewal that reuses the key of the certificate it replaces. The subject stays the same
+    across renewals, so nothing changes in the client's registration. The subject and alternative
+    names of a renewal request must be identical to those of the certificate being renewed
+    (RFC 7030 §4.2.2).
+
+    Certificates are short-lived (central's `client-certificates.validity`), so revocation is expiry;
+    a certificate that has been replaced keeps working until it expires. Renewals form a chain that
+    began at the enrolment; at `client-identity.max-age` (a year by default) central refuses a renewal
+    with `403` until an operator extends the chain (`POST /configuration/clients/est/extend`), unless
+    `client-identity.auto-extend` is on. The end of the chain is in every answer, in the
+    `Versola-Chain-Ends-At` header, when it has one.
+
+    A request body is at most 16 KiB.
+  license:
+    name: Versola Community License v1.0
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin (`cacerts`, `csrattrs`, `simpleenroll`)
+  - url: https://auth-mtls.example.com
+    description: Auth's mutual-TLS listener (`cacerts`, `csrattrs`, `simplereenroll`)
+
+paths:
+  /.well-known/est/cacerts:
+    get:
+      operationId: estCaCerts
+      summary: The CA certificates a client must trust
+      description: |
+        RFC 7030 §4.1. The certificates of `est.ca-certificates` (by default
+        `mutual-tls.trusted-certificates`) as a certs-only PKCS#7.
+      tags: [EST]
+      security: []
+      responses:
+        '200':
+          description: The CA certificates.
+          content:
+            application/pkcs7-mime; smime-type=certs-only:
+              schema:
+                $ref: '#/components/schemas/CertsOnly'
+        '404':
+          description: EST is not enabled.
+
+  /.well-known/est/csrattrs:
+    get:
+      operationId: estCsrAttrs
+      summary: Attributes the request is asked to carry
+      description: |
+        RFC 7030 §4.5.2: `204` says there are none. The subject the request must say is given to the operator
+        with the enrolment token and in the `400` for a request that says another.
+      tags: [EST]
+      security: []
+      responses:
+        '204':
+          description: No attributes.
+        '404':
+          description: EST is not enabled.
+
+  /.well-known/est/simpleenroll:
+    post:
+      operationId: estSimpleEnroll
+      summary: The first certificate, for a one-time token
+      description: |
+        RFC 7030 §4.2.1. Main listener. The token is single-use and is spent by the first request that
+        is otherwise acceptable: a request refused with `400` does not spend it. An unknown, spent,
+        expired or another client's token, and a missing one, are one and the same `401`.
+      tags: [EST]
+      security:
+        - enrolmentTokenBasic: []
+        - enrolmentTokenBearer: []
+      requestBody:
+        required: true
+        content:
+          application/pkcs10:
+            schema:
+              $ref: '#/components/schemas/Pkcs10'
+      responses:
+        '200':
+          $ref: '#/components/responses/Issued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: EST is not enabled.
+
+  /.well-known/est/simplereenroll:
+    post:
+      operationId: estSimpleReenroll
+      summary: A new certificate, for the one the client has
+      description: |
+        RFC 7030 §4.2.2. **Mutual-TLS listener only** (`404` on the main listener, which the metadata document's
+        issuer names). Authenticated by the certificate the client presented in the TLS handshake: it has to
+        have been issued to the client through EST, be valid now, and still carry the subject the client is
+        registered by. The new key has to differ from that of the certificate it replaces.
+      tags: [EST]
+      security:
+        - clientCertificate: []
+      requestBody:
+        required: true
+        content:
+          application/pkcs10:
+            schema:
+              $ref: '#/components/schemas/Pkcs10'
+      responses:
+        '200':
+          $ref: '#/components/responses/Issued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            The presented certificate is expired, was not issued through EST, or is not one this client
+            has any more. No reason is given.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: EST is not enabled.
+
+components:
+  securitySchemes:
+    enrolmentTokenBasic:
+      type: http
+      scheme: basic
+      description: The client id as the user name and the one-time enrolment token as the password.
+    enrolmentTokenBearer:
+      type: http
+      scheme: bearer
+      description: The one-time enrolment token; it says which client it is for.
+    clientCertificate:
+      type: mutualTLS
+      description: The certificate EST issued to the client, presented in the handshake.
+
+  responses:
+    Issued:
+      description: |
+        The certificate chain (leaf first, no key; the order inside the PKCS#7 is that of its DER
+        encoding, so a client picks its certificate by subject).
+      headers:
+        Content-Transfer-Encoding:
+          schema:
+            type: string
+            const: base64
+        Versola-Chain-Ends-At:
+          description: When the client's chain of renewals ends, as an ISO-8601 instant; absent where it does not.
+          schema:
+            type: string
+            format: date-time
+      content:
+        application/pkcs7-mime; smime-type=certs-only:
+          schema:
+            $ref: '#/components/schemas/CertsOnly'
+    BadRequest:
+      description: |
+        Not a PKCS#10 (base64 of the DER; the media type is `application/pkcs10`), too large, or not what
+        the registration entitles the client to: another subject, an unacceptable key, a reused key. The
+        body says which, in plain text.
+      content:
+        text/plain:
+          schema:
+            type: string
+    Unauthorized:
+      description: |
+        The credentials are not valid. No reason is given. Carries `WWW-Authenticate: Basic realm="est"`.
+    Forbidden:
+      description: |
+        The client may not have a certificate now: it is not registered with `estEnrollment`, or its chain has
+        reached `client-identity.max-age` and an operator has to extend it. The body says which.
+      content:
+        text/plain:
+          schema:
+            type: string
+
+  schemas:
+    Pkcs10:
+      type: string
+      description: A PKCS#10 certification request, DER, in base64 (RFC 7030 §4.2.1).
+    CertsOnly:
+      type: string
+      description: A certs-only PKCS#7 (CMC Simple PKI Response), DER, in base64.

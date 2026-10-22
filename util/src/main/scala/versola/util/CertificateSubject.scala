@@ -15,8 +15,10 @@ import zio.schema.*
 import java.io.StringReader
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets
-import java.security.KeyPairGenerator
-import java.security.spec.ECGenParameterSpec
+import java.security.cert.X509Certificate
+import java.security.interfaces.{ECPublicKey, RSAPublicKey}
+import java.security.spec.{ECGenParameterSpec, ECParameterSpec}
+import java.security.{AlgorithmParameters, KeyPairGenerator, PublicKey}
 import java.util.Base64
 import javax.security.auth.x500.X500Principal
 import scala.jdk.CollectionConverters.*
@@ -42,6 +44,20 @@ case class CertificateSubject(
 ) derives JsonCodec, Schema:
 
   def principal: X500Principal = X500Principal(distinguishedName)
+
+  /** Whether `certificate` is for exactly this subject: the same distinguished name and the same alternative names, no
+    * name more and none fewer. The certificate-side counterpart of [[CertificateSubject.matches]], for deciding that a
+    * certificate presented today still says what the client is registered by. */
+  def describes(certificate: X509Certificate): Boolean =
+    val names = scala.util.Try(Option(certificate.getSubjectAlternativeNames).map(_.asScala.toList).getOrElse(Nil)).toOption
+    def of(tag: Int): Set[String] =
+      names.getOrElse(Nil).filter(_.get(0) == Integer.valueOf(tag)).map(_.get(1).toString).toSet
+    def ip(value: String): String = InetAddress.getByName(value).getHostAddress
+    names.isDefined && certificate.getSubjectX500Principal == principal &&
+    of(GeneralName.dNSName) == dnsNames.toSet &&
+    of(GeneralName.uniformResourceIdentifier) == uris.toSet &&
+    of(GeneralName.rfc822Name) == emailAddresses.toSet &&
+    of(GeneralName.iPAddress).map(ip) == ipAddresses.map(ip).toSet
 
   private def alternativeNames: List[GeneralName] =
     dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++
@@ -110,6 +126,26 @@ object CertificateSubject:
       case (_, false, _) => Left("the request's subject is not the one the client is registered by")
       case (_, _, false) => Left("the request's alternative names are not the ones the client is registered by")
       case _ => Right(())
+
+  /** The public key `csrPem` asks a certificate for, when it is one worth issuing for: EC on P-256, or RSA of at least
+    * 2048 bits. Anything else (a weak RSA key, another curve, a key type this does not know) is refused with the reason,
+    * so a client cannot be handed a certificate no policy of ours would have admitted. */
+  def requestedKey(csrPem: String): Either[String, PublicKey] =
+    scala.util.Try(
+      JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest]).getPublicKey,
+    ).toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
+      case key: ECPublicKey if isP256(key) => Right(key)
+      case _: ECPublicKey => Left("the request's key is an EC key on a curve other than P-256")
+      case key: RSAPublicKey if key.getModulus.bitLength >= MinRsaBits => Right(key)
+      case _: RSAPublicKey => Left(s"the request's RSA key is shorter than $MinRsaBits bits")
+      case other => Left(s"the request's key is ${other.getAlgorithm}, which is neither EC P-256 nor RSA")
+
+  private val MinRsaBits = 2048
+
+  private def isP256(key: ECPublicKey): Boolean =
+    val p256 = AlgorithmParameters.getInstance("EC")
+    p256.init(ECGenParameterSpec("secp256r1"))
+    key.getParams.getCurve == p256.getParameterSpec(classOf[ECParameterSpec]).getCurve
 
   /** The decoded common name of a subject -- `app,blue` for `CN=app\,blue`, which is what the
     * request carries and what a CA compares a token's subject against. */
