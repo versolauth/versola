@@ -23,7 +23,6 @@ object EdgeController extends Controller:
     rotateEdgeKeyEndpoint,
     deleteOldEdgeKeyEndpoint,
     deleteEdgeEndpoint,
-    edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
     setEdgeOverloadEndpoint,
     createEdgeGroupEndpoint,
@@ -188,38 +187,6 @@ object EdgeController extends Controller:
       yield response
     }
 
-  /** The registered signing keys of every edge, for auth to authenticate the edges that call
-    * it directly (see `versola.util.EdgeAssertion`). Public keys only -- the same JWKs
-    * `authorizeInternal` verifies an edge's own sync calls against.
-    *
-    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has
-    * no use for its peers' keys, and handing them over would let a single compromised edge
-    * learn the identities it would have to forge.
-    */
-  val edgesRegistryEndpoint =
-    Method.GET / "configuration" / "edges" / "registry" -> handler { (request: Request) =>
-      for
-        callerEdgeId <- authorizeInternal(request)
-        _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
-        service <- ZIO.service[EdgeService]
-        edges <- service.getAllEdges
-        tenants <- ZIO.serviceWithZIO[TenantRepository](_.getAll)
-        response = GetEdgesRegistryResponse(
-          edges = edges.map(edge =>
-            EdgeRegistryEntry(
-              id = edge.id,
-              publicKey = edge.publicKey,
-              oldPublicKey = edge.oldPublicKey,
-              // What lets auth refuse an assertion from an edge that is real and correctly
-              // signed but not the one this token's tenant is behind -- see
-              // `versola.util.EdgeAssertion`.
-              tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
-            ),
-          ).toList,
-        )
-      yield Response.json(response.toJson)
-    }
-
 case class RegisterEdgeRequest(
     id: EdgeId,
     /** The group the edge joins and never leaves; absent means `default`. */
@@ -264,19 +231,6 @@ case class OverloadPolicyError(
 case class GetAllEdgesResponse(
     edges: List[EdgeResponse],
 ) derives Schema, JsonCodec
-
-/** `oldPublicKey` is present only during a rotation window, and is sent so auth keeps
-  * accepting assertions an edge signed with the key it is rotating out. */
-case class EdgeRegistryEntry(
-    id: EdgeId,
-    publicKey: Json.Obj,
-    oldPublicKey: Option[Json.Obj],
-    tenantIds: List[TenantId],
-) derives JsonCodec
-
-case class GetEdgesRegistryResponse(
-    edges: List[EdgeRegistryEntry],
-) derives JsonCodec
 
 case class ServiceKeyResponse(
     keyId: String,

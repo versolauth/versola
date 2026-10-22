@@ -78,6 +78,10 @@ case class EdgeConfig(
     // the only mode that existed before the key did, so every configuration written without
     // it keeps running as the first-party edge it always was.
     mode: EdgeMode = EdgeMode.FirstParty,
+    // The listener that serves `/resources/*` to callers that authenticate their token by the
+    // certificate of the handshake (RFC 8705 §3). Absent serves none: the plain listener
+    // cannot see a caller's certificate, so it keeps refusing certificate-bound tokens.
+    mutualTls: Option[EdgeConfig.MutualTls] = None,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
@@ -255,6 +259,24 @@ object EdgeConfig:
         bundle.toFile.nn.deleteOnExit()
         Files.write(bundle, many.flatMap(path => Files.readAllLines(Path.of(path)).nn.asScala :+ "").mkString("\n").getBytes(StandardCharsets.UTF_8))
         ClientSSLConfig.FromCertFile(bundle.toString)
+
+  /** Edge's own mutual-TLS listener (`MPORT`), shaped like auth's (`CoreConfig.MutualTlsConfig`).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8.
+    * @param trustedCertificates PEM path to the anchors a caller's chain is validated against.
+    *   Required, with no default: left unset Netty trusts the JDK's store, and every
+    *   publicly-trusted CA would vouch for callers of this listener.
+    * @param externalUrl the address callers reach this listener at, for the operator's own
+    *   documentation and tooling; a deployment behind a NAT or a TCP-passthrough load balancer
+    *   binds on one address and publishes another.
+    */
+  case class MutualTls(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+      externalUrl: URL,
+  )
 
   case class Security(
       tokenEncryption: EdgeConfig.Security.TokenEncryption,

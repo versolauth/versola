@@ -41,6 +41,7 @@ import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, d
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.time.Instant
 import javax.crypto.AEADBadTagException
 import javax.crypto.spec.SecretKeySpec
@@ -560,7 +561,7 @@ object EdgeService:
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
         _ <- checkRevoked(typedClaims)
-        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
+        binding <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -570,7 +571,7 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims)
+        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {
@@ -654,18 +655,27 @@ object EdgeService:
       * parsing on this side -- #320), so it cannot tell a holder of a leaked bound token from
       * the client the token was bound to, and §3 is explicit that a bound token must not be
       * honoured for anyone else.
+      *
+      * The one place edge can see a caller's certificate is the handshake of its own mutual-TLS
+      * listener (`EdgeMutualTls`): a `Bearer` token arriving there is judged against the
+      * certificate presented, and honoured when that is the one it names. Every other
+      * presentation is judged as above, whichever port it came in on.
       */
     private def checkTokenBinding(
         request: Request,
         accessToken: AccessToken,
         claims: AccessTokenClaims,
         authSource: AuthSource,
-    ): IO[Outcome, Unit] =
+    ): IO[Outcome, BindingCheck] =
       val presentation = authSource match
         case AuthSource.Cookie(_) => Presentation.Cookie
-        case AuthSource.Header(AuthScheme.Bearer) => Presentation.Bearer
+        case AuthSource.Header(AuthScheme.Bearer) =>
+          request.remoteCertificate match
+            case Some(certificate: X509Certificate) => Presentation.BearerOverMutualTls(TokenBinding.thumbprint(certificate))
+            case _ => Presentation.Bearer
         case AuthSource.Header(AuthScheme.Dpop) => Presentation.Dpop
-      TokenBinding.check(claims.confirmation, presentation) match
+      val check = TokenBinding.check(claims.confirmation, presentation)
+      (check match
         case BindingCheck.CertificateOutsideSession =>
           Observability.setError("certificate_bound_token_outside_session") *>
             ZIO.fail(Outcome.Unauthorized)
@@ -705,23 +715,28 @@ object EdgeService:
         case BindingCheck.UnboundDpop =>
           Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
 
-        case BindingCheck.Accept => ZIO.unit
+        case BindingCheck.Accept | BindingCheck.AcceptCallerCertificate => ZIO.unit
+      ).as(check)
 
     /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
-      * here, so the call has to carry whatever that binding names -- and the two are carried
-      * in different places: an edge assertion in a header for a key-bound token, the
-      * certificate itself in the handshake for a certificate-bound one. Only the second needs
-      * the client looked up: its certificate is part of the registration central syncs, not
-      * of the token.
+      * here, so the call has to say what edge already established -- and says it by the
+      * handshake, not by a header: a token bound to the certificate of one of this edge's own
+      * sessions is presented over that client's certificate (looked up, as it is part of the
+      * registration central syncs, not of the token), and one whose holder this edge verified at
+      * its boundary -- a key proof, or the certificate of its mutual-TLS listener -- over this
+      * edge's own certificate, which auth accepts only from an edge it trusts.
       */
     private def fetchUserInfo(
         accessToken: AccessToken,
         claims: AccessTokenClaims,
+        check: BindingCheck,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         binding <-
           (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
             case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
+            case (None, Some(_)) if check == BindingCheck.AcceptCallerCertificate =>
+              ZIO.succeed(SSOClient.TokenBinding.CallerCertificate)
             case (None, Some(_)) =>
               clientService.findClient(claims.clientId)
                 .someOrFail(ClientNotFound(claims.clientId))

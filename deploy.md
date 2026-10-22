@@ -326,6 +326,58 @@ cluster, so open its port deliberately (see [Mutual TLS certificates](#mutual-tl
   namespace, so a client cannot be given a certificate that passes for an edge.
 - No schema change, no data migration.
 
+#### Breaking change: edge reaches `/userinfo` with its own certificate, not an edge assertion; edge's mutual-TLS listener
+
+Two linked changes make an API behind edge's `/resources` callable with an access token bound to the
+*caller's* client certificate (RFC 8705 §3, `cnf.x5t#S256`), the way a bank would call an operator's API
+with a FAPI 2.0 client (`tls_client_auth`, PAR, certificate-bound tokens).
+
+1. **`/userinfo` over mutual TLS.** An edge no longer sends `Versola-Edge-Assertion`, and `auth` no longer
+   reads it. When an edge-served endpoint needs `/userinfo` for a key-bound (DPoP) token, or for a token
+   bound to a caller's certificate, the edge calls auth's mutual-TLS listener with **its own** certificate
+   (the one it presents to central: issued by central, `urn:versola:edge:<id>`), and `auth` serves the call
+   without the DPoP proof and without the holder's certificate **only if that certificate was signed by one
+   of the certificates in the new `auth` setting `mutual-tls.edge-trusted-certificates`** and names exactly
+   one edge. The edge has already verified the holder at its own boundary; the certificate is the proof that
+   an edge `auth` trusts did so. A token bound to *both* a key and a certificate is refused anyway, a
+   certificate in a forwarded header is never taken for an edge's, and signature, revocation and the
+   `openid` scope are checked as always. Without `edge-trusted-certificates` no certificate is an edge's and
+   `/userinfo` behaves as before. Removed: `EdgeAssertion`, `EdgeAssertionService`, auth's edge-registry sync,
+   central's `GET /configuration/edges/registry`, the `dpop_edge_assertion_*` metrics (and their dashboard
+   panels), and the assertion-sized floor on `dpop_proofs` eviction.
+2. **A mutual-TLS listener on `edge`** (`mutual-tls { certificate, private-key, trusted-certificates,
+   external-url }` in `edge.conf`, shaped like auth's; `MPORT`, default 8083, `MBIND_HOST`). It serves
+   `/resources/{resourceId}/{path}` and nothing else, requires a client certificate in the handshake, and
+   honours a `Bearer` token with `cnf.x5t#S256` only when the SHA-256 thumbprint of that certificate equals
+   it. The plain listener is unchanged: such a token is still `401 certificate_bound_token_outside_session`
+   there. Opt-in: with no `mutual-tls` block edge serves no second port.
+
+What breaks, and how to migrate:
+
+- **`auth` and `edge` upgrade together.** A new edge sends no assertion, so an old `auth` refuses its
+  `/userinfo` calls for key-bound tokens; a new `auth` ignores an old edge's assertion.
+- **A key-bound token on an endpoint with `fetchUserInfo` needs `mutual-tls.edge-trusted-certificates`**
+  in `auth.conf` and the edge's certificate in the handshake of `native.auth-mutual-tls-url`. `versola
+  configure vps` writes `edge-trusted-certificates = "/app/mtls/edge-ca.crt"` (and the Helm chart already
+  mounts `/app/mtls/edge-trust/ca.crt` for it); `docker-local` names its single CA, which central never uses
+  to sign a client a name in the edge namespace. Add the line to an existing `auth.conf` that predates it.
+  An edge with no `native` block cannot make this call (the certificate is only ever sent to auth's own
+  listener, never to `versola-internal-url`) and answers `500` for such a token.
+- `dpop_edge_assertion_*` metrics and `GET /configuration/edges/registry` are gone.
+
+Security implication: **the edge's certificate private key becomes the most sensitive key of the
+deployment.** Whoever holds it can call `/userinfo` as an edge, for any token, with no proof of possession.
+Keep the edge CA dedicated (never the CA that issues clients' certificates: a client whose issuer can sign
+`urn:versola:edge:<id>` could otherwise impersonate an edge, which is why `auth` also checks the issuer and
+not only the name), keep edge certificates short-lived (vps: 30 days, renewed by the edge) and rotate them,
+and make auth's mutual-TLS listener reachable only from the network the edges run in. Deleting an edge in
+central, or rotating its key, cuts it off from central at once; its certificate stays valid at `auth` until it
+expires, which is the reason for short lifetimes.
+
+Edge's own mutual-TLS listener is opt-in and its certificates are yours to provide for now (`versola
+configure` does not issue them): a server certificate for the public name callers use, and
+`trusted-certificates` naming the CA(s) that issue your callers' client certificates.
+
 #### Behaviour change (vps bundle): three intermediates, pin pairs, loopback `MPORT`
 
 The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Breaking, and
@@ -339,7 +391,8 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
   all of them on the first run (and says why in its output); the pins on `edge` follow because it
   restarts with them.
 - `auth.conf`: `mutual-tls.trusted-certificates` is `/app/mtls/auth-trust.crt` (client and edge
-  intermediates, never the root; auth accepts no edge certificate for anything yet). `central.conf`:
+  intermediates, never the root) and `mutual-tls.edge-trusted-certificates` is `/app/mtls/edge-ca.crt` (the edge intermediate alone: a
+  certificate it signed, naming an edge, is what `/userinfo` takes as an edge's own call). `central.conf`:
   `mutual-tls.trusted-certificates` is `/app/mtls/edge-ca.crt` (edge identities only; a client
   certificate no longer completes the handshake). `edge.conf`: `native.trusted-certificates` and
   `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
@@ -632,9 +685,11 @@ move together and `configure` is re-run)
   it needs a persistent `identity.directory`. Revocation: deleting the edge, or rotating its signing
   key (`POST /configuration/edges/rotate-key`), cuts it off at once, because `central` needs both the
   certificate and the edge's signed token. A list of revoked serials comes later.
-- **Not in this release:** `auth` accepting an edge's certificate (so clients served by an edge still
-  need their own certificate or `issueEdgeClientCertificate`), `mutual-tls.edge-trusted-certificates`
-  on `auth`, and `central` publishing pins to remote edges.
+- **Not in this release:** `auth` accepting an edge's certificate for a client served by an edge
+  (such clients still need their own certificate or `issueEdgeClientCertificate`), and `central`
+  publishing pins to remote edges. (`mutual-tls.edge-trusted-certificates` on `auth`, which makes
+  `/userinfo` take an edge's certificate as the proof that the edge verified a token's holder, comes with
+  "edge reaches `/userinfo` with its own certificate" below.)
 - The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
   upgrade changes nothing for existing edges.
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
