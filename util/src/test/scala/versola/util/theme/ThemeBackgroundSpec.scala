@@ -202,7 +202,8 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
         )
       },
       test("a theme is decoded with its background, and an unknown one is refused") {
-        val tokens = ThemeTokens("fintech", Some(ThemeOverrides(None, None, None, None, Some(Background.horizon))))
+        val tokens =
+          ThemeTokens(base = "fintech", overrides = Some(ThemeOverrides(None, None, None, None, Some(Background.horizon))), variables = None)
         assertTrue(
           tokens.toJson == """{"base":"fintech","overrides":{"background":"horizon"}}""",
           tokens.toJson.fromJson[ThemeTokens] == Right(tokens),

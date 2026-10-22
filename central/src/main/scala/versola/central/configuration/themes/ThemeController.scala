@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
-import versola.util.theme.ThemePresets
+import versola.util.theme.{ThemePresets, ThemeVariables}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -16,6 +16,7 @@ object ThemeController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     getAllThemesEndpoint,
     getThemePresetsEndpoint,
+    getThemeVariablesEndpoint,
     renderThemeEndpoint,
     syncThemesEndpoint,
     createThemeEndpoint,
@@ -38,6 +39,15 @@ object ThemeController extends Controller:
     Method.GET / "configuration" / "themes" / "presets" -> handler { (request: Request) =>
       for _ <- authorizeBasic(request)
       yield Response.json(GetThemePresetsResponse(ThemePresets.all).toJson)
+    }
+
+  /** The tokens a theme may set one by one: the groups, and for each its kind, whether it takes a light and a dark value, a
+    * description in each language and its default. Fixed by the build, like the presets.
+    */
+  val getThemeVariablesEndpoint =
+    Method.GET / "configuration" / "themes" / "variables" -> handler { (request: Request) =>
+      for _ <- authorizeBasic(request)
+      yield Response.json(ThemeVariables.catalog.toJson)
     }
 
   /** The stylesheet of a theme built from the given tokens; nothing is stored. */

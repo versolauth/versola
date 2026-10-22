@@ -10,7 +10,7 @@
   align-self: flex-start; display: flex; align-items: center; justify-content: center; width: 56px; height: 56px; margin: 0 0 22px; padding: 8px;
   border-radius: var(--rf);
   /* a dark logo must not vanish on the dark card, whatever its colours */
-  background: light-dark(var(--field), rgba(255, 255, 255, 0.94));
+  background: var(--logo-plate);
 }
 .consent-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .consent-icon-initial { padding: 0; background: var(--brand); color: var(--on-brand); font-size: 1.5rem; font-weight: 750; }

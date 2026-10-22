@@ -122,7 +122,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(21, 23, 28, 0.35);
+  background: var(--scrim);
   z-index: 300;
 }
 .confirmation-dialog {

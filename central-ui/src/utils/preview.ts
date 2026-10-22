@@ -64,7 +64,7 @@ export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${params.themeCss}\n${params.style}</style><script>window.__VERSOLA_FORM__=${configJson};</script></head><body><div id="versola-form-root"></div><script>${params.jsCompiled}</script></body></html>`;
 }
 
-/** The stylesheet each theme gives a page, for previews. A stylesheet theme is its own CSS; a visual theme (the
+/** The stylesheet each theme gives a page, for previews. A theme stored with CSS only is its own CSS; any other (the
  *  built-in `default` among them) is composed by central on the base stylesheet, which the console does not have, so
  *  it is asked for. A theme central cannot render keeps its own CSS rather than failing the preview. */
 export async function previewStylesheets(themes: ThemeRecord[]): Promise<Record<string, string>> {

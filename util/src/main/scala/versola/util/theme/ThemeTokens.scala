@@ -50,10 +50,13 @@ case class ThemeOverrides(
 object ThemeOverrides:
   val empty: ThemeOverrides = ThemeOverrides(None, None, None, None, None)
 
-/** A theme built from tokens: the id of a built-in preset and the values it overrides; absent overrides are none. */
+/** A theme built from tokens: the id of a built-in preset, the values it overrides and the forms' CSS variables it sets
+  * directly (see [[ThemeVariables]]); absent overrides and variables are none.
+  */
 case class ThemeTokens(
     base: String,
     overrides: Option[ThemeOverrides],
+    variables: Option[Map[String, VariableValue]],
 ) derives JsonCodec, Schema
 
 /** Every token with a value: a preset's, or a preset's with a theme's overrides laid over it. */

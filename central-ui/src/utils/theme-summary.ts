@@ -1,4 +1,5 @@
 import type { OAuthClient, ResolvedThemeTokens, ThemeOverrides, ThemePreset, ThemeRecord } from '../types';
+import { sameValue, type VariableValue } from './theme-variables';
 
 const ORDER: Array<keyof ThemeOverrides> = ['brand', 'surface', 'background', 'shape', 'mode'];
 const SHORT: Record<keyof ThemeOverrides, string> = { brand: 'brand', surface: 'page', background: 'background', shape: 'shape', mode: 'scheme' };
@@ -45,11 +46,33 @@ export function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-/** What differs between the stored theme and the editor, named for the bar: `brand colour, shape`. */
-export function unsavedNames(saved: { base: string; overrides: ThemeOverrides; css: string }, now: { base: string; overrides: ThemeOverrides; css: string }, cssName: string): string[] {
+export interface ThemeEditState {
+  base: string;
+  overrides: ThemeOverrides;
+  variables: Record<string, VariableValue>;
+  css: string;
+}
+
+const sameVariables = (a: Record<string, VariableValue>, b: Record<string, VariableValue>) => {
+  const left = Object.entries(a).sort(([x], [y]) => x.localeCompare(y));
+  const right = Object.entries(b).sort(([x], [y]) => x.localeCompare(y));
+  return left.length === right.length && left.every(([name, value], index) => name === right[index][0] && sameValue(value, right[index][1]));
+};
+
+/** What differs between the stored theme and the editor, named for the bar: `brand colour, shape, token overrides, custom CSS`. */
+export function unsavedNames(saved: ThemeEditState, now: ThemeEditState): string[] {
   const names: string[] = [];
   if (saved.base !== now.base) names.push('base theme');
   for (const key of ORDER) if (saved.overrides[key] !== now.overrides[key]) names.push(LONG[key]);
-  if (saved.css !== now.css) names.push(cssName);
+  if (!sameVariables(saved.variables, now.variables)) names.push('token overrides');
+  if (saved.css !== now.css) names.push('custom CSS');
   return names;
+}
+
+/** The Base column of the themes list: `Overrides: brand, shape · Token overrides · Custom CSS`. */
+export function themeDetailText(theme: ThemeRecord): string {
+  const parts = [overridesText(theme.tokens?.overrides)];
+  if (Object.keys(theme.tokens?.variables ?? {}).length > 0) parts.push('Token overrides');
+  if (theme.css.trim() !== '') parts.push('Custom CSS');
+  return parts.join(' · ');
 }
