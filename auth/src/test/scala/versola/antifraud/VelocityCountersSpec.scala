@@ -196,7 +196,19 @@ object VelocityCountersSpec extends UnitSpecBase:
     test("while off nothing is counted or started") {
       val counters = VelocityCounters.off
       for
-        ctx <- counters.recordAndSnapshot(AntifraudContext(None, ClientId("c"), AntifraudAction.otp_request, ip = Some("1.1.1.1")))
+        ctx <- counters.recordAndSnapshot(AntifraudContext(
+          tenantId = None,
+          clientId = ClientId("c"),
+          action = AntifraudAction.otp_request,
+          subjectHash = None,
+          destPrefix = None,
+          deviceId = None,
+          ip = Some("1.1.1.1"),
+          asn = None,
+          userAgent = None,
+          ja4 = None,
+          signals = Map.empty,
+        ))
       yield assertTrue(ctx.signals.isEmpty, counters.size == 0)
     },
   )

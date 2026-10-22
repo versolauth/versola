@@ -314,13 +314,13 @@ object VelocityCounters:
       failing: Ref[Boolean],
       reported: Ref[Long],
   ):
-    // The first failure of an outage is logged with its stack, and the recovery; the counter says how long it lasts.
+    // A failure is swallowed on purpose (the counts stay per instance), so the first of an outage is logged with its
+    // stack; the counter says how long it lasts.
     private def failed(what: String, cause: Cause[Throwable]): UIO[Unit] =
       AntifraudMetrics.velocityFailed(what) *>
         failing.getAndSet(true).flatMap(was => ZIO.logWarningCause(s"antifraud velocity $what failed", cause).unless(was)).unit
 
-    private val recovered: UIO[Unit] =
-      failing.getAndSet(false).flatMap(was => ZIO.logInfo("antifraud velocity counters are shared again").when(was)).unit
+    private val recovered: UIO[Unit] = failing.set(false)
 
     private def reportSize: UIO[Unit] =
       reported.getAndSet(counters.untracked).flatMap(was => AntifraudMetrics.velocityUntracked(counters.untracked - was)) *>

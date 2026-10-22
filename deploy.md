@@ -547,9 +547,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud_velocity_failed_total{what="flush"|"load"}` and are logged once per outage. A load reads every
   shared minute of the day (at most `max-load-rows`), so on a large deployment raise `share-from` to share fewer keys.
   **The table holds IP addresses, which are personal data:** rows are deleted a day and an hour after their minute,
-  by the service. A key of a phone number is a keyed hash, as in `af_event`. The service takes the address from
-  `X-Forwarded-For`, then `X-Real-IP`, as the conversation does, so it is the client's only when the proxy in front
-  sets them and nothing else can reach `auth`.
+  by the service. A key of a phone number is a keyed hash, as in `af_event`. The address is the request's `auth.ip`
+  (from `X-Forwarded-For`, then `X-Real-IP`), so it is the client's only when the proxy in front sets them and
+  nothing else can reach `auth`.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

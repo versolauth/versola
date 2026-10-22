@@ -14,8 +14,9 @@ import java.time.Instant
   *
   * Where the context's fields come from:
   *   - `phone`: `subjectHash`, the keyed hash of the number or address (never the number itself),
-  *   - `ip`: `ip`, which the caller takes from `ConversationRouter`'s `ipAddress` (`X-Forwarded-For`, then `X-Real-IP`):
-  *     the address of the client only when the deployment's proxy sets those headers and is the only way in,
+  *   - `ip`: `ip`, which the caller reads from the request's log context (`Observability.currentIp`, the `auth.ip` of
+  *     the `receive-http` line): the client's address only when the proxy in front sets `X-Forwarded-For` or
+  *     `X-Real-IP` and is the only way in,
   *   - `device`: `deviceId`, `asn`: `asn` (both empty until P1-1 and P1-3 fill them),
   *   - `prefix`: the tenant and `destPrefix` (the leading digits of the number), so a tenant's ranges are its own.
   */

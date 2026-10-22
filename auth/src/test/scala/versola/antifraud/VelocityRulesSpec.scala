@@ -21,7 +21,12 @@ object VelocityRulesSpec extends UnitSpecBase:
     action = AntifraudAction.otp_request,
     subjectHash = Some("hash"),
     destPrefix = Some("4915"),
+    deviceId = None,
     ip = Some("203.0.113.7"),
+    asn = None,
+    userAgent = None,
+    ja4 = None,
+    signals = Map.empty,
   )
 
   /** Makes `n` requests as the evaluate caller does and decides the last one. */
