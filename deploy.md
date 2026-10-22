@@ -704,7 +704,7 @@ additive: no existing client, route or key changes (central gets one migration, 
    (auth does not start without it): a PEM file with the **client CA alone**, which `cacerts` hands out. It is
    deliberately not defaulted to `mutual-tls.trusted-certificates`, which is every anchor a client chain is validated
    against and may hold the edge CA as well (the `vps` bundle and the chart do), and a bank must not be told to trust
-   that. On the generated targets: `EST_ENABLED=true` and, except on `local` and Kubernetes (where the chart mounts the client CA alone, `/app/mtls/client-trust/ca.crt`), `EST_CA_CERTIFICATES=<path in auth's container>`.
+   that. On the generated targets: `EST_ENABLED=true` and, except on `local` and Kubernetes (where the chart mounts the client CA alone at `/app/mtls/client-trust/ca.crt`: from the trust-manager bundle `<release>-client-only-ca`, or `pki.est.caSecret` without trust-manager; never the root, and the chart fails rendering with `pki.est.enabled` and no source), `EST_CA_CERTIFICATES=<path in auth's container>`.
    **A client needs two base URLs**: enrolment on the issuer origin and re-enrolment on the mutual-TLS origin (a stock EST client
    is configured, and run, once for each; `simplereenroll` on the issuer origin is `404`). Deliberate narrowing of RFC 7030: a
    renewal always uses a **new key** (clients whose HSM cannot rotate keys cannot use it), and a request with
@@ -744,6 +744,14 @@ additive: no existing client, route or key changes (central gets one migration, 
    ends is valid for its whole `validity`, so the client can run up to that long past `Versola-Chain-Ends-At`. The
    client is told the date in every answer, and `GET /configuration/clients` shows `est.pending`,
    `est.certificateExpiresAt` and `est.chainEndsAt`.
+   **Interop notes (libest `estclient`, Cisco's reference client, run against a local stack).** `cacerts`, `csrattrs` (204) and
+   `simpleenroll` with a Basic token work, with these caveats: (a) libest compares response header names case-sensitively
+   and looks for `WWW-Authenticate`, while auth (zio-http) writes header names in lower case, so it stops with "No
+   WWW-Authenticate header found" unless a proxy in front restores the case; (b) its command-line client builds a
+   CSR with a common name only, so the client has to be registered with `mtlsAuth` of `subject_dn` `CN=<name>` for its
+   request to say the registered subject; (c) its `-r` re-enrolment always signs with the key of the presented
+   certificate and has no way to rekey, which this profile refuses (400, "a renewal needs a new key"), so the stock
+   command-line client cannot renew; a client built on the libest API can. Other clients were not tried.
 6. **If a key is out.** What is revoked is the right to **renew**, not the certificate, which keeps authenticating until
    it expires (set another `mtlsAuth` subject on the client, or delete it, to cut that too). Every certificate belongs
    to a generation of the chain; a new enrolment (a new token) starts one, so earlier certificates stop renewing, and
