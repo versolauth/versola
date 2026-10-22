@@ -318,29 +318,59 @@ object ConversationService:
                 clientId = conversation.clientId,
                 isRegistering = conversation.isRegistering,
               )
-              now <- Clock.instant
-              sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
-              updatedConversation = conversation.copy(
-                userId = effectiveUserId,
-                // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
-                credential = Some(credential),
-                step = sentStep,
-                userEmail = conversation.userEmail,
-                userPhone = conversation.userPhone,
-                userLogin = conversation.userLogin,
-                userClaims = conversation.userClaims,
-              )
-              written <- conversationRepository.overwrite(authId, updatedConversation)
-              result2 <- if written then
-                otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
-                  .tapBoth(
-                    _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
-                    _ =>
-                      otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
+              // Asked for every phone number, a code that stands in for an unknown user included, and answered the same:
+              // were a closed range to refuse only the numbers that get a real code, the refusal would tell which
+              // numbers are users. Only a real code is charged, so trying numbers cannot close a range.
+              charged = credential.isRight && otp.real.isDefined
+              chargedAt <- Clock.instant
+              // From the charge to the send nothing may leave the count standing for a code that did not go out: an
+              // error, a lost write and an interruption all give it back, which is why the stretch is entered
+              // uninterruptibly and the return is the exit of what follows.
+              result2 <- ZIO.uninterruptibleMask: restore =>
+                for
+                  allowed <- credential match
+                    case Right(phone) => antifraudEvents.allowSms(conversation.clientId, phone, chargedAt, charge = otp.real.isDefined)
+                    case Left(_) => ZIO.succeed(true)
+                  sentOut <- Ref.make(false)
+                  giveBack = ZIO.foreachDiscard(credential.toOption.filter(_ => charged))(phone =>
+                    antifraudEvents.releaseSms(conversation.clientId, phone, chargedAt),
                   )
-                  .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
-              else
-                Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                  rendered <-
+                    if !allowed then
+                      otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *> accessDenied(authId, conversation)
+                    else
+                      restore:
+                        for
+                          now <- Clock.instant
+                          sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
+                          updatedConversation = conversation.copy(
+                            userId = effectiveUserId,
+                            // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
+                            credential = Some(credential),
+                            step = sentStep,
+                            userEmail = conversation.userEmail,
+                            userPhone = conversation.userPhone,
+                            userLogin = conversation.userLogin,
+                            userClaims = conversation.userClaims,
+                          )
+                          written <- conversationRepository.overwrite(authId, updatedConversation)
+                          sentResult <- if written then
+                            // The flag goes up in the same uninterruptible step in which the send is known to have
+                            // succeeded, so an interruption cannot fall between the two and give back a code that went.
+                            ZIO.uninterruptibleMask(sending =>
+                              sending(otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)) <* sentOut.set(true),
+                            )
+                              .tapBoth(
+                                _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
+                                _ =>
+                                  otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
+                              )
+                              .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
+                          else
+                            Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                        yield sentResult
+                      .onExit(_ => ZIO.unlessZIO(sentOut.get)(giveBack))
+                yield rendered
             yield result2
       yield result
 

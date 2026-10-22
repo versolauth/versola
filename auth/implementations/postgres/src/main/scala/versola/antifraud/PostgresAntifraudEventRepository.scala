@@ -7,7 +7,7 @@ import versola.util.postgres.BasicCodecs
 import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 
 import java.time.format.DateTimeFormatter
-import java.time.{Instant, LocalDate}
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration = 5.seconds) extends AntifraudEventRepository, BasicCodecs:
   import PgCodec.SeqCodec
@@ -32,6 +32,39 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
             )
           """.update
       .unit
+
+  override def rollupStats(from: Instant, to: Instant, prefixLength: Int): Task[Boolean] =
+    xa.transactMeasured("rollup-antifraud-stats"):
+      val locked = sql"SELECT pg_try_advisory_xact_lock($RollupLock)".query[Boolean].run().head
+      if !locked then false
+      else
+        val fromAt = from.atOffset(ZoneOffset.UTC)
+        val toAt = to.atOffset(ZoneOffset.UTC)
+        sql"""
+          INSERT INTO af_dest_stats (tenant_id, dest_prefix, minute, requests, sent, suppressed, throttled,
+                                     provider_errors, verified, wrong_codes)
+          SELECT COALESCE(tenant_id, ''), left(dest_prefix, $prefixLength), date_trunc('minute', at),
+                 COUNT(*) FILTER (WHERE action = 'otp_request'),
+                 COUNT(*) FILTER (WHERE outcome = 'sent'),
+                 COUNT(*) FILTER (WHERE outcome = 'suppressed'),
+                 COUNT(*) FILTER (WHERE outcome IN ('throttled', 'locked')),
+                 COUNT(*) FILTER (WHERE outcome = 'provider_error'),
+                 COUNT(*) FILTER (WHERE outcome = 'verified'),
+                 COUNT(*) FILTER (WHERE outcome = 'wrong_code')
+          FROM af_event
+          WHERE channel = 'sms' AND dest_prefix IS NOT NULL AND at >= $fromAt AND at < $toAt
+          GROUP BY 1, 2, 3
+          ON CONFLICT (tenant_id, dest_prefix, minute) DO UPDATE SET
+            requests = EXCLUDED.requests, sent = EXCLUDED.sent, suppressed = EXCLUDED.suppressed,
+            throttled = EXCLUDED.throttled, provider_errors = EXCLUDED.provider_errors,
+            verified = EXCLUDED.verified, wrong_codes = EXCLUDED.wrong_codes
+        """.update.run()
+        true
+
+  override def pruneStats(before: Instant): Task[Unit] =
+    xa.connectMeasured("prune-antifraud-stats"):
+      sql"DELETE FROM af_dest_stats WHERE minute < ${before.atOffset(ZoneOffset.UTC)}".update.run()
+    .unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Unit] =
     xa.transactMeasured("maintain-antifraud-partitions"):
@@ -66,6 +99,8 @@ object PostgresAntifraudEventRepository:
 
   /** Held for the length of a maintenance transaction; any constant would do. */
   private val AdvisoryLock = 7430001L
+
+  private val RollupLock = 7430002L
 
   private val suffix = DateTimeFormatter.BASIC_ISO_DATE
 

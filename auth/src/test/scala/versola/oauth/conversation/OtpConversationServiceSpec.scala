@@ -53,7 +53,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeChallengeMethod = CodeChallengeMethod.S256
 
-  class Env:
+  class Env(smsAllowed: Boolean = true, afterRequested: zio.UIO[Unit] = ZIO.unit):
     val otpService = stub[OtpService]
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
@@ -73,7 +73,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val antifraud = RecordingAntifraudEvents()
+    val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested)
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -217,6 +217,98 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0).exit
           outcomes = env.antifraud.steps.map(_.outcome)
         yield assertTrue(result.isFailure, outcomes == List(AntifraudOutcome.provider_error))
+      },
+      test("a closed range is answered the same for a real code and for the stand-in of an unknown user, and only the real one is charged") {
+        def refused(otp: ConversationStep.Otp) =
+          val env = Env(smsAllowed = false)
+          for
+            _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+            _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+            _ <- env.otpService.prepareOtp.succeedsWith(otp)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            result <- env.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+          yield (result, env.otpService.sendOtp.calls.isEmpty, env.antifraud.steps.map(_.outcome), env.antifraud.smsAsked)
+        for
+          real <- refused(realOtp)
+          fake <- refused(realOtp.copy(real = None))
+        yield assertTrue(
+          real._1 == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          fake._1 == real._1,
+          real._2, fake._2,
+          real._3 == List(AntifraudOutcome.throttled),
+          fake._3 == real._3,
+          real._4 == List(true),
+          fake._4 == List(false),
+        )
+      },
+      test("a code that was charged and not sent is given back, whether the provider failed or the write was lost") {
+        val failing = Env()
+        val lost = Env()
+        for
+          _ <- failing.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- failing.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- failing.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- failing.conversationRepository.overwrite.succeedsWith(true)
+          _ <- failing.otpService.sendOtp.failsWith(RuntimeException("503"))
+          _ <- failing.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0).exit
+          _ <- lost.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- lost.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- lost.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- lost.conversationRepository.overwrite.succeedsWith(false)
+          _ <- lost.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+        yield assertTrue(failing.antifraud.smsReleased == 1, lost.antifraud.smsReleased == 1)
+      },
+      test("a code that was charged is given back when the write fails or the request is interrupted, not only on the expected branches") {
+        val broken = Env()
+        val interrupted = Env()
+        for
+          _ <- broken.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- broken.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- broken.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- broken.conversationRepository.overwrite.failsWith(RuntimeException("database is down"))
+          _ <- broken.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0).exit
+          _ <- interrupted.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- interrupted.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- interrupted.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- interrupted.conversationRepository.overwrite.returnsZIO(_ => ZIO.never)
+          fiber <- interrupted.service
+            .prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+            .fork
+          _ <- Live.live(ZIO.sleep(zio.Duration.fromMillis(200)))
+          _ <- fiber.interrupt
+        yield assertTrue(broken.antifraud.smsReleased == 1, interrupted.antifraud.smsReleased == 1)
+      },
+      test("an interruption after the send has succeeded does not give the code back, one before it has finished does") {
+        val phone = Right(versola.util.Phone("+4915123456789"))
+        def interruptedAt(env: Env) =
+          for
+            _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+            _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+            _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            fiber <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0).fork
+            _ <- Live.live(ZIO.sleep(zio.Duration.fromMillis(200)))
+            _ <- fiber.interrupt
+          yield env.antifraud.smsReleased
+        val duringSend = Env()
+        val afterSend = Env(afterRequested = ZIO.never)
+        for
+          _ <- duringSend.otpService.sendOtp.returnsZIO(_ => ZIO.never)
+          _ <- afterSend.otpService.sendOtp.succeedsWith(())
+          before <- interruptedAt(duringSend)
+          after <- interruptedAt(afterSend)
+        yield assertTrue(before == 1, after == 0, afterSend.otpService.sendOtp.calls.size == 1)
+      },
+      test("an address never asks the budget") {
+        val env = Env(smsAllowed = false)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+        yield assertTrue(env.antifraud.smsAsked.isEmpty, env.antifraud.smsReleased == 0)
       },
       test("a request that lost the write race and sent nothing records nothing") {
         val env = Env()

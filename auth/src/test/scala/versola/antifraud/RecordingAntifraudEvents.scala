@@ -16,7 +16,7 @@ object RecordingAntifraudEvents:
   )
 
 /** An [[AntifraudEvents]] that keeps what the sign-in steps told it, for the specs of those steps. */
-final class RecordingAntifraudEvents extends AntifraudEvents:
+final class RecordingAntifraudEvents(smsAllowed: Boolean = true, afterRequested: UIO[Unit] = zio.ZIO.unit) extends AntifraudEvents:
   import RecordingAntifraudEvents.Step
 
   private val told = scala.collection.mutable.ListBuffer.empty[Step]
@@ -25,6 +25,19 @@ final class RecordingAntifraudEvents extends AntifraudEvents:
 
   override def record(event: AntifraudEvent): UIO[Unit] = zio.ZIO.unit
 
+  private val asked = scala.collection.mutable.ListBuffer.empty[Boolean]
+  private val released = new java.util.concurrent.atomic.AtomicInteger(0)
+
+  /** The `charge` flag of each [[allowSms]] call, in order. */
+  def smsAsked: List[Boolean] = synchronized(asked.toList)
+
+  def smsReleased: Int = released.get
+
+  override def allowSms(clientId: ClientId, phone: Phone, at: java.time.Instant, charge: Boolean): UIO[Boolean] =
+    zio.ZIO.succeed(synchronized(asked += charge)) *> zio.ZIO.succeed(smsAllowed)
+
+  override def releaseSms(clientId: ClientId, phone: Phone, at: java.time.Instant): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
+
   override def otpRequested(
       authId: AuthId,
       clientId: ClientId,
@@ -32,7 +45,7 @@ final class RecordingAntifraudEvents extends AntifraudEvents:
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
   ): UIO[Unit] =
-    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome))).unit
+    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome))) *> afterRequested
 
   override def otpChecked(
       authId: AuthId,

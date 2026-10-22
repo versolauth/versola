@@ -1,14 +1,15 @@
 package versola.antifraud
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
 
 import java.nio.charset.StandardCharsets
-import java.time.{LocalDate, ZoneOffset}
+import java.time.temporal.ChronoUnit
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 /** The antifraud event log, as the sign-in steps see it: something to tell, never something to wait for.
   *
@@ -19,6 +20,15 @@ import java.time.{LocalDate, ZoneOffset}
   */
 trait AntifraudEvents:
   def record(event: AntifraudEvent): UIO[Unit]
+
+  /** Whether a code may be sent to `phone`: false when the budget of its range is used up or the range is not
+    * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
+    * with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
+    * sends nothing and must be answered exactly like one that does. Always true while no budget is configured. */
+  def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean]
+
+  /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
+  def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
@@ -47,6 +57,11 @@ object AntifraudEvents:
     * @param retention      how long a day's partition is kept
     * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
     *                       leave the writer without a partition
+    * @param smsBudget      the limit on codes sent to one range of numbers, off by default
+    * @param statsInterval  how often `af_dest_stats` is rolled up from the log
+    * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
+    * @param statsRetention how long a minute of statistics is kept
+    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
     */
   case class Settings(
       queueCapacity: Int = 20000,
@@ -54,6 +69,11 @@ object AntifraudEvents:
       flushInterval: Duration = 1.second,
       retention: Duration = 14.days,
       partitionsAhead: Int = 3,
+      smsBudget: SmsBudget.Settings = SmsBudget.Settings(),
+      statsInterval: Duration = 1.minute,
+      statsLookback: Duration = 2.minutes,
+      statsRetention: Duration = 30.days,
+      statsPrefixLength: Int = 4,
   )
 
   object Settings:
@@ -62,6 +82,10 @@ object AntifraudEvents:
   /** Records nothing. For tests of what calls it, and for a deployment that does not want the log. */
   object noop extends AntifraudEvents:
     override def record(event: AntifraudEvent): UIO[Unit] = ZIO.unit
+
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
+
+    override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
     override def otpRequested(
         authId: AuthId,
@@ -100,7 +124,10 @@ object AntifraudEvents:
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
-        events = Impl(queue, settings.queueCapacity, securityService, secureRandom, configService, subjectKey)
+        budget = SmsBudget(settings.smsBudget)
+        events = Impl(queue, settings.queueCapacity, budget, settings, securityService, secureRandom, configService, subjectKey)
+        _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
+        _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
         _ <- Writer(queue, repository, settings).run
       yield events
@@ -108,13 +135,47 @@ object AntifraudEvents:
   class Impl(
       queue: Queue[AntifraudEvent],
       queueCapacity: Int,
+      budget: SmsBudget,
+      settings: Settings,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       configService: OAuthConfigurationService,
       subjectKey: Secret,
   ) extends AntifraudEvents:
 
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
+      if !settings.smsBudget.enabled then ZIO.succeed(true)
+      else
+        for
+          client <- configService.find(clientId)
+          regions <- configService.getPhoneRegions(clientId)
+          // Where anyone may register with the number, any number is sent a real code, so a range whose codes are
+          // not used says nothing about its users and everything about whoever asks; the conversion is only looked
+          // at where registration is closed for the number.
+          breaker = !PhoneRegion.allowsRegistration(regions, phone)
+          decision = budget.decide(client.map(_.tenantId), phone.filter(_.isDigit), at, charge, conversionBreaker = breaker)
+          _ <- decision match
+            case SmsBudget.Decision.Refused => AntifraudMetrics.smsRefused
+            case SmsBudget.Decision.Untracked => AntifraudMetrics.smsBudgetFull
+            case SmsBudget.Decision.Allowed => ZIO.unit
+        yield decision != SmsBudget.Decision.Refused
+
+    override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
+      ZIO.when(settings.smsBudget.enabled):
+        configService.find(clientId).map(client => budget.release(client.map(_.tenantId), phone.filter(_.isDigit), at))
+      .unit
+
     override def record(event: AntifraudEvent): UIO[Unit] =
+      feedBudget(event) *> enqueue(event)
+
+    // Sends are counted when they are allowed (allowSms); a verification can only be seen here.
+    private def feedBudget(event: AntifraudEvent): UIO[Unit] =
+      ZIO.foreachDiscard(event.destPrefix.filter(_ => event.channel == AntifraudChannel.sms)): prefix =>
+        event.outcome match
+          case AntifraudOutcome.verified => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
+          case _ => ZIO.unit
+
+    private def enqueue(event: AntifraudEvent): UIO[Unit] =
       // A refused request (`throttled`, `locked`) is logged at the pace its sender sets, so once the queue is half full they give way: what
       // is left is for the requests that were let through, which the statistics are made of.
       val shed = AntifraudEvents.shedFirst.contains(event.outcome)
@@ -235,6 +296,21 @@ object AntifraudEvents:
         _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
       yield ()
 
+  private class Rollup(repository: AntifraudEventRepository, settings: Settings):
+
+    private val once: UIO[Unit] =
+      Clock.instant.flatMap: now =>
+        val to = now.truncatedTo(ChronoUnit.MINUTES)
+        val from = to.minusSeconds(settings.statsLookback.toSeconds)
+        (repository.rollupStats(from, to, settings.statsPrefixLength) *>
+          repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
+          cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
+          _ => ZIO.unit,
+        )
+
+    val run: URIO[Scope, Unit] =
+      (ZIO.sleep(settings.statsInterval) *> once).forever.forkScoped.unit
+
   private class Maintenance(repository: AntifraudEventRepository, settings: Settings):
 
     private val once: IO[Unit, Unit] =
@@ -265,6 +341,20 @@ object AntifraudMetrics:
   private val queueSizeGauge = Metric.gauge("antifraud_event_queue_size")
 
   val enqueued: UIO[Unit] = enqueuedTotal.increment
+
+  private val smsRefusedTotal = Metric.counter("antifraud_sms_budget_refused_total")
+
+  private val smsBudgetFullTotal = Metric.counter("antifraud_sms_budget_full_total")
+
+  /** No label for the range: the ranges are whatever an attacker's numbers make them. */
+  val smsRefused: UIO[Unit] = smsRefusedTotal.increment
+
+  /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges. */
+  val smsBudgetFull: UIO[Unit] = smsBudgetFullTotal.increment
+
+  private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
+
+  val rollupFailed: UIO[Unit] = rollupFailedTotal.increment
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
 

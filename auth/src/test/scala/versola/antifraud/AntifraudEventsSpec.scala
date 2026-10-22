@@ -3,7 +3,7 @@ package versola.antifraud
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, TenantId}
+import versola.oauth.client.model.{ClientId, PhoneRegion, TenantId}
 import versola.oauth.conversation.model.AuthId
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
@@ -43,6 +43,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
+      _ <- e.repository.rollupStats.succeedsWith(true)
+      _ <- e.repository.pruneStats.succeedsWith(())
       events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents])
     yield events).provideSome[Scope](
       ZLayer.succeed[AntifraudEventRepository](e.repository),
@@ -52,6 +54,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
+
+  private val t0 = Instant.parse("2026-10-21T10:00:30Z")
 
   private val small = AntifraudEvents.Settings(queueCapacity = 3, batchSize = 10, flushInterval = 1.second, retention = 14.days, partitionsAhead = 3)
 
@@ -186,6 +190,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
           scope <- Scope.make
           _ <- e.repository.maintainPartitions.succeedsWith(())
           _ <- e.repository.insertBatch.succeedsWith(())
+          _ <- e.repository.rollupStats.succeedsWith(true)
+          _ <- e.repository.pruneStats.succeedsWith(())
           events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
             ZLayer.succeed[AntifraudEventRepository](e.repository),
             ZLayer.succeed(small),
@@ -238,6 +244,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
               attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
             _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.pruneStats.succeedsWith(())
             _ <- AntifraudEvents.live.build.provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
@@ -260,6 +268,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.repository.maintainPartitions.failsWith(RuntimeException("no permission"))
             _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.pruneStats.succeedsWith(())
             events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
@@ -271,6 +281,72 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- events.record(event())
             _ <- TestClock.adjust(0.seconds)
           yield assertTrue(e.repository.insertBatch.calls.size == 1)
+      },
+    ),
+    suite("the SMS budget")(
+      test("charged sends close the range, a check that charges nothing does not count, and another range is still allowed") {
+        val e = env
+        val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 2))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, limited)
+            _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = false))
+            first <- events.allowSms(clientId, phone, t0, charge = true)
+            second <- events.allowSms(clientId, Phone("+4915100000000"), t0, charge = true)
+            third <- events.allowSms(clientId, Phone("+4915199999999"), t0, charge = true)
+            readOnly <- events.allowSms(clientId, phone, t0, charge = false)
+            otherRange <- events.allowSms(clientId, Phone("+4917112345678"), t0, charge = true)
+            _ <- events.releaseSms(clientId, phone, t0)
+            afterRelease <- events.allowSms(clientId, phone, t0, charge = false)
+          yield assertTrue(first, second, !third, !readOnly, otherRange, afterRelease)
+      },
+      test("the conversion is only looked at where registration is closed for the number; the hourly limit applies everywhere") {
+        val germany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = true)
+        val closedGermany = germany.copy(registration = false)
+        def run(regions: List[PhoneRegion], settings: SmsBudget.Settings) =
+          val e = env
+          ZIO.scoped:
+            for
+              _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+              _ <- e.configService.getPhoneRegions.succeedsWith(regions)
+              _ <- e.repository.insertBatch.succeedsWith(())
+              events <- build(e, small.copy(smsBudget = settings))
+              _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = true))
+              allowed <- events.allowSms(clientId, phone, t0, charge = false)
+            yield allowed
+        val breaker = SmsBudget.Settings(minVolume = 5, minConversion = 0.5)
+        for
+          open <- run(List(germany), breaker)
+          closed <- run(List(closedGermany), breaker)
+          limitOpen <- run(List(germany), SmsBudget.Settings(sentPerHour = 5))
+        yield assertTrue(open, !closed, !limitOpen)
+      },
+      test("with no budget configured nothing is looked up") {
+        val e = env
+        ZIO.scoped:
+          for
+            events <- build(e, small)
+            allowed <- events.allowSms(clientId, phone, t0, charge = true)
+          yield assertTrue(allowed, e.configService.find.calls.isEmpty)
+      },
+    ),
+    suite("the statistics rollup")(
+      test("recomputes the last minutes every interval, and removes what is older than the retention") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
+            _ <- build(e, small.copy(statsRetention = 30.days))
+            _ <- TestClock.adjust(1.minute)
+            rolled = e.repository.rollupStats.calls
+            pruned = e.repository.pruneStats.calls
+          yield assertTrue(
+            rolled == List((Instant.parse("2026-10-21T09:59:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
+            pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
+          )
       },
     ),
     suite("describing a step")(

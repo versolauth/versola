@@ -495,6 +495,37 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
   optional `antifraud` block of `auth`'s config.
 
+- **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
+  minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
+  default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
+  (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
+  ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
+  instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
+  next run recomputes the last `stats-lookback` (2 minutes). A BRIN index on `af_event (at)` keeps that read to the
+  blocks of those minutes.
+  Separately, `antifraud.sms-budget` closes a range (tenant plus the first `prefix-length` digits) for the next hour:
+  `sent-per-hour` (that many codes may be sent to it, no more) and `min-volume` with `min-conversion` (a range with at
+  least that many codes sent of which fewer than that share were verified). Both are **off by default** (`0`).
+  **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
+  range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
+  for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
+  exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
+  unverified, which closes it. For that reason the conversion breaker (`min-volume`) is never applied to a number
+  whose region allows registration (`phoneRegions[].registration`); `sent-per-hour` is, so keep it well above the
+  real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
+  range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
+  someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
+  candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
+  an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
+  matters more than the pumping it protects against, leave `sent-per-hour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
+  and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
+  hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
+  that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
+  `max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
+  (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
+  the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
+  tenant's regions is refused before the conversation takes it, whatever the budget says.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
