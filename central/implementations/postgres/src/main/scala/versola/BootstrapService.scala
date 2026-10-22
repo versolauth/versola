@@ -37,7 +37,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -254,6 +254,7 @@ object BootstrapService:
     "DELETE" -> "/settings/passkeys",
     "POST" -> "/settings/passkeys/register/start",
     "POST" -> "/settings/passkeys/register/finish",
+    "PATCH" -> "/settings/password",
   )
 
   /** Endpoints of the account page. Granted to every seeded role - each of them belongs to
@@ -793,10 +794,11 @@ object BootstrapService:
   /** Default theme seeded from the shared CSS resource. */
   private val defaultThemeId = "default"
 
-  /** Default locales seeded for the console. */
-  private val defaultLocales: Vector[LocaleRecord] = Vector(
+  /** Default locales seeded for the console. A locale's name is written in that language (`Русский`, not
+    * `Russian`): the login forms' language selector shows it as it is, so a visitor can find their own. */
+  private[versola] val defaultLocales: Vector[LocaleRecord] = Vector(
     LocaleRecord("en", "English", isDefault = true, active = true),
-    LocaleRecord("ru", "Russian", isDefault = false, active = true),
+    LocaleRecord("ru", "Русский", isDefault = false, active = true),
   )
 
   /** Default forms loaded from classpath resources, with their backend properties. */
@@ -1492,7 +1494,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the

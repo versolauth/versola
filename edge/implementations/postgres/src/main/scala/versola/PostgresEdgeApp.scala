@@ -9,31 +9,23 @@ import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
-  AuthorizationPresetsSyncClient,
-  CentralSyncTokenService,
-  ClientCertificateEnrollment,
   ClientCertificateFiles,
-  DpopAlgorithmsSyncClient,
-  DpopPolicySyncClient,
+  ConfigurationSource,
   EdgeConfig,
   EdgeController,
+  EdgeIdentity,
   EdgeService,
+  InternalSurface,
   JwksService,
-  JwksSyncClient,
   OAuthClientService,
-  OAuthClientsSyncClient,
   OverloadPolicyService,
-  OverloadPolicySyncClient,
   PermissionService,
-  PermissionsSyncClient,
   PostgresDpopProofRepository,
   PostgresEdgeSessionRepository,
   PostgresLoginRepository,
   PostgresRevocationNotifications,
   PostgresRevocationRepository,
   ResourceService,
-  ResourcesSyncClient,
-  RolesSyncClient,
   SSOClient,
   SSOClientWarmUp,
   ServiceController,
@@ -60,16 +52,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     EdgeConfig &
       SecureRandom &
       SecurityService &
-      CentralSyncTokenService &
-      AuthorizationPresetsSyncClient &
-      OAuthClientsSyncClient &
-      ResourcesSyncClient &
-      RolesSyncClient &
-      PermissionsSyncClient &
-      DpopAlgorithmsSyncClient &
-      DpopPolicySyncClient &
+      ConfigurationSource &
+      EdgeIdentity &
       DpopPolicyService &
-      OverloadPolicySyncClient &
       OverloadPolicyService &
       OAuthClientService &
       ResourceService &
@@ -99,12 +84,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   override protected def guardExemptPeers =
     ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
+  /** The surface every mode serves. The internal one is added by [[mountedRoutes]], which is
+    * where the mode is known. */
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       EdgeController.routes,
       NativeController.routes,
-      ServiceController.routes,
     ).reduce(_ ++ _)
+
+  override def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    ZIO.serviceWith[EdgeConfig](config => routes ++ InternalSurface.routes(config.mode))
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
@@ -123,21 +112,14 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SecureRandom.live >++>
       SecurityService.live >++>
       configSnapshot >++>
-      CentralSyncTokenService.live >++>
-      AuthorizationPresetsSyncClient.live >++>
-      ClientCertificateEnrollment.live >++>
-      OAuthClientsSyncClient.live >++>
-      versola.edge.ClientPermissionsSyncClient.live >++>
       CelEvaluator.live >++>
-      ResourcesSyncClient.live >++>
-      RolesSyncClient.live >++>
-      PermissionsSyncClient.live >++>
-      DpopAlgorithmsSyncClient.live >++>
-      DpopPolicySyncClient.live >++>
+      // The three mode boundaries of #555. `EdgeConfig.validated` above has already refused a
+      // mode none of them implements, so each selects by mode without a failure path of its own
+      // to reach; the internal surface is mounted in `mountedRoutes`.
+      ConfigurationSource.live >++>
+      EdgeIdentity.live >++>
       DpopPolicyService.live >++>
-      OverloadPolicySyncClient.live >++>
       OverloadPolicyService.live >++>
-      JwksSyncClient.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>
       PermissionService.live >++>

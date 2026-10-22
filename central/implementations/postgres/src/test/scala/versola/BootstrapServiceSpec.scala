@@ -96,6 +96,12 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
       assertTrue(settings.acrVocabulary == Some(Map("otp" -> List("otp"), "passkey" -> List("passkey"))))
     },
+    test("names each seeded locale in its own language, as the login forms' language selector shows it") {
+      assertTrue(
+        BootstrapService.defaultLocales.map(locale => locale.code -> locale.name).toMap ==
+          Map("en" -> "English", "ru" -> "Русский"),
+      )
+    },
     test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
       val themes = stub[ThemeRepository]
       for
@@ -282,6 +288,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           endpointId("DELETE", "/settings/passkeys"),
           endpointId("POST", "/settings/passkeys/register/start"),
           endpointId("POST", "/settings/passkeys/register/finish"),
+          endpointId("PATCH", "/settings/password"),
         ),
       )
     },

@@ -80,6 +80,10 @@ spec:
             - name: mtls
               containerPort: {{ $svc.mutualTlsPort }}
             {{- end }}
+            {{- if and (eq $name "central") $.Values.exposure.central.host }}
+            - name: enroll
+              containerPort: {{ $svc.enrollmentPort }}
+            {{- end }}
           env:
             - name: PORT
               value: {{ $svc.port | quote }}
@@ -104,6 +108,12 @@ spec:
             - name: MPORT
               value: {{ $svc.mutualTlsPort | quote }}
             {{- end }}
+            {{- if and (eq $name "central") $.Values.exposure.central.host }}
+            # The enrollment listener (design-edge-network.md, F5): plain TLS-terminated, one route.
+            # Bound only while `exposure.central.host` is set; the Ingress for that host leads here.
+            - name: APORT
+              value: {{ $svc.enrollmentPort | quote }}
+            {{- end }}
             # See VersolaApp.scala's bindHost comment and #207: prod's VPS
             # sets this to 127.0.0.1 because of network_mode: host, which
             # would make every pod unreachable here. Deliberately not a
@@ -120,6 +130,9 @@ spec:
             # Which issuer signs the certificates central issues to edge-fronted clients
             # (central.conf's `client-certificates.cert-manager`).
             {{- include "versola.pki.issuerEnv" $ | nindent 12 }}
+            # And the issuer for edges' identity certificates (`edge-certificates.cert-manager`):
+            # the edge CA, which is what central's mutual-TLS listener trusts.
+            {{- include "versola.pki.edgeIssuerEnv" $ | nindent 12 }}
             {{- end }}
             {{- include "versola.secretEnv" (dict "root" $ "service" $name) | nindent 12 }}
             {{- with $svc.extraEnv }}

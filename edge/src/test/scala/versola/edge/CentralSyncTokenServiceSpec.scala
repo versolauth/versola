@@ -48,6 +48,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
   private val service =
     ZIO.service[CentralSyncTokenService].provideSome[Scope](
       ZLayer.succeed(config),
+      EdgeCertificateHolder.live,
       CentralSyncTokenService.live,
       ZLayer.succeed(ConfigSnapshot.disabled),
     )

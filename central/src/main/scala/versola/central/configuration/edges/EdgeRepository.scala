@@ -10,7 +10,7 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
 
   def find(id: EdgeId): Task[Option[EdgeRecord]]
 
-  def createEdge(id: EdgeId, publicKeyJwk: Json.Obj, requireDpopNonce: Boolean): Task[Unit]
+  def createEdge(id: EdgeId, publicKeyJwk: Json.Obj, requireDpopNonce: Boolean, groupId: EdgeGroupId): Task[Unit]
 
   def rotateEdgeKey(id: EdgeId, newPublicKeyJwk: Json.Obj): Task[Unit]
 

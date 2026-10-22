@@ -88,9 +88,9 @@ object SigningKeySelectionSpec extends E2ESpec:
           .label("a token signed with the selected key must verify against the published JWKS")
     },
 
-    // The one that cannot work by accident: auth's own configured private key is RSA, so an
-    // ES256 token can only have been signed with a private half central generated and
-    // published over the sync channel.
+    // auth's own configured private key is also ES256 now, so the algorithm alone proves nothing:
+    // the kid assertion is what shows the token was signed with the private half central generated
+    // and published over the sync channel, not with the configured key.
     test("a tenant's tokens are signed with the ES256 key it selected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -102,7 +102,7 @@ object SigningKeySelectionSpec extends E2ESpec:
       yield assertTrue(head.kid == kid)
         .label(s"the token must name the selected key, got kid=${head.kid} for selection '$kid'") &&
         assertTrue(head.alg == "ES256")
-          .label(s"an EC key cannot be signed with under an RSA algorithm, got ${head.alg}") &&
+          .label(s"an EC key must be signed with under ES256, got ${head.alg}") &&
         assertTrue(verified)
           .label("the published EC JWK must verify the token signed with its private half")
     },

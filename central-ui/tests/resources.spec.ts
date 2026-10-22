@@ -234,7 +234,10 @@ test.describe('record', () => {
     const row = page.getByRole('table', { name: 'Endpoints of orders-api' }).locator('tr[data-endpoint="GET /orders"]');
     const badge = await row.locator('.method-badge').boundingBox();
     const path = await row.locator('.path').boundingBox();
-    expect(Math.abs(badge!.y - path!.y)).toBeLessThan(8);
+    // Centres, not tops: the badge is padded, so its top sits a few pixels off the text's, and
+    // the difference was exactly the old bound on the CI font. Wrapped onto its own line the
+    // centres are a whole line apart.
+    expect(Math.abs(badge!.y + badge!.height / 2 - (path!.y + path!.height / 2))).toBeLessThan(8);
     expect((await row.locator('td').first().boundingBox())!.width).toBeGreaterThanOrEqual(207);
   });
 

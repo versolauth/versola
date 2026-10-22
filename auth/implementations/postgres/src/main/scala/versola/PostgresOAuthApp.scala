@@ -2,7 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.account.AccountSettingsController
+import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
   AcrResolutionService,
   AuthorizationResponseService,
@@ -30,7 +30,7 @@ import versola.oauth.conversation.{
   ConversationService,
   PostgresConversationRepository,
 }
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -67,6 +67,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ClientAssertionRepository &
       ClientAssertionService &
       DpopService &
+      EdgeAssertionService &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -106,6 +107,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
+      AccountSettingsService &
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
@@ -169,7 +171,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
     ZIO.serviceWith[CoreConfig](
       _.mutualTls.map(mtls =>
-        Server.Config.default.binding(bindHost, mutualTlsPort).ssl(
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
           SSLConfig.fromFile(
             behaviour = SSLConfig.HttpBehaviour.Fail,
             certPath = mtls.certificate,
@@ -228,6 +230,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>
       DpopNonceService.live >++>
+      EdgeAssertionService.live >++>
       JsonSchemaValidator.live >++>
       OAuthConfigurationService.live >++>
       DpopService.live >++>
@@ -260,6 +263,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >++>
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
+      AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
       UserService.live >++>
@@ -293,7 +297,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.rsaPrivateKey)
+    .mapOrFail(SecretConfig.signingPrivateKey)
 
   given DeriveConfig[EnvName] = DeriveConfig[String]
     .map:

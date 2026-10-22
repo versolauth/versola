@@ -61,10 +61,7 @@ components:
       description: |
         The access token from `/token`, sent in the `Authorization` header as
         `Bearer <token>`, or as `DPoP <token>` with a `DPoP` proof header for a key-bound token
-        (RFC 9449 §7.1; a key-bound token presented as `Bearer` is refused, with one exception: the
-        edge fronting a native client, which verified the client's proof itself, may present the
-        token as `Bearer` with the certificate that client registered, over the mutual-TLS listener or through the
-        tenant's certificate-forwarding terminator). The header is the
+        (RFC 9449 §7.1; a key-bound token presented as `Bearer` is refused). The header is the
         only place the token is read from: a form body (RFC 6750 §2.2) or a query parameter is
         not, and a request that carries the token only there is answered with `invalid_request`.
 

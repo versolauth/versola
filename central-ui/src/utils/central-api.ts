@@ -6,6 +6,7 @@ import type {
   AuthorizationPreset,
   BackendProperty,
   Edge,
+  OverloadPolicy,
   Locale,
   FormPreview,
   FormRecord,
@@ -106,7 +107,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1380,6 +1381,7 @@ export async function fetchEdges(): Promise<Edge[]> {
     // An edge central has not answered for is read as requiring one, which is what every
     // edge did before the setting existed.
     requireDpopNonce: edge.requireDpopNonce ?? true,
+    ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
   })));
 }
 
@@ -1388,6 +1390,15 @@ export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean
     method: 'PUT',
     query: { edgeId },
     body: { requireDpopNonce },
+  });
+}
+
+/** Replaces the edge's overload policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
+export async function setEdgeOverloadPolicy(edgeId: string, policy: OverloadPolicy): Promise<void> {
+  await requestVoid('/configuration/edges/overload', {
+    method: 'PUT',
+    query: { edgeId },
+    body: policy,
   });
 }
 
