@@ -361,7 +361,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url).contains(authorizeUrl),
-        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String])),
+        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String], None)),
       )
     },
     test("passes whitelisted query params to authorize") {
@@ -373,7 +373,21 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(
         response.status == Status.SeeOther,
-        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"))),
+        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"), None)),
+      )
+    },
+    test("passes the page the login should return to on to authorize") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/preset-1?acr_values=sensitive&return_to=%2Fresources%2Fauth%2Fsettings").toOption.get),
+          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        service.authorize.calls == List(
+          (PresetId("preset-1"), Map("acr_values" -> "sensitive"), Some("/resources/auth/settings")),
+        ),
       )
     },
     test("returns 404 when the preset is unknown") {

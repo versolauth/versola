@@ -290,8 +290,15 @@ switch in the preview toolbar picks the language the preview shows), `Style`, `S
 `?edit=<tab>`. Themes: Base theme (a wrapping row of pills, each with its brand colour as a dot, the selected one filled, and a
 one-line hint of what it sets: no thumbnails, the preview shows the result; a built-in theme is never "dark" or "light", the
 Colour scheme control and the preview's Light/Dark are the only place the scheme shows), Look (each overridden token with
-an `Overridden` badge and Reset, `Clear overrides`; no Extra CSS), a theme stored as a stylesheet is shown read-only as
-"Stylesheet (legacy)" with Delete only; "Used by" is computed in
+an `Overridden` badge and Reset, `Clear overrides`) and an Advanced card after Look: Token overrides (rows of one token each; the
+token list, its nine groups, kinds, descriptions and defaults come from central, `GET /configuration/themes/variables`,
+and the select is grouped by them with the description and default under it; a colour that is a pair has Light and Dark
+inputs and a "Same for both" toggle, a length is a number in px, a shadow, weight or font is text; every kind is validated
+by `src/utils/theme-variables.ts`) and Custom CSS (the last resort: collapsed behind "Add custom CSS" while empty, open when
+the theme has CSS; a `versola-code-editor` (css), the hint that most things are tokens above and that its rules win, with
+contrast and small screens the author's, and the variables a rule may target; the preview includes both, the unsaved bar
+names "token overrides" and "custom CSS"). A theme stored with CSS and no values opens in the same editor on the
+Versola base with the CSS card open; the list shows it as "Versola + custom CSS". "Used by" is computed in
 the console from the tenant's clients (central has no usage endpoint). Lists are tables with a kind filter and
 no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
 `forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.

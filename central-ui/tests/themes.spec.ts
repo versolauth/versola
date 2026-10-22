@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
-import { ftClients, ftPath, ftState } from './forms-themes-fixtures';
+import { ftClients, ftPath, ftState, ftThemes } from './forms-themes-fixtures';
 import { baseStylesheetMock, setupConfigApiMocks, type MockConfigState } from './mocks';
+import tokenCatalog from '../src/utils/theme-variables.json' with { type: 'json' };
 
 const listPath = ftPath('themes');
 const recordPath = (id: string) => ftPath('themes', `&id=${id}`);
@@ -55,15 +56,17 @@ test.describe('list', () => {
     await expect(page.locator('versola-themes-list .group-title')).toHaveCount(0);
   });
 
-  test('names the overridden tokens, never counts them; a stored stylesheet is listed as legacy and read-only', async ({ page }) => {
-    await loadAdminApp(page, { path: listPath, state });
+  test('names the overridden tokens, never counts them; a theme with custom CSS says so, and one stored with CSS only is listed as Versola + custom CSS', async ({ page }) => {
+    const themes = [...ftThemes, { id: 'branded-css', css: '.a{}', tenantId: null, tokens: { base: 'versola', overrides: { brand: '#112233' } } }];
+    await loadAdminApp(page, { path: listPath, state: { ...state, themes } });
 
     await expect(themeRow(page, 'default')).toContainText('Versola');
     await expect(themeRow(page, 'default')).toContainText('No overrides');
     await expect(themeRow(page, 'shop-brand')).toContainText('Overrides: brand, page +1');
     await expect(themeRow(page, 'partner-green')).toContainText('Overrides: brand');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('Stylesheet (legacy)');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('Read-only');
+    await expect(themeRow(page, 'georgia-2024')).toContainText('Versola + custom CSS');
+    await expect(themeRow(page, 'branded-css')).toContainText('Overrides: brand · Custom CSS');
+    await expect(themeRow(page, 'default')).not.toContainText('Custom CSS');
   });
 
   test('shows the look as a thumbnail and the brand colour, its own override or its base\'s', async ({ page }) => {
@@ -73,8 +76,8 @@ test.describe('list', () => {
     await expect(themeRow(page, 'default').locator('code')).toHaveText('#155e75');
     await expect(themeRow(page, 'ledger').locator('code')).toHaveText('#5b5bd6');
     await expect(themeRow(page, 'shop-brand').locator('versola-theme-thumb')).toHaveAttribute('brand', '#e5484d');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('Set by its CSS');
-    await expect(themeRow(page, 'legacy-2024').locator('versola-theme-thumb')).toHaveCount(0);
+    await expect(themeRow(page, 'georgia-2024')).toContainText('Set by its CSS');
+    await expect(themeRow(page, 'georgia-2024').locator('versola-theme-thumb')).toHaveCount(0);
   });
 
   test('says which clients use a theme, computed from the clients the screen loads', async ({ page }) => {
@@ -83,7 +86,7 @@ test.describe('list', () => {
     await expect(themeRow(page, 'shop-brand').locator('.tag')).toHaveText(['shop-mobile', 'storefront-web']);
     await expect(themeRow(page, 'partner-green').locator('.tag')).toHaveText(['partner-portal']);
     await expect(themeRow(page, 'ledger')).toContainText('No clients');
-    await expect(themeRow(page, 'legacy-2024')).toContainText('No clients');
+    await expect(themeRow(page, 'georgia-2024')).toContainText('No clients');
   });
 
   test('two clients and +N that names the rest', async ({ page }) => {
@@ -191,18 +194,17 @@ test.describe('list', () => {
     const nav = page.locator('versola-navigation');
     await nav.getByText('Themes', { exact: true }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Themes' })).toBeVisible();
-    await expect(themeRow(page, 'legacy-2024')).toBeVisible();
+    await expect(themeRow(page, 'georgia-2024')).toBeVisible();
   });
 });
 
 test.describe('record', () => {
-  test('has a header with the ID, kind, scope and the clients that use it', async ({ page }) => {
+  test('has a header with the ID, scope and the clients that use it', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('shop-brand'), state });
 
     await expect(crumb(page, 'Themes')).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: 'shop-brand' })).toBeVisible();
     const header = page.locator('versola-record-header');
-    await expect(header).toContainText('Visual');
     await expect(header).toContainText('This tenant');
     await expect(header).toContainText('Used by');
     await expect(header.locator('.tag')).toHaveText(['shop-mobile', 'storefront-web']);
@@ -217,14 +219,12 @@ test.describe('record', () => {
     await expect(page.locator('versola-record-header')).toContainText('No clients');
   });
 
-  test('is cards: Base theme, Look and Delete last, with no Extra CSS section', async ({ page }) => {
+  test('is cards: Base theme, Look, Custom CSS and Delete last', async ({ page }) => {
     await loadAdminApp(page, { path: recordPath('shop-brand'), state });
 
     await expect(page.locator('versola-theme-record section.card, versola-theme-record versola-danger-card section.card').evaluateAll(
-      (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Base theme', 'Look', 'Delete theme']);
+      (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Base theme', 'Look', 'Advanced', 'Delete theme']);
     await expect(page.locator('details.advanced')).toHaveCount(0);
-    await expect(page.getByText('Extra CSS (optional)')).toHaveCount(0);
-    await expect(page.locator('versola-code-editor')).toHaveCount(0);
   });
 
   test('opens a stored theme on its base with its overrides, named and not counted', async ({ page }) => {
@@ -395,36 +395,341 @@ test.describe('editing', () => {
     await expect.poll(() => srcdoc(page)).toContain(baseStylesheetMock);
   });
 
-  test('has no Extra CSS editor, and keeps CSS that was stored with the tokens when it is saved', async ({ page }) => {
-    const themes = [{ id: 'extra', css: '.y{}', tenantId: null, tokens: { base: 'versola' } }];
-    const api = await loadAdminApp(page, { path: recordPath('extra'), state: { ...state, themes } });
+  test('Custom CSS is collapsed while empty, opens on Add custom CSS and is sent with the tokens', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('default'), state });
+    const customCard = card(page, 'Advanced');
 
-    await expect(page.getByText('Extra CSS (optional)')).toHaveCount(0);
-    await expect(page.locator('versola-code-editor')).toHaveCount(0);
-    await expect(card(page, 'Look')).toContainText('carries extra CSS that was stored through the API');
+    await expect(customCard).toContainText('None.');
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toHaveCount(0);
+    await customCard.getByRole('button', { name: 'Add custom CSS' }).click();
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
+    // The last resort: its hint now says most things are tokens, and the list of variables is the one central serves.
+    await expect(customCard).toContainText('Most things are tokens above: buttons, the card, fields, text, lines and the logo.');
+    await expect(customCard).toContainText('so your rules win; you are responsible for contrast and small screens.');
+    for (const name of [...tokenCatalog.variables.map(variable => variable.name), '--page-bg']) {
+      await expect(customCard.locator('.tokens code').filter({ hasText: new RegExp(`^${name}$`) })).toHaveCount(1);
+    }
+    expect(tokenCatalog.variables.length).toBeGreaterThanOrEqual(40);
+    await expect(bar(page)).toHaveText('No unsaved changes');
+
+    await page.getByRole('textbox', { name: 'Custom CSS' }).fill('.container { box-shadow: none; }');
+    await expect(bar(page)).toHaveText('Unsaved: custom CSS');
+    await page.getByRole('button', { name: 'Sharp' }).click();
+    await expect(bar(page)).toHaveText('Unsaved: shape, custom CSS');
+    await save(page).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'default',
+      css: '.container { box-shadow: none; }',
+      tokens: { base: 'versola', overrides: { shape: 'sharp' } },
+    });
+    await expect(bar(page)).toHaveText('No unsaved changes');
+  });
+
+  test('Token overrides: Add token adds a row for a token, the preview and the save carry it, Remove takes it away', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+
+    await expect(advanced).toContainText('Token overrides');
+    await expect(advanced.getByRole('list', { name: 'Token overrides' })).toHaveCount(0);
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const rows = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+    await expect(rows).toHaveCount(1);
+    await expect(bar(page)).toHaveText('Unsaved: token overrides');
+    // The first token not taken: --page-light, a colour, with a picker and its hex.
+    await expect(rows.first().getByRole('combobox')).toHaveValue('--page-light');
+    await expect(rows.first().locator('input[type="color"]')).toHaveCount(1);
+    await expect(rows.first()).toContainText('Page colour in the light scheme');
+
+    await rows.first().getByRole('combobox').selectOption('--rs');
+    await expect(rows.first()).toContainText('Corner radius of the card');
+    await expect(rows.first()).toContainText('Default 24px');
+    const length = rows.first().getByRole('spinbutton');
+    await expect(length).toHaveValue('24');
+    await length.fill('8');
+    await expect.poll(() => srcdoc(page)).toContain('--rs:8px;');
+
+    // The cascade: the five values, then the token overrides, then the custom CSS.
+    await advanced.getByRole('button', { name: 'Add custom CSS' }).click();
+    await page.getByRole('textbox', { name: 'Custom CSS' }).fill('.container { box-shadow: none; }');
+    await expect(bar(page)).toHaveText('Unsaved: token overrides, custom CSS');
+    await expect.poll(() => srcdoc(page)).toContain('.container { box-shadow: none; }');
+    const doc = await srcdoc(page);
+    expect(doc.indexOf('--brand:#155e75')).toBeLessThan(doc.indexOf('--rs:8px;'));
+    expect(doc.indexOf('--rs:8px;')).toBeLessThan(doc.indexOf('.container { box-shadow: none; }'));
+
+    await save(page).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'default',
+      css: '.container { box-shadow: none; }',
+      tokens: { base: 'versola', variables: { '--rs': '8px' } },
+    });
+
+    await advanced.getByRole('button', { name: 'Remove --rs' }).click();
+    await expect(rows).toHaveCount(0);
+    await expect(bar(page)).toHaveText('Unsaved: token overrides');
+    await expect.poll(async () => (await srcdoc(page)).includes('--rs:8px;')).toBe(false);
+  });
+
+  test('a token already used is not offered twice, and the last token cannot be added past the list', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    const total = tokenCatalog.variables.length;
+    for (let i = 0; i < total; i++) await advanced.getByRole('button', { name: 'Add token' }).click();
+
+    await expect(advanced.getByRole('button', { name: 'Add token' })).toHaveCount(0);
+    const names = await advanced.getByRole('combobox').evaluateAll((selects: Element[]) => selects.map(select => (select as HTMLSelectElement).value));
+    expect(new Set(names).size).toBe(total);
+    await expect(advanced.getByRole('combobox').first().locator('option:checked')).toHaveText('--page-light');
+    await expect(advanced.getByRole('combobox').nth(1).locator('option[value="--page-light"]')).toBeDisabled();
+  });
+
+  test('a value central would refuse is explained under the row and blocks Save, and the preview leaves it out', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const value = advanced.getByRole('textbox', { name: '--page-light value' });
+
+    await value.fill('red; } body { display: none');
+    await expect(advanced.getByRole('alert')).toContainText('Not allowed');
+    await expect(save(page)).toBeDisabled();
+    await expect.poll(async () => (await srcdoc(page)).includes('display: none')).toBe(false);
+    await value.fill('url(https://x.example/a.png)');
+    await expect(advanced.getByRole('alert')).toContainText('Not allowed');
+    await value.fill('#ff6b4a');
+    await expect(advanced.getByRole('alert')).toHaveCount(0);
+    await expect(save(page)).toBeEnabled();
+    await expect.poll(() => srcdoc(page)).toContain('--page-light:#ff6b4a;');
+  });
+
+  test('the token select is grouped as central lists the tokens, with the description and the default under it', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const select = advanced.getByRole('combobox', { name: 'Token for row 1' });
+
+    const labels = await select.locator('optgroup').evaluateAll((groups: Element[]) => groups.map(group => (group as HTMLOptGroupElement).label));
+    expect(labels).toEqual(['Page', 'Brand and logo', 'Card', 'Text', 'Fields', 'Buttons', 'Links and focus', 'Lines', 'Status and overlays']);
+    for (const group of tokenCatalog.groups) {
+      const inScala = tokenCatalog.variables.filter(variable => variable.group === group.id).map(variable => variable.name);
+      const inSelect = await select.locator(`optgroup[label="${group.title.en}"] option`).evaluateAll((options: Element[]) => options.map(option => (option as HTMLOptionElement).value));
+      expect(inSelect, group.id).toEqual(inScala);
+    }
+
+    await select.selectOption('--btn-hover');
+    await expect(advanced.locator('.var-help')).toContainText('Fill of the main button under the pointer');
+    await expect(advanced.locator('.var-help')).toContainText('Default color-mix(in srgb, var(--btn) 88%, var(--sheet))');
+    // The description is what the select is described by, so a screen reader reads it with the token.
+    await expect(select).toHaveAccessibleDescription(/Fill of the main button under the pointer/);
+  });
+
+  test('a pair token has a light and a dark input and a "Same for both" toggle; a token that is not a pair has neither', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    const row = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem').first();
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+
+    await row.getByRole('combobox').selectOption('--brand');
+    await expect(row.getByRole('checkbox')).toHaveCount(0);
+    await expect(row.getByRole('textbox', { name: '--brand value' })).toBeVisible();
+
+    await row.getByRole('combobox').selectOption('--btn');
+    // A pair token starts with the two values the forms paint, so adding it changes nothing yet.
+    await expect(row.getByRole('textbox', { name: '--btn light value' })).toHaveValue('#1c1b19');
+    await expect(row.getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#f3f2f0');
+    await expect(row.locator('input[type="color"]')).toHaveCount(2);
+    const same = row.getByRole('checkbox', { name: '--btn: same for both schemes' });
+    await expect(same).not.toBeChecked();
+
+    await row.getByRole('textbox', { name: '--btn light value' }).fill('#d9480f');
+    await row.getByRole('textbox', { name: '--btn dark value' }).fill('#ff922b');
+    await expect.poll(() => srcdoc(page)).toContain('--btn:light-dark(#d9480f,#ff922b);');
+
+    // One value for both schemes: written as it is, without light-dark().
+    await same.check();
+    await expect(row.getByRole('textbox', { name: '--btn light value' })).toHaveCount(0);
+    await expect(row.getByRole('textbox', { name: '--btn value' })).toHaveValue('#d9480f');
+    await expect.poll(() => srcdoc(page)).toContain('--btn:#d9480f;');
+    await expect.poll(async () => (await srcdoc(page)).includes('--btn:light-dark(')).toBe(false);
+
+    // And back: the two begin as that value.
+    await row.getByRole('checkbox', { name: '--btn: same for both schemes' }).uncheck();
+    await expect(row.getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#d9480f');
+    await row.getByRole('textbox', { name: '--btn dark value' }).fill('#ff922b');
+    await save(page).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'default',
+      css: '',
+      tokens: { base: 'versola', variables: { '--btn': { light: '#d9480f', dark: '#ff922b' } } },
+    });
+  });
+
+  test('a stored pair comes back as a light and a dark input, and a single value as one', async ({ page }) => {
+    const themes = [{ id: 'with-pair', css: '', tenantId: null, tokens: { base: 'versola', variables: { '--btn': { light: '#112233', dark: '#ddeeff' }, '--ink': '#222222' } } }];
+    await loadAdminApp(page, { path: listPath, state: { ...state, themes } });
+    await themeRow(page, 'with-pair').click();
+    const rows = card(page, 'Advanced').getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+
+    await expect(rows.nth(0).getByRole('textbox', { name: '--btn light value' })).toHaveValue('#112233');
+    await expect(rows.nth(0).getByRole('textbox', { name: '--btn dark value' })).toHaveValue('#ddeeff');
+    await expect(rows.nth(1).getByRole('textbox', { name: '--ink value' })).toHaveValue('#222222');
+    await expect(rows.nth(1).getByRole('checkbox', { name: '--ink: same for both schemes' })).toBeChecked();
+    await expect(bar(page)).toHaveText('No unsaved changes');
+    await rows.nth(0).getByRole('textbox', { name: '--btn dark value' }).fill('#eeeeee');
+    await expect(bar(page)).toHaveText('Unsaved: token overrides');
+  });
+
+  test('each kind is edited with its own control and refused with its own reason', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    const add = async (token: string) => {
+      await advanced.getByRole('button', { name: 'Add token' }).click();
+      const rows = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+      const row = rows.last();
+      await row.getByRole('combobox').selectOption(token);
+      return row;
+    };
+
+    const length = await add('--rs');
+    await expect(length.getByRole('spinbutton')).toHaveValue('24');
+    const shadow = await add('--shadow');
+    await expect(shadow.getByRole('textbox', { name: '--shadow value' })).toHaveValue('0 30px 60px -24px var(--shadow-color)');
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('0 0');
+    await expect(shadow.getByRole('alert')).toContainText('A shadow layer is [inset] x y [blur [spread]] colour.');
+    await expect(save(page)).toBeDisabled();
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('0 8px 24px rgba(0, 0, 0, 0.2)');
+    await expect(shadow.getByRole('alert')).toHaveCount(0);
+    await expect.poll(() => srcdoc(page)).toContain('--shadow:0 8px 24px rgba(0, 0, 0, 0.2);');
+    await shadow.getByRole('textbox', { name: '--shadow value' }).fill('none');
+    await expect(shadow.getByRole('alert')).toHaveCount(0);
+
+    const weight = await add('--heading-weight');
+    await expect(weight.getByRole('textbox', { name: '--heading-weight value' })).toHaveValue('750');
+    await weight.getByRole('textbox', { name: '--heading-weight value' }).fill('1000');
+    await expect(weight.getByRole('alert')).toContainText('Use a whole number from 100 to 900.');
+    await weight.getByRole('textbox', { name: '--heading-weight value' }).fill('600');
+    await expect(weight.getByRole('alert')).toHaveCount(0);
+
+    const font = await add('--font');
+    await font.getByRole('textbox', { name: '--font value' }).fill("'Georgia'");
+    await expect(font.getByRole('alert')).toContainText('Use only letters, digits, spaces');
+    await font.getByRole('textbox', { name: '--font value' }).fill('Georgia, serif');
+    await expect(font.getByRole('alert')).toHaveCount(0);
+
+    const colour = await add('--ink');
+    await colour.getByRole('textbox', { name: '--ink light value' }).fill('12px');
+    await expect(colour.getByRole('alert')).toContainText('Light: Not a colour');
+    await colour.getByRole('textbox', { name: '--ink light value' }).fill('#222222');
+    await colour.getByRole('textbox', { name: '--ink dark value' }).fill('rgb(1,2,3');
+    await expect(colour.getByRole('alert')).toContainText('Dark: Close every parenthesis.');
+  });
+
+  test('a button colour override is carried to the preview: the stylesheet it renders has it, after the five values', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('default'), state });
+    const advanced = card(page, 'Advanced');
+    await advanced.getByRole('button', { name: 'Add token' }).click();
+    const row = advanced.getByRole('list', { name: 'Token overrides' }).getByRole('listitem').first();
+    await row.getByRole('combobox').selectOption('--btn');
+    await row.getByRole('checkbox', { name: '--btn: same for both schemes' }).check();
+    await row.getByRole('textbox', { name: '--btn value' }).fill('#d9480f');
+
+    await expect.poll(() => srcdoc(page)).toContain('--btn:#d9480f;');
+    const doc = await srcdoc(page);
+    expect(doc.indexOf('--brand:#155e75')).toBeLessThan(doc.indexOf('--btn:#d9480f;'));
+  });
+
+  test('stored token overrides come back as rows, a value the controls cannot show is plain text, and the list and header say so', async ({ page }) => {
+    const themes = [{ id: 'with-tokens', css: '', tenantId: null, tokens: { base: 'versola', variables: { '--rs': '8px', '--page-light': 'color-mix(in oklab, red 10%, white)' } } }];
+    const api = await loadAdminApp(page, { path: listPath, state: { ...state, themes } });
+    await expect(themeRow(page, 'with-tokens')).toContainText('No overrides · Token overrides');
+    await themeRow(page, 'with-tokens').click();
+
+    const rows = card(page, 'Advanced').getByRole('list', { name: 'Token overrides' }).getByRole('listitem');
+    await expect(rows).toHaveCount(2);
+    await expect(page.locator('versola-record-header')).toContainText('Token overrides');
+    await expect(rows.nth(0).getByRole('spinbutton')).toHaveValue('8');
+    await expect(rows.nth(1).getByRole('textbox', { name: '--page-light value' })).toHaveValue('color-mix(in oklab, red 10%, white)');
+    await expect(rows.nth(1).locator('input[type="color"]')).toHaveCount(0);
+    await expect(bar(page)).toHaveText('No unsaved changes');
+
+    await page.getByRole('button', { name: 'Studio' }).click();
+    await save(page).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'with-tokens',
+      css: '',
+      tokens: { base: 'studio', variables: { '--rs': '8px', '--page-light': 'color-mix(in oklab, red 10%, white)' } },
+    });
+  });
+
+  test('a theme that has custom CSS opens with the card expanded, keeps the CSS on save, and the preview includes it', async ({ page }) => {
+    const themes = [{ id: 'with-css', css: '.y{ color: hotpink }', tenantId: null, tokens: { base: 'versola' } }];
+    const api = await loadAdminApp(page, { path: recordPath('with-css'), state: { ...state, themes } });
+
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toHaveValue('.y{ color: hotpink }');
+    await expect(card(page, 'Advanced').getByRole('button', { name: 'Add custom CSS' })).toHaveCount(0);
+    await expect(page.locator('versola-record-header')).toContainText('Custom CSS');
+    // The preview is what central renders: the generated block, then the custom CSS after it.
+    await expect.poll(() => srcdoc(page)).toContain('.y{ color: hotpink }');
+    const doc = await srcdoc(page);
+    expect(doc.indexOf('--brand:#155e75')).toBeLessThan(doc.indexOf('.y{ color: hotpink }'));
+
+    await page.getByRole('textbox', { name: 'Custom CSS' }).fill('.y{ color: teal }');
+    await expect.poll(() => srcdoc(page)).toContain('.y{ color: teal }');
+    expect(await srcdoc(page)).not.toContain('hotpink');
     await page.getByRole('button', { name: 'Studio' }).click();
     await save(page).click();
 
-    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({ id: 'extra', css: '.y{}', tokens: { base: 'studio' } });
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({ id: 'with-css', css: '.y{ color: teal }', tokens: { base: 'studio' } });
   });
 
-  test('a stored stylesheet theme is shown read-only as legacy, with Delete only', async ({ page }) => {
-    const api = await loadAdminApp(page, { path: recordPath('legacy-2024'), state });
+  test('a read-only viewer sees the CSS but cannot edit it or add any', async ({ page }) => {
+    const themes = [{ id: 'with-css', css: '.y{}', tenantId: null, tokens: { base: 'versola' } }];
+    await loadAdminApp(page, { path: recordPath('with-css'), state: { ...state, themes, myPermissions: readOnly } });
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeDisabled();
 
-    await expect(header(page)).toContainText('Stylesheet (legacy)');
-    await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
+    await loadAdminApp(page, { path: recordPath('default'), state: { ...state, myPermissions: readOnly } });
+    await expect(card(page, 'Advanced')).toContainText('None.');
+    await expect(page.getByRole('button', { name: 'Add custom CSS' })).toHaveCount(0);
+  });
+
+  test('a theme stored with CSS and no values opens editable on the Versola base, and saves the values with the CSS', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: recordPath('georgia-2024'), state });
+
+    await expect(page.getByRole('button', { name: 'Versola' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(card(page, 'Look')).toContainText('No overrides: this theme is the base theme.');
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toHaveValue('body { font-family: Georgia, serif; }');
+    await expect(card(page, 'Base theme')).toContainText('stored with CSS only');
     await expect(page.locator('versola-theme-record section.card, versola-theme-record versola-danger-card section.card').evaluateAll(
-      (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Stylesheet (legacy)', 'Delete theme']);
-    await expect(card(page, 'Stylesheet (legacy)')).toContainText('The console no longer creates or edits these');
-    await expect(page.getByRole('textbox', { name: 'CSS (read-only)' })).toBeDisabled();
-    await expect(page.getByRole('textbox', { name: 'CSS (read-only)' })).toHaveValue('body { font-family: Georgia, serif; }');
-    // Nothing to save: no bar, no Save.
-    await expect(bar(page)).toHaveCount(0);
-    await expect(save(page)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Delete theme legacy-2024' })).toBeEnabled();
-    // The preview still draws the stored stylesheet.
+      (cards: Element[]) => cards.map(card => card.getAttribute('aria-label')))).resolves.toEqual(['Base theme', 'Look', 'Advanced', 'Delete theme']);
     await expect.poll(() => srcdoc(page)).toContain('Georgia');
-    expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
+    // Saving is possible at once: it stores the values the editor shows.
+    await expect(save(page)).toBeEnabled();
+    await save(page).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toEqual({
+      id: 'georgia-2024',
+      css: 'body { font-family: Georgia, serif; }',
+      tokens: { base: 'versola' },
+    });
+    await expect(bar(page)).toHaveText('No unsaved changes');
+    await expect(card(page, 'Base theme')).not.toContainText('stored with CSS only');
+  });
+
+  test('uses none of the retired wording on the themes pages', async ({ page }) => {
+    for (const path of [listPath, recordPath('georgia-2024'), recordPath('shop-brand'), newPath]) {
+      await loadAdminApp(page, { path, state });
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      const text = await page.evaluate(() => {
+        const walk = (node: Node): string => {
+          const own = node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '') : '';
+          const root = (node as Element).shadowRoot;
+          return own + [...(root ? root.childNodes : []), ...node.childNodes].map(walk).join(' ');
+        };
+        return walk(document.body);
+      });
+      expect(text).toContain(path === listPath ? 'Base' : 'Custom CSS');
+      expect(text).not.toMatch(/legacy|stylesheet theme|extra css/i);
+    }
   });
 
   test('Cancel with edits asks first; keeping them stays, discarding returns to the list', async ({ page }) => {
@@ -682,13 +987,20 @@ test.describe('create', () => {
     await expect(save(page, 'Create theme')).toBeEnabled();
   });
 
-  test('has no stylesheet path: no Built as choice, no CSS editor, every new theme is built on a base', async ({ page }) => {
-    await newTheme(page);
+  test('has the same Custom CSS card, collapsed, and every new theme is built on a base', async ({ page }) => {
+    const api = await newTheme(page);
 
     await expect(page.getByRole('group', { name: 'Built as' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Stylesheet' })).toHaveCount(0);
-    await expect(page.locator('versola-code-editor')).toHaveCount(0);
-    await expect(page.getByText('Extra CSS')).toHaveCount(0);
+    await expect(card(page, 'Advanced')).toContainText('None.');
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toHaveCount(0);
+    await page.getByPlaceholder('e.g. default').fill('with-rules');
+    await card(page, 'Advanced').getByRole('button', { name: 'Add custom CSS' }).click();
+    await page.getByRole('textbox', { name: 'Custom CSS' }).fill(':root { --rs: 8px; }');
+    await expect(bar(page)).toHaveText('New theme: custom CSS');
+    await expect.poll(() => srcdoc(page)).toContain(':root { --rs: 8px; }');
+    await save(page, 'Create theme').click();
+
+    expect((await findRequest(api.requests, 'POST', '/configuration/themes')).body).toMatchObject({ id: 'with-rules', css: ':root { --rs: 8px; }', tokens: { base: 'versola' } });
   });
 
   test('cannot be created when central has no built-in themes to build on', async ({ page }) => {

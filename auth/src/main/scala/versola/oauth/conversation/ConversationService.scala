@@ -664,8 +664,8 @@ object ConversationService:
         conversation: ConversationRecord,
         vocabulary: Map[Acr, NonEmptyList[PassedAuthFactor]],
     ): Boolean =
-      conversation.targetAcr.forall: acr =>
-        vocabulary.get(acr).exists(_.forall(required =>
+      conversation.targetAcr.forall: _ =>
+        conversation.requiredFactors(vocabulary).exists(_.forall(required =>
           conversation.amr.keySet.exists(_.satisfies(required, conversation.authFlow.equivalents)),
         ))
 

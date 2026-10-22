@@ -1032,6 +1032,85 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         challenge.exists(_.contains("""acr_values="passkey-level mfa-level"""")),
       )
     },
+    test("points a cookie session at the login of its preset that asks for the acr and max_age missing") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        location = response.headers.get("Location")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        location.contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the endpoint's acr even when only the age is too old, so the new sign-in keeps it") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))))
+        fresh <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond))
+        stale <- env.signToken(acr = Some("sensitive"), authTime = Some(now.getEpochSecond - 600))
+        service = env.buildService(client, security)
+        wrongAcr <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(fresh)),
+        )
+        tooOld <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(
+        wrongAcr.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive"),
+        tooOld.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the age alone when the endpoint requires no acr") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(maxAge = Some(300))))
+        stale <- env.signToken(authTime = Some(now.getEpochSecond - 600))
+        response <- env.buildService(client, security).proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(response.headers.get("Location").contains(s"/login/${presetId}?max_age=300"))
+    },
+    test("gives a bearer caller the challenge only, with no login URL to follow") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"))
+        request = Request.get(URL.empty / "users").addHeader(Header.Custom("Authorization", s"Bearer $token"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.headers.get("WWW-Authenticate").exists(_.contains("""acr_values="sensitive"""")),
+        response.headers.get("Location").isEmpty,
+      )
+    },
     test("returns 401 with max_age challenge when auth_time is older than endpoint maxAge") {
       val env = new Env
       val endpoint = usersEndpoint(maxAge = Some(300))

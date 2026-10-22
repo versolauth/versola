@@ -188,9 +188,15 @@ final class EdgeApi(client: Client, config: E2EConfig):
     * the state and conversation cookies have to be carried across hops that belong to two
     * different origins.
     */
-  def authorize(auth: OAuthClient, presetId: String, login: String, password: String): Task[EdgeCallback] =
+  def authorize(
+      auth: OAuthClient,
+      presetId: String,
+      login: String,
+      password: String,
+      returnTo: Option[String] = None,
+  ): Task[EdgeCallback] =
     for
-      started <- this.login(presetId)
+      started <- this.login(presetId, returnTo.map("return_to" -> _).toList*)
       authorizeUrl <- ZIO.fromOption(started.header(Header.Location).map(_.url.encode))
         .orElseFail(RuntimeException(s"/login/$presetId did not redirect (status=${started.status})"))
       authorized <- auth.probe(Method.GET, authorizeUrl)

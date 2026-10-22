@@ -400,6 +400,7 @@ export interface PaginatedResponse<T> {
 // Edge
 export type { OverloadPolicy } from '../utils/overload-policy';
 import type { OverloadPolicy } from '../utils/overload-policy';
+import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
@@ -449,6 +450,8 @@ export interface ThemeOverrides {
 export interface ThemeTokens {
   base: string;
   overrides?: ThemeOverrides;
+  /** Token overrides: CSS variables of the forms' theming API (`--rs` -> `8px`), laid after the five values. */
+  variables?: Record<string, VariableValue>;
 }
 
 // Every token with a value: a built-in theme's own.
@@ -467,8 +470,8 @@ export interface ThemePreset {
   tokens: ResolvedThemeTokens;
 }
 
-// A theme is a stylesheet, or -- with `tokens` -- a built-in base with overrides, in which case
-// `css` holds only the theme's own additions and may be empty.
+// A theme is a built-in base with overrides (`tokens`) and optional custom CSS (`css`), which is laid after the CSS
+// generated from the tokens. A theme stored before tokens existed has `css` and no `tokens`.
 export interface ThemeRecord {
   id: string;
   css: string;

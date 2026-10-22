@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientsUsingTheme, joinNames, overrideKeys, overridesText, presetHint, resolveTokens, unsavedNames } from './theme-summary';
+import { clientsUsingTheme, joinNames, overrideKeys, overridesText, presetHint, resolveTokens, themeDetailText, unsavedNames } from './theme-summary';
 
 describe('theme summary', () => {
   it('names the overridden tokens in the editor order', () => {
@@ -29,10 +29,18 @@ describe('theme summary', () => {
   });
 
   it('names what changed since the stored theme', () => {
-    const saved = { base: 'versola', overrides: { brand: '#111111' }, css: '' };
-    expect(unsavedNames(saved, saved, 'extra CSS')).toEqual([]);
-    expect(unsavedNames(saved, { base: 'studio', overrides: { brand: '#222222', shape: 'sharp' as const }, css: 'x{}' }, 'extra CSS'))
-      .toEqual(['base theme', 'brand colour', 'shape', 'extra CSS']);
+    const saved = { base: 'versola', overrides: { brand: '#111111' }, variables: {}, css: '' };
+    expect(unsavedNames(saved, saved)).toEqual([]);
+    expect(unsavedNames(saved, { base: 'studio', overrides: { brand: '#222222', shape: 'sharp' as const }, variables: { '--rs': '8px' }, css: 'x{}' }))
+      .toEqual(['base theme', 'brand colour', 'shape', 'token overrides', 'custom CSS']);
+    expect(unsavedNames({ ...saved, variables: { '--rs': '8px' } }, { ...saved, variables: { '--rs': ' 8px ' } })).toEqual([]);
+  });
+
+  it('describes a theme for the list: overrides, token overrides and custom CSS, never counts', () => {
+    const plain = { id: 'a', css: '', tenantId: null, tokens: { base: 'versola' } };
+    expect(themeDetailText(plain)).toBe('No overrides');
+    expect(themeDetailText({ ...plain, css: '.a{}', tokens: { base: 'versola', overrides: { brand: '#112233', shape: 'sharp' }, variables: { '--rs': '8px' } } }))
+      .toBe('Overrides: brand, shape · Token overrides · Custom CSS');
   });
 
   it('says what a built-in theme sets: colour, shape, page and background, never a colour scheme', () => {

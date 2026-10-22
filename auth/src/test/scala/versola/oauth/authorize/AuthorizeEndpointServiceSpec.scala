@@ -984,6 +984,74 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.head._2.targetAcr == Some(targetAcr),
       )
     },
+    test("fixes the factors a built-in class asks of the user when the step-up conversation starts") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val sensitive = AcrResolutionService.Sensitive
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(sensitive))
+        _ <- env.acrResolver.builtInFactors.succeedsWith(Some(NonEmptyList(PassedAuthFactor.passkey)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(jwtToken.serialize()), acrValues = Some(NonEmptyList(sensitive))),
+        )
+        created = env.conversationRepository.create.calls.head._2
+      yield assertTrue(
+        created.targetAcr == Some(sensitive),
+        created.targetFactors == Some(List(PassedAuthFactor.passkey)),
+      )
+    },
+    test("fixes no factors for a class the tenant's vocabulary defines") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val targetAcr = Acr("mfa")
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(jwtToken.serialize()), acrValues = Some(NonEmptyList(targetAcr))),
+        )
+      yield assertTrue(
+        env.conversationRepository.create.calls.head._2.targetFactors.isEmpty,
+        env.acrResolver.builtInFactors.calls.isEmpty,
+      )
+    },
     test("create conversation with known userId when id_token_hint provided without session and no acr_values") {
       val env = Env()
       val uuid = UUID.randomUUID()
