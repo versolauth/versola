@@ -258,6 +258,26 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- lost.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
         yield assertTrue(failing.antifraud.smsReleased == 1, lost.antifraud.smsReleased == 1)
       },
+      test("a code that was charged is given back when the write fails or the request is interrupted, not only on the expected branches") {
+        val broken = Env()
+        val interrupted = Env()
+        for
+          _ <- broken.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- broken.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- broken.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- broken.conversationRepository.overwrite.failsWith(RuntimeException("database is down"))
+          _ <- broken.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0).exit
+          _ <- interrupted.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- interrupted.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- interrupted.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- interrupted.conversationRepository.overwrite.returnsZIO(_ => ZIO.never)
+          fiber <- interrupted.service
+            .prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+            .fork
+          _ <- Live.live(ZIO.sleep(zio.Duration.fromMillis(200)))
+          _ <- fiber.interrupt
+        yield assertTrue(broken.antifraud.smsReleased == 1, interrupted.antifraud.smsReleased == 1)
+      },
       test("an address never asks the budget") {
         val env = Env(smsAllowed = false)
         for

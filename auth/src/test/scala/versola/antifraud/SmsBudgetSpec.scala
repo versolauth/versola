@@ -96,4 +96,24 @@ object SmsBudgetSpec extends UnitSpecBase:
       for results <- ZIO.foreachPar(1 to 200)(_ => ZIO.attemptBlocking(budget.decide(tenant, "4915", t0, charge = true)).orDie)
       yield assertTrue(results.count(_ == Decision.Allowed) == 10)
     },
+      test("a code given back after its minute is over is taken from its own minute, and a reused minute is left alone") {
+      val budget = SmsBudget(SmsBudget.Settings(sentPerHour = 2))
+      sendTo(budget, "4915", 2, at = t0)
+      budget.release(tenant, "4915", t0)
+      val reopened = allowed(budget, tenant, "4915", t0.plusSeconds(90))
+      // the same slot, an hour later, holds other minutes' data: a late give-back of the old charge must not touch it
+      sendTo(budget, "4915", 1, at = t0.plusSeconds(3600))
+      budget.release(tenant, "4915", t0)
+      val untouched = budget.decide(tenant, "4915", t0.plusSeconds(3600), charge = true) == Decision.Allowed
+      val closed = !allowed(budget, tenant, "4915", t0.plusSeconds(3600))
+      assertTrue(reopened, untouched, closed)
+    },
+    test("the conversion breaker can be left out for a request, the hourly limit cannot") {
+      val budget = SmsBudget(SmsBudget.Settings(sentPerHour = 100, minVolume = 3, minConversion = 0.5))
+      sendTo(budget, "4915", 3)
+      assertTrue(
+        budget.decide(tenant, "4915", t0, charge = false, conversionBreaker = true) == Decision.Refused,
+        budget.decide(tenant, "4915", t0, charge = false, conversionBreaker = false) == Decision.Allowed,
+      )
+    },
   )

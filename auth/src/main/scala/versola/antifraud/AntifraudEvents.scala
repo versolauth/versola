@@ -1,7 +1,7 @@
 package versola.antifraud
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
 import zio.*
@@ -9,7 +9,7 @@ import zio.metrics.{Metric, MetricLabel}
 
 import java.nio.charset.StandardCharsets
 import java.time.temporal.ChronoUnit
-import java.time.{LocalDate, ZoneOffset}
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 /** The antifraud event log, as the sign-in steps see it: something to tell, never something to wait for.
   *
@@ -25,10 +25,10 @@ trait AntifraudEvents:
     * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
     * with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
     * sends nothing and must be answered exactly like one that does. Always true while no budget is configured. */
-  def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean]
+  def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean]
 
-  /** Gives back a code that [[allowSms]] charged and that was not sent. */
-  def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit]
+  /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
+  def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
@@ -83,9 +83,9 @@ object AntifraudEvents:
   object noop extends AntifraudEvents:
     override def record(event: AntifraudEvent): UIO[Unit] = ZIO.unit
 
-    override def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
 
-    override def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit] = ZIO.unit
+    override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
     override def otpRequested(
         authId: AuthId,
@@ -143,25 +143,26 @@ object AntifraudEvents:
       subjectKey: Secret,
   ) extends AntifraudEvents:
 
-    override def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean] =
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
       if !settings.smsBudget.enabled then ZIO.succeed(true)
       else
         for
           client <- configService.find(clientId)
-          now <- Clock.instant
-          decision = budget.decide(client.map(_.tenantId), phone.filter(_.isDigit), now, charge)
+          regions <- configService.getPhoneRegions(clientId)
+          // Where anyone may register with the number, any number is sent a real code, so a range whose codes are
+          // not used says nothing about its users and everything about whoever asks; the conversion is only looked
+          // at where registration is closed for the number.
+          breaker = !PhoneRegion.allowsRegistration(regions, phone)
+          decision = budget.decide(client.map(_.tenantId), phone.filter(_.isDigit), at, charge, conversionBreaker = breaker)
           _ <- decision match
             case SmsBudget.Decision.Refused => AntifraudMetrics.smsRefused
             case SmsBudget.Decision.Untracked => AntifraudMetrics.smsBudgetFull
             case SmsBudget.Decision.Allowed => ZIO.unit
         yield decision != SmsBudget.Decision.Refused
 
-    override def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit] =
+    override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
       ZIO.when(settings.smsBudget.enabled):
-        for
-          client <- configService.find(clientId)
-          now <- Clock.instant
-        yield budget.release(client.map(_.tenantId), phone.filter(_.isDigit), now)
+        configService.find(clientId).map(client => budget.release(client.map(_.tenantId), phone.filter(_.isDigit), at))
       .unit
 
     override def record(event: AntifraudEvent): UIO[Unit] =

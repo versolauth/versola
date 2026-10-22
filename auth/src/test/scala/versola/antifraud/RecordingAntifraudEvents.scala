@@ -33,10 +33,10 @@ final class RecordingAntifraudEvents(smsAllowed: Boolean = true) extends Antifra
 
   def smsReleased: Int = released.get
 
-  override def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean] =
+  override def allowSms(clientId: ClientId, phone: Phone, at: java.time.Instant, charge: Boolean): UIO[Boolean] =
     zio.ZIO.succeed(synchronized(asked += charge)) *> zio.ZIO.succeed(smsAllowed)
 
-  override def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
+  override def releaseSms(clientId: ClientId, phone: Phone, at: java.time.Instant): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
 
   override def otpRequested(
       authId: AuthId,

@@ -34,7 +34,7 @@ final class SmsBudget(settings: SmsBudget.Settings):
     * only the answer is given, for a request that sends nothing but must be answered exactly as one that does. A
     * range the budget has no room to track is let through ([[Decision.Untracked]]): the limit must not become the
     * thing an attacker fills up. */
-  def decide(tenantId: Option[TenantId], prefix: String, at: Instant, charge: Boolean): Decision =
+  def decide(tenantId: Option[TenantId], prefix: String, at: Instant, charge: Boolean, conversionBreaker: Boolean = true): Decision =
     if !settings.enabled then Decision.Allowed
     else
       val k = key(tenantId, prefix)
@@ -44,17 +44,17 @@ final class SmsBudget(settings: SmsBudget.Settings):
         else if windows.size >= settings.maxRanges then None
         else Some(windows.computeIfAbsent(k, _ => Window()))
       window match
-        case Some(w) => if w.admit(at, charge, closed) then Decision.Allowed else Decision.Refused
+        case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker)) then Decision.Allowed else Decision.Refused
         case None if charge => Decision.Untracked
         case None => Decision.Allowed
 
-  /** Gives back a code that was charged and not sent after all. */
+  /** Gives back a code that was charged at `at` and not sent after all. */
   def release(tenantId: Option[TenantId], prefix: String, at: Instant): Unit =
-    Option(windows.get(key(tenantId, prefix))).foreach(_.add(at, sent = -1, verified = 0))
+    Option(windows.get(key(tenantId, prefix))).foreach(_.giveBack(at))
 
-  private def closed(sent: Int, verified: Int): Boolean =
+  private def closed(sent: Int, verified: Int, conversionBreaker: Boolean): Boolean =
     (settings.sentPerHour > 0 && sent >= settings.sentPerHour) ||
-      (settings.minVolume > 0 && sent >= settings.minVolume && verified < sent * settings.minConversion)
+      (conversionBreaker && settings.minVolume > 0 && sent >= settings.minVolume && verified < sent * settings.minConversion)
 
   /** Forgets ranges that have been quiet for the whole hour. */
   def evict(at: Instant): Unit =
@@ -98,8 +98,14 @@ object SmsBudget:
         minuteOf(slot) = minute
         this.sent(slot) = 0
         this.verified(slot) = 0
-      this.sent(slot) = math.max(0, this.sent(slot) + sent)
+      this.sent(slot) += sent
       this.verified(slot) += verified
+
+    /** Takes back a charge of the minute of `at`; a minute that has since been reused is left alone. */
+    def giveBack(at: Instant): Unit = synchronized:
+      val minute = at.getEpochSecond / 60
+      val slot = (minute % Minutes).toInt
+      if minuteOf(slot) == minute && sent(slot) > 0 then sent(slot) -= 1
 
     /** Checks and charges in one step. */
     def admit(at: Instant, charge: Boolean, closed: (Int, Int) => Boolean): Boolean = synchronized:

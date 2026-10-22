@@ -440,10 +440,15 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
   range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
   for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
-  exempted. Where self-registration is open, anyone can ask for codes to a range and leave them unverified, which
-  closes it: the conversion breaker in particular hands that lever to an attacker, so use it only where registration
-  is closed (an unknown number then gets no real code, is never counted, and cannot close a range) and keep
-  `sent-per-hour` well above the real peak. A refusal ends the sign-in in "access denied", the event is `throttled`
+  exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
+  unverified, which closes it. For that reason the conversion breaker (`min-volume`) is never applied to a number
+  whose region allows registration (`phoneRegions[].registration`); `sent-per-hour` is, so keep it well above the
+  real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
+  range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
+  someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
+  candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
+  an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
+  matters more than the pumping it protects against, leave `sent-per-hour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
   and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
