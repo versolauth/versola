@@ -14,6 +14,7 @@ import type {
   OtpTemplateRecord,
   ChallengeSettingsChanges,
   ChallengeSettingsRecord,
+  ClientEstState,
   ClientTemplate,
   JwksKeySummary,
   MutualTlsAuth,
@@ -159,6 +160,7 @@ type ClientsResponse = {
     template?: ClientTemplate | null;
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
+    est?: ClientEstState | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -775,6 +777,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
+        est: client.est ?? null,
         tenantId,
       };
     }),

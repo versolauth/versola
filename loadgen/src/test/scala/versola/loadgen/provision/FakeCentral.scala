@@ -426,6 +426,7 @@ object FakeCentral:
         "requirePushedAuthorizationRequests",
         "edgeSigningKey",
         "edgeClientCertificate",
+        "estEnrollment",
       )),
       (Method.POST, "/configuration/clients/native") -> (create ++ signInMembers ++ Set(
         "issueEdgeClientCertificate",
@@ -436,7 +437,7 @@ object FakeCentral:
       (
         Method.POST,
         "/configuration/clients/service",
-      ) -> (create ++ Set("permissions", "dpopBoundAccessTokens", "certificateBoundAccessTokens", "jwks", "generateJwks")),
+      ) -> (create ++ Set("permissions", "dpopBoundAccessTokens", "certificateBoundAccessTokens", "jwks", "generateJwks", "estEnrollment")),
       (Method.PUT, "/configuration/clients/web") -> (update ++ updateSignIn ++ Set(
         "redirectUris",
         "dpopBoundAccessTokens",

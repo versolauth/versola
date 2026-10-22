@@ -1108,9 +1108,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val userAgentCookieSecret = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey = rand(rng, 32)
   val edgeSessionsSecret = rand(rng, 32)
-  val edgeInternalSecret = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
-  val parRequestsSecret = rand(rng, 32)  // auth only: keys the stored request_uri references
-  val dpopNoncesSecret = rand(rng, 32)   // auth only: authenticates DPoP-Nonce values
+  val edgeInternalSecret = rand(rng, 32)     // authorizes edge's non-prod /service/configuration/sync
+  val parRequestsSecret = rand(rng, 32)      // auth only: keys the stored request_uri references
+  val dpopNoncesSecret = rand(rng, 32)       // auth only: authenticates DPoP-Nonce values
   val antifraudSubjectSecret = rand(rng, 32) // auth only: keys the hash of a destination in the antifraud event log
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
@@ -1396,6 +1396,54 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |  private-key = "${File(edgeInternalTlsDir, "ca.key").getAbsolutePath}"
          |}
          |""".stripMargin
+    else ""
+  // RFC 7030 EST under /.well-known/est/: a client registered with `estEnrollment` gets and renews its mTLS
+  // client certificate from auth, which central issues. Needs the `mutual-tls` block above (renewal is
+  // served on that listener only), so it is written wherever that is. `local` has it on, for e2e; elsewhere
+  // it is opt-in with EST_ENABLED=true, because it opens a route on the public listener.
+  val estEnabled =
+    sys.env.get("EST_ENABLED").map(_.trim).filter(_.nonEmpty) match
+      case None => isLocal
+      case Some("true") => true
+      case Some("false") => false
+      case Some(other) => throw RuntimeException(s"EST_ENABLED must be true or false, not '$other'")
+  // The CA `cacerts` hands out: the one central issues clients' certificates from, alone. Never the trust anchors of
+  // the listener, which may hold the CA of edges as well. `local` issues from the terminator's CA
+  // (`centralClientCertificateAuthorityBlock`); elsewhere the operator names the file.
+  val estCaCertificates =
+    if !estEnabled then ""
+    else if isLocal then File(edgeInternalTlsDir, "ca.crt").getAbsolutePath
+    // The chart mounts the client CA alone (`<release>-client-only-ca`); with `pki.issuerRef` set for every role the edge and
+    // client CA are the same CA, and so is this file.
+    else if isKubernetes then "/app/mtls/client-trust/ca.crt"
+    else
+      sys.env.get("EST_CA_CERTIFICATES").map(_.trim).filter(_.nonEmpty).getOrElse(
+        throw RuntimeException(
+          "EST_CA_CERTIFICATES is required when EST_ENABLED=true: the path, in auth's container, of a PEM file with the client CA alone",
+        ),
+      )
+  val authEstBlock =
+    if estEnabled then
+      s"""
+         |# RFC 7030 EST (/.well-known/est/): `simpleenroll` on the main listener, `simplereenroll` on the
+         |# mutual-TLS listener. `cacerts` hands out `ca-certificates`, the client CA alone.
+         |est {
+         |  enabled         = true
+         |  ca-certificates = "$estCaCertificates"
+         |}
+         |""".stripMargin
+    else ""
+  // The chain of a client certificate obtained through EST is short here, so that e2e can watch it end and
+  // be extended, and a certificate may be renewed at any time of its life; every other target keeps central's defaults (a year,
+  // re-approved by an operator; the last third of a certificate's life).
+  val centralClientIdentityBlock =
+    if isLocal then
+      """
+        |client-identity {
+        |  max-age     = "20 seconds"
+        |  renew-window = 1.0
+        |}
+        |""".stripMargin
     else ""
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
@@ -1855,7 +1903,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
        |}
-       |$authMutualTlsBlock
+       |$authMutualTlsBlock$authEstBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
@@ -2073,7 +2121,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |auth {
        |  url = "$authInternalUrl"
        |}
-       |$centralClientCertificateAuthorityBlock$centralMutualTlsBlock
+       |$centralClientCertificateAuthorityBlock$centralClientIdentityBlock$centralMutualTlsBlock
        |user-outbox {
        |  poll-interval = 1 second
        |  batch-size = 32

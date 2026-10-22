@@ -238,6 +238,20 @@ issue the certificate it names -- see [Certificate storage and rotation](#certif
 
 The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
 
+### Client certificates through EST (RFC 7030)
+
+The `local` target also writes `est { enabled = true, ca-certificates = ... }` (the CA central issues from) into `auth/dev/env.conf`
+and a `client-identity { max-age = "20 seconds", renew-window = 1.0 }` into `central/dev/env.conf`: a client registered with `estEnrollment` enrols at `/.well-known/est/simpleenroll` on auth and renews at
+`/.well-known/est/simplereenroll` on `MPORT`, and the short chain is what lets `EstEnrollmentSpec` watch it end and be extended.
+Central issues from the CA of `client-certificate-authority` (the one `auth/dev/mtls/trusted-clients.crt` trusts). The e2e spec drives
+`openssl` as the client; see [`deploy.md`](deploy.md#client-certificates-through-est-rfc-7030) for the deployment side.
+
+`scripts/est-smoke.sh` is a runbook for a running stand (not run by CI): it creates a test client, enrols with openssl, calls
+`/token` over the mutual-TLS origin, renews, checks the old certificate, revokes and deletes the client. It reads
+`AUTH_URL`, `AUTH_MTLS_URL`, `CENTRAL_ADMIN_URL` and `CENTRAL_ADMIN_SECRET` from the environment, refuses to run unless every
+host is in `EST_SMOKE_ALLOWED_HOSTS`, never prints a token or a key, and waits for the renew window up to
+`EST_SMOKE_MAX_WAIT_SECONDS` (the window is a third of the certificate's life by default).
+
 ### Native apps through edge (#420)
 
 `edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's

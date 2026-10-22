@@ -601,11 +601,16 @@ The chart generates no `env.conf`, so point yours at the files it mounts:
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
 | `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (client + edge CA bundle; without trust-manager the issuing root) |
 | `auth` | `/app/mtls/edge-trust/ca.crt` | `mutual-tls.edge-trusted-certificates` (the edge CA alone) |
+| `auth` | `/app/mtls/client-trust/ca.crt` | `est.ca-certificates` (EST `cacerts`; the client CA alone, **never the root**: the `<release>-client-only-ca` trust-manager bundle, or `pki.est.caSecret`; absent both, no mount) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
 | `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
 | `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the edge CA alone; without trust-manager the issuing root) |
 | `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` (the in-cluster edge's identity, from the edge CA, with both URIs) |
 | `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
+
+EST's `cacerts` hands this file to a bank, so it is the client CA alone and **never the root**, which signs the edge and server roles too. With trust-manager (`pki.trustBundle.enabled`) it is the bundle `<release>-client-only-ca` (the client CA and `pki.trustBundle.sources`). Without it the chart's `ca.crt` files are the root, so they are not used for this: give the client CA certificate as a Secret in the release namespace and name it in `pki.est.caSecret` (`name`, `key`, default `ca.crt`); the bootstrapped client CA's own Secret lives in `pki.trustNamespace` and cannot be mounted. With neither, nothing is mounted, and `pki.est.enabled: true` makes rendering fail with that reason, rather than auth failing at startup. `.github/scripts/check-chart-est-ca.sh` renders each mode and asserts the mounted source is not the root.
+
+With `pki.issuerRef` set and no per-role issuers, edge identities and client certificates come from the **same CA**, so the edge CA is then the client CA and EST `cacerts` hands it out: a bank is told to trust the CA that also issues edge identities. Give the edge role its own issuer (`pki.issuerRefs.edge`) before enabling EST for partners.
 
 Auth, central and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A

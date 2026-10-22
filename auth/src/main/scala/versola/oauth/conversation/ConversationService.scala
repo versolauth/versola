@@ -415,26 +415,26 @@ object ConversationService:
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
-                  val otpType = conversation.authFlow.otpType
-                  val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
-                  for
-                    // Before the overwrite: the flag records that the OTP passed, and a lost write race on
-                    // the conversation does not unmake that. The conversation then carries the fresh claims.
-                    fresh <- ZIO.foreach(conversation.userId.zip(conversation.credential)):
-                      case (uid, cred) => userRepository.markVerified(uid, cred)
-                    updated = conversation.copy(
-                      amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
-                      userClaims = fresh.flatten.orElse(conversation.userClaims),
-                    )
-                    written <- conversationRepository.overwrite(authId, updated)
-                    // Recorded once the step is stored: a retry after a lost write race submits the same code
-                    // again, and a second `verified` for one conversation would count a conversion twice.
-                    result <-
-                      if written then
-                        otpChecked(authId, conversation, AntifraudOutcome.verified)
-                          .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                      else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
-                  yield result
+                val otpType = conversation.authFlow.otpType
+                val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
+                for
+                  // Before the overwrite: the flag records that the OTP passed, and a lost write race on
+                  // the conversation does not unmake that. The conversation then carries the fresh claims.
+                  fresh <- ZIO.foreach(conversation.userId.zip(conversation.credential)):
+                    case (uid, cred) => userRepository.markVerified(uid, cred)
+                  updated = conversation.copy(
+                    amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
+                    userClaims = fresh.flatten.orElse(conversation.userClaims),
+                  )
+                  written <- conversationRepository.overwrite(authId, updated)
+                  // Recorded once the step is stored: a retry after a lost write race submits the same code
+                  // again, and a second `verified` for one conversation would count a conversion twice.
+                  result <-
+                    if written then
+                      otpChecked(authId, conversation, AntifraudOutcome.verified)
+                        .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                    else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                yield result
 
     override def preparePasswordStep(
         authId: AuthId,

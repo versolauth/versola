@@ -422,6 +422,30 @@ group: {{ default "cert-manager.io" $ref.group }}
 The cert-manager issuerRef a role's certificates are issued from: the operator's when one is named,
 otherwise the role's ClusterIssuer this chart bootstraps. Expects {root: $, role: "..."}.
 */}}
+{{/* The client CA on its own: what auth's EST `cacerts` hands out (`est.ca-certificates`). */}}
+{{- define "versola.pki.clientOnlyTrustBundle" -}}
+{{- printf "%s-client-only-ca" (include "versola.fullname" .) -}}
+{{- end -}}
+
+{{/*
+Where auth's `/app/mtls/client-trust/ca.crt` (EST `cacerts`, the client CA alone) comes from: `secret` when
+`pki.est.caSecret.name` names a Secret in the release namespace, `bundle` when trust-manager writes the client-only
+bundle, else empty. Never the leaf Secret's `ca.crt`, which is the ROOT and signs all three roles: a bank must not be
+handed that. (The bootstrapped client CA's own Secret is in `pki.trustNamespace`, which a pod cannot mount.) Fails when
+`pki.est.enabled` is set and there is no source.
+*/}}
+{{- define "versola.pki.clientTrustSource" -}}
+{{- $est := default dict .Values.pki.est -}}
+{{- $secret := default dict $est.caSecret -}}
+{{- if $secret.name -}}
+secret
+{{- else if .Values.pki.trustBundle.enabled -}}
+bundle
+{{- else if $est.enabled -}}
+{{- fail "pki.est.enabled needs a source for auth's est.ca-certificates (the client CA alone): set pki.trustBundle.enabled=true (trust-manager writes <release>-client-only-ca) or pki.est.caSecret.name to a Secret in this namespace holding the client CA certificate. Without trust-manager the chart's own ca.crt is the root, which signs every role and must not be handed to a client" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "versola.pki.issuerRef" -}}
 {{- $own := include "versola.pki.operatorRef" . -}}
 {{- if $own -}}
@@ -484,6 +508,26 @@ identity there (#554). Without trust-manager the trust files are the leaf Secret
       - key: ca.crt
         path: ca.crt
   {{- end }}
+{{- $clientTrust := include "versola.pki.clientTrustSource" $root }}
+{{- if $clientTrust }}
+# The client CA alone, for EST's `cacerts` (`est.ca-certificates`): a bank is told to trust this and nothing else, so
+# not the bundle above, which holds the edge CA as well, and never the root. With one CA for every role (`pki.issuerRef`)
+# the edge CA and the client CA are the same CA, and so is this.
+- name: mtls-client-trust
+  {{- if eq $clientTrust "secret" }}
+  secret:
+    secretName: {{ $root.Values.pki.est.caSecret.name }}
+    items:
+      - key: {{ default "ca.crt" $root.Values.pki.est.caSecret.key }}
+        path: ca.crt
+  {{- else }}
+  configMap:
+    name: {{ include "versola.pki.clientOnlyTrustBundle" $root }}
+    items:
+      - key: ca-bundle.crt
+        path: ca.crt
+  {{- end }}
+{{- end }}
 {{- else if eq .service "central" -}}
 - name: central-mtls-server
   secret:
@@ -546,6 +590,11 @@ identity there (#554). Without trust-manager the trust files are the leaf Secret
 - name: mtls-edge-trust
   mountPath: /app/mtls/edge-trust
   readOnly: true
+{{- if include "versola.pki.clientTrustSource" .root }}
+- name: mtls-client-trust
+  mountPath: /app/mtls/client-trust
+  readOnly: true
+{{- end }}
 {{- else if eq .service "central" -}}
 - name: central-mtls-server
   mountPath: /app/central-mtls/server
@@ -580,7 +629,7 @@ secret.reloader.stakater.com/reload: {{ printf "%s,%s,%s" (include "versola.pki.
 {{- else -}}
 secret.reloader.stakater.com/reload: {{ include "versola.pki.serverSecret" .root | quote }}
 {{- if $bundles }}
-configmap.reloader.stakater.com/reload: {{ printf "%s,%s" (include "versola.pki.trustBundle" .root) (include "versola.pki.edgeTrustBundle" .root) | quote }}
+configmap.reloader.stakater.com/reload: {{ printf "%s,%s,%s" (include "versola.pki.trustBundle" .root) (include "versola.pki.edgeTrustBundle" .root) (include "versola.pki.clientOnlyTrustBundle" .root) | quote }}
 {{- end }}
 {{- end -}}
 {{- end -}}

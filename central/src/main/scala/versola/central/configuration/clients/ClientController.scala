@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.configuration.*
 import versola.central.configuration.clients.certificates.ClientCertificateService
+import versola.central.configuration.clients.est.ClientEstService
 import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -15,7 +16,8 @@ import zio.prelude.These
 import zio.schema.*
 
 object ClientController extends Controller:
-  type Env = Tracing & OAuthClientService & ClientCertificateService & ResourceService & CentralConfig & SecurityService & EdgeService
+  type Env =
+    Tracing & OAuthClientService & ClientCertificateService & ClientEstService & ResourceService & CentralConfig & SecurityService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
@@ -37,6 +39,7 @@ object ClientController extends Controller:
       for
         _ <- authorizeBasic(request)
         clientService <- ZIO.service[OAuthClientService]
+        estStates <- ZIO.serviceWithZIO[ClientEstService](_.states)
 
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         offset <- request.url.queryZIO[Option[Int]]("offset").someOrElse(0)
@@ -77,6 +80,7 @@ object ClientController extends Controller:
               applicationType = client.applicationType,
               kind = ClientKind.of(client),
               themeOverrides = client.themeOverrides,
+              est = estStates.get(client.id),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -207,12 +211,13 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ClientCertificateService]
+        est <- ZIO.service[ClientEstService]
         body <- request.bodyAs[A]
         create = toRequest(body)
         _ <- ZIO.when(create.frontChannelLogoutUri.isDefined && create.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(create.id))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindRegistration(kind, create))(ZIO.fail(_))
-        registered <- service.register(create)
+        registered <- if create.estEnrollment then est.registerClient(create) else service.register(create)
         response = CreateClientResponse(registered.secret.map(Base64Url.encode), registered.createdAt, registered.privateKey)
       yield Response.json(response.toJson).status(Status.Created))
         .catchAll(typedFailure)
