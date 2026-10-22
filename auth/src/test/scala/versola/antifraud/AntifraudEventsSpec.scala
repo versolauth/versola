@@ -282,7 +282,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       },
     ),
     suite("the SMS budget")(
-      test("sends are counted from the events and close the range, and a request for another range is still allowed") {
+      test("charged sends close the range, a check that charges nothing does not count, and another range is still allowed") {
         val e = env
         val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 2))
         ZIO.scoped:
@@ -290,25 +290,23 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, limited)
-            before <- events.allowSms(clientId, phone)
-            _ <- ZIO.foreachDiscard(1 to 2)(_ => events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent))
-            sameRange <- events.allowSms(clientId, Phone("+4915199999999"))
-            otherRange <- events.allowSms(clientId, Phone("+4917112345678"))
-          yield assertTrue(before, !sameRange, otherRange)
+            _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, charge = false))
+            first <- events.allowSms(clientId, phone, charge = true)
+            second <- events.allowSms(clientId, Phone("+4915100000000"), charge = true)
+            third <- events.allowSms(clientId, Phone("+4915199999999"), charge = true)
+            readOnly <- events.allowSms(clientId, phone, charge = false)
+            otherRange <- events.allowSms(clientId, Phone("+4917112345678"), charge = true)
+            _ <- events.releaseSms(clientId, phone)
+            afterRelease <- events.allowSms(clientId, phone, charge = false)
+          yield assertTrue(first, second, !third, !readOnly, otherRange, afterRelease)
       },
-      test("suppressed and refused requests are not sends and do not count") {
+      test("with no budget configured nothing is looked up") {
         val e = env
-        val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 1))
         ZIO.scoped:
           for
-            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
-            _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, limited)
-            _ <- ZIO.foreachDiscard(List(AntifraudOutcome.suppressed, AntifraudOutcome.throttled, AntifraudOutcome.provider_error))(outcome =>
-              events.otpRequested(authId, clientId, None, Right(phone), outcome),
-            )
-            allowed <- events.allowSms(clientId, phone)
-          yield assertTrue(allowed)
+            events <- build(e, small)
+            allowed <- events.allowSms(clientId, phone, charge = true)
+          yield assertTrue(allowed, e.configService.find.calls.isEmpty)
       },
     ),
     suite("the statistics rollup")(
@@ -322,7 +320,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             rolled = e.repository.rollupStats.calls
             pruned = e.repository.pruneStats.calls
           yield assertTrue(
-            rolled == List((Instant.parse("2026-10-21T09:56:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
+            rolled == List((Instant.parse("2026-10-21T09:59:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
             pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
           )
       },

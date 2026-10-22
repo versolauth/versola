@@ -21,9 +21,14 @@ import java.time.{LocalDate, ZoneOffset}
 trait AntifraudEvents:
   def record(event: AntifraudEvent): UIO[Unit]
 
-  /** Whether a code may still be sent to `phone`: false when the budget of its range is used up or the range is
-    * not converting (see [[SmsBudget]]). Always true while no budget is configured. */
-  def allowSms(clientId: ClientId, phone: Phone): UIO[Boolean]
+  /** Whether a code may be sent to `phone`: false when the budget of its range is used up or the range is not
+    * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
+    * with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
+    * sends nothing and must be answered exactly like one that does. Always true while no budget is configured. */
+  def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean]
+
+  /** Gives back a code that [[allowSms]] charged and that was not sent. */
+  def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit]
 
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
@@ -56,6 +61,7 @@ object AntifraudEvents:
     * @param statsInterval  how often `af_dest_stats` is rolled up from the log
     * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
+    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
     */
   case class Settings(
       queueCapacity: Int = 20000,
@@ -65,8 +71,9 @@ object AntifraudEvents:
       partitionsAhead: Int = 3,
       smsBudget: SmsBudget.Settings = SmsBudget.Settings(),
       statsInterval: Duration = 1.minute,
-      statsLookback: Duration = 5.minutes,
+      statsLookback: Duration = 2.minutes,
       statsRetention: Duration = 30.days,
+      statsPrefixLength: Int = 4,
   )
 
   object Settings:
@@ -76,7 +83,9 @@ object AntifraudEvents:
   object noop extends AntifraudEvents:
     override def record(event: AntifraudEvent): UIO[Unit] = ZIO.unit
 
-    override def allowSms(clientId: ClientId, phone: Phone): UIO[Boolean] = ZIO.succeed(true)
+    override def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
+
+    override def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit] = ZIO.unit
 
     override def otpRequested(
         authId: AuthId,
@@ -134,22 +143,34 @@ object AntifraudEvents:
       subjectKey: Secret,
   ) extends AntifraudEvents:
 
-    override def allowSms(clientId: ClientId, phone: Phone): UIO[Boolean] =
-      for
-        client <- configService.find(clientId)
-        now <- Clock.instant
-        prefix = phone.filter(_.isDigit)
-        allowed = budget.allows(client.map(_.tenantId), prefix, now)
-        _ <- ZIO.unless(allowed)(AntifraudMetrics.smsRefused(prefix.take(settings.smsBudget.prefixLength)))
-      yield allowed
+    override def allowSms(clientId: ClientId, phone: Phone, charge: Boolean): UIO[Boolean] =
+      if !settings.smsBudget.enabled then ZIO.succeed(true)
+      else
+        for
+          client <- configService.find(clientId)
+          now <- Clock.instant
+          decision = budget.decide(client.map(_.tenantId), phone.filter(_.isDigit), now, charge)
+          _ <- decision match
+            case SmsBudget.Decision.Refused => AntifraudMetrics.smsRefused
+            case SmsBudget.Decision.Untracked => AntifraudMetrics.smsBudgetFull
+            case SmsBudget.Decision.Allowed => ZIO.unit
+        yield decision != SmsBudget.Decision.Refused
+
+    override def releaseSms(clientId: ClientId, phone: Phone): UIO[Unit] =
+      ZIO.when(settings.smsBudget.enabled):
+        for
+          client <- configService.find(clientId)
+          now <- Clock.instant
+        yield budget.release(client.map(_.tenantId), phone.filter(_.isDigit), now)
+      .unit
 
     override def record(event: AntifraudEvent): UIO[Unit] =
       feedBudget(event) *> enqueue(event)
 
+    // Sends are counted when they are allowed (allowSms); a verification can only be seen here.
     private def feedBudget(event: AntifraudEvent): UIO[Unit] =
       ZIO.foreachDiscard(event.destPrefix.filter(_ => event.channel == AntifraudChannel.sms)): prefix =>
         event.outcome match
-          case AntifraudOutcome.sent => ZIO.succeed(budget.sent(event.tenantId, prefix, event.at))
           case AntifraudOutcome.verified => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
           case _ => ZIO.unit
 
@@ -280,7 +301,7 @@ object AntifraudEvents:
       Clock.instant.flatMap: now =>
         val to = now.truncatedTo(ChronoUnit.MINUTES)
         val from = to.minusSeconds(settings.statsLookback.toSeconds)
-        (repository.rollupStats(from, to, settings.smsBudget.prefixLength) *>
+        (repository.rollupStats(from, to, settings.statsPrefixLength) *>
           repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
           cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
           _ => ZIO.unit,
@@ -322,9 +343,13 @@ object AntifraudMetrics:
 
   private val smsRefusedTotal = Metric.counter("antifraud_sms_budget_refused_total")
 
-  /** `prefix` is at most `prefixLength` digits of a number, and only ranges the budget tracks are ever refused. */
-  def smsRefused(prefix: String): UIO[Unit] =
-    smsRefusedTotal.tagged(Set(MetricLabel("prefix", prefix))).increment
+  private val smsBudgetFullTotal = Metric.counter("antifraud_sms_budget_full_total")
+
+  /** No label for the range: the ranges are whatever an attacker's numbers make them. */
+  val smsRefused: UIO[Unit] = smsRefusedTotal.increment
+
+  /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges. */
+  val smsBudgetFull: UIO[Unit] = smsBudgetFullTotal.increment
 
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 

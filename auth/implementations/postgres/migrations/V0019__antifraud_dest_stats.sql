@@ -20,3 +20,8 @@ CREATE TABLE af_dest_stats (
 
 -- Retention deletes by age.
 CREATE INDEX af_dest_stats_minute_idx ON af_dest_stats (minute);
+
+-- The rollup reads the last minutes of af_event by time alone, and the other indexes of af_event lead with a
+-- subject or a range. Events are written in time order, so a BRIN index on `at` is nearly free to maintain and
+-- lets the rollup (and any report over a window) read just the blocks of that window instead of the day.
+CREATE INDEX af_event_at_idx ON af_event USING brin (at);

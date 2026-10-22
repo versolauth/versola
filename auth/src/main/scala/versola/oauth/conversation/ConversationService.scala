@@ -318,11 +318,14 @@ object ConversationService:
                 clientId = conversation.clientId,
                 isRegistering = conversation.isRegistering,
               )
-              // Only a code that is really going out is counted against the range: one that stands in for an unknown
-              // user costs nothing, and counting it would let anyone close a range by trying numbers.
+              // Asked for every phone number, a code that stands in for an unknown user included, and answered the same:
+              // were a closed range to refuse only the numbers that get a real code, the refusal would tell which
+              // numbers are users. Only a real code is charged, so trying numbers cannot close a range.
+              charged = credential.isRight && otp.real.isDefined
               allowed <- credential match
-                case Right(phone) if otp.real.isDefined => antifraudEvents.allowSms(conversation.clientId, phone)
-                case _ => ZIO.succeed(true)
+                case Right(phone) => antifraudEvents.allowSms(conversation.clientId, phone, charge = otp.real.isDefined)
+                case Left(_) => ZIO.succeed(true)
+              giveBack = ZIO.foreachDiscard(credential.toOption.filter(_ => charged))(phone => antifraudEvents.releaseSms(conversation.clientId, phone))
               result2 <-
                 if !allowed then
                   otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *> accessDenied(authId, conversation)
@@ -344,13 +347,13 @@ object ConversationService:
                     sentResult <- if written then
                       otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
                         .tapBoth(
-                          _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
+                          _ => giveBack *> otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
                           _ =>
                             otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
                         )
                         .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
                     else
-                      Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                      giveBack *> Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
                   yield sentResult
             yield result2
       yield result
