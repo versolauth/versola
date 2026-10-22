@@ -1,7 +1,14 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.antifraud.{AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository}
+import versola.antifraud.{
+  AntifraudEventRepository,
+  AntifraudEvents,
+  AntifraudListRepository,
+  AntifraudLists,
+  PostgresAntifraudEventRepository,
+  PostgresAntifraudListRepository,
+}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -104,6 +111,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService &
       AntifraudEvents &
       AntifraudEventRepository &
+      AntifraudListRepository &
+      AntifraudLists &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -216,6 +225,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
+      PostgresAntifraudListRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -232,6 +242,16 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](
         _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
+      )
+
+  /** `antifraud.lists`, optional like the rest of the block. */
+  private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(
+          Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]).withDefault(AntifraudLists.Settings.default))
+            .withDefault(AntifraudLists.Settings.default),
+        ),
       )
 
   /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
@@ -297,6 +317,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConsentService.live >++>
       antifraudSettings >++>
       AntifraudEvents.live >++>
+      antifraudListSettings >++>
+      AntifraudLists.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
