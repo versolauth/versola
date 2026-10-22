@@ -1068,6 +1068,93 @@ def genJwtSigningKey(rng: SecureRandom, today: String): EcKey = genEcKey(rng, s"
 /** The JWKS central is bootstrapped with: only the public half of the key auth holds. */
 def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
+// ── OTP provider / SMTP blocks of auth.conf ────────────────────────────────────
+// Plain functions (not inlined in genEnv) so that scripts/src/test can read what they write.
+// The values go into the file between double quotes as they are, like every other value of
+// these configs: a name that is not a plain identifier is refused rather than written.
+
+/** The entries of otp-provider's `body`, from `--otp-body-<name>=<value>` flags, sorted by name.
+  * One flag per entry because [[cliArgs]] keeps a single value per flag name: a repeated flag would
+  * keep only the last one. */
+def otpBodyEntries(args: Map[String, String]): List[(String, String)] =
+  val prefix = "otp-body-"
+  val entries = args.toList.collect:
+    case (flag, value) if flag.startsWith(prefix) && flag.length > prefix.length => flag.stripPrefix(prefix) -> value
+  entries.foreach: (name, _) =>
+    if !name.matches("[A-Za-z][A-Za-z0-9_]*") then
+      throw RuntimeException(s"--$prefix$name: the name of a body entry is made of letters, digits and _, starting with a letter")
+  entries.sortBy((name, _) => name)
+
+def renderOtpBlock(url: String, method: String, username: String, password: String, body: List[(String, String)]): String =
+  val credentials =
+    List(
+      Option.when(username.nonEmpty)(s"""  username = "$username""""),
+      Option.when(password.nonEmpty)(s"""  password = "$password""""),
+    ).flatten
+  val bodyLines =
+    if body.nonEmpty then body.map((name, value) => s"""    $name = "$value"""")
+    else List("""    # phones = "{{phone}}"""", """    # mes = "{{message}}"""")
+  (List(
+    "",
+    "# SMS one-time codes: auth sends a JSON object to this HTTP provider (with HTTP basic",
+    "# authentication when username and password are set). Every value of `body` may contain",
+    "# {{phone}} (the number) and {{message}} (the text, code included).",
+    "otp-provider {",
+    s"""  method = "$method"""",
+    s"""  url = "$url"""",
+  ) ++ credentials ++ List("  body {") ++ bodyLines ++ List("  }", "}", "")).mkString("\n")
+
+/** What stands in auth.conf when no OTP provider was asked for: the example block, commented out. */
+val otpBlockOff: String =
+  """
+    |# SMS one-time codes are off: auth only logs "OTP provider is not configured" instead of sending.
+    |# To turn them on, remove the leading `# ` below and fill the block in (or pass --otp-* flags
+    |# to gen-env, or run `versola configure sms`). Auth sends the JSON object `body` to `url`
+    |# with the given HTTP method; every value of `body` may contain {{phone}} (the number) and
+    |# {{message}} (the text, code included). Example for a provider that takes `phones` and `mes`:
+    |# otp-provider {
+    |#   method = "POST"
+    |#   url = "https://sms.example.com/send"
+    |#   username = "login"      # optional, with password: HTTP basic authentication
+    |#   password = "password"
+    |#   body {
+    |#     phones = "{{phone}}"
+    |#     mes = "{{message}}"
+    |#   }
+    |# }
+    |""".stripMargin
+
+def renderSmtpBlock(host: String, port: Int, username: String, password: String, from: String, subject: String, startTls: Boolean): String =
+  s"""
+     |# Email one-time codes: auth sends them through this SMTP server.
+     |smtp {
+     |  host = "$host"
+     |  port = $port
+     |  username = "$username"
+     |  password = "$password"
+     |  from = "$from"
+     |  subject = "$subject"
+     |  start-tls = $startTls
+     |}
+     |""".stripMargin
+
+/** What stands in auth.conf when no SMTP server was asked for: the example block, commented out. */
+val smtpBlockOff: String =
+  """
+    |# Email one-time codes are off: auth only logs "SMTP is not configured" instead of sending.
+    |# To turn them on, remove the leading `# ` below and fill the block in (or pass --smtp-* flags
+    |# to gen-env, or run `versola configure smtp`). Example:
+    |# smtp {
+    |#   host = "smtp.example.com"
+    |#   port = 587
+    |#   username = "login"
+    |#   password = "password"
+    |#   from = "noreply@example.com"
+    |#   subject = "Your verification code"
+    |#   start-tls = true      # STARTTLS on the port above
+    |# }
+    |""".stripMargin
+
 @main def genEnv(args: String*): Unit =
   cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
@@ -1756,33 +1843,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       val method = prompt("  HTTP method [POST]: ", "POST", flag = "otp-method")
       val uname = prompt("  Username (empty = none): ", flag = "otp-username")
       val pass = prompt("  Password (empty = none): ", flag = "otp-password")
-      val uLine = if uname.nonEmpty then s"""  username = "$uname"\n""" else ""
-      val pLine = if pass.nonEmpty then s"""  password = "$pass"\n""" else ""
-      s"""
-         |otp-provider {
-         |  method = "$method"
-         |  url = "$url"
-         |  ${uLine}
-         |  ${pLine}
-         |  body {
-         |    # phones = "{{phone}}"
-         |    # mes = "{{message}}"
-         |  }
-         |}
-         |""".stripMargin
-    else
-      """
-        |# otp-provider {
-        |#   method = "POST"
-        |#   url = ""
-        |#   username = ""
-        |#   password = ""
-        |#   body {
-        |#     phones = "{{phone}}"
-        |#     mes = "{{message}}"
-        |#   }
-        |# }
-        |""".stripMargin
+      renderOtpBlock(url, method, uname, pass, otpBodyEntries(cliArgs))
+    else otpBlockOff
 
   // ── SMTP ──────────────────────────────────────────────────────────────────────
   section("\n── SMTP ──────────────────────────────────────────────────────────────")
@@ -1797,29 +1859,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       val from = prompt("  From email [noreply@example.com]: ", "noreply@example.com", flag = "smtp-from")
       val subj = prompt("  Subject [Your verification code]: ", "Your verification code", flag = "smtp-subject")
       val tls = promptYN("  Use STARTTLS?", defaultYes = true, flag = "smtp-starttls")
-      s"""
-         |smtp {
-         |  host = "$host"
-         |  port = $port
-         |  username = "$uname"
-         |  password = "$pass"
-         |  from = "$from"
-         |  subject = "$subj"
-         |  start-tls = $tls
-         |}
-         |""".stripMargin
-    else
-      """
-        |# smtp {
-        |#   host = ""
-        |#   port = 587
-        |#   username = ""
-        |#   password = ""
-        |#   from = ""
-        |#   subject = ""
-        |#   start-tls = true
-        |# }
-        |""".stripMargin
+      renderSmtpBlock(host, port, uname, pass, from, subj, tls)
+    else smtpBlockOff
 
   // ── Build config files ────────────────────────────────────────────────────────
 

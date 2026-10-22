@@ -117,6 +117,21 @@ It requires [scala-cli](https://scala-cli.virtuslab.org/install).
 scala-cli run scripts/gen-env.scala
 ```
 
+Auth's one-time-code delivery is off unless asked for: `auth.conf` then carries the `otp-provider`
+(SMS, an HTTP provider) and `smtp` blocks commented out, with an example and what to do. The
+flags below turn them on without typing at a prompt; `versola configure sms|smtp` stores the
+same values and hands them over on every `configure`:
+
+| Flag | Meaning |
+|---|---|
+| `--otp[=true]`, `--otp-url`, `--otp-method` (default `POST`), `--otp-username`, `--otp-password` | the `otp-provider` block; username and password are HTTP basic credentials, left out when empty |
+| `--otp-body-<name>=<value>` | one entry of the JSON object sent to the provider (one flag per entry, `<name>` made of letters, digits and `_`); a value may contain `{{phone}}` and `{{message}}`. Needs `--otp`: without it the entries are ignored. Without any entry, the block holds the commented example, as before |
+| `--smtp[=true]`, `--smtp-host`, `--smtp-port` (587), `--smtp-username`, `--smtp-password`, `--smtp-from`, `--smtp-subject`, `--smtp-starttls` (true) | the `smtp` block |
+
+Values are written between double quotes as they are, so one with a quote, a backslash or a line
+break gives a file auth cannot read. The passwords are plain values of `auth.conf`, not OpenBao
+secrets.
+
 The script first asks for the environment **Name** (default `local`):
 
 - **`local`** — runs non-interactively. All remaining prompts are skipped and defaults are
