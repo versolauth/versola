@@ -42,6 +42,10 @@ trait ClientEstRepository:
     * calls with the same token cannot both succeed. */
   def consumeToken(tokenHash: String, now: Instant): Task[Option[ClientId]]
 
+  /** Gives back a token spent by [[consumeToken]] whose enrolment then failed on our side (the CA was down), so that the
+    * operator is not asked for a new one. Only ever called by the one request that spent it. */
+  def releaseToken(tokenHash: String): Task[Unit]
+
   /** Begins the chain of `clientId` at `at`, or moves its start there. */
   def startChain(clientId: ClientId, at: Instant): Task[Unit]
 

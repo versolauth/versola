@@ -15,6 +15,9 @@ CREATE TABLE client_est_tokens (
     used_at    TIMESTAMPTZ
 );
 
+-- Deleting a client cascades here by client.
+CREATE INDEX client_est_tokens_client_idx ON client_est_tokens (client_id);
+
 -- Every certificate issued through EST, found by thumbprint when one is presented to renew. The certificate is not stored.
 CREATE TABLE client_est_certificates (
     thumbprint TEXT        PRIMARY KEY,

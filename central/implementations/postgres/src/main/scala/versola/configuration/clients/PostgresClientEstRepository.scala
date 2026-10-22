@@ -64,6 +64,11 @@ class PostgresClientEstRepository(xa: TransactorZIO) extends ClientEstRepository
         RETURNING client_id
       """.query[ClientId].run().headOption
 
+  override def releaseToken(tokenHash: String): Task[Unit] =
+    xa.connectMeasured("release-client-est-token"):
+      sql"UPDATE client_est_tokens SET used_at = NULL WHERE token_hash = $tokenHash".update.run()
+    .unit
+
   override def startChain(clientId: ClientId, at: Instant): Task[Unit] =
     xa.connectMeasured("start-client-est-chain"):
       sql"UPDATE client_est_enrollments SET chain_started_at = $at WHERE client_id = $clientId".update.run()

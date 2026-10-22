@@ -7,9 +7,9 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.{JcaPKCS10CertificationRequest, JcaPKCS10CertificationRequestBuilder}
 import org.scalamock.stubs.ZIOStubs
+import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.*
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer, ClientCertificateRequests}
-import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
@@ -86,6 +86,8 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
             tokens += tokenHash -> (id, expiresAt, true)
             Some(id)
           case _ => None
+    def releaseToken(tokenHash: String) =
+      ZIO.succeed { tokens = tokens.updatedWith(tokenHash)(_.map((id, expiresAt, _) => (id, expiresAt, false))) }
     def startChain(clientId: ClientId, at: Instant) = ZIO.succeed { chains += clientId -> at }
     def chainStartedAt(clientId: ClientId) = ZIO.succeed(chains.get(clientId))
     def recordCertificate(certificate: EstCertificate) = ZIO.succeed { certificates += certificate.thumbprint -> certificate }
@@ -149,6 +151,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val service: URIO[SecureRandom, ClientEstService] =
       for
         _ <- clientService.findClient.returnsZIO(id => ZIO.succeed(clients.find(_.id == id)))
+        _ <- clientService.getAllClients.succeedsWith(clients.toVector)
         random <- ZIO.service[SecureRandom]
       yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend))
 
@@ -285,6 +288,22 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           curve.asInstanceOf[ClientEstService.Refused].reason.contains("P-256"),
           rsa.chain.contains("BEGIN CERTIFICATE"),
         )
+      },
+      test("a token spent for an enrolment the CA could not serve is given back, and works once the CA does") {
+        class Flaky extends ClientCertificateIssuer:
+          var down = true
+          override def sign(request: CertificateSigningRequest): Task[String] =
+            if down then ZIO.fail(RuntimeException("the CA is unreachable")) else FakeCa().sign(request)
+        val failing = Flaky()
+        val env = Env(issuer = failing)
+        for
+          _ <- realTime
+          service <- env.service
+          issued <- service.issueEnrollmentToken(clientId)
+          first <- service.enroll(issued.token, None, csr()).flip
+          _ = failing.down = false
+          second <- service.enroll(issued.token, None, csr())
+        yield assertTrue(first.getMessage.contains("unreachable"), second.chain.contains("BEGIN CERTIFICATE"))
       },
       test("a certificate the CA returns with a name more than the registration is not handed over") {
         val env = Env(issuer = FakeCa(addedUri = Some("urn:versola:edge:somebody")))
@@ -430,6 +449,18 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           env.repository.enabled.contains(clientId),
           sent.mtlsAuth.contains(ClientCertificateRequests.defaultAuth(tenantId, clientId)),
+        )
+      },
+      test("refuses a subject another client is registered by already: it would be that client at /token") {
+        val taken = record(otherClientId, mtlsAuth = Some(ClientCertificateRequests.defaultAuth(tenantId, clientId)))
+        val env = Env(clients = List(taken), enabled = Nil)
+        for
+          service <- env.service
+          refused <- service.registerClient(request()).flip
+        yield assertTrue(
+          refused.asInstanceOf[InvalidRegistrationConfiguration].reason.contains(otherClientId),
+          env.clientService.registerClient.calls.isEmpty,
+          env.repository.enabled.isEmpty,
         )
       },
       test("refuses a client that does not authenticate with a certificate, a native app, and a supplied certificate") {

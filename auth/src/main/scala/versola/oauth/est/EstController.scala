@@ -24,7 +24,8 @@ object EstController extends Controller:
   /** Served on the mutual-TLS listener (RFC 8705 §5's, `MPORT`). */
   def reenrollmentRoutes: Routes[Env, Throwable] = Routes(cacertsEndpoint, csrattrsEndpoint, simpleReenrollEndpoint)
 
-  /** A request is a PKCS#10 of a few hundred bytes; this bounds what an unauthenticated caller can make auth read. */
+  /** A request is a PKCS#10 of a few hundred bytes; this bounds what an unauthenticated caller can make auth read (the body
+    * is read through a stream that stops one byte past it). */
   val MaxBody: Int = 16 * 1024
 
   private val PkcsMime = "application/pkcs7-mime; smime-type=certs-only"
@@ -76,9 +77,12 @@ object EstController extends Controller:
     for
       _ <- ZIO.fail(EstError.BadRequest("the request is application/pkcs10"))
         .unless(request.header(Header.ContentType).exists(_.mediaType.fullType == "application/pkcs10"))
-      bytes <- request.body.asArray
+      declared = request.header(Header.ContentLength).map(_.length)
+      _ <- ZIO.fail(EstError.BadRequest("the request is too large")).when(declared.exists(_ > MaxBody))
+      // Read no more than a request's worth even where the length is not declared (chunked) or understated.
+      bytes <- request.body.asStream.take(MaxBody + 1L).runCollect
       _ <- ZIO.fail(EstError.BadRequest("the request is too large")).when(bytes.length > MaxBody)
-    yield String(bytes, java.nio.charset.StandardCharsets.US_ASCII)
+    yield String(bytes.toArray, java.nio.charset.StandardCharsets.US_ASCII)
 
   private def certsOnly(base64: Array[Byte], chainEndsAt: Option[java.time.Instant]): Response =
     val headers = Headers(

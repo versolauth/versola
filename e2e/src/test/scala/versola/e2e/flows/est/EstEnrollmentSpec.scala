@@ -169,9 +169,7 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
       id <- uid.map(suffix => s"est-bank-$suffix")
       result <- ZIO.acquireReleaseWith(
         registerBank(api, id).tap(r => ZIO.fail(RuntimeException(s"registration: ${r.status} ${r.body}")).unless(r.status.isSuccess)),
-      )(
-        _ => api.delete("/configuration/clients", "clientId" -> id).ignore,
-      ) { _ =>
+      )(_ => api.delete("/configuration/clients", "clientId" -> id).ignore) { _ =>
         enrolmentToken(api, id).flatMap((token, subject) => use(api, auth, id, token, subject))
       }
     yield result
@@ -308,7 +306,9 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
           withoutCertificate.isLeft,
         )
     },
-    test("cacerts is served without credentials on both listeners, csrattrs says there are none, and a client that holds a secret is not registered for EST") {
+    test(
+      "cacerts is served without credentials on both listeners, csrattrs says there are none, and a client that holds a secret is not registered for EST",
+    ) {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         api <- central

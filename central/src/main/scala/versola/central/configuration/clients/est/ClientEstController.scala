@@ -35,12 +35,15 @@ object ClientEstController extends Controller:
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
-        hours = request.url.queryParams.getAll("validityHours").headOption.flatMap(_.toLongOption)
-        validity = hours.fold(ClientEstService.TokenValidity)(h => Duration.fromSeconds(h * 3600L))
-        response <- ZIO.serviceWithZIO[ClientEstService](_.issueEnrollmentToken(clientId, validity)).map: issued =>
-          Response.json(EstEnrollmentTokenResponse(issued.token, issued.expiresAt, issued.subject).toJson).status(Status.Created)
-        .catchSome:
-          case error: ClientEstService.Refused => ZIO.succeed(Response.text(error.getMessage).status(statusOf(error)))
+        hours = request.url.queryParams.getAll("validityHours").headOption
+        response <- hours.map(_.toLongOption) match
+          case Some(None) => ZIO.succeed(Response.text("validityHours is a whole number of hours").status(Status.BadRequest))
+          case parsed =>
+            val validity = parsed.flatten.fold(ClientEstService.TokenValidity)(h => Duration.fromSeconds(h.max(0L).min(1_000_000L) * 3600L))
+            ZIO.serviceWithZIO[ClientEstService](_.issueEnrollmentToken(clientId, validity)).map: issued =>
+              Response.json(EstEnrollmentTokenResponse(issued.token, issued.expiresAt, issued.subject).toJson).status(Status.Created)
+            .catchSome:
+              case error: ClientEstService.Refused => ZIO.succeed(Response.text(error.getMessage).status(statusOf(error)))
       yield response
     }
 
@@ -88,16 +91,16 @@ object ClientEstController extends Controller:
 
   private def failure(error: ClientEstService.Refused | ClientEstService.InvalidCredentials.type | Throwable): ZIO[Any, Throwable, Response] =
     error match
-    case ClientEstService.InvalidCredentials =>
-      Observability.setError("est_unauthorized") *> ZIO.succeed(Response.status(Status.Unauthorized))
-    case refused: ClientEstService.Refused =>
-      Observability.setError(
-        refused.kind match
-          case ClientEstService.Refusal.BadRequest => "est_bad_request"
-          case ClientEstService.Refusal.Forbidden => "est_forbidden",
-        Some(refused.getMessage),
-      ) *> ZIO.succeed(Response.text(refused.getMessage).status(statusOf(refused)))
-    case other: Throwable => ZIO.fail(other)
+      case ClientEstService.InvalidCredentials =>
+        Observability.setError("est_unauthorized") *> ZIO.succeed(Response.status(Status.Unauthorized))
+      case refused: ClientEstService.Refused =>
+        Observability.setError(
+          refused.kind match
+            case ClientEstService.Refusal.BadRequest => "est_bad_request"
+            case ClientEstService.Refusal.Forbidden => "est_forbidden",
+          Some(refused.getMessage),
+        ) *> ZIO.succeed(Response.text(refused.getMessage).status(statusOf(refused)))
+      case other: Throwable => ZIO.fail(other)
 
 case class EstEnrollmentTokenResponse(
     token: String,

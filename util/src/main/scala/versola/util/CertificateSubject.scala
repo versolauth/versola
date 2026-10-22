@@ -140,12 +140,26 @@ object CertificateSubject:
       case _: RSAPublicKey => Left(s"the request's RSA key is shorter than $MinRsaBits bits")
       case other => Left(s"the request's key is ${other.getAlgorithm}, which is neither EC P-256 nor RSA")
 
+  /** Whether two public keys are the same key, by their key material and not their encoding: the same EC point on the
+    * same curve, or the same RSA modulus and exponent, however each was written down. */
+  def sameKey(a: PublicKey, b: PublicKey): Boolean =
+    (a, b) match
+      case (x: ECPublicKey, y: ECPublicKey) => x.getW == y.getW && sameCurve(x.getParams, y.getParams)
+      case (x: RSAPublicKey, y: RSAPublicKey) => x.getModulus == y.getModulus && x.getPublicExponent == y.getPublicExponent
+      case _ => false
+
   private val MinRsaBits = 2048
 
-  private def isP256(key: ECPublicKey): Boolean =
-    val p256 = AlgorithmParameters.getInstance("EC")
-    p256.init(ECGenParameterSpec("secp256r1"))
-    key.getParams.getCurve == p256.getParameterSpec(classOf[ECParameterSpec]).getCurve
+  private def p256: ECParameterSpec =
+    val parameters = AlgorithmParameters.getInstance("EC")
+    parameters.init(ECGenParameterSpec("secp256r1"))
+    parameters.getParameterSpec(classOf[ECParameterSpec])
+
+  /** The whole parameter set, not only the curve equation: explicit parameters with another generator are not P-256. */
+  private def sameCurve(a: ECParameterSpec, b: ECParameterSpec): Boolean =
+    a.getCurve == b.getCurve && a.getGenerator == b.getGenerator && a.getOrder == b.getOrder && a.getCofactor == b.getCofactor
+
+  private def isP256(key: ECPublicKey): Boolean = sameCurve(key.getParams, p256)
 
   /** The decoded common name of a subject -- `app,blue` for `CN=app\,blue`, which is what the
     * request carries and what a CA compares a token's subject against. */

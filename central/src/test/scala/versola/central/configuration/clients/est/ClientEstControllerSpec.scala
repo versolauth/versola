@@ -138,6 +138,18 @@ object ClientEstControllerSpec extends ZIOSpecDefault, ZIOStubs:
         answer <- response.body.asJson[EstEnrollmentTokenResponse]
       yield assertTrue(response.status == Status.Created, answer == EstEnrollmentTokenResponse("TOKEN", endsAt, "CN=bank-a"))
     },
+    test("a validity that is not a number of hours is 400, not the default") {
+      val service = stub[ClientEstService]
+      for
+        response <- call(
+          service,
+          Request.post(
+            URL.root / "configuration" / "clients" / "est" / "enrollment-tokens" ++ QueryParams("clientId" -> "bank-a", "validityHours" -> "soon"),
+            Body.empty,
+          ).addHeader(TestAdminAuth.basicAuthHeader),
+        )
+      yield assertTrue(response.status == Status.BadRequest, service.issueEnrollmentToken.calls.isEmpty)
+    },
     test("an operator extends a chain; the internal token is not an operator's") {
       val service = stub[ClientEstService]
       val extend = URL.root / "configuration" / "clients" / "est" / "extend" ++ QueryParams("clientId" -> "bank-a")
