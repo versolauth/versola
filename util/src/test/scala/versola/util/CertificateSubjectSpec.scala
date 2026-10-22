@@ -122,6 +122,19 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
       )
       assertTrue(subject.describes(own.certificate), !subject.describes(other.certificate), !subject.describes(moreNames.certificate))
     },
+    test("describes: a subject with no names tolerates the common name as the one DNS name, only when asked, and nothing more") {
+      val bare = CertificateSubject("CN=mobile-app,OU=tenant-a,O=Versola", "mobile-app", Nil, Nil, Nil, Nil)
+      val withCn = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("mobile-app"))
+      val withOther = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("evil.example"))
+      val withUri = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("mobile-app"), uri = Some("urn:versola:edge:x"))
+      assertTrue(
+        !bare.describes(withCn.certificate),
+        bare.describes(withCn.certificate, tolerateCommonNameDns = true),
+        !bare.describes(withOther.certificate, tolerateCommonNameDns = true),
+        !bare.describes(withUri.certificate, tolerateCommonNameDns = true),
+        !subject.describes(withCn.certificate, tolerateCommonNameDns = true),
+      )
+    },
     test("requestedKey accepts EC P-256 and RSA 2048, and refuses a weaker RSA key and another curve") {
       def csrFor(algorithm: String, init: java.security.KeyPairGenerator => Unit): String =
         val generator = java.security.KeyPairGenerator.getInstance(algorithm)
