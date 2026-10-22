@@ -165,6 +165,38 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.native.map(_.blobTtl) == Some(10.minutes),
         )
       },
+      // Every configuration written before the listener existed has no such block, and none serves
+      // `/resources` on a second port.
+      test("a file without a mutual-tls block parses with no listener") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.mutualTls.isEmpty)
+      },
+      test("parses a mutual-tls block shaped like auth's") {
+        val block =
+          """mutual-tls {
+            |  certificate = "/app/mtls/edge-server.crt"
+            |  private-key = "/app/mtls/edge-server.key"
+            |  trusted-certificates = "/app/mtls/callers-ca.crt"
+            |  external-url = "https://api-mtls.example.com"
+            |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.mutualTls == Some(
+            EdgeConfig.MutualTls(
+              certificate = "/app/mtls/edge-server.crt",
+              privateKey = "/app/mtls/edge-server.key",
+              trustedCertificates = "/app/mtls/callers-ca.crt",
+              externalUrl = URL.decode("https://api-mtls.example.com").toOption.get,
+            ),
+          ),
+        )
+      },
       test("internalUrl falls back to versolaUrl when versola-internal-url is absent") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false))

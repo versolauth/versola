@@ -63,21 +63,34 @@ object SSOClient:
   case object InvalidGrant
   case object UserInfoUnauthorized
 
-  /** What a token's `cnf` claim obliges a call made with it to bring along. Auth enforces the
-    * binding on `/userinfo` too, and the two bindings are honoured in different places -- a
-    * key by an assertion in a header, a certificate by the handshake itself -- so the caller
-    * names which one it holds rather than this guessing from the token.
+  /** What a token's `cnf` claim says about the call made with it. Auth enforces the binding on
+    * `/userinfo` too, so the caller names which one it holds rather than this guessing from the
+    * token.
+    *
+    * Every binding is answered by the connection, never by a header: a certificate-bound token by
+    * the certificate this client authenticates with, and a token whose holder edge verified at
+    * its own boundary by this edge's own certificate.
     */
   enum TokenBinding:
     /** A plain bearer token: auth asks nothing of the call beyond the token. */
     case Unbound
 
-    /** RFC 9449 §6.1 `cnf.jkt`. */
+    /** RFC 9449 §6.1 `cnf.jkt`. Edge has already checked the proof of the key at its own
+      * boundary and holds no key to mint another for this call. What lets auth tell this call
+      * from the `Bearer` downgrade of a key-bound token (RFC 9449 §7.2) is the certificate of
+      * this edge in the handshake, which auth trusts to have done that check. */
     case Key
 
-    /** RFC 8705 §3.1 `cnf.x5t#S256`: the token is honoured only over the certificate it names,
-      * which is the one this client authenticates with. */
+    /** RFC 8705 §3.1 `cnf.x5t#S256` of a token edge holds for one of its own sessions: the token
+      * is honoured over the certificate it names, which is the one this client authenticates
+      * with. */
     case Certificate(clientId: ClientId, credential: ClientCredential)
+
+    /** RFC 8705 §3.1 `cnf.x5t#S256` of a token a caller presented over this edge's own
+      * mutual-TLS listener: edge has already compared the certificate of that handshake with the
+      * thumbprint, and cannot present the caller's certificate to auth. Like [[Key]], auth takes
+      * this edge's certificate as the proof. */
+    case CallerCertificate
 
   /** A token bound to a certificate this edge does not hold -- central registered the client
     * for some other credential after the token was issued. Raised rather than calling without
@@ -88,6 +101,16 @@ object SSOClient:
     extends RuntimeException(
       s"the access token is bound to a client certificate (RFC 8705 §3.1), but this edge holds " +
         s"no certificate for client '$clientId' -- central sent some other credential",
+    )
+
+  /** A token whose holder only this edge verified cannot be checked by auth without this edge's
+    * own certificate. Raised rather than calling with plain `Bearer`, which auth refuses as the
+    * downgrade of a bound token and reports as an `invalid_token` that names nothing missing here.
+    */
+  case class EdgeCertificateUnavailable(reason: String)
+    extends RuntimeException(
+      s"the access token is bound to a key or a certificate, and auth takes it from this edge only over " +
+        s"the edge's own client certificate (RFC 8705): $reason",
     )
 
   /** A client whose registration demands something the credential central sent cannot
@@ -175,12 +198,31 @@ object SSOClient:
       *
       * With neither, the route is `internalUrl` again and the call is refused as before
       * (`CredentialNeedsTls`, `CredentialNeedsTrustedServer`), not made unauthenticated.
+      *
+      * This is the route of a *client's* certificate. The certificate of this edge itself
+      * ([[edgeRoute]]) only ever goes to the listener.
       */
     private val certificateRoute: CertificateRoute =
       val terminator = CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
       val pinnedTerminator = config.internalUrl.scheme.contains(Scheme.HTTPS) && config.versolaInternalTrustedCertificates.nonEmpty
       if pinnedTerminator then terminator
       else config.native.fold(terminator)(native => CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates)))
+
+    /** Where this edge's own certificate goes: auth's mutual-TLS listener (`native.auth-mutual-tls-url`,
+      * pinned by `native.trusted-certificates`), always, whatever `internalUrl` is or is pinned to.
+      *
+      * Not [[certificateRoute]], whose terminator branch is for a client's certificate: a terminator
+      * forwards the certificate in a header, which auth reads for a client of a tenant that named one --
+      * and never for the edge's call, since an edge is recognised by the certificate of the handshake
+      * auth itself terminated, not by one a proxy vouched for. A terminator would also only ask for
+      * certificates of the issuer it advertises. And `internalUrl` is, on a `versola configure vps`
+      * deployment, auth's public https name, which is no listener at all (#774).
+      *
+      * Without `native` there is no such listener: `None`, and the call is refused rather than made without
+      * the certificate or sent to something that cannot read it.
+      */
+    private val edgeRoute: Option[CertificateRoute] =
+      config.native.map(native => CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates)))
 
     private def internalTrustOf(pins: Set[String]): Option[ClientSSLConfig] =
       Option.when(pins.nonEmpty)(EdgeConfig.pinnedTrust(pins))
@@ -378,6 +420,21 @@ object SSOClient:
         certificateConfig <- certificateFiles.present(certificate)
       yield ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)
 
+    /** The connection this edge's own certificate is presented over: [[edgeRoute]], its far side authenticated
+      * by the pins configured for it. */
+    private def edgeConnection: Task[ClientSSLConfig] =
+      for
+        route <- ZIO.fromOption(edgeRoute)
+          .orElseFail(SSOClient.EdgeCertificateUnavailable("no `native` block names auth's mutual-TLS listener"))
+        _ <- ZIO.fail(SSOClient.EdgeCertificateUnavailable(s"'${route.base.encode}' is reached over plaintext"))
+          .unless(route.base.scheme.contains(Scheme.HTTPS))
+        trust <- ZIO.fromOption(route.trust)
+          .orElseFail(SSOClient.EdgeCertificateUnavailable(s"no trust anchors are configured for '${route.base.encode}'"))
+        certificate <- identity.certificate
+          .someOrFail(SSOClient.EdgeCertificateUnavailable("this edge holds no certificate yet"))
+        certificateConfig <- certificateFiles.present(certificate)
+      yield ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)
+
     private case class CertificateRoute(base: URL, trust: Option[ClientSSLConfig])
 
     /** @param ssl how the connection this is sent over authenticates, for the one method that
@@ -448,35 +505,31 @@ object SSOClient:
         binding: SSOClient.TokenBinding,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
-        // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
-        // own: the client's key signed the one edge already checked, and edge does not hold
-        // that key to mint another. What this edge sends instead to tell the call apart from
-        // the `Bearer` downgrade of a key-bound token is the identity's business
-        // (`EdgeIdentity`, an `EdgeAssertion` for a first-party edge) -- asked for only when
-        // the token is bound to a key, since nothing else needs such an exemption.
-        identification <- identity.headersFor(accessToken).when(binding == SSOClient.TokenBinding.Key)
-
-        // RFC 8705 §3: the other binding is answered by the connection rather than by a
-        // header -- auth hashes the certificate this handshake presents and refuses the token
-        // unless it is the one `cnf.x5t#S256` names. The same certificate this client
-        // authenticates with, which is why there is nothing to exempt it from here: proving
-        // the binding and authenticating are the same act.
-        certificateBound = binding match
-          case SSOClient.TokenBinding.Certificate(_, credential @ ClientCredential.MutualTls(_)) => Some(credential)
-          case _ => None
-        userInfo = certificateBound.fold(userInfoUrl)(endpoint(_, "userinfo"))
+        // auth enforces RFC 9449 §7 and RFC 8705 §3 on this token too, and this call has no proof
+        // of either to forward: the client's key signed the proof edge already checked, and edge
+        // holds neither that key nor the certificate of a caller that is not its own client.
+        // Both are answered by the connection instead. A certificate-bound token of one of this
+        // edge's own sessions is presented over the certificate it names; one whose holder this
+        // edge verified at its own boundary is presented over this edge's certificate, which auth
+        // accepts only from an edge it trusts (see `UserInfoController`).
         connection <- binding match
           case SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificate)) =>
-            mutualTlsConnection(clientId, certificate, userInfo).asSome
+            mutualTlsConnection(clientId, certificate, certificateRoute.base / "userinfo").asSome
           case SSOClient.TokenBinding.Certificate(clientId, _) =>
             ZIO.fail(SSOClient.TokenBoundToAbsentCertificate(clientId))
-          case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.Unbound =>
+          case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.CallerCertificate =>
+            edgeConnection.asSome
+          case SSOClient.TokenBinding.Unbound =>
             ZIO.none
+        userInfo = binding match
+          case SSOClient.TokenBinding.Certificate(_, _: ClientCredential.MutualTls) => certificateRoute.base / "userinfo"
+          case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.CallerCertificate =>
+            edgeRoute.fold(userInfoUrl)(_.base / "userinfo")
+          case _ => userInfoUrl
 
         request = Request
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
-          .addHeaders(identification.getOrElse(Headers.empty))
 
         response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
 

@@ -1,18 +1,14 @@
 package versola.edge
 
-import com.nimbusds.jose.jwk.RSAKey
-import versola.edge.model.{AccessToken, EdgeId}
-import versola.util.{EdgeAssertion, JWT, Secret}
+import versola.edge.model.EdgeId
+import versola.util.{EdgeIdentityNames, PrivateClientCertificate, Secret, TestCertificates}
 import zio.*
 import zio.http.URL
-import zio.json.*
-import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
-import java.security.interfaces.RSAPublicKey
 
-/** Boundary 2 of #555: the identity a mode selects, and what the first-party one sends. */
+/** Boundary 2 of #555: the identity a mode selects, and what the first-party one presents. */
 object EdgeIdentitySpec extends ZIOSpecDefault:
 
   private val keyPair =
@@ -34,46 +30,50 @@ object EdgeIdentitySpec extends ZIOSpecDefault:
     configurationCacheRefreshInterval = 5.minutes,
   )
 
-  /** This edge's public key as central would have registered it, which is what auth verifies
-    * an assertion against. */
-  private val registeredKeys = JWT.PublicKeys.fromJson(
-    Json.Obj("keys" -> Json.Arr(
-      RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(config.keyId).build()
-        .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj()),
-    )),
-  )
+  private val material = PrivateClientCertificate(
+    TestCertificates.generate(subject = "CN=edge-1", uris = List(EdgeIdentityNames.edgeUri("edge-1"))).bundle,
+  ).material.toOption.get
+
+  private def holder(held: Option[PrivateClientCertificate.Material]): EdgeCertificateHolder =
+    new EdgeCertificateHolder:
+      override def paths = None
+      override def material = ZIO.succeed(held)
+      override def install(chain: String, privateKeyPem: String) = ZIO.unit
 
   def spec = suite("EdgeIdentity")(
     suite("Registered")(
-      test("sends an edge assertion under the registered key, bound to the token presented") {
-        for
-          headers <- EdgeIdentity.Registered(config).headersFor(AccessToken("at-1"))
-          assertion <- ZIO.fromOption(headers.rawHeader(EdgeAssertion.HeaderName))
-            .orElseFail(new RuntimeException("no edge assertion sent"))
-          edgeId <- EdgeAssertion.edgeIdOf(assertion)
-          accepted <- EdgeAssertion.verify(assertion, registeredKeys, "at-1").either
-          rejected <- EdgeAssertion.verify(assertion, registeredKeys, "a-different-token").flip
-        yield assertTrue(
-          edgeId == config.id,
-          accepted.isRight,
-          rejected == EdgeAssertion.Error.TokenMismatch,
-        )
+      test("presents the certificate this edge holds for central") {
+        for presented <- EdgeIdentity.Registered(holder(Some(material))).certificate
+        yield assertTrue(presented == Some(material))
       },
-      test("sends nothing but the assertion") {
-        for headers <- EdgeIdentity.Registered(config).headersFor(AccessToken("at-1"))
-        // zio-http lower-cases a header's name on the way in; the value is what carries the case.
-        yield assertTrue(headers.toList.map(_.headerName) == List(EdgeAssertion.HeaderName.toLowerCase))
+      test("has none before the edge holds a certificate, and then the one central renewed it with") {
+        for
+          renewed <- Ref.make(Option.empty[PrivateClientCertificate.Material])
+          current = new EdgeCertificateHolder:
+            override def paths = None
+            override def material = renewed.get
+            override def install(chain: String, privateKeyPem: String) = ZIO.unit
+          identity = EdgeIdentity.Registered(current)
+          before <- identity.certificate
+          _ <- renewed.set(Some(material))
+          after <- identity.certificate
+        yield assertTrue(before.isEmpty, after == Some(material))
       },
     ),
     suite("by mode")(
       test("first-party is the registered edge") {
-        for identity <- ZIO.service[EdgeIdentity].provideLayer(ZLayer.succeed(config) >>> EdgeIdentity.live)
+        for
+          identity <- ZIO.service[EdgeIdentity].provideLayer(
+            ZLayer.succeed(config) ++ ZLayer.succeed(holder(None)) >>> EdgeIdentity.live,
+          )
         yield assertTrue(identity.isInstanceOf[EdgeIdentity.Registered])
       },
       test("partner is refused as not implemented, the same way the configuration is") {
         for
           error <- ZIO.service[EdgeIdentity]
-            .provideLayer(ZLayer.succeed(config.copy(mode = EdgeMode.Partner)) >>> EdgeIdentity.live)
+            .provideLayer(
+              ZLayer.succeed(config.copy(mode = EdgeMode.Partner)) ++ ZLayer.succeed(holder(None)) >>> EdgeIdentity.live,
+            )
             .flip
         yield assertTrue(error == EdgeMode.NotImplemented(EdgeMode.Partner))
       },

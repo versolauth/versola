@@ -56,6 +56,12 @@ final case class E2EConfig(
       * `scripts/gen-env.scala`'s `local` target (`central/dev/mtls`). */
     centralMutualTlsUrl: String = "https://localhost:9011",
     centralMutualTlsServerCertificate: String = "../central/dev/mtls/server.crt",
+    /** Edge's own mutual-TLS listener (`MPORT`, default 8083), which serves `/resources` to callers whose
+      * token is bound to their own certificate, and the CA that signed its certificate -- what a caller
+      * authenticates the listener by. Defaults match `scripts/gen-env.scala`'s `local` target
+      * (`edge/dev/mtls`). */
+    edgeMutualTlsUrl: String = "https://localhost:8083",
+    edgeMutualTlsTrustedCertificates: String = "../edge/dev/mtls/ca.crt",
 )
 
 object E2EConfig:
@@ -101,6 +107,8 @@ object E2EConfig:
       edgeEnvConf <- env("EDGE_ENV_CONF", "../edge/dev/env.conf")
       centralMutualTlsUrl <- env("CENTRAL_MTLS_URL", "https://localhost:9011")
       centralMutualTlsServerCertificate <- env("CENTRAL_MTLS_SERVER_CERT", "../central/dev/mtls/server.crt")
+      edgeMutualTlsUrl <- env("EDGE_MTLS_URL", "https://localhost:8083")
+      edgeMutualTlsTrustedCertificates <- env("EDGE_MTLS_CA", "../edge/dev/mtls/ca.crt")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -129,6 +137,8 @@ object E2EConfig:
       edgeEnvConf,
       centralMutualTlsUrl,
       centralMutualTlsServerCertificate,
+      edgeMutualTlsUrl,
+      edgeMutualTlsTrustedCertificates,
     )
 
   private def env(name: String, default: String): Task[String] =

@@ -257,6 +257,28 @@ terminator's -- as the listener's `trusted-certificates`, so one issued certific
 edge-fronted web client through nginx and a native one on `MPORT`. Without a
 `client-certificate-authority`, central refuses such a registration.
 
+### Edge's own mutual-TLS listener, and edge as a caller of `/userinfo`
+
+An API behind edge's `/resources` can be called with a token bound to the *caller's* client certificate
+(RFC 8705 §3). Edge's plain listener cannot see that certificate, so edge also serves
+`/resources/{resourceId}/{path}` -- and nothing else -- on `MPORT` (unset: 8083, `MBIND_HOST`) when
+`edge/dev/env.conf` has a `mutual-tls { certificate, private-key, trusted-certificates, external-url }` block.
+`trusted-certificates` is the CA(s) of the callers; a `Bearer` token with `cnf.x5t#S256` is accepted only for
+the certificate it names. The `local` target writes the block, generates the listener's own certificate
+(`edge/dev/mtls/{ca,server}.{crt,key}`) and trusts `auth/dev/mtls/ca.crt` for callers, so e2e's
+`EdgeResourcesMutualTlsSpec` signs a bank's certificate with that CA.
+
+Auth cannot verify the caller's token holder for such a request, so edge calls `/userinfo` over its **own**
+certificate (the one it presents to central) to auth's mutual-TLS listener (`native.auth-mutual-tls-url`).
+Auth takes it as the proof when the certificate names exactly one edge (`urn:versola:edge:<id>`) and was
+signed by a certificate in `mutual-tls.edge-trusted-certificates` -- a CA that issues edge certificates and
+nothing else, which `auth` checks is a CA at startup; the listener's `trusted-certificates` must also contain it, so
+that the handshake succeeds. Central must still list the edge (`GET /configuration/edges/registry`, which `auth` syncs)
+and have assigned it the tenant of the token's client, so deleting an edge cuts its certificate off. The
+`local` target sets it to `central/dev/mtls/ca.crt` (which signed `edge-client.*`) and adds that CA to
+`auth/dev/mtls/trusted-clients.crt`. Without it, a key-bound token or a certificate-bound token of a caller
+fails on an endpoint with `fetchUserInfo`.
+
 ### The edge surface on central (#554)
 
 Central serves what an edge reads (`GET /edge/sync/*`) and the certificate signing an edge enrols
@@ -292,8 +314,9 @@ vps (the compose bundle that `versola-cli` deploys) splits the roles across thre
 step-ca root, so the rule above is enforced by the handshake and not only by the name: `central`
 trusts `/app/mtls/edge-ca.crt`, which holds the **edge** intermediate and nothing else, so a client
 certificate (from the **client** intermediate) does not complete the handshake, and `auth` trusts
-`/app/mtls/auth-trust.crt` (client + edge; auth accepts no edge certificate for anything yet, so
-the name check on that side comes with the step that does). The listener
+`/app/mtls/auth-trust.crt` (client + edge; its `edge-trusted-certificates` is `/app/mtls/edge-ca.crt`, the
+edge intermediate alone: `/userinfo` takes a call over a certificate that intermediate signed and that
+names an edge as the proof that the edge verified the token's holder -- see "Edge's own mutual-TLS listener" below). The listener
 leaves come from the **server** intermediate (365 days), the edge identity of the local edge from the edge
 intermediate (365 days; `versola configure vps --cert-lifetime-days N`, 0 = unlimited). **`central` signs edge identities itself** (`/edge/enroll`,
 `/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that
