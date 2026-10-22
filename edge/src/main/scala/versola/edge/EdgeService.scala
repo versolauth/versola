@@ -594,7 +594,7 @@ object EdgeService:
           else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
           else ProxyMetrics.AuthCall.None
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
-        response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
+        response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
