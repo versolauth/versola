@@ -48,10 +48,11 @@ trap 'rm -rf "$work"' EXIT
 generate_secrets() {
   (
     cd "$work"
+    # --server=false: the bloop path asks repo.scala-lang.org first, and a hung host cost 25 min here.
     ENV_NAME=ci-check \
     AUTH_URL=https://ci.invalid \
     POSTGRES_HOST=ci.invalid:5432 \
-      scala-cli run "$repo_root/scripts/gen-env.scala" <<< "vps" >/dev/null
+      scala-cli run --server=false "$repo_root/scripts/gen-env.scala" <<< "vps" >/dev/null
   )
 }
 
