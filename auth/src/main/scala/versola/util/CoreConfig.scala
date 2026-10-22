@@ -181,10 +181,17 @@ object CoreConfig:
     *   because a deployment behind a NAT or a TCP-passthrough load balancer binds this
     *   listener on one address and publishes another, the same relationship [[JwtConfig.issuer]]
     *   already has to `PORT`.
+    * @param edgeTrustedCertificates PEM path to the certificate(s) that issue the certificates of
+    *   edges (`urn:versola:edge:<id>`). A call to `/userinfo` over this listener with a certificate one
+    *   of them signed is taken as an edge's, which has verified the holder of the token itself
+    *   (`EdgeCertificateTrust`). Must be a dedicated issuer, never one that also signs clients'
+    *   certificates, and these certificates must also be among [[trustedCertificates]] so that the
+    *   handshake accepts them. Absent: no certificate is an edge's.
     */
   case class MutualTlsConfig(
       certificate: String,
       privateKey: String,
       trustedCertificates: String,
       externalUrl: String,
+      edgeTrustedCertificates: Option[String] = None,
   )

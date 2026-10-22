@@ -27,10 +27,10 @@ object ConfigurationSource:
   type Requirements = Scope & Client & EdgeConfig & SecurityService & CelEvaluator & ConfigSnapshot
 
   /** The source `EdgeConfig.mode` names. */
-  val live: ZLayer[Requirements, Throwable, ConfigurationSource] =
+  val live: ZLayer[Requirements, Throwable, ConfigurationSource & EdgeCertificateHolder] =
     ZLayer.service[EdgeConfig].flatMap(env => forMode(env.get.mode))
 
-  def forMode(mode: EdgeMode): ZLayer[Requirements, Throwable, ConfigurationSource] =
+  def forMode(mode: EdgeMode): ZLayer[Requirements, Throwable, ConfigurationSource & EdgeCertificateHolder] =
     mode match
       case EdgeMode.FirstParty => central
       // Unreachable through `EdgeConfig.validated`, which refuses the mode first; kept so the
@@ -41,7 +41,7 @@ object ConfigurationSource:
     * existed: each client authenticates with the sync token, and the clients sync enrols
     * the certificates it is registered to generate.
     */
-  val central: ZLayer[Requirements, Throwable, ConfigurationSource] =
+  val central: ZLayer[Requirements, Throwable, ConfigurationSource & EdgeCertificateHolder] =
     EdgeCertificateHolder.live >++>
       CentralSyncTokenService.live >++>
       EdgeIdentityEnrollment.live >++>

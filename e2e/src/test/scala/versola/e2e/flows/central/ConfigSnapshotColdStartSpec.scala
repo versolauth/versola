@@ -37,7 +37,8 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
   private val ColdAuthUrl = "http://localhost:9013"
   private val ColdAuthPorts = Map("PORT" -> "9013", "DPORT" -> "9014", "APORT" -> "9017", "MPORT" -> "9018")
   private val ColdEdgeUrl = "http://localhost:9015"
-  private val ColdEdgePorts = Map("PORT" -> "9015", "DPORT" -> "9016")
+  // MPORT too: the running edge holds the default one (8083) for its mutual-TLS listener.
+  private val ColdEdgePorts = Map("PORT" -> "9015", "DPORT" -> "9016", "MPORT" -> "9019")
 
   private case class Started(process: Process, log: Path, readinessUrl: String)
 
