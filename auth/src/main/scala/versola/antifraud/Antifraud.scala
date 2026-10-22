@@ -3,8 +3,9 @@ package versola.antifraud
 import versola.oauth.client.model.{ClientId, TenantId}
 import zio.*
 
-/** What the rules get to see about one risky step: who asks, for what, from where. Everything but the action is
-  * optional, because not every signal exists on every path (no device id before P1-1, no ASN before P1-3).
+/** What the rules get to see about one risky step: who asks, for what, from where. Every field but the action,
+  * tenant and client is optional, because not every signal exists on every path (no device id before P1-1, no ASN
+  * before P1-3); a caller says so explicitly with `None`.
   *
   * Destinations are never carried as themselves: [[subjectHash]] is the keyed hash the event log uses.
   *
@@ -14,14 +15,14 @@ case class AntifraudContext(
     tenantId: Option[TenantId],
     clientId: ClientId,
     action: AntifraudAction,
-    subjectHash: Option[String] = None,
-    destPrefix: Option[String] = None,
-    deviceId: Option[String] = None,
-    ip: Option[String] = None,
-    asn: Option[Int] = None,
-    userAgent: Option[String] = None,
-    ja4: Option[String] = None,
-    signals: Map[String, String] = Map.empty,
+    subjectHash: Option[String],
+    destPrefix: Option[String],
+    deviceId: Option[String],
+    ip: Option[String],
+    asn: Option[Int],
+    userAgent: Option[String],
+    ja4: Option[String],
+    signals: Map[String, String],
 )
 
 /** What to do with the step, from the mildest to the harshest. */

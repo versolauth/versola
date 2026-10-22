@@ -13,7 +13,7 @@ object RecordingAntifraudEvents:
       userAgent: Option[String],
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
-      decision: Option[Decision] = None,
+      decision: Option[Decision],
   )
 
 /** An [[AntifraudEvents]] that keeps what the sign-in steps told it, for the specs of those steps. */
@@ -49,7 +49,7 @@ final class RecordingAntifraudEvents(
   /** How many times a decision asked to hold a request back. */
   def holds: Int = held.get
 
-  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], ip: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
+  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
     zio.ZIO.succeed(decision)
 
   override def hold(decision: Decision): UIO[Unit] = zio.ZIO.succeed(held.incrementAndGet()).unit
@@ -75,4 +75,4 @@ final class RecordingAntifraudEvents(
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
   ): UIO[Unit] =
-    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_verify, authId, clientId, userAgent, credential, outcome))).unit
+    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_verify, authId, clientId, userAgent, credential, outcome, None))).unit

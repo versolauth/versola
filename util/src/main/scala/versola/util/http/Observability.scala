@@ -33,6 +33,11 @@ object Observability:
     * request/redirect that carried the failure). */
   val error = LogAnnotation[ErrorDetails]("error", (_, r) => r, _.toJson)
 
+  /** What the antifraud check made of the request being handled: the decision, its score and the rules that fired,
+    * and how the step ended. Rendered under the `antifraud` key of the log lines after it is filled in, so the
+    * `receive-http` line of the request carries it; there is no line of its own. */
+  val antifraud = LogAnnotation[AntifraudDetails]("antifraud", (_, r) => r, _.toJson)
+
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
@@ -88,6 +93,15 @@ object Observability:
     * be used for alerting/metrics without risking unbounded cardinality. */
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
+
+  /** Fills in the antifraud context of the request currently being handled; like [[updateAuth]], called mid-flow as
+    * the check and the outcome become known. */
+  def updateAntifraud(initial: AntifraudDetails)(f: AntifraudDetails => AntifraudDetails): UIO[Unit] =
+    logContext.update(context => context.annotate(antifraud, f(context.get(antifraud).getOrElse(initial))))
+
+  /** The IP of the request being handled, as [[setIp]] recorded it. */
+  val currentIp: UIO[Option[String]] =
+    logContext.get.map(_.get(auth).flatMap(_.ip))
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
@@ -711,6 +725,18 @@ object Observability:
 
   object AuthDetails:
     val empty: AuthDetails = AuthDetails()
+
+  /** The antifraud check of a request. `decision` is the action taken (`Allow`, `Block`, `Fake`, ...), `rules` the
+    * names of the rules that fired; `outcome` is how the step ended and is set once it did. */
+  @jsonMemberNames(SnakeCase)
+  case class AntifraudDetails(
+      action: String,
+      decision: String,
+      score: Int,
+      rules: List[String],
+      destPrefix: Option[String],
+      outcome: Option[String],
+  ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key
     * (e.g. `otp_wrong`, `rate_limit_exceeded`, `service_unavailable`); `description` is
