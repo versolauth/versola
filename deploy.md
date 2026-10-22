@@ -679,7 +679,7 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 | Outbound field | Default | Environment base |
 |---|---|---|
 | `mode` | `shadow` | `HTTP_CLIENT_GUARD_MODE` |
-| `maxConcurrent` | the connection pool size (128) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
+| `maxConcurrent` | the connection pool size (128, the maximum of the default `dynamic` pool; `HTTP_CLIENT_POOL_*` in k8s/README.md) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
 | `maxQueue` / `queueTimeoutMillis` / `requestTimeoutMillis` | 256 / 1000 / 10000 | `HTTP_CLIENT_GUARD_MAX_QUEUE`, `_QUEUE_TIMEOUT`, `_REQUEST_TIMEOUT` |
 | `breaker` | off; failureRatio 0.5, minCalls 20, window 10 s, open 5 s, probeCalls 3 | policy only |
 | `retryBudget` | ratio 0.1, minPerSecond 5 | policy only |
