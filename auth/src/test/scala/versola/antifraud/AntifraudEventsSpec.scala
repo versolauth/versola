@@ -51,6 +51,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed(settings),
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
+      ZLayer.succeed[Antifraud](Antifraud.off),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
@@ -197,6 +198,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed(small),
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
+            ZLayer.succeed[Antifraud](Antifraud.off),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -251,6 +253,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -275,6 +278,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )

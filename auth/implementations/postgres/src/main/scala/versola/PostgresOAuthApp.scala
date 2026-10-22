@@ -2,6 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.antifraud.{
+  Antifraud,
   AntifraudEventRepository,
   AntifraudEvents,
   AntifraudListRepository,
@@ -316,9 +317,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserService.live >++>
       ConsentService.live >++>
       antifraudSettings >++>
-      AntifraudEvents.live >++>
       antifraudListSettings >++>
       AntifraudLists.live >++>
+      // Each component that adds rules is listed here.
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
+        Antifraud.Impl(settings.decision, List(lists.ruleSet)): Antifraud,
+      ) >++>
+      AntifraudEvents.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
