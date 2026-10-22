@@ -1059,9 +1059,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val userAgentCookieSecret = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey = rand(rng, 32)
   val edgeSessionsSecret = rand(rng, 32)
-  val edgeInternalSecret = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
-  val parRequestsSecret = rand(rng, 32)  // auth only: keys the stored request_uri references
-  val dpopNoncesSecret = rand(rng, 32)   // auth only: authenticates DPoP-Nonce values
+  val edgeInternalSecret = rand(rng, 32)     // authorizes edge's non-prod /service/configuration/sync
+  val parRequestsSecret = rand(rng, 32)      // auth only: keys the stored request_uri references
+  val dpopNoncesSecret = rand(rng, 32)       // auth only: authenticates DPoP-Nonce values
   val antifraudSubjectSecret = rand(rng, 32) // auth only: keys the hash of a destination in the antifraud event log
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
