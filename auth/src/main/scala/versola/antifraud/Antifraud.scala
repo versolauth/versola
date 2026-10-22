@@ -3,8 +3,9 @@ package versola.antifraud
 import versola.oauth.client.model.{ClientId, TenantId}
 import zio.*
 
-/** What the rules get to see about one risky step: who asks, for what, from where. Everything but the action is
-  * optional, because not every signal exists on every path (no device id before P1-1, no ASN before P1-3).
+/** What the rules get to see about one risky step: who asks, for what, from where. Every field but the action,
+  * tenant and client is optional, because not every signal exists on every path (no device id before P1-1, no ASN
+  * before P1-3); a caller says so explicitly with `None`.
   *
   * Destinations are never carried as themselves: [[subjectHash]] is the keyed hash the event log uses.
   *
@@ -14,14 +15,14 @@ case class AntifraudContext(
     tenantId: Option[TenantId],
     clientId: ClientId,
     action: AntifraudAction,
-    subjectHash: Option[String] = None,
-    destPrefix: Option[String] = None,
-    deviceId: Option[String] = None,
-    ip: Option[String] = None,
-    asn: Option[Int] = None,
-    userAgent: Option[String] = None,
-    ja4: Option[String] = None,
-    signals: Map[String, String] = Map.empty,
+    subjectHash: Option[String],
+    destPrefix: Option[String],
+    deviceId: Option[String],
+    ip: Option[String],
+    asn: Option[Int],
+    userAgent: Option[String],
+    ja4: Option[String],
+    signals: Map[String, String],
 )
 
 /** What to do with the step, from the mildest to the harshest. */
@@ -72,6 +73,7 @@ object Antifraud:
     * @param challengeAt    score from which the step is challenged; 0 disables
     * @param reviewAt       score from which the step is sent to review; 0 disables
     * @param blockAt        score from which the step is refused; 0 disables
+    * @param delay          how long a `Delay` holds the request back
     * @param timeout        the longest an evaluation may take
     * @param failureAction  the decision when evaluation fails or times out
     */
@@ -81,9 +83,15 @@ object Antifraud:
       challengeAt: Int = 0,
       reviewAt: Int = 0,
       blockAt: Int = 0,
+      delay: Duration = 2.seconds,
       timeout: Duration = 20.millis,
       failureAction: DecisionAction = DecisionAction.Challenge,
   )
+
+  /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer
+    * is assembled. */
+  def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings, Antifraud] =
+    ZLayer.fromFunction((settings: AntifraudEvents.Settings) => Impl(settings.decision, ruleSets): Antifraud)
 
   val off: Antifraud = _ => ZIO.succeed(Decision.allow)
 

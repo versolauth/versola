@@ -3,6 +3,8 @@ package versola.antifraud
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
+import versola.util.http.Observability
+import versola.util.http.Observability.AntifraudDetails
 import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -30,6 +32,26 @@ trait AntifraudEvents:
   /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
+  /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
+    * request's log context carries. Never fails; always
+    * [[Decision.allow]] while the decision engine is off. */
+  def decideOtpRequest(
+      clientId: ClientId,
+      userAgent: Option[String],
+      credential: Either[Email, Phone],
+  ): UIO[Decision]
+
+  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, until a challenge can be asked for,
+    * P1-2): the pause is the friction. Returns at once for any other decision. */
+  def hold(decision: Decision): UIO[Unit]
+
+  /** A real code took `took` to hand to the provider; what a fake send imitates. */
+  def sendTook(took: Duration): UIO[Unit]
+
+  /** How long a fake send waits so that it is not told from a real one by its timing: a sample of the recent real
+    * ones. Zero while the decision engine is off or nothing was measured yet. */
+  def fakeSendDelay: UIO[Duration]
+
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
       authId: AuthId,
@@ -37,6 +59,7 @@ trait AntifraudEvents:
       userAgent: Option[String],
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
+      decision: Option[Decision] = None,
   ): UIO[Unit]
 
   /** A submitted OTP was checked and this is how it ended. */
@@ -58,6 +81,7 @@ object AntifraudEvents:
     * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
     *                       leave the writer without a partition
     * @param smsBudget      the limit on codes sent to one range of numbers, off by default
+    * @param decision       the rule engine that decides what to do with an OTP request, off by default
     * @param statsInterval  how often `af_dest_stats` is rolled up from the log
     * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
@@ -70,6 +94,7 @@ object AntifraudEvents:
       retention: Duration = 14.days,
       partitionsAhead: Int = 3,
       smsBudget: SmsBudget.Settings = SmsBudget.Settings(),
+      decision: Antifraud.Settings = Antifraud.Settings(),
       statsInterval: Duration = 1.minute,
       statsLookback: Duration = 2.minutes,
       statsRetention: Duration = 30.days,
@@ -87,12 +112,22 @@ object AntifraudEvents:
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
+    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
+      ZIO.succeed(Decision.allow)
+
+    override def hold(decision: Decision): UIO[Unit] = ZIO.unit
+
+    override def sendTook(took: Duration): UIO[Unit] = ZIO.unit
+
+    override def fakeSendDelay: UIO[Duration] = ZIO.succeed(Duration.Zero)
+
     override def otpRequested(
         authId: AuthId,
         clientId: ClientId,
         userAgent: Option[String],
         credential: Either[Email, Phone],
         outcome: AntifraudOutcome,
+        decision: Option[Decision],
     ): UIO[Unit] = ZIO.unit
 
     override def otpChecked(
@@ -106,7 +141,7 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -114,6 +149,7 @@ object AntifraudEvents:
       for
         repository <- ZIO.service[AntifraudEventRepository]
         settings <- ZIO.service[Settings]
+        antifraud <- ZIO.service[Antifraud]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
@@ -125,7 +161,7 @@ object AntifraudEvents:
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
         budget = SmsBudget(settings.smsBudget)
-        events = Impl(queue, settings.queueCapacity, budget, settings, securityService, secureRandom, configService, subjectKey)
+        events = Impl(queue, settings.queueCapacity, budget, antifraud, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
@@ -136,6 +172,8 @@ object AntifraudEvents:
       queue: Queue[AntifraudEvent],
       queueCapacity: Int,
       budget: SmsBudget,
+      antifraud: Antifraud,
+      latency: SendLatency,
       settings: Settings,
       securityService: SecurityService,
       secureRandom: SecureRandom,
@@ -159,6 +197,55 @@ object AntifraudEvents:
             case SmsBudget.Decision.Untracked => AntifraudMetrics.smsBudgetFull
             case SmsBudget.Decision.Allowed => ZIO.unit
         yield decision != SmsBudget.Decision.Refused
+
+    override def decideOtpRequest(
+        clientId: ClientId,
+        userAgent: Option[String],
+        credential: Either[Email, Phone],
+    ): UIO[Decision] =
+      if !settings.decision.enabled then ZIO.succeed(Decision.allow)
+      else
+        (for
+          client <- configService.find(clientId)
+          hash <- subjectHash(credential)
+          ip <- Observability.currentIp
+          decision <- antifraud.evaluate(
+            AntifraudContext(
+              tenantId = client.map(_.tenantId),
+              clientId = clientId,
+              action = AntifraudAction.otp_request,
+              subjectHash = Some(hash),
+              destPrefix = credential.toOption.map(destPrefix),
+              deviceId = None,
+              ip = ip,
+              asn = None,
+              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+              ja4 = None,
+              signals = Map.empty,
+            ),
+          )
+          _ <- AntifraudMetrics.decided(decision.action)
+          // The check goes on the `receive-http` line of the request, not into a line of its own.
+          _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
+            _.copy(decision = decision.action.toString, score = decision.score, rules = decision.firedRules),
+          )
+        yield decision).catchAllCause: cause =>
+          ZIO.logDebugCause("could not build the antifraud context", cause) *>
+            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List("antifraud_error")))
+
+    private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
+      AntifraudDetails(action.toString, DecisionAction.Allow.toString, 0, Nil, credential.toOption.map(destPrefix), None)
+
+    override def hold(decision: Decision): UIO[Unit] =
+      decision.action match
+        case DecisionAction.Delay | DecisionAction.Challenge => ZIO.sleep(settings.decision.delay)
+        case _ => ZIO.unit
+
+    override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
+
+    override def fakeSendDelay: UIO[Duration] =
+      if !settings.decision.enabled then ZIO.succeed(Duration.Zero)
+      else Random.nextIntBounded(Int.MaxValue).map(latency.sample)
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
       ZIO.when(settings.smsBudget.enabled):
@@ -192,8 +279,9 @@ object AntifraudEvents:
         userAgent: Option[String],
         credential: Either[Email, Phone],
         outcome: AntifraudOutcome,
+        decision: Option[Decision],
     ): UIO[Unit] =
-      event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome)
+      event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, decision)
 
     override def otpChecked(
         authId: AuthId,
@@ -204,6 +292,12 @@ object AntifraudEvents:
     ): UIO[Unit] =
       event(authId, clientId, userAgent, credential, AntifraudAction.otp_verify, outcome)
 
+    private def subjectHash(credential: Either[Email, Phone]): Task[String] =
+      val subject = credential.fold(_.toLowerCase, identity[String])
+      securityService.mac(Secret(subject.getBytes(StandardCharsets.UTF_8)), subjectKey).map(Base64Url.encode)
+
+    private def destPrefix(phone: Phone): String = phone.filter(_.isDigit).take(AntifraudEvents.destPrefixLength)
+
     private def event(
         authId: AuthId,
         clientId: ClientId,
@@ -211,14 +305,16 @@ object AntifraudEvents:
         credential: Either[Email, Phone],
         action: AntifraudAction,
         outcome: AntifraudOutcome,
+        decision: Option[Decision] = None,
     ): UIO[Unit] =
+      // How the step ended goes on the `receive-http` line of the request too.
+      Observability.updateAntifraud(details(action, credential))(_.copy(outcome = Some(outcome.toString))) *>
       // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
       (for
         id <- secureRandom.nextUUIDv7
         now <- Clock.instant
         client <- configService.find(clientId)
-        subject = credential.fold(_.toLowerCase, identity[String])
-        hash <- securityService.mac(Secret(subject.getBytes(StandardCharsets.UTF_8)), subjectKey)
+        hash <- subjectHash(credential)
         _ <- record(
           AntifraudEvent(
             id = id,
@@ -229,9 +325,12 @@ object AntifraudEvents:
             action = action,
             outcome = outcome,
             channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
-            subjectHash = Base64Url.encode(hash),
-            destPrefix = credential.toOption.map(phone => phone.filter(_.isDigit).take(AntifraudEvents.destPrefixLength)),
+            subjectHash = hash,
+            destPrefix = credential.toOption.map(destPrefix),
             userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+            decision = decision.map(_.action.toString),
+            score = decision.map(_.score),
+            rules = decision.fold(List.empty[String])(_.firedRules),
           ),
         )
       yield ()).catchAllCause(cause => AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause))
@@ -351,6 +450,12 @@ object AntifraudMetrics:
 
   /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges. */
   val smsBudgetFull: UIO[Unit] = smsBudgetFullTotal.increment
+
+  private val decisionsTotal = Metric.counter("antifraud_decisions_total")
+
+  /** Decisions by action, a closed set of labels. */
+  def decided(action: DecisionAction): UIO[Unit] =
+    decisionsTotal.tagged(Set(MetricLabel("action", action.toString))).increment
 
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 

@@ -1,6 +1,6 @@
 package versola.oauth.conversation
 
-import versola.antifraud.{AntifraudAction, AntifraudOutcome, RecordingAntifraudEvents}
+import versola.antifraud.{AntifraudAction, AntifraudOutcome, Decision, DecisionAction, RecordingAntifraudEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
@@ -21,11 +21,11 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
-import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
-import zio.{Ref, ZIO}
+import zio.{Ref, ZIO, durationInt}
 
 import java.security.KeyFactory
 import java.security.spec.RSAPublicKeySpec
@@ -53,7 +53,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeChallengeMethod = CodeChallengeMethod.S256
 
-  class Env(smsAllowed: Boolean = true, afterRequested: zio.UIO[Unit] = ZIO.unit):
+  class Env(smsAllowed: Boolean = true, afterRequested: zio.UIO[Unit] = ZIO.unit, decision: Decision = Decision.allow, fakeDelay: zio.Duration = zio.Duration.Zero):
     val otpService = stub[OtpService]
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
@@ -73,7 +73,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested)
+    val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested, decision, fakeDelay)
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -142,6 +142,74 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val submittedOtp = realOtp.copy(timesRequested = 1)
 
   val spec = suite("OtpConversationService")(
+    suite("antifraud decision")(
+      test("a Block decision refuses the request, records it as blocked with the decision, and sends nothing") {
+        val blocked = Decision(DecisionAction.Block, 12, List("deny_list"))
+        val env = Env(decision = blocked)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0)
+          steps = env.antifraud.steps
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          steps.map(_.outcome) == List(AntifraudOutcome.blocked),
+          steps.flatMap(_.decision) == List(blocked),
+          env.antifraud.smsAsked.isEmpty,
+        )
+      },
+      test("a Fake decision sends nothing, is answered like a send and recorded as faked") {
+        val fake = Decision(DecisionAction.Fake, 0, List("fake_list"))
+        val env = Env(decision = fake)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0)
+          steps = env.antifraud.steps
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.RenderStep],
+          steps.map(_.outcome) == List(AntifraudOutcome.faked),
+          // A fake code is not charged to the range's budget.
+          env.antifraud.smsAsked == List(false),
+        )
+      },
+      test("a fake send waits as long as the antifraud sample says, a real one does not wait") {
+        val fake = Decision(DecisionAction.Fake, 0, Nil)
+        def run(decision: Decision, otp: ConversationStep.Otp) =
+          val env = Env(decision = decision, fakeDelay = 3.seconds)
+          for
+            _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+            _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+            _ <- env.otpService.prepareOtp.succeedsWith(otp)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            _ <- env.otpService.sendOtp.succeedsWith(())
+            fiber <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0).fork
+            _ <- TestClock.adjust(2.seconds)
+            early <- fiber.poll
+            _ <- TestClock.adjust(2.seconds)
+            _ <- fiber.join
+          yield early.isEmpty
+        for
+          fakeWaited <- run(fake, realOtp.copy(real = None))
+          realWaited <- run(Decision.allow, realOtp)
+        yield assertTrue(fakeWaited, !realWaited)
+      },
+      test("a code entered after a fake send is recorded as fake_verify") {
+        val env = Env()
+        val fakeStep = realOtp.copy(real = None)
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(initialConversation.copy(credential = Some(Left(email))), fakeStep, otpCode, authId)
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.fake_verify))
+      },
+    ),
     suite("antifraud events")(
       test("a request that sent a code is recorded as sent, with the destination, client and user agent") {
         val env = Env()
@@ -156,7 +224,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           steps = env.antifraud.steps
         yield assertTrue(
           steps == List(
-            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent),
+            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent, None),
           ),
         )
       },
