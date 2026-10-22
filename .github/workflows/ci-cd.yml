@@ -274,10 +274,17 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
+          # Maven Central has every artifact these scripts need; scala-cli's default resolver
+          # list also asks repo.scala-lang.org's nightlies first, and when that host is down
+          # each lookup waits out a 2.5-minute timeout (25+ minutes for one script on
+          # 2026-10-21), which pushes the job past its 45-minute limit.
+          COURSIER_REPOSITORIES: ivy2Local|central
         run: scala-cli run .github/scripts/coverage-badge.scala
 
       - name: Generate dev configs
         if: github.event_name != 'release'
+        env:
+          COURSIER_REPOSITORIES: ivy2Local|central # see "Publish coverage badge to gist"
         run: echo "local" | scala-cli run scripts/gen-env.scala
 
       # For the fresh-start check after edge comes up (see
