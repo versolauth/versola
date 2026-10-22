@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.central.configuration.clients.est.ClientEstService
 import versola.central.configuration.clients.{
   ApplicationType,
   AuthFlow,
@@ -167,23 +168,7 @@ case class CreatePermissionRequest(
     permission: Permission,
     description: Map[String, String],
     endpointIds: Set[ResourceEndpointId],
-) derives Schema
-
-object CreatePermissionRequest:
-  /** New permission IDs are colon-separated only; the ID is decoded as a string first so the 400 names that rule. */
-  private case class Wire(
-      tenantId: TenantId,
-      permission: String,
-      description: Map[String, String],
-      endpointIds: Set[ResourceEndpointId],
-  ) derives JsonDecoder
-
-  given JsonCodec[CreatePermissionRequest] = JsonCodec(
-    DeriveJsonEncoder.gen[CreatePermissionRequest],
-    JsonDecoder[Wire].mapOrFail(wire =>
-      Permission.fromNew(wire.permission).map(CreatePermissionRequest(wire.tenantId, _, wire.description, wire.endpointIds)),
-    ),
-  )
+) derives Schema, JsonCodec
 
 case class UpdatePermissionRequest(
     tenantId: TenantId,
@@ -425,6 +410,8 @@ case class OAuthClientResponse(
     kind: ClientKind,
     /** What this client changes in the theme it uses; absent when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
+    /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
+    est: Option[ClientEstService.State] = None,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -545,6 +532,11 @@ case class CreateClientRequest(
     enrollEdgeClientCertificate: Boolean,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** Have the client obtain and renew its mTLS client certificate through EST (RFC 7030, served by auth), which central
+      * issues from the CA behind `client-certificates` and never with the client's key. Needs `tls_client_auth`; the
+      * client is registered by [[mtlsAuth]] or, where it names none, by `CN=<client>,OU=<tenant>,O=Versola`. Mutually
+      * exclusive with [[issueEdgeClientCertificate]], [[enrollEdgeClientCertificate]] and supplying a certificate. */
+    estEnrollment: Boolean = false,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */

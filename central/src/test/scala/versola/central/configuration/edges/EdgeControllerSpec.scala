@@ -233,7 +233,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
     ),
     internalTestCase(
-      description = "edges registry serves every edge's public keys and assigned tenants to auth",
+      description = "edges registry serves every edge's id and assigned tenants to auth",
       token = authSyncToken,
       expectedStatus = Status.Ok,
       setup = service =>
@@ -248,7 +248,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
         TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
         // Assigned to neither edge below, and must not leak into either one's tenantIds --
-        // this is the set `EdgeAssertionService` checks a token's tenant against.
+        // this is the set `EdgeCertificateTrust` checks a token's tenant against.
         TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
       ),
       verify = response =>
@@ -257,19 +257,13 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
         yield assertTrue(
           body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
-          body.edges.head.publicKey == publicJwk,
-          // Both halves of a rotation, so auth keeps accepting assertions signed with the key
-          // being rotated out until it is removed.
-          body.edges.head.oldPublicKey.isEmpty,
-          body.edges(1).oldPublicKey.contains(publicJwk),
-          // What lets auth refuse an assertion from a real, correctly signed edge that is
+          // What lets auth refuse a call from a real edge, with a valid certificate, that is
           // simply not the one this token's tenant is behind.
           body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
           body.edges(1).tenantIds == List(TenantId("tenant-c")),
         ),
     ),
-    // An edge has no business reading its peers' identities: the keys it would need to forge
-    // one are exactly what this would hand it.
+    // An edge has no business reading its peers' identities.
     internalTestCase(
       description = "edges registry refuses an edge, authenticated or not",
       token = edgeSyncToken,

@@ -703,6 +703,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/password — submits the password of a user the conversation already knows. */
+  def submitPassword(cookie: String, password: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/password", Map("password" -> password, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/set-password — submits a new password when the conversation requires it. */
   def submitSetPassword(cookie: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)

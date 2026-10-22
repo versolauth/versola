@@ -101,7 +101,10 @@ private def verifyBinding(
             }
           .unit
     case BindingCheck.Accept => ZIO.unit
-    case BindingCheck.Downgrade | BindingCheck.CertificateOutsideSession | BindingCheck.UnboundDpop =>
+    // Edge's own endpoints are not served on the mutual-TLS listener, so no presentation here
+    // produces `AcceptCallerCertificate`; refused all the same if one ever did.
+    case BindingCheck.Downgrade | BindingCheck.CertificateOutsideSession | BindingCheck.UnboundDpop |
+        BindingCheck.AcceptCallerCertificate =>
       ZIO.fail(AuthorizeOutcome.Denied)
 
 case class PermissionsClaims(

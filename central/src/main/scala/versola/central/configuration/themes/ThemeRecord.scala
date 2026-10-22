@@ -33,7 +33,7 @@ case class GetThemePresetsResponse(
 ) derives Schema, JsonCodec
 
 /** Asks what stylesheet a theme would have, for the console's preview. `tokens` present: a token theme (the foundation,
-  * what the tokens set, then `css`); absent: a stylesheet theme, where `css` alone is the stylesheet. `overrides` are a
+  * what the tokens set, then `css`); absent: a theme stored with CSS only, where `css` alone is the stylesheet. `overrides` are a
   * client's own, laid after all of that as the authorization server does.
   */
 case class RenderThemeRequest(
@@ -45,7 +45,7 @@ case class RenderThemeRequest(
 case class RenderThemeResponse(
     /** The whole stylesheet: the base stylesheet, what the tokens set, the theme's own CSS, then the client's overrides. */
     css: String,
-    /** Only what the theme's tokens set; empty for a stylesheet theme. */
+    /** Only what the theme's tokens set; empty for a theme stored with CSS only. */
     generated: String,
 ) derives Schema, JsonCodec
 

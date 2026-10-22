@@ -1,4 +1,5 @@
 import { clientKindOf, type ClientKind } from './client-presets';
+import type { ThemeVariableCatalog } from './theme-variables';
 import type {
   AuthFlow,
   AuthMethod,
@@ -13,6 +14,7 @@ import type {
   OtpTemplateRecord,
   ChallengeSettingsChanges,
   ChallengeSettingsRecord,
+  ClientEstState,
   ClientTemplate,
   JwksKeySummary,
   MutualTlsAuth,
@@ -158,6 +160,7 @@ type ClientsResponse = {
     template?: ClientTemplate | null;
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
+    est?: ClientEstState | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -774,6 +777,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
+        est: client.est ?? null,
         tenantId,
       };
     }),
@@ -1512,8 +1516,18 @@ export async function fetchThemePresets(): Promise<ThemePreset[]> {
   return response.presets;
 }
 
+// The tokens a theme may set one by one: groups, kinds, descriptions and defaults, defined in central. An older central
+// that has no such endpoint answers 404; the editor then has no tokens to offer and says so.
+export async function fetchThemeVariables(): Promise<ThemeVariableCatalog> {
+  try {
+    return await request<ThemeVariableCatalog>('/configuration/themes/variables');
+  } catch {
+    return { groups: [], variables: [] };
+  }
+}
+
 // The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
-// exactly what users get, because nobody but central builds it. `tokens` null is a stylesheet theme (its CSS alone is
+// exactly what users get, because nobody but central builds it. `tokens` null is a theme stored with CSS only (its CSS alone is
 // the stylesheet); `overrides` are a client's own, laid over the theme as auth does, so the answer is that client's
 // effective stylesheet. Empty overrides are not sent.
 export async function renderTheme(

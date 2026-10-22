@@ -2089,7 +2089,7 @@ const appearancePresets = [
 const appearanceThemes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'money', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { shape: 'sharp' } } },
-  { id: 'legacy', css: 'LEGACY-CSS', tenantId: null },
+  { id: 'css-only', css: 'CSS-ONLY', tenantId: null },
 ];
 const appearanceState = (client: Record<string, unknown>) => ({
   clients: { 'tenant-alpha': [client] },
@@ -2185,28 +2185,28 @@ test('resets one override, and clears all of them with an empty object', async (
   await expect(page.getByText('Same as the theme')).toBeVisible();
 });
 
-test('says that overrides apply on top of a stylesheet theme, and sends nothing when none was set', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+test('says that overrides apply on top of a theme that has only custom CSS, and sends nothing when none was set', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
 
   await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Branding and logout');
-  await expect(appearanceBlock(page).getByText('The theme is a stylesheet')).toBeVisible();
+  await expect(appearanceBlock(page).getByText('The theme is only custom CSS')).toBeVisible();
   // Its values are not known, so none is claimed: no preset's values stand in for them.
   await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
-  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(5);
+  await expect(appearanceBlock(page).getByText('Set by the theme\'s CSS')).toHaveCount(5);
   await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"], .bg-card[aria-pressed="true"]')).toHaveCount(0);
 
   await saveEdit(page);
   expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');
 });
 
-test('over a stylesheet theme, a choice equal to the default theme is still saved as an override', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+test('over a theme that has only custom CSS, a choice equal to the default theme is still saved as an override', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
 
   await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Branding and logout');
   const block = appearanceBlock(page);
-  // Soft is the default theme's shape: over a token theme that would be no override, over a stylesheet it is one.
+  // Soft is the default theme's shape: over a token theme that would be no override, over a CSS-only theme it is one.
   await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' }).click();
   await block.getByLabel('Brand colour, #rrggbb').fill('155e75');
   await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' })).toHaveAttribute('aria-pressed', 'true');

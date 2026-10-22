@@ -143,19 +143,27 @@ test('opens a permission and shows its endpoints, who grants it, the detached ba
   await expect(page.getByRole('button', { name: /^Open permission (.* )?reports:read$/ })).toBeFocused();
 });
 
-test('a permission whose ID has a dot is flagged as a legacy ID, read-only except Delete', async ({ page }) => {
-  const legacy = { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] };
-  await loadAdminApp(page, { path: permissionsPath, state: { permissions: { 'tenant-alpha': [legacy, alphaRead] }, resources } });
+test('accepts hyphens inside a segment and offers no legacy state for any listed permission', async ({ page }) => {
+  const hyphenated = { permission: 'auth-settings:manage', description: { en: 'Manage account settings' }, endpointIds: [101] };
+  const api = await loadAdminApp(page, { path: permissionsPath, state: { permissions: { 'tenant-alpha': [hyphenated, alphaRead] }, resources } });
 
-  const row = page.locator('versola-data-table').getByRole('row').filter({ hasText: 'Write alpha resources' });
-  await expect(row.locator('.chip.warn')).toHaveText('Legacy ID');
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'Read alpha resources' }).locator('.chip.warn')).toHaveCount(0);
+  await expect(page.locator('versola-data-table .chip.warn')).toHaveCount(0);
+  await expect(page.getByText('Legacy ID')).toHaveCount(0);
 
-  await page.getByRole('button', { name: /^Open permission (.* )?alpha\.write$/ }).click();
-  const dialog = panel(page, 'Write alpha resources');
-  await expect(dialog.getByText('This ID uses dots, which are no longer allowed. Recreate the permission with a colon ID (orders:read) and move its roles and clients.')).toBeVisible();
-  await expect(dialog.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: 'Delete permission alpha.write' })).toBeVisible();
+  await page.getByRole('button', { name: /^Open permission (.* )?auth-settings:manage$/ }).click();
+  const dialog = panel(page, 'Manage account settings');
+  await expect(dialog.getByRole('button', { name: /^Edit/ }).first()).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Delete permission auth-settings:manage' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
+  const create = panel(page, 'Create permission');
+  const id = create.getByLabel('Permission ID *');
+  await id.fill('billing-admin:read');
+  await expect(id).not.toHaveAttribute('aria-invalid', 'true');
+  await id.fill('Billing:read');
+  await expect(id).toHaveAttribute('aria-invalid', 'true');
+  expect(api.requests.some(request => request.method === 'PUT' || request.method === 'POST')).toBeFalsy();
 });
 
 for (const width of [1440, 375]) {

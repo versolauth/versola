@@ -15,6 +15,7 @@ import versola.central.configuration.clients.certificates.{
   ClientCertificateService,
   EdgeCertificateEnrollmentRepository,
 }
+import versola.central.configuration.clients.est.{ClientEstController, ClientEstRepository, ClientEstService}
 import versola.central.configuration.clients.{
   AuthorizationPresetController,
   AuthorizationPresetRepository,
@@ -57,6 +58,7 @@ import versola.configuration.challenges.{PostgresChallengeSettingsRepository, Po
 import versola.configuration.clients.{
   PostgresAuthorizationPresetRepository,
   PostgresClientCertificateIssuanceRepository,
+  PostgresClientEstRepository,
   PostgresEdgeCertificateEnrollmentRepository,
   PostgresOAuthClientRepository,
 }
@@ -150,8 +152,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
+      ClientEstRepository &
       ClientCertificateIssuer &
       ClientCertificateService &
+      ClientEstService &
       ServerMetadataRepository &
       ServerMetadataService &
       JwksService
@@ -166,6 +170,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       PermissionController.routes,
       ResourceController.routes,
       ClientController.routes,
+      ClientEstController.routes,
       AuthorizationPresetController.routes,
       ScopeController.routes,
       AuthorizationDetailTypeController.routes,
@@ -228,6 +233,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOAuthClientRepository.live >++>
           PostgresClientCertificateIssuanceRepository.live >++>
           PostgresEdgeCertificateEnrollmentRepository.live >++>
+          PostgresClientEstRepository.live >++>
           PostgresAuthorizationPresetRepository.live >++>
           PostgresOAuthScopeRepository.live >++>
           PostgresAuthorizationDetailTypeRepository.live >++>
@@ -264,6 +270,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateIssuer.live >++>
       EdgeCertificateIssuer.live >++>
       ClientCertificateService.live >++>
+      ClientEstService.live >++>
       BootstrapService.live >++>
       TenantService.live >++>
       PermissionService.live >++>

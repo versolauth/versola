@@ -18,6 +18,7 @@ case class CoreConfig(
     dpop: Option[CoreConfig.DpopConfig],
     argon2: Option[Argon2Config],
     mutualTls: Option[CoreConfig.MutualTlsConfig],
+    est: Option[CoreConfig.EstConfig] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
@@ -140,6 +141,21 @@ object CoreConfig:
       nonceTtl = Duration.fromSeconds(300),
     )
 
+  /** RFC 7030 EST under `/.well-known/est/`: a client registered with `estEnrollment` gets and renews its mTLS client
+    * certificate there. `simpleenroll` (the first certificate, for a one-time token) is served on the main listener and
+    * `simplereenroll` (for the certificate the client has, so a new key each time) only on the mutual-TLS listener, which
+    * therefore has to be configured. Auth holds no CA: it checks the request and has central issue.
+    *
+    * @param enabled the switch; absent or false, every EST route answers 404.
+    * @param caCertificates PEM path to the certificates `cacerts` hands out, the CA a client must trust for what is issued
+    *   to it. Required when `enabled`, and not defaulted to [[MutualTlsConfig.trustedCertificates]]: those are every anchor a
+    *   client chain is validated against and may hold the CA of edges, which a bank must not be told to trust.
+    */
+  case class EstConfig(
+      enabled: Boolean = false,
+      caCertificates: Option[String] = None,
+  )
+
   /** RFC 8705 §5: the listener `auth` terminates mutual TLS on itself, separate from the one
     * serving everything else.
     *
@@ -165,10 +181,17 @@ object CoreConfig:
     *   because a deployment behind a NAT or a TCP-passthrough load balancer binds this
     *   listener on one address and publishes another, the same relationship [[JwtConfig.issuer]]
     *   already has to `PORT`.
+    * @param edgeTrustedCertificates PEM path to the certificate(s) that issue the certificates of
+    *   edges (`urn:versola:edge:<id>`). A call to `/userinfo` over this listener with a certificate one
+    *   of them signed is taken as an edge's, which has verified the holder of the token itself
+    *   (`EdgeCertificateTrust`). Must be a dedicated issuer, never one that also signs clients'
+    *   certificates, and these certificates must also be among [[trustedCertificates]] so that the
+    *   handshake accepts them. Absent: no certificate is an edge's.
     */
   case class MutualTlsConfig(
       certificate: String,
       privateKey: String,
       trustedCertificates: String,
       externalUrl: String,
+      edgeTrustedCertificates: Option[String] = None,
   )

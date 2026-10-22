@@ -9,7 +9,7 @@ import type { MockConfigState } from './mocks';
  * Forms: five built-in ones (credential's active v7 has gaps in ru and kk and its newer v8, not
  * active, is complete; set-password lacks kk) and two custom ones, which are for the Playwright specs
  * only: the docs screenshots take `ftBuiltInForms`, so they never show a form somebody made up.
- * Themes: the default, a legacy stylesheet one and visual ones on the built-in themes; the clients
+ * Themes: the default, one stored with CSS only and ones on the built-in themes; the clients
  * name them, so the list can say who uses what.
  */
 export const ftTenant = 'tenant-alpha';
@@ -111,7 +111,7 @@ export const ftThemes = [
   { id: 'shop-brand', css: '', tenantId: ftTenant, tokens: { base: 'versola', overrides: { brand: '#e5484d', surface: 'soft', background: 'horizon' } } },
   { id: 'ledger', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { mode: 'dark', surface: 'bold' } } },
   { id: 'partner-green', css: '', tenantId: ftTenant, tokens: { base: 'versola', overrides: { brand: '#2f9e63' } } },
-  { id: 'legacy-2024', css: 'body { font-family: Georgia, serif; }', tenantId: ftTenant },
+  { id: 'georgia-2024', css: 'body { font-family: Georgia, serif; }', tenantId: ftTenant },
 ];
 
 const client = (id: string, name: string, theme: string) => ({

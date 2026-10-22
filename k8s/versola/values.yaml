@@ -441,7 +441,8 @@ services:
 #   auth    edge names edge only      (`<release>-versola-edge-ca`; auth's `mutual-tls.edge-trusted-certificates`)
 #   central handshake  edge only      (`<release>-versola-edge-ca`)
 # Without trust-manager (`trustBundle.enabled: false`) the chart falls back to the leaf Secret's
-# `ca.crt`, which is the root: that works, but splits nothing.
+# `ca.crt`, which is the root: that works, but splits nothing. EST's `cacerts` is the exception: auth's
+# `/app/mtls/client-trust/ca.crt` is never the root (see `est` below).
 #
 # Relationships:
 #   (1) auth's and central's trust anchors for incoming certificates -- CA *bundles*; several CAs may
@@ -467,6 +468,16 @@ services:
 # Secrets), then drop the outgoing source. See k8s/README.md.
 pki:
   enabled: true
+  # RFC 7030 EST (auth's `est.ca-certificates`, written by gen-env for the k8s target when EST_ENABLED=true): the client CA
+  # alone, mounted at /app/mtls/client-trust/ca.crt, because `cacerts` hands it to a bank and the root (which signs the
+  # edge role too) must not be. It comes from the trust-manager bundle `<release>-client-only-ca` when
+  # `trustBundle.enabled`, or from `caSecret` (a Secret in this namespace with the client CA certificate; `key` defaults to
+  # `ca.crt`), which wins when set. With neither there is no mount, and `enabled: true` makes rendering fail instead of
+  # leaving auth to start without its file. With one issuer for every role (`issuerRef`) the edge CA and the client CA are
+  # the same CA, and `cacerts` hands it out.
+  est:
+    enabled: false
+    caSecret: {}
   # An issuer you already run, instead of the CA hierarchy this chart bootstraps. It then signs all
   # three roles, unless `issuerRefs` names one for a role; a role that has an issuer of its own is
   # not bootstrapped, and its CA has to be named in `trustBundle.sources` / `edgeSources`:

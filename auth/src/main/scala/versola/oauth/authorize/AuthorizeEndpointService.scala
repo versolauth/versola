@@ -152,7 +152,7 @@ object AuthorizeEndpointService:
               satisfiedAcr <- request.acrValues match
                 case None => ZIO.none
                 case Some(values) =>
-                  acrResolutionService.checkAcrSatisfaction(request.clientId, values, session.amr.keySet, flow.equivalents)
+                  acrResolutionService.checkAcrSatisfaction(request.clientId, values, session.amr.keySet, session.userId, flow)
 
               acrSatisfied = request.acrValues.isEmpty || satisfiedAcr.isDefined
 
@@ -356,6 +356,12 @@ object AuthorizeEndpointService:
               case _ => ZIO.none
           case _ => ZIO.succeed(knownUserId)
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
+        // A class the server defines itself asks for a different factor of each user, so what it asks
+        // of this one is settled now and kept on the conversation.
+        targetFactors <- (targetAcr, effectiveUserId) match
+          case (Some(acr), Some(uid)) if AcrResolutionService.isBuiltIn(acr) =>
+            acrResolutionService.builtInFactors(request.clientId, acr, uid, flow).map(_.map(_.toList))
+          case _ => ZIO.none
         // When a verified userId is available (from session or id_token_hint), always populate all
         // user fields so the credential step can be skipped and challenges are asked directly.
         // If no userId is known, userOpt is None and fields remain empty for normal credential entry.
@@ -404,6 +410,7 @@ object AuthorizeEndpointService:
           grantedScope = None,
           promptConsent = request.promptConsent,
           dpopJkt = request.dpopJkt,
+          targetFactors = targetFactors,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)

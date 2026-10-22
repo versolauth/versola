@@ -162,11 +162,23 @@ export interface OAuthClient {
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
+  /** Where the client stands when it obtains its mTLS certificate through EST (RFC 7030);
+   *  absent or null when it does not. */
+  est?: ClientEstState | null;
   /** What this client changes in the theme it uses (a partner app with its own brand); absent or
    *  null when it changes nothing. */
   themeOverrides?: ThemeOverrides | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
+}
+
+/** A client that obtains its certificate through EST: `pending` until its first certificate is
+ *  issued, then when the latest one expires and, where chains end, when the chain does (renewing is
+ *  refused from then until an operator extends it). */
+export interface ClientEstState {
+  pending: boolean;
+  certificateExpiresAt?: string | null;
+  chainEndsAt?: string | null;
 }
 
 // OTP Template
@@ -388,6 +400,7 @@ export interface PaginatedResponse<T> {
 // Edge
 export type { OverloadPolicy } from '../utils/overload-policy';
 import type { OverloadPolicy } from '../utils/overload-policy';
+import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
@@ -437,6 +450,8 @@ export interface ThemeOverrides {
 export interface ThemeTokens {
   base: string;
   overrides?: ThemeOverrides;
+  /** Token overrides: CSS variables of the forms' theming API (`--rs` -> `8px`), laid after the five values. */
+  variables?: Record<string, VariableValue>;
 }
 
 // Every token with a value: a built-in theme's own.
@@ -455,8 +470,8 @@ export interface ThemePreset {
   tokens: ResolvedThemeTokens;
 }
 
-// A theme is a stylesheet, or -- with `tokens` -- a built-in base with overrides, in which case
-// `css` holds only the theme's own additions and may be empty.
+// A theme is a built-in base with overrides (`tokens`) and optional custom CSS (`css`), which is laid after the CSS
+// generated from the tokens. A theme stored before tokens existed has `css` and no `tokens`.
 export interface ThemeRecord {
   id: string;
   css: string;

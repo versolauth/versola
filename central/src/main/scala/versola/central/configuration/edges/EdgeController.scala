@@ -188,13 +188,14 @@ object EdgeController extends Controller:
       yield response
     }
 
-  /** The registered signing keys of every edge, for auth to authenticate the edges that call
-    * it directly (see `versola.util.EdgeAssertion`). Public keys only -- the same JWKs
-    * `authorizeInternal` verifies an edge's own sync calls against.
+  /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
+    * certificate that names an edge (`urn:versola:edge:<id>`) belongs to one central still
+    * knows: the certificate's own validity cannot be shortened from here, so deleting an edge
+    * has to reach auth some other way (see `versola.oauth.mtls.EdgeCertificateTrust`). No
+    * keys: auth recognises an edge by its certificate, not by a key it holds.
     *
-    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has
-    * no use for its peers' keys, and handing them over would let a single compromised edge
-    * learn the identities it would have to forge.
+    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has no
+    * use for its peers' identities.
     */
   val edgesRegistryEndpoint =
     Method.GET / "configuration" / "edges" / "registry" -> handler { (request: Request) =>
@@ -208,11 +209,6 @@ object EdgeController extends Controller:
           edges = edges.map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
-              publicKey = edge.publicKey,
-              oldPublicKey = edge.oldPublicKey,
-              // What lets auth refuse an assertion from an edge that is real and correctly
-              // signed but not the one this token's tenant is behind -- see
-              // `versola.util.EdgeAssertion`.
               tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
             ),
           ).toList,
@@ -265,12 +261,8 @@ case class GetAllEdgesResponse(
     edges: List[EdgeResponse],
 ) derives Schema, JsonCodec
 
-/** `oldPublicKey` is present only during a rotation window, and is sent so auth keeps
-  * accepting assertions an edge signed with the key it is rotating out. */
 case class EdgeRegistryEntry(
     id: EdgeId,
-    publicKey: Json.Obj,
-    oldPublicKey: Option[Json.Obj],
     tenantIds: List[TenantId],
 ) derives JsonCodec
 

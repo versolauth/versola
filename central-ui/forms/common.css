@@ -2,19 +2,21 @@
  * Shared base styles for every login form. The `default` theme is this file, re-seeded at each
  * central start, so edits here reach every deployment that has not forked it.
  *
- * Theming API (what a theme may override on :root):
- *   --brand, --on-brand     accent colour and the text colour that is readable on it
- *   --focus, --on-focus     the brand as focus rings and ticked boxes: kept visible (3:1) on the card; follows --brand
- *   --rf / --rb / --rs      corner radius of fields, buttons and the card
- *   --page-light/--page-dark  page background per colour scheme, --glow-light/--glow-dark the halo of the glow in each
- *   --page-bg               what `body` paints behind the card: by default the glow over --page; a theme's background
- *                           token (glow, linear, horizon, flat) replaces only this variable (see ThemeCss)
- *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
- *   --scheme-locked         `1` hides the visitor's Auto / Light / Dark toggle (and the page ignores the stored choice): set it
- *                           whenever the theme fixes the scheme. A theme with a fixed mode sets it itself; a stylesheet that
- *                           sets `color-scheme` and does not want the toggle sets `--scheme-locked: 1` too. Default 0.
- * The neutral surface and text tokens below (--ink, --sheet, --field, --line, ...) are defined per
- * colour scheme with light-dark(), so they follow color-scheme.
+ * Theming API: every custom property declared in `:root` below is a token a theme may override, except the plumbing
+ * listed after this paragraph. The list with each token's kind (colour, length, shadow, weight, font), description in
+ * each language and group is defined once in `ThemeVariables.scala` (util); a test fails when it and this `:root`
+ * differ, in names or in defaults, so a token added here is added there in the same change.
+ *   - A token that is a light-dark() pair below takes one value for both schemes or `{ light, dark }`.
+ *   - Buttons: --btn, --on-btn, --btn-hover, --btn-secondary-line, --btn-secondary-ink. Their defaults reference --ink,
+ *     --invert, --line, so overriding those moves the buttons too, unless a button token is set itself.
+ *   - --page-light/--page-dark, --glow-light/--glow-dark: page background and the halo of the glow in each scheme.
+ *   - --rf / --rb / --rs: corner radius of fields, buttons and the card. --control-h: height of fields and buttons.
+ *   - --focus, --on-focus: the brand as focus rings and ticked boxes, kept visible (3:1) on the card; follow --brand.
+ * Plumbing, not tokens: --page-bg (what `body` paints behind the card; a theme's Background control replaces only this
+ * variable, see ThemeCss), --page, --glow, --page-tint, --passkey-icon, --text-soft (credential.css), --scheme-locked
+ * (`1` hides the visitor's Auto / Light / Dark toggle: a theme with a fixed mode sets it itself, custom CSS that sets
+ * `color-scheme` and does not want the toggle sets it too) and `color-scheme` itself (`light` or `dark` forces a scheme;
+ * the default follows the device).
  */
 :root {
   color-scheme: light dark;
@@ -47,7 +49,23 @@
   --line-strong: light-dark(#cfc9bb, #55535a);
   --invert: light-dark(#ffffff, #1c1b19);
   --danger: light-dark(#c0341d, #ff8a73);
-  --shadow: 0 30px 60px -24px light-dark(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.8));
+  --shadow-color: light-dark(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.8));
+  --shadow: 0 30px 60px -24px var(--shadow-color);
+  --scrim: rgba(16, 24, 40, 0.45);
+  --card-w: 460px;
+  --card-pad: 40px;
+  --logo-h: 40px;
+  --logo-plate: light-dark(var(--field), rgba(255, 255, 255, 0.94));
+  --font: system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
+  --heading-weight: 750;
+  --link: var(--ink);
+  --field-focus: var(--ink);
+  --placeholder: color-mix(in srgb, var(--text-muted) 70%, transparent);
+  --btn: var(--ink);
+  --on-btn: var(--invert);
+  --btn-hover: color-mix(in srgb, var(--btn) 88%, var(--sheet));
+  --btn-secondary-line: var(--line);
+  --btn-secondary-ink: var(--ink);
   --passkey-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4'/%3E%3Cpath d='M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2'/%3E%3Cpath d='M17.29 21.02c.12-.6.43-2.3.5-3.02'/%3E%3Cpath d='M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4'/%3E%3Cpath d='M8.65 22c.21-.66.45-1.32.57-2'/%3E%3Cpath d='M14 13.12c0 2.38 0 6.38-1 8.88'/%3E%3Cpath d='M2 16h.01'/%3E%3Cpath d='M21.8 16c.2-2 .131-5.354 0-6'/%3E%3Cpath d='M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2'/%3E%3C/svg%3E");
 }
 * {
@@ -62,7 +80,7 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 100%;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font);
   font-size: 16px;
   line-height: 1.5;
   color: var(--ink);
@@ -81,9 +99,9 @@ body {
   background: var(--sheet);
   border: 1px solid var(--sheet-line);
   border-radius: var(--rs);
-  padding: 56px 40px 32px;
+  padding: 56px var(--card-pad) 32px;
   box-shadow: var(--shadow);
-  width: min(460px, calc(100vw - 48px));
+  width: min(var(--card-w), calc(100vw - 48px));
   min-height: min(520px, calc(100dvh - 48px));
 }
 /* The partner's app the user is signing in to, inside the card. */
@@ -103,7 +121,7 @@ body {
   padding: 6px;
   border-radius: var(--rf);
   /* a dark logo must not vanish on the dark card, whatever its colours */
-  background: light-dark(var(--field), rgba(255, 255, 255, 0.94));
+  background: var(--logo-plate);
   overflow: hidden;
 }
 .client-badge-icon img {
@@ -149,7 +167,7 @@ body {
 .page-logo {
   display: grid;
   justify-items: center;
-  height: 40px;
+  height: var(--logo-h);
   max-width: 240px;
 }
 .page-logo img {
@@ -171,7 +189,7 @@ body {
 h1 {
   font-size: 1.9rem;
   line-height: 1.15;
-  font-weight: 750;
+  font-weight: var(--heading-weight);
   letter-spacing: -0.03em;
   color: var(--ink);
   margin: 0 0 28px;
@@ -196,15 +214,14 @@ form {
   width: 100%;
 }
 .input-field::placeholder {
-  color: var(--text-muted);
-  opacity: 0.7;
+  color: var(--placeholder);
 }
 .input-field:hover {
   background: var(--field-hover);
 }
 .input-field:focus {
   background: var(--sheet);
-  border-color: var(--ink);
+  border-color: var(--field-focus);
 }
 .input-field[aria-invalid='true'],
 .input-field.input-error {
@@ -235,19 +252,19 @@ form {
   cursor: not-allowed;
 }
 .btn-primary {
-  color: var(--invert);
-  background: var(--ink);
+  color: var(--on-btn);
+  background: var(--btn);
 }
 .btn-primary:hover:not(:disabled) {
-  opacity: 0.88;
+  background: var(--btn-hover);
 }
 .btn-secondary {
-  color: var(--ink);
+  color: var(--btn-secondary-ink);
   background: transparent;
-  border-color: var(--line);
+  border-color: var(--btn-secondary-line);
 }
 .btn-secondary:hover:not(:disabled) {
-  border-color: var(--ink);
+  border-color: var(--btn-secondary-ink);
 }
 .btn:focus-visible,
 .password-toggle:focus-visible,
@@ -257,7 +274,7 @@ form {
   outline-offset: 3px;
 }
 a {
-  color: var(--ink);
+  color: var(--link);
   font-weight: 650;
   text-decoration-color: var(--focus);
   text-decoration-thickness: 2px;
@@ -480,7 +497,7 @@ a {
     min-height: min(82dvh, 640px);
     justify-content: flex-start;
     border-radius: var(--rs) var(--rs) 0 0;
-    padding: 56px 22px 24px;
+    padding: 56px min(var(--card-pad), 22px) 24px;
   }
   h1 {
     font-size: 1.75rem;

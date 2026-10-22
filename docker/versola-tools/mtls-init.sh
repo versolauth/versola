@@ -14,8 +14,8 @@
 # Trust files, each holding exactly one intermediate and never the root, because a trust anchor
 # that is the root accepts every intermediate and the split would mean nothing:
 #   client-ca.crt, edge-ca.crt, server-ca.crt, and auth-trust.crt = client + edge (auth's
-#   handshake takes client certificates and edge identities; auth accepts no edge certificate for
-#   anything yet).
+#   handshake takes client certificates and edge identities; auth reads `edge-ca.crt` as its
+#   `mutual-tls.edge-trusted-certificates`, so only a certificate the edge intermediate signed is an edge's).
 # `ca.crt` (root + client intermediate) is still written for whatever pinned it before the split.
 #
 # Pinned leaves have two pin files, <name>.crt and <name>.next.crt. edge trusts both, so a leaf can

@@ -196,7 +196,7 @@ jobs:
       # (which used to run its own npm build:forms before its own `sbt
       # stage`, see docker-central job below).
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
 
@@ -274,11 +274,16 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
-        run: scala-cli run .github/scripts/coverage-badge.scala
+        run: scala-cli run --server=false .github/scripts/coverage-badge.scala
 
+      # `--server=false`: with scala-cli's bloop compile server, Scala 3.8.1's sbt-bridge and
+      # repl artifacts are first looked up on repo.scala-lang.org's maven-nightlies. When that
+      # host accepts connections and never answers, every lookup waits ~2.5 min before falling
+      # back to Maven Central, which turned a 30 s step into 25 min. Compiling in-process never
+      # touches that repository.
       - name: Generate dev configs
         if: github.event_name != 'release'
-        run: echo "local" | scala-cli run scripts/gen-env.scala
+        run: echo "local" | scala-cli run --server=false scripts/gen-env.scala
 
       # For the fresh-start check after edge comes up (see
       # check-fresh-start-login.sh): with the dev default (1 minute) a slow
@@ -892,7 +897,7 @@ jobs:
       # where the reverse proxy versola-cli sets up serves it as static
       # files -- no separate gateway image for it.
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
 
@@ -1385,7 +1390,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
           cache: npm

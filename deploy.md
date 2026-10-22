@@ -326,6 +326,74 @@ cluster, so open its port deliberately (see [Mutual TLS certificates](#mutual-tl
   namespace, so a client cannot be given a certificate that passes for an edge.
 - No schema change, no data migration.
 
+#### Breaking change: edge reaches `/userinfo` with its own certificate, not an edge assertion; edge's mutual-TLS listener
+
+Two linked changes make an API behind edge's `/resources` callable with an access token bound to the
+*caller's* client certificate (RFC 8705 §3, `cnf.x5t#S256`), the way a bank would call an operator's API
+with a FAPI 2.0 client (`tls_client_auth`, PAR, certificate-bound tokens).
+
+1. **`/userinfo` over mutual TLS.** An edge no longer sends `Versola-Edge-Assertion`, and `auth` no longer
+   reads it. When an edge-served endpoint needs `/userinfo` for a key-bound (DPoP) token, or for a token
+   bound to a caller's certificate, the edge calls auth's mutual-TLS listener with **its own** certificate
+   (the one it presents to central: issued by central, `urn:versola:edge:<id>`). `auth` serves the call
+   without the DPoP proof and without the holder's certificate **only if all of these hold**: the
+   certificate was signed by one of the certificates in the new `auth` setting
+   `mutual-tls.edge-trusted-certificates` (certificate authorities, valid now; checked at startup) and names
+   exactly one edge; **central still lists that edge** (auth syncs `GET /configuration/edges/registry`, ids
+   and assigned tenants, with the rest of its configuration); and the edge is **assigned to the tenant of
+   the token's client**. Otherwise the call is judged as any client's. A token bound to *both* a key and a
+   certificate is refused anyway, a certificate in a forwarded header is never taken for an edge's, and
+   signature, revocation and the `openid` scope are checked as always. Without `edge-trusted-certificates`
+   no certificate is an edge's and `/userinfo` behaves as before. Removed: `EdgeAssertion`,
+   `EdgeAssertionService`, the signing keys in central's registry (it now serves ids and tenants only), the
+   `dpop_edge_assertion_*` metrics (and their dashboard panels), and the assertion-sized floor on
+   `dpop_proofs` eviction.
+2. **A mutual-TLS listener on `edge`** (`mutual-tls { certificate, private-key, trusted-certificates,
+   external-url }` in `edge.conf`, shaped like auth's; `MPORT`, default 8083, `MBIND_HOST`). It serves
+   `/resources/{resourceId}/{path}` and nothing else, requires a client certificate in the handshake, and
+   honours a `Bearer` token with `cnf.x5t#S256` only when the SHA-256 thumbprint of that certificate equals
+   it. The plain listener is unchanged: such a token is still `401 certificate_bound_token_outside_session`
+   there. Opt-in: with no `mutual-tls` block edge serves no second port.
+
+What breaks, and how to migrate:
+
+- **`auth` and `edge` upgrade together.** A new edge sends no assertion, so an old `auth` refuses its
+  `/userinfo` calls for key-bound tokens; a new `auth` ignores an old edge's assertion.
+- **A key-bound token on an endpoint with `fetchUserInfo` needs `mutual-tls.edge-trusted-certificates`**
+  in `auth.conf` and the edge's certificate in the handshake of `native.auth-mutual-tls-url`. `versola
+  configure vps` writes `edge-trusted-certificates = "/app/mtls/edge-ca.crt"` (and the Helm chart already
+  mounts `/app/mtls/edge-trust/ca.crt` for it); `docker-local` names its single CA, which central never uses
+  to sign a client a name in the edge namespace. Add the line to an existing `auth.conf` that predates it.
+  An edge with no `native` block cannot make this call (the certificate is only ever sent to auth's own
+  listener, never to `versola-internal-url`) and answers `500` for such a token.
+- `dpop_edge_assertion_*` metrics are gone, and `GET /configuration/edges/registry` no longer carries keys (`auth` reads ids and tenants from it).
+
+Security implication: **the edge's certificate private key becomes the most sensitive key of the
+deployment.** Whoever holds it can call `/userinfo` as that edge, for any token of the tenants the edge is
+assigned to, with no proof of possession: that is the blast radius of a stolen edge certificate. What limits
+it: the edge CA must be dedicated (never the CA that issues clients' certificates: a client whose issuer
+can sign `urn:versola:edge:<id>` could otherwise impersonate an edge, which is why `auth` checks the issuer
+and not only the name; `docker-local` has a single CA and relies on central refusing to issue a client such
+a name, `gen-env` says so), edge certificates are short-lived (vps: 30 days, renewed by the edge), and
+**deleting an edge in central (or unassigning its tenants) cuts it off at `auth` within one configuration
+refresh**, not at expiry. Rotate the edge CA like any other, and make auth's mutual-TLS listener reachable
+only from the network the edges run in.
+
+In plain words: an edge certificate lets its holder call `/userinfo` **without proof of possession, for any
+token of the tenants assigned to that edge**. A certificate's own validity cannot be shortened after
+issuance; deleting the edge in central cuts it off at `auth` only **after the next configuration refresh**
+(`configuration-cache-refresh-interval` in `auth.conf`, one minute in `docker-local`, five elsewhere), and if
+central is unreachable `auth` keeps the last registry it had (with none loaded, no certificate is an edge's:
+it fails closed). **The edge CA must be dedicated.** If `edge-trusted-certificates` names the CA that also issues
+client certificates (`docker-local`, or a `client-certificates` backend sharing a CA), the only thing keeping a
+client from presenting an edge name is central refusing `urn:versola:edge:` names in client certificates
+(`ClientCertificateServiceSpec`); `auth` logs a warning at startup when the listener trusts nothing else, and
+`gen-env` warns for `docker-local`.
+
+Edge's own mutual-TLS listener is opt-in and its certificates are yours to provide for now (`versola
+configure` does not issue them): a server certificate for the public name callers use, and
+`trusted-certificates` naming the CA(s) that issue your callers' client certificates.
+
 #### Behaviour change (vps bundle): three intermediates, pin pairs, loopback `MPORT`
 
 The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Breaking, and
@@ -339,7 +407,8 @@ The vps bundle's mutual-TLS certificates are split by role (#554 follow-up). Bre
   all of them on the first run (and says why in its output); the pins on `edge` follow because it
   restarts with them.
 - `auth.conf`: `mutual-tls.trusted-certificates` is `/app/mtls/auth-trust.crt` (client and edge
-  intermediates, never the root; auth accepts no edge certificate for anything yet). `central.conf`:
+  intermediates, never the root) and `mutual-tls.edge-trusted-certificates` is `/app/mtls/edge-ca.crt` (the edge intermediate alone: a
+  certificate it signed, naming an edge, is what `/userinfo` takes as an edge's own call). `central.conf`:
   `mutual-tls.trusted-certificates` is `/app/mtls/edge-ca.crt` (edge identities only; a client
   certificate no longer completes the handshake). `edge.conf`: `native.trusted-certificates` and
   `central.mutual-tls.trusted-certificates` are now two-element lists, `server.crt` +
@@ -542,6 +611,38 @@ versola-auth` makes bootstrap set a fresh one. More admin users: Console → **U
 User**, **Edit Roles**, **Reset Password** — in prod the temporary password can only be delivered by
 email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 
+#### The Security page asks for a fresh sign-in
+
+On a database where `central`'s bootstrap **creates** the `auth` resource (the one that proxies the
+Security page of Account Settings), removing a passkey, starting to add one and signing another session
+out require the built-in `sensitive` ACR with a sign-in no older than 300 seconds. `sensitive` is the
+strongest factor the user has: a passkey if they have one, else their password, else a one-time code, so
+a session that only passed a one-time code cannot change who can sign in to an account that has a passkey.
+Edge answers such a call with `401`, the RFC 9470 challenge and, for a browser session, a `Location` header
+with the login that asks for what is missing; the page goes there, asking to be sent back to itself (`return_to`,
+a path of the preset's own origin; edge keeps it in `pending_logins.return_to`, migration `V2007`). Back on the
+page the action the user had already confirmed is carried out at once (within ten minutes; adding a passkey
+leaves the name in its field if the browser wants a click of its own), and a sign-in that ends in an error (for
+example `unmet_authentication_requirements`) is reported on the page. Reading the page, renaming a
+passkey and finishing an enrollment ask for nothing more.
+
+A deployment that already has the `auth` resource is **not** changed: bootstrap keeps the step-up an
+operator has set (none, until now), so an upgrade alters nothing for it. To switch it on, update the
+resource in the console (**Resources** → `auth` → endpoints → **Step-up**) or with `PUT /configuration/resources`
+(`central/open-api/central.yaml`), and give the three endpoints
+`stepUpCondition: "true"`, `stepUpAcr: "sensitive"` and `maxAge: 300`:
+
+| Method | Path |
+|---|---|
+| `DELETE` | `/settings/sessions` |
+| `DELETE` | `/settings/passkeys` |
+| `POST` | `/settings/passkeys/register/start` |
+
+The console's resource editor lists `sensitive` as a built-in choice next to the tenant's own ACRs, so the
+same change can be made there. A user whose flow can ask for none of their factors (a passkey the flow cannot ask for,
+or no password and no one-time-code destination) is refused with `unmet_authentication_requirements`
+rather than let through.
+
 ### Mutual TLS certificates
 
 `auth`'s mutual-TLS listener (`MPORT`, RFC 8705) is on by default, with its certificate machinery;
@@ -622,6 +723,78 @@ expires 365 days (by default, see below) after it was issued. A step-ca volume f
 existed keeps issuing certificates with the subject rewritten to the bare CN, which `central` refuses
 when longer; recreate the `versola-step-ca-*` volume to lift it.
 
+### Client certificates through EST (RFC 7030)
+
+A client that authenticates with `tls_client_auth` (a bank calling a FAPI 2.0 API, say) can obtain and
+renew its certificate by itself with standard EST, with a key it generated. It is off until enabled, and
+additive: no existing client, route or key changes (central gets one migration, `V1027`, three new tables).
+
+1. **Enable it in `auth`.** `est { enabled = true }` in `auth.conf` (`configure` writes it for `local`;
+   on `vps`, `docker-local` and Kubernetes set `EST_ENABLED=true` in `versola-tools`' environment). It needs
+   the `mutual-tls` block, because renewal is served on that listener only. `est.ca-certificates` is **required**
+   (auth does not start without it): a PEM file with the **client CA alone**, which `cacerts` hands out. It is
+   deliberately not defaulted to `mutual-tls.trusted-certificates`, which is every anchor a client chain is validated
+   against and may hold the edge CA as well (the `vps` bundle and the chart do), and a bank must not be told to trust
+   that. On the generated targets: `EST_ENABLED=true` and, except on `local` and Kubernetes (where the chart mounts the client CA alone at `/app/mtls/client-trust/ca.crt`: from the trust-manager bundle `<release>-client-only-ca`, or `pki.est.caSecret` without trust-manager; never the root, and the chart fails rendering with `pki.est.enabled` and no source), `EST_CA_CERTIFICATES=<path in auth's container>`.
+   **A client needs two base URLs**: enrolment on the issuer origin and re-enrolment on the mutual-TLS origin (a stock EST client
+   is configured, and run, once for each; `simplereenroll` on the issuer origin is `404`). Deliberate narrowing of RFC 7030: a
+   renewal always uses a **new key** (clients whose HSM cannot rotate keys cannot use it), and a request with
+   `challengePassword` (tls-unique channel binding, §3.5) is refused. A token bound to a certificate (RFC 8705 §3) is
+   accepted only over that certificate, so a client keeps presenting the old certificate with its old tokens until they
+   expire, and uses the new one for new tokens; the renew window (a third of the life by default) is the overlap to count on.
+   The routes are `/.well-known/est/{cacerts,csrattrs,simpleenroll}` on the public name of `auth`, and
+   `/.well-known/est/{cacerts,csrattrs,simplereenroll}` on the public name of its mutual-TLS listener (see
+   [Remote and partner edges](#remote-and-partner-edges-and-the-public-domains)); the spec is
+   `auth/open-api/est.yaml`.
+2. **Central needs a CA to issue from**: the `client-certificates` block (step-ca or cert-manager), as for
+   edge-fronted clients. `client-certificates.validity` (14 days by default) is how long a certificate lives;
+   the client renews before it ends; the certificate is revoked by expiry, and what can be revoked at once is the right to renew (below). `auth` holds no CA credentials and calls central
+   (`POST /est/enroll`, `POST /est/renew`, auth's token only) to have a certificate issued; central's own
+   listeners are not exposed to the client. **Auth is in the same trust zone as the mutual-TLS terminator, not outside
+   it**: it is what tells central which certificate a client presented and which token it sent, and central cannot
+   check either (a certificate is public, and no key is shown to it). Whoever controls auth, or its internal token to
+   central, can therefore renew the certificate of any EST client that has a current one, and enrol with a token they
+   observe. What central narrows: only a certificate issued through EST, of the client's current generation, renews;
+   only in the last third of its life (`client-identity.renew-window`); a replaced certificate that renews again
+   closes the chain; the chain ends at `max-age` whatever is asked; and the certificate carries the registered
+   subject, never one the caller names.
+3. **Register the client** with `estEnrollment: true` (web and service clients; `authMethod` `tls_client_auth`;
+   the tenant must set `mtlsCertificateHeader`, as for any `tls_client_auth` client). It holds no certificate yet.
+   The certificate's subject is the client's `mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola` where it names none;
+   it is never taken from a request, and stays the same across renewals.
+4. **Create a one-time token** with `POST /configuration/clients/est/enrollment-tokens?clientId=<id>` (24 hours
+   by default, `validityHours` up to 168). It is shown once together with the `subject` the request must say.
+   The client trades it at `simpleenroll` (HTTP Basic, the client id as user name, or Bearer) with a PKCS#10 for
+   that subject. It renews at `simplereenroll` on the mutual-TLS listener with the certificate it has, a new key
+   each time; an expired certificate does not renew, enrol the client again with a new token.
+5. **Chains.** Renewals are a chain that begins at the enrolment. `client-identity { max-age = 365d,
+   auto-extend = false, renew-window = 0.3333 }` in `central.conf`: at `max-age` central refuses renewals (`403`) until
+   an operator calls `POST /configuration/clients/est/extend?clientId=<id>`, so every client is re-approved yearly;
+   `auto-extend = true` makes central extend by itself. A certificate renews only in the last `renew-window` of its life
+   (earlier is `403`, with the date it opens). The end of the chain is soft: a certificate issued the day before it
+   ends is valid for its whole `validity`, so the client can run up to that long past `Versola-Chain-Ends-At`. The
+   client is told the date in every answer, and `GET /configuration/clients` shows `est.pending`,
+   `est.certificateExpiresAt` and `est.chainEndsAt`.
+   **Interop notes (libest `estclient`, Cisco's reference client, run against a local stack).** `cacerts`, `csrattrs` (204) and
+   `simpleenroll` with a Basic token work, with these caveats: (a) libest compares response header names case-sensitively
+   and looks for `WWW-Authenticate`, while auth (zio-http) writes header names in lower case, so it stops with "No
+   WWW-Authenticate header found" unless a proxy in front restores the case; (b) its command-line client builds a
+   CSR with a common name only, so the client has to be registered with `mtlsAuth` of `subject_dn` `CN=<name>` for its
+   request to say the registered subject; (c) its `-r` re-enrolment always signs with the key of the presented
+   certificate and has no way to rekey, which this profile refuses (400, "a renewal needs a new key"), so the stock
+   command-line client cannot renew; a client built on the libest API can. Other clients were not tried.
+6. **If a key is out.** What is revoked is the right to **renew**, not the certificate, which keeps authenticating until
+   it expires (set another `mtlsAuth` subject on the client, or delete it, to cut that too). Every certificate belongs
+   to a generation of the chain; a new enrolment (a new token) starts one, so earlier certificates stop renewing, and
+   so does `POST /configuration/clients/est/revoke?clientId=<id>`, which also withdraws an open token (a new token
+   replaces the earlier unused ones). A certificate that a renewal replaced and that comes to renew again after 3
+   minutes means the key is in two hands: central closes the chain (`403`, `est_chain_fork_detected`, outcome
+   `chain_fork`) and the operator enrols the client again. `simpleenroll` is limited to 30 attempts a minute per
+   client id and replica (`429`).
+
+Metrics: `est_requests_total{operation,outcome}` in `auth` and `est_certificate_requests_total{operation,outcome}`
+in `central` (`outcome`: `issued`, `unauthorized`, `bad_request`, `forbidden`, `chain_fork`, `rate_limited` (auth only), `error`).
+
 ### Remote and partner edges, and the public domains
 
 > **Design for the next release.** This section describes what that release contains, so a deployment
@@ -690,9 +863,11 @@ move together and `configure` is re-run)
   it needs a persistent `identity.directory`. Revocation: deleting the edge, or rotating its signing
   key (`POST /configuration/edges/rotate-key`), cuts it off at once, because `central` needs both the
   certificate and the edge's signed token. A list of revoked serials comes later.
-- **Not in this release:** `auth` accepting an edge's certificate (so clients served by an edge still
-  need their own certificate or `issueEdgeClientCertificate`), `mutual-tls.edge-trusted-certificates`
-  on `auth`, and `central` publishing pins to remote edges.
+- **Not in this release:** `auth` accepting an edge's certificate for a client served by an edge
+  (such clients still need their own certificate or `issueEdgeClientCertificate`), and `central`
+  publishing pins to remote edges. (`mutual-tls.edge-trusted-certificates` on `auth`, which makes
+  `/userinfo` take an edge's certificate as the proof that the edge verified a token's holder, comes with
+  "edge reaches `/userinfo` with its own certificate" below.)
 - The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
   upgrade changes nothing for existing edges.
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
@@ -737,7 +912,7 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 | Outbound field | Default | Environment base |
 |---|---|---|
 | `mode` | `shadow` | `HTTP_CLIENT_GUARD_MODE` |
-| `maxConcurrent` | the connection pool size (128) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
+| `maxConcurrent` | the connection pool size (128, the maximum of the default `dynamic` pool; `HTTP_CLIENT_POOL_*` in k8s/README.md) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
 | `maxQueue` / `queueTimeoutMillis` / `requestTimeoutMillis` | 256 / 1000 / 10000 | `HTTP_CLIENT_GUARD_MAX_QUEUE`, `_QUEUE_TIMEOUT`, `_REQUEST_TIMEOUT` |
 | `breaker` | off; failureRatio 0.5, minCalls 20, window 10 s, open 5 s, probeCalls 3 | policy only |
 | `retryBudget` | ratio 0.1, minPerSecond 5 | policy only |
@@ -783,6 +958,34 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
+### Access log
+
+Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are
+the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
+profile under load, almost all of it for successful requests.
+
+- `HTTP_ACCESS_LOG=full` (default): every request, as before.
+- `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
+  against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
+  `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
+  (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
+  trace id is sampled at random.
+- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
+- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
+- A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
+
+`http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
+error ratios and latency do not change; only a search for one successful request in the log can come up empty.
+
+`send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
+upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+`LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
+`debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
+is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
+
+Invalid values fall back to the defaults.
+
 ### Configuration reference
 
 | Variable | Default | Meaning |
@@ -792,6 +995,10 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
+| `HTTP_ACCESS_LOG` | `full` | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
+| `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
+| `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
+| `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and

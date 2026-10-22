@@ -26,7 +26,9 @@ object LoadgenHttpClient:
     * The pool is also the driver's ceiling on in-flight requests: `size / latency` per host per driver, with
     * the excess queueing inside the driver and being recorded as latency the SUT never had. 256 is enough for
     * ~2500 rps at 100 ms across two drivers and not for more, so `HTTP_CLIENT_POOL_SIZE` (the variable the
-    * services use) raises it; size it above `rate x latency` of the scale being driven.
+    * services use) raises it; size it above `rate x latency` of the scale being driven. Unlike the services, whose
+    * default pool is dynamic, the driver keeps a fixed pool so its ceiling does not move during a measurement; it reads
+    * only the size, not `HTTP_CLIENT_POOL_KIND`.
     */
   val poolSize: Int =
     Option(java.lang.System.getenv("HTTP_CLIENT_POOL_SIZE")).flatMap(_.trim.toIntOption).filter(_ > 0).getOrElse(256)

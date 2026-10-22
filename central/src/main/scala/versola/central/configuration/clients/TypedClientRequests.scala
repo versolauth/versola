@@ -62,6 +62,7 @@ case class CreateWebClientRequest(
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
     themeOverrides: Option[ThemeOverrides],
+    estEnrollment: Boolean = false,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -100,6 +101,7 @@ case class CreateWebClientRequest(
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
       themeOverrides,
+      estEnrollment = estEnrollment,
     )
 
 /** An app installed on a device, which holds a DPoP key of its own and no credential. Either
@@ -198,6 +200,7 @@ case class CreateServiceClientRequest(
     certificateBoundAccessTokens: Boolean = false,
     jwks: Option[JsonWebKeySet] = None,
     generateJwks: Option[ClientAssertion.Algorithm] = None,
+    estEnrollment: Boolean = false,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -236,6 +239,7 @@ case class CreateServiceClientRequest(
       issueEdgeClientCertificate = false,
       enrollEdgeClientCertificate = false,
       themeOverrides = None,
+      estEnrollment = estEnrollment,
     )
 
 // An update names the client and what changes. The client's kind, its `authMethod` and what a

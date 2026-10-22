@@ -342,11 +342,11 @@ the three — a Helm install schedules them at once. A service in that state is 
 
 How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
 
-- With `dynamic` (min 0) the service becomes ready by itself once central binds its port, and
+- With `dynamic` (min 0, the default) the service becomes ready by itself once central binds its port, and
   `restartCount` stays 0.
-- With the default `fixed` pool it does **not**. The first request to central opens all the pool's
+- With `HTTP_CLIENT_POOL_KIND=fixed` it does **not**. The first request to central opens all the pool's
   connections, and when central refuses them the pool keeps one failed connection per slot (128 by
-  default). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
+  default size). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
   its budget even though central is already listening. The service exits with code 1 after the two
   minutes and relies on the restart policy (`restartPolicy: Always` in Kubernetes,
   `restart: unless-stopped` in the compose templates); the restarted process builds a fresh pool
@@ -387,11 +387,11 @@ Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
 
 ### Outbound connections: `HTTP_CLIENT_POOL_*`
 
-auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default.
+auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default. `dynamic` is the default kind because `fixed` opens all of a target's connections on first use (128 mTLS handshakes to auth); set `HTTP_CLIENT_POOL_KIND=fixed` to get the previous behaviour. `docker/versola-tools/compose.fragment.yml.template` in [#791](https://github.com/versolauth/versola/pull/791) sets `dynamic` explicitly for edge and becomes redundant with this default.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HTTP_CLIENT_POOL_KIND` | `fixed` or `dynamic` | `fixed` |
+| `HTTP_CLIENT_POOL_KIND` | `dynamic` or `fixed` (an unknown value means `dynamic`) | `dynamic` |
 | `HTTP_CLIENT_POOL_SIZE` | connections per target; for `dynamic` the maximum | `128` (zio-http's own default is 10) |
 | `HTTP_CLIENT_POOL_MIN` | `dynamic` only: connections kept open when idle (not above the maximum) | `0` |
 | `HTTP_CLIENT_POOL_TTL` | `dynamic` only: how long the pool must be unused before it shrinks to the minimum, a duration such as `30s` or `2m` | `30s` |
@@ -601,11 +601,16 @@ The chart generates no `env.conf`, so point yours at the files it mounts:
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
 | `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (client + edge CA bundle; without trust-manager the issuing root) |
 | `auth` | `/app/mtls/edge-trust/ca.crt` | `mutual-tls.edge-trusted-certificates` (the edge CA alone) |
+| `auth` | `/app/mtls/client-trust/ca.crt` | `est.ca-certificates` (EST `cacerts`; the client CA alone, **never the root**: the `<release>-client-only-ca` trust-manager bundle, or `pki.est.caSecret`; absent both, no mount) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
 | `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
 | `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the edge CA alone; without trust-manager the issuing root) |
 | `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` (the in-cluster edge's identity, from the edge CA, with both URIs) |
 | `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
+
+EST's `cacerts` hands this file to a bank, so it is the client CA alone and **never the root**, which signs the edge and server roles too. With trust-manager (`pki.trustBundle.enabled`) it is the bundle `<release>-client-only-ca` (the client CA and `pki.trustBundle.sources`). Without it the chart's `ca.crt` files are the root, so they are not used for this: give the client CA certificate as a Secret in the release namespace and name it in `pki.est.caSecret` (`name`, `key`, default `ca.crt`); the bootstrapped client CA's own Secret lives in `pki.trustNamespace` and cannot be mounted. With neither, nothing is mounted, and `pki.est.enabled: true` makes rendering fail with that reason, rather than auth failing at startup. `.github/scripts/check-chart-est-ca.sh` renders each mode and asserts the mounted source is not the root.
+
+With `pki.issuerRef` set and no per-role issuers, edge identities and client certificates come from the **same CA**, so the edge CA is then the client CA and EST `cacerts` hands it out: a bank is told to trust the CA that also issues edge identities. Give the edge role its own issuer (`pki.issuerRefs.edge`) before enabling EST for partners.
 
 Auth, central and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A

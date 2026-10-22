@@ -40,10 +40,10 @@ export interface OverridesChange {
 export class VersolaThemeTokenControls extends LitElement {
   /** What the tokens are without any override: the values shown as inherited. */
   @property({ attribute: false }) base?: ResolvedThemeTokens;
-  /** The base is a stylesheet, whose values are not known here (`base` is then not used). Nothing is shown as
+  /** The base is a theme that has only CSS, whose values are not known here (`base` is then not used). Nothing is shown as
    *  inherited, and every choice is written as an override even when it matches some preset: an override equal to
-   *  a value the stylesheet may not have would otherwise be dropped. */
-  @property({ type: Boolean }) stylesheet = false;
+   *  a value that CSS may not have would otherwise be dropped. */
+  @property({ type: Boolean }) cssOnly = false;
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
@@ -127,9 +127,9 @@ export class VersolaThemeTokenControls extends LitElement {
     return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
   }
 
-  /** The value each token shows; `undefined` for one a stylesheet sets and the operator has not overridden. */
+  /** The value each token shows; `undefined` for one the theme's CSS sets and the operator has not overridden. */
   private get resolved(): Partial<ResolvedThemeTokens> {
-    const base = this.stylesheet ? undefined : this.base;
+    const base = this.cssOnly ? undefined : this.base;
     return {
       brand: this.overrides.brand ?? base?.brand,
       shape: this.overrides.shape ?? base?.shape,
@@ -150,8 +150,8 @@ export class VersolaThemeTokenControls extends LitElement {
   private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
     const next = { ...this.overrides };
     // A value equal to the base's is not an override: the theme then follows the base when it changes. Not so over
-    // a stylesheet, whose own values are unknown: the choice is the only record of what the operator wants.
-    if (value === undefined || (!this.stylesheet && value === this.base?.[key])) delete next[key];
+    // a CSS-only theme, whose own values are unknown: the choice is the only record of what the operator wants.
+    if (value === undefined || (!this.cssOnly && value === this.base?.[key])) delete next[key];
     else next[key] = value;
     this.emit(next);
   }
@@ -165,19 +165,19 @@ export class VersolaThemeTokenControls extends LitElement {
    *  Reset; while it is not overridden, where it comes from. */
   private groupTitle(key: keyof ThemeOverrides, label: string, baseValue: string | undefined) {
     const own = this.overrides[key] !== undefined;
-    const note = this.stylesheet ? 'Set by the stylesheet' : this.inheritedNote;
-    const title = own ? (this.stylesheet ? 'Overridden' : `Overridden · base: ${baseValue}`) : '';
+    const note = this.cssOnly ? 'Set by the theme\'s CSS' : this.inheritedNote;
+    const title = own ? (this.cssOnly ? 'Overridden' : `Overridden · base: ${baseValue}`) : '';
     return html`
       <div class="group-title" title=${title || nothing}>
         <div class="field-label">${own ? html`<span class="dot-overridden" role="img" aria-label="Overridden"></span>` : nothing}${label}</div>
         ${own
-          ? html`<button class="reset" aria-label=${`Reset ${key} to ${this.stylesheet ? 'the stylesheet' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>`
+          ? html`<button class="reset" aria-label=${`Reset ${key} to ${this.cssOnly ? 'the theme\'s CSS' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>`
           : note ? html`<span class="note-inherited">${note}</span>` : nothing}
       </div>`;
   }
 
   render() {
-    if (!this.base && !this.stylesheet) return nothing;
+    if (!this.base && !this.cssOnly) return nothing;
     const resolved = this.resolved;
     const base = this.base;
     return html`
