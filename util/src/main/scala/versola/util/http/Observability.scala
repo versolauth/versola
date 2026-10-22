@@ -323,7 +323,7 @@ object Observability:
   /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
     * value falls back to its default):
     *
-    *   - `HTTP_CLIENT_POOL_KIND`: `fixed` (default) or `dynamic`.
+    *   - `HTTP_CLIENT_POOL_KIND`: `dynamic` (default, also for an unset or unknown value) or `fixed`.
     *   - `HTTP_CLIENT_POOL_SIZE`: connections per target, default [[defaultClientPoolSize]]. For `dynamic` this is the maximum.
     *   - `HTTP_CLIENT_POOL_MIN`: `dynamic` only, connections kept open when idle, default 0.
     *   - `HTTP_CLIENT_POOL_TTL`: `dynamic` only, how long the pool must be unused before it shrinks back to the minimum,
@@ -343,7 +343,21 @@ object Observability:
     *     connection is released. So a too small `max` shows as latency and as `http_client_active_requests`, never as errors.
     *   - A pooled channel that has closed is discarded on checkout and another is tried, up to `max` times.
     *
-    * `Fixed` is the pre-existing behaviour. zio-http's own default is `Fixed(10)`, and an HTTP/1.1 connection serves one request
+    * The default is `Dynamic(0, 128, 30s)`: `Fixed(128)` opens all 128 connections to a target on its first use (128 mTLS
+    * handshakes to auth; the first admin login after a start took 2.7-3.5 s against 1.6 s), `Dynamic` opens them as
+    * concurrency needs them. Measured on Yandex Cloud (one auth+edge pair on one 8-vCPU node, 1M users, 2 runs per variant,
+    * round-robin), cores being edge+auth CPU per 1000 steps/s:
+    *
+    *   - steady load: `Fixed(128)` 2.10 cores (runs 2.04 and 2.16), edge p99 50 ms, edge memory 822 MiB; `Dynamic(0, 128)` 2.05
+    *     (2.00, 2.10), 50 ms, 785 MiB; `Dynamic(32, 128)` 2.09 (2.02, 2.16), 50 ms, 802 MiB. The differences are inside the
+    *     run-to-run spread: no CPU or latency cost, and the edge holds ~40 MiB less.
+    *   - overload at ~1.25x the knee with the shipped overload defaults: errors per run 3.4% and 0.20% for `Fixed`, 3.8% and 9.1%
+    *     for `Dynamic(0, 128)`, 0.15% and 9.3% for `Dynamic(32, 128)`; edge p99 ~6 s everywhere. Repeats of one variant differ
+    *     more than variants do, so the pool kind does not decide behaviour under overload; the overload protection does.
+    *   - limits: one pair, one backend, two runs per variant.
+    *
+    * `HTTP_CLIENT_POOL_KIND=fixed` keeps the previous behaviour. The size matters for either kind: zio-http's own default is
+    * `Fixed(10)`, and an HTTP/1.1 connection serves one request
     * at a time, so ten of them cap a pod at `10 / latency` requests per second towards each target: ~780/s at
     * 13 ms, 200/s at 50 ms, however idle its CPU is. Seen on the Yandex Cloud step-load test: one edge
     * pod, at 780 rps to a backend answering in 13 ms, tipped over that line, queued 486 requests and
@@ -365,12 +379,11 @@ object Observability:
   ): ConnectionPoolConfig =
     val maximum = size.flatMap(_.trim.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
     kind.map(_.trim.toLowerCase) match
-      case Some("dynamic") =>
+      case Some("fixed") => ConnectionPoolConfig.Fixed(maximum)
+      case _ =>
         val minimum = min.flatMap(_.trim.toIntOption).filter(m => m >= 0 && m <= maximum).getOrElse(defaultClientPoolMin.min(maximum))
         val keepAlive = ttl.flatMap(parseDuration).getOrElse(defaultClientPoolTtl)
         ConnectionPoolConfig.Dynamic(minimum, maximum, keepAlive)
-      case _ =>
-        ConnectionPoolConfig.Fixed(maximum)
 
   private def parseDuration(value: String): Option[Duration] =
     Try(ScalaDuration(value.trim)).toOption

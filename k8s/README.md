@@ -342,11 +342,11 @@ the three — a Helm install schedules them at once. A service in that state is 
 
 How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
 
-- With `dynamic` (min 0) the service becomes ready by itself once central binds its port, and
+- With `dynamic` (min 0, the default) the service becomes ready by itself once central binds its port, and
   `restartCount` stays 0.
-- With the default `fixed` pool it does **not**. The first request to central opens all the pool's
+- With `HTTP_CLIENT_POOL_KIND=fixed` it does **not**. The first request to central opens all the pool's
   connections, and when central refuses them the pool keeps one failed connection per slot (128 by
-  default). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
+  default size). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
   its budget even though central is already listening. The service exits with code 1 after the two
   minutes and relies on the restart policy (`restartPolicy: Always` in Kubernetes,
   `restart: unless-stopped` in the compose templates); the restarted process builds a fresh pool
@@ -387,11 +387,11 @@ Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
 
 ### Outbound connections: `HTTP_CLIENT_POOL_*`
 
-auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default.
+auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default. `dynamic` is the default kind because `fixed` opens all of a target's connections on first use (128 mTLS handshakes to auth); set `HTTP_CLIENT_POOL_KIND=fixed` to get the previous behaviour. `docker/versola-tools/compose.fragment.yml.template` in [#791](https://github.com/versolauth/versola/pull/791) sets `dynamic` explicitly for edge and becomes redundant with this default.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HTTP_CLIENT_POOL_KIND` | `fixed` or `dynamic` | `fixed` |
+| `HTTP_CLIENT_POOL_KIND` | `dynamic` or `fixed` (an unknown value means `dynamic`) | `dynamic` |
 | `HTTP_CLIENT_POOL_SIZE` | connections per target; for `dynamic` the maximum | `128` (zio-http's own default is 10) |
 | `HTTP_CLIENT_POOL_MIN` | `dynamic` only: connections kept open when idle (not above the maximum) | `0` |
 | `HTTP_CLIENT_POOL_TTL` | `dynamic` only: how long the pool must be unused before it shrinks to the minimum, a duration such as `30s` or `2m` | `30s` |
