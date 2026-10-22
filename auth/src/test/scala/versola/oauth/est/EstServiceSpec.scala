@@ -88,6 +88,19 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           otherCurve <- service(central).enroll(credentials, p384).flip
         yield assertTrue(weakKey.isInstanceOf[EstError.BadRequest], otherCurve.isInstanceOf[EstError.BadRequest], central.enroll.calls.isEmpty)
       },
+      test("a request with challengePassword is 400 before central is asked") {
+        val central = stub[EstCentralClient]
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val keys = generator.generateKeyPair()
+        val bound = java.util.Base64.getEncoder.encodeToString(
+          org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder(javax.security.auth.x500.X500Principal("CN=bank-a"), keys.getPublic)
+            .addAttribute(org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers.pkcs_9_at_challengePassword, org.bouncycastle.asn1.DERPrintableString("x"))
+            .build(org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA").build(keys.getPrivate)).getEncoded,
+        )
+        for failure <- service(central).enroll(credentials, bound).flip
+        yield assertTrue(failure.isInstanceOf[EstError.BadRequest], central.enroll.calls.isEmpty)
+      },
       test("attempts at one client id are limited per window, and another client id has its own") {
         val central = stub[EstCentralClient]
         val limited = service(central, attempts = 2)

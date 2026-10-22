@@ -672,14 +672,20 @@ additive: no existing client, route or key changes (central gets one migration, 
    (auth does not start without it): a PEM file with the **client CA alone**, which `cacerts` hands out. It is
    deliberately not defaulted to `mutual-tls.trusted-certificates`, which is every anchor a client chain is validated
    against and may hold the edge CA as well (the `vps` bundle and the chart do), and a bank must not be told to trust
-   that. On the generated targets: `EST_ENABLED=true` and `EST_CA_CERTIFICATES=<path in auth's container>`.
+   that. On the generated targets: `EST_ENABLED=true` and, except on `local` and Kubernetes (where the chart mounts the client CA alone, `/app/mtls/client-trust/ca.crt`), `EST_CA_CERTIFICATES=<path in auth's container>`.
+   **A client needs two base URLs**: enrolment on the issuer origin and re-enrolment on the mutual-TLS origin (a stock EST client
+   is configured, and run, once for each; `simplereenroll` on the issuer origin is `404`). Deliberate narrowing of RFC 7030: a
+   renewal always uses a **new key** (clients whose HSM cannot rotate keys cannot use it), and a request with
+   `challengePassword` (tls-unique channel binding, §3.5) is refused. A token bound to a certificate (RFC 8705 §3) is
+   accepted only over that certificate, so a client keeps presenting the old certificate with its old tokens until they
+   expire, and uses the new one for new tokens; the renew window (a third of the life by default) is the overlap to count on.
    The routes are `/.well-known/est/{cacerts,csrattrs,simpleenroll}` on the public name of `auth`, and
    `/.well-known/est/{cacerts,csrattrs,simplereenroll}` on the public name of its mutual-TLS listener (see
    [Remote and partner edges](#remote-and-partner-edges-and-the-public-domains)); the spec is
    `auth/open-api/est.yaml`.
 2. **Central needs a CA to issue from**: the `client-certificates` block (step-ca or cert-manager), as for
    edge-fronted clients. `client-certificates.validity` (14 days by default) is how long a certificate lives;
-   the client renews before it ends and revocation is expiry. `auth` holds no CA credentials and calls central
+   the client renews before it ends; the certificate is revoked by expiry, and what can be revoked at once is the right to renew (below). `auth` holds no CA credentials and calls central
    (`POST /est/enroll`, `POST /est/renew`, auth's token only) to have a certificate issued; central's own
    listeners are not exposed to the client. **Auth is in the same trust zone as the mutual-TLS terminator, not outside
    it**: it is what tells central which certificate a client presented and which token it sent, and central cannot

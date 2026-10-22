@@ -22,8 +22,27 @@ info:
       and nowhere else. It is authenticated by the client's current certificate, which that listener's
       handshake validated against `mutual-tls.trusted-certificates`; a certificate in a request header is
       never read. An expired certificate is not renewed with itself: an operator enrols the client again.
-    * **`cacerts`** and **`csrattrs`** are on both and need no credentials (RFC 7030 §4.1.2, §4.5). `cacerts` hands out
-      `est.ca-certificates`, the client CA alone, which the deployment must name.
+    * **`cacerts`** and **`csrattrs`** need no credentials (RFC 7030 §4.1.2, §4.5) **on the main listener**, which is
+      where a client with no certificate fetches them. They are served on the mutual-TLS listener as well, but that
+      listener demands a client certificate in the handshake, so there they are reachable only with a valid one.
+      `cacerts` hands out `est.ca-certificates`, the client CA alone, which the deployment must name.
+
+    **A client needs two base URLs**, which RFC 7030 §3.2.2 does not assume (it has one server and one prefix):
+    enrolment (`simpleenroll`, `cacerts`) on the issuer origin, and re-enrolment (`simplereenroll`) on the mutual-TLS
+    origin. A stock EST client configured with one base URL gets `404` for `simplereenroll` on the main listener, and a
+    TLS handshake error for `simpleenroll` on the mutual-TLS one. Such a client is run twice, once per origin.
+
+    **Where this departs from or extends RFC 7030.**
+    * Re-enrolment **always needs a new key** (§4.2.2 admits the same key, "renew", as well as a new one, "rekey"). A
+      client whose HSM cannot generate a new key for each certificate cannot use this profile.
+    * A request carrying **`challengePassword`** is refused with `400` (§3.5: a server MUST verify the tls-unique value a
+      client includes, and tls-unique is not defined for TLS 1.3). Send the request without it.
+    * **Bearer** for the enrolment token is an extension: §3.2.3 names Basic and Digest, and `WWW-Authenticate`
+      advertises Basic only.
+    * Extensions, not in the RFC: `429` with `Retry-After` on `simpleenroll`, the `Versola-Chain-Ends-At` header, and
+      `403` for a renewal that is too early or for a chain that has ended or been closed.
+    * `cacerts` is the one CA of `est.ca-certificates`, not a CA hierarchy; `csrattrs` is always `204`; `serverkeygen`,
+      `fullcmc` and arbitrary labels (`/.well-known/est/<label>/...`) are not served.
 
     What is issued is central's decision, and auth holds no CA credentials. The certificate carries
     the subject the client is **registered** by (`mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola`
@@ -34,13 +53,21 @@ info:
     names of a renewal request must be identical to those of the certificate being renewed
     (RFC 7030 §4.2.2).
 
-    Certificates are short-lived (central's `client-certificates.validity`), so revocation is expiry;
-    a certificate that has been replaced keeps working until it expires. Renewals form a chain that
+    Certificates are short-lived (central's `client-certificates.validity`), so the certificate itself is revoked by
+    expiry: one that has been replaced keeps authenticating until it expires. What can be revoked at once is the
+    **right to renew**, below. Renewals form a chain that
     began at the enrolment; at `client-identity.max-age` (a year by default) central refuses a renewal
     with `403` until an operator extends the chain (`POST /configuration/clients/est/extend`), unless
     `client-identity.auto-extend` is on; the end is soft, as a certificate issued just before it is valid for its
     whole lifetime. A certificate renews only in the last part of its life (`client-identity.renew-window`, a third
     by default): earlier is `403`, naming when it opens.
+
+    **Tokens and the renewed certificate (RFC 8705 §3).** An access token bound to a certificate carries its thumbprint
+    (`cnf.x5t#S256`) and is accepted only over that certificate; the renewed one has another thumbprint. A client keeps
+    presenting the old certificate with the tokens issued over it until they expire, which is why the old certificate
+    stays valid; it asks for new tokens over the new one. The overlap to count on is the renew window: a certificate
+    renews in the last third of its life by default, so it still has at least that third left when its successor is
+    issued.
 
     The right to renew is what is revoked, not the certificate. Every certificate belongs to a generation of the
     client's chain; an enrolment with a new token, or `POST /configuration/clients/est/revoke`, ends the right of
@@ -125,7 +152,7 @@ paths:
         '404':
           description: EST is not enabled.
         '429':
-          description: Too many attempts for this client id in the minute. `Retry-After` says when to try again.
+          description: Too many attempts for this client id in the minute (a Versola extension). `Retry-After` says when to try again.
 
   /.well-known/est/simplereenroll:
     post:
@@ -169,7 +196,7 @@ components:
     enrolmentTokenBearer:
       type: http
       scheme: bearer
-      description: The one-time enrolment token; it says which client it is for.
+      description: The one-time enrolment token; it says which client it is for. An extension of RFC 7030 §3.2.3, which names Basic and Digest.
     clientCertificate:
       type: mutualTLS
       description: The certificate EST issued to the client, presented in the handshake.

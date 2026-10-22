@@ -32,6 +32,19 @@ object EstCodecSpec extends ZIOSpecDefault:
         val armoured = CertificateSubject.pem("CERTIFICATE REQUEST", der)
         assertTrue(EstCodec.requestPem(armoured) == EstCodec.requestPem(Base64.getEncoder.encodeToString(der)))
       },
+      test("refuses a request that asks for channel binding with challengePassword, and says why") {
+        val generator = KeyPairGenerator.getInstance("EC")
+        generator.initialize(ECGenParameterSpec("secp256r1"))
+        val keys = generator.generateKeyPair()
+        val der = JcaPKCS10CertificationRequestBuilder(X500Principal("CN=bank-a"), keys.getPublic)
+          .addAttribute(
+            org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers.pkcs_9_at_challengePassword,
+            org.bouncycastle.asn1.DERPrintableString("tls-unique-value"),
+          )
+          .build(JcaContentSignerBuilder("SHA256withECDSA").build(keys.getPrivate)).getEncoded
+        val refused = EstCodec.requestPem(Base64.getEncoder.encodeToString(der))
+        assertTrue(refused.left.exists(_.contains("challengePassword")))
+      },
       test("refuses what is not base64, what is empty, and what is base64 of something that is not a PKCS#10") {
         assertTrue(
           EstCodec.requestPem("***not base64***").isLeft,

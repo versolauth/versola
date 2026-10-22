@@ -601,11 +601,14 @@ The chart generates no `env.conf`, so point yours at the files it mounts:
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
 | `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (client + edge CA bundle; without trust-manager the issuing root) |
 | `auth` | `/app/mtls/edge-trust/ca.crt` | `mutual-tls.edge-trusted-certificates` (the edge CA alone) |
+| `auth` | `/app/mtls/client-trust/ca.crt` | `est.ca-certificates` (EST `cacerts`; the client CA alone, `<release>-client-only-ca` bundle; written by `gen-env` for the `k8s` target when `EST_ENABLED=true`) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
 | `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
 | `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the edge CA alone; without trust-manager the issuing root) |
 | `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` (the in-cluster edge's identity, from the edge CA, with both URIs) |
 | `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
+
+The client-only bundle exists so that a bank which fetches `cacerts` is not told to trust the edge CA. With `pki.issuerRef` set and no per-role issuers, edge identities and client certificates come from the **same CA**, so the edge-only and client-only files are the same CA and a bank is told to trust the CA that also issues edge identities: give the edge role its own issuer (`pki.issuerRefs.edge`) before enabling EST for partners.
 
 Auth, central and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A

@@ -312,5 +312,28 @@ spec:
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+# The client CA alone (`<release>-client-only-ca`): what auth's EST `cacerts` hands out. The bundle above holds the edge CA
+# too, which a bank must not be told to trust.
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: {{ include "versola.pki.clientOnlyTrustBundle" . }}
+spec:
+  sources:
+    {{- if not $clientOwn }}
+    - secret:
+        name: {{ $full }}-client-ca
+        key: tls.crt
+    {{- end }}
+    {{- with .Values.pki.trustBundle.sources }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  target:
+    configMap:
+      key: ca-bundle.crt
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
 {{- end }}
 {{- end }}

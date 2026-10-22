@@ -1413,6 +1413,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val estCaCertificates =
     if !estEnabled then ""
     else if isLocal then File(edgeInternalTlsDir, "ca.crt").getAbsolutePath
+    // The chart mounts the client CA alone (`<release>-client-only-ca`); with `pki.issuerRef` set for every role the edge and
+    // client CA are the same CA, and so is this file.
+    else if isKubernetes then "/app/mtls/client-trust/ca.crt"
     else
       sys.env.get("EST_CA_CERTIFICATES").map(_.trim).filter(_.nonEmpty).getOrElse(
         throw RuntimeException(

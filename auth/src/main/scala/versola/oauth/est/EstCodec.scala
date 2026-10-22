@@ -1,5 +1,6 @@
 package versola.oauth.est
 
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
 import org.bouncycastle.cert.jcajce.JcaCertStore
 import org.bouncycastle.cms.{CMSAbsentContent, CMSSignedDataGenerator}
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
@@ -23,7 +24,15 @@ object EstCodec:
     for
       der <- Try(Base64.getMimeDecoder.decode(base64)).toEither.left.map(_ => "the request is not base64")
       _ <- Either.cond(der.nonEmpty, (), "the request is empty")
-      _ <- Try(PKCS10CertificationRequest(der)).toEither.left.map(error => s"the request is not a PKCS#10: ${error.getMessage}")
+      request <- Try(PKCS10CertificationRequest(der)).toEither.left.map(error => s"the request is not a PKCS#10: ${error.getMessage}")
+      // RFC 7030 §3.5: a server MUST verify the tls-unique value a client puts in `challengePassword`, and tls-unique is
+      // not defined for TLS 1.3. Verifying it where the session allows would be a promise kept for some clients and not
+      // others, so a request that asks for channel binding is refused, saying so, instead of being served without it.
+      _ <- Either.cond(
+        request.getAttributes(PKCSObjectIdentifiers.pkcs_9_at_challengePassword).isEmpty,
+        (),
+        "channel binding is not supported: send the request without challengePassword (RFC 7030 §3.5)",
+      )
     yield CertificateSubject.pem("CERTIFICATE REQUEST", der)
 
   /** A certs-only PKCS#7 holding `certificates`, base64 in lines of 64 characters. */
