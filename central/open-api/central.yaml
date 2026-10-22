@@ -37,7 +37,8 @@ info:
       (RFC 7030) request of a client registered with `estEnrollment`: central checks the request
       against the registration and has the CA behind `client-certificates` issue. Auth's token
       alone reaches them (an edge's is refused); they are not served on the mutual-TLS listener.
-      Auth holds no CA credentials.
+      Auth holds no CA credentials, but it is in the trust zone of the mutual-TLS terminator: central takes from it
+      which certificate was presented and which token was sent.
 
     ## Authentication
 
@@ -446,7 +447,9 @@ paths:
         (`validityHours` asks for another time, at most 168), at `POST /.well-known/est/simpleenroll` on auth
         (RFC 7030; HTTP Basic with the client id as user name, or Bearer) together with a PKCS#10 request
         made with a key it generated, for its first certificate. Only a hash of the token is kept: it is
-        shown here and never again. `subject` is what the request must say: the certificate carries
+        shown here and never again; a new token replaces the client's earlier unused ones, and the enrolment it
+        leads to ends the right of every earlier certificate to renew (see `POST /configuration/clients/est/revoke`).
+        `subject` is what the request must say: the certificate carries
         exactly that subject, and a request that says another is refused (RFC 7030 §4.2.2 asks the same of
         a renewal). The certificate is renewed by the client itself on auth's mutual-TLS listener (see
         `POST /configuration/clients/est/extend` for how long, and what happens at the end).
@@ -488,13 +491,37 @@ paths:
         certificate it has until it expires and is told the date in every answer
         (`Versola-Chain-Ends-At` of the EST response), and the date is in `est.chainEndsAt` of
         `GET /configuration/clients`. Calling this starts the chain over. With `auto-extend` on, central
-        extends the chain itself and this has no effect on anything the client sees.
+        extends the chain itself and this has no effect on anything the client sees. The end is soft: a certificate
+        issued just before it is valid for its whole `client-certificates.validity`.
       operationId: extendClientEstChain
       parameters:
         - $ref: '#/components/parameters/ClientIdQuery'
       responses:
         '204':
           description: The chain starts over now.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The client is not registered with `estEnrollment`, or does not exist.
+
+  /configuration/clients/est/revoke:
+    post:
+      tags: [Clients]
+      summary: End the right of a client's certificates to renew
+      description: |
+        For an operator who suspects the key of a client that obtains its certificate through EST is out. What is
+        revoked is the right to **renew**, which is the real credential: every certificate issued so far belongs to
+        a generation of the chain, and none of them can renew any more; tokens not yet used are withdrawn. The
+        certificates themselves keep authenticating until they expire (change the client's `mtlsAuth` subject, or delete
+        the client, to cut that too). The client enrols again with a new token, which starts a new generation (and does
+        the same to every certificate before it). A certificate that a renewal replaced and that renews again after a
+        grace of three minutes is the same event, detected by central: the chain is closed (`403` to that request).
+      operationId: revokeClientEstChain
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: The right to renew is ended; `est.pending` is true until the client enrols again.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':

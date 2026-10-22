@@ -144,7 +144,8 @@ object CoreConfig:
     *
     * @param enabled the switch; absent or false, every EST route answers 404.
     * @param caCertificates PEM path to the certificates `cacerts` hands out, the CA a client must trust for what is issued
-    *   to it. Absent, [[MutualTlsConfig.trustedCertificates]]: the anchors a client's chain is validated against.
+    *   to it. Required when `enabled`, and not defaulted to [[MutualTlsConfig.trustedCertificates]]: those are every anchor a
+    *   client chain is validated against and may hold the CA of edges, which a bank must not be told to trust.
     */
   case class EstConfig(
       enabled: Boolean = false,

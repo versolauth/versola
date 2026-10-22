@@ -29,8 +29,12 @@ import java.time.{Duration as JavaDuration, Instant}
 
 /** How a client that is registered with `estEnrollment` gets and renews its mTLS client certificate: the policy half of
   * EST (RFC 7030), which auth serves to the client and calls central for. Central alone holds the power to issue --
-  * through the CA behind [[ClientCertificateIssuer]], never with the client's key -- so a compromise of auth buys no
-  * certificate.
+  * through the CA behind [[ClientCertificateIssuer]], never with the client's key. Auth is in the trust zone of the mutual-TLS
+  * terminator, not outside it: it is what tells central which certificate a client presented and which token it sent, and
+  * central cannot check either itself (a certificate is public, and no key is shown). What central does narrow is what
+  * auth, or whoever holds its token, can make of that: only a certificate issued through EST, of the current generation,
+  * renews, and only in the last part of its life (`client-identity.renew-window`); one that has been replaced and is used
+  * again closes the chain; and the chain ends at `max-age` whatever is asked.
   *
   * The certificate's subject is the one the client is registered by (`mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola`
   * where it names none), never what a request asks for: a request that says anything else is refused, which is also
@@ -39,7 +43,14 @@ import java.time.{Duration as JavaDuration, Instant}
   *
   * The first certificate is traded for a one-time token an operator created ([[issueEnrollmentToken]], [[enroll]]);
   * every later one is asked for with the client's current certificate ([[renew]]), with a new key each time. The
-  * certificates are short-lived, so revocation is expiry; the old one keeps working until it expires.
+  * certificates are short-lived, so what is revoked is the right to renew, not the certificate: it keeps authenticating
+  * until it expires.
+  *
+  * That right is the real credential, so it is kept in generations. Every certificate belongs to the generation of the
+  * enrolment it descends from. A re-enrolment ([[enroll]]), a revocation ([[revoke]]) and a detected fork each start a
+  * new generation, and a certificate of an earlier one can no longer renew. A fork is detected the way a refresh-token
+  * reuse is: a certificate that a renewal replaced and that comes to renew again, after a short grace for a client that
+  * did not get the answer, means the key is in two hands.
   *
   * The certificates a client goes through are a chain, which begins at its enrolment. `client-identity.max-age` is how old
   * a chain may get; at that age central extends it itself (`auto-extend`) or, the default, stops renewing until an
@@ -77,6 +88,11 @@ trait ClientEstService:
   /** Starts the client's chain over, so that its next renewals are not refused for age. */
   def extend(clientId: ClientId): IO[ClientEstService.Refused | Throwable, Unit]
 
+  /** Ends the right of every certificate issued so far to renew, and withdraws the tokens not yet used: an operator who
+    * suspects the key of a client is out. The certificates keep authenticating until they expire. The client enrols
+    * again with a new token. */
+  def revoke(clientId: ClientId): IO[ClientEstService.Refused | Throwable, Unit]
+
   /** Where each EST client stands. */
   def states: Task[Map[ClientId, ClientEstService.State]]
 
@@ -84,6 +100,10 @@ object ClientEstService:
   val TokenValidity: Duration = 24.hours
 
   val MaxTokenValidity: Duration = 7.days
+
+  /** How long after a renewal the certificate it replaced may still be used to renew, for a client that did not get the answer
+    * and asks again. */
+  val ForkGrace: Duration = 3.minutes
 
   /** `subject` is what the certificate must say, for the operator to give the client's side. */
   case class IssuedToken(token: String, expiresAt: Instant, subject: String)
@@ -104,8 +124,12 @@ object ClientEstService:
     /** The request is not what the registration entitles the client to: another subject, a weak or reused key. */
     case BadRequest
 
-    /** The client may not have a certificate now: EST is not enabled for it, or its chain has reached its limit. */
+    /** The client may not have a certificate now: EST is not enabled for it, it is too early to renew, or its chain has
+      * reached its limit. */
     case Forbidden
+
+    /** A certificate that had been replaced was used to renew: the chain is in two hands, and has been closed. */
+    case ChainClosed
 
   case class Refused(kind: Refusal, reason: String) extends RuntimeException(reason)
 
@@ -136,6 +160,7 @@ object ClientEstService:
         .getOrElse(CentralConfig.ClientCertificatesConfig().validity)
     private val policy = config.clientIdentity
     private val maxAge: JavaDuration = JavaDuration.ofMillis(policy.maxAge.toMillis)
+    private val renewWindow: Double = policy.renewWindow.max(0.0).min(1.0)
 
     private def endOf(started: Instant): Option[Instant] = Option.unless(policy.autoExtend)(started.plus(maxAge))
 
@@ -205,11 +230,14 @@ object ClientEstService:
           spent <- est.consumeToken(hash(token), now)
           // Another caller spent it between the look and now.
           _ <- ZIO.fail(InvalidCredentials).unless(spent.contains(clientId))
-          // The chain begins before anything is issued, so that a certificate never exists without one; and a token
-          // spent for an enrolment that failed on our side (the CA was down) is given back, so the operator is not
-          // asked to make another.
-          chain <- (est.startChain(clientId, now) *> issue(client, subject, csrPem))
-            .onError(_ => est.releaseToken(hash(token)).ignore)
+          // A token spent for an enrolment the CA could not serve is given back, so that the operator is not asked to make
+          // another -- but only for that: once the CA has signed, or if the request is interrupted, the token stays spent,
+          // and there is never a second certificate for one token.
+          chain <- sign(subject, csrPem).tapError(_ => est.releaseToken(hash(token)).ignore)
+          leaf <- verified(subject, chain)
+          // The generation, the start of the chain and the certificate are recorded together.
+          _ <- est.recordEnrollment(record(clientId, leaf, now), now)
+          _ <- ZIO.logInfo(issuedMessage(clientId, leaf))
         yield Issued(chain, endOf(now))
 
     override def renew(presentedCertificatePem: String, csrPem: String): IO[Refused | InvalidCredentials.type | Throwable, Issued] =
@@ -222,34 +250,64 @@ object ClientEstService:
           known <- est.findCertificate(thumbprint(presented)).someOrFail(InvalidCredentials)
           // The handshake has checked the validity already; an expired certificate is one an operator must re-enrol.
           _ <- ZIO.fail(InvalidCredentials).when(now.isBefore(presented.getNotBefore.toInstant) || !now.isBefore(presented.getNotAfter.toInstant))
+          // The right to renew belongs to the current generation: after a re-enrolment, a revocation or a fork the old
+          // certificates are as good as unknown.
+          current <- est.generation(known.clientId)
+          _ <- ZIO.fail(InvalidCredentials).unless(current.contains(known.generation))
           client <- estClient(known.clientId).orElseFail(Refused(Refusal.Forbidden, "EST enrolment is not enabled for this client"))
+          // A certificate a renewal replaced, used again after the grace: the key is in two hands. Close the chain, for the
+          // client and for whoever has the copy: the operator enrols the client again.
+          _ <- known.supersededAt match
+            case Some(at) if now.isAfter(at.plus(ForkGrace)) =>
+              est.revoke(client.id) *>
+                Observability.setError("est_chain_fork_detected") *>
+                ZIO.logWarning(s"the certificate chain of client '${client.id}' was closed: a certificate that had been replaced renewed again") *>
+                ZIO.fail(Refused(
+                  Refusal.ChainClosed,
+                  "the certificate chain was closed: a certificate that had been replaced was used to renew. An operator enrols the client again",
+                ))
+            case _ => ZIO.unit
           subject <- subjectOf(client)
           _ <- ZIO.fail(Refused(Refusal.Forbidden, "the presented certificate does not carry the subject the client is registered by"))
             .unless(subject.describes(presented))
+          // Only in the last part of its life: a certificate that is not near its end has no need of a successor, and a
+          // caller that asks early is not the client's own routine.
+          lifetime = JavaDuration.between(presented.getNotBefore.toInstant, presented.getNotAfter.toInstant)
+          opens = presented.getNotAfter.toInstant.minusMillis((lifetime.toMillis * renewWindow).toLong)
+          _ <- ZIO.fail(Refused(
+            Refusal.Forbidden,
+            s"it is too early to renew: from $opens, the last ${(renewWindow * 100).toInt}% of the certificate's life",
+          ))
+            .when(now.isBefore(opens))
           _ <- check(csrPem, subject, presentedKey = Some(presented))
           recorded <- est.chainStartedAt(client.id)
-          started = recorded.getOrElse(known.issuedAt)
-          aged = JavaDuration.between(started, now).compareTo(maxAge) > 0
           // At the end of a chain: extend it, or stop, as the operator chose. Never a surprise: the client has been told the
-          // date in every answer since its enrolment.
-          begun <-
-            if !aged then ZIO.succeed(started)
-            else if policy.autoExtend then est.startChain(client.id, now).as(now)
-            else
-              ZIO.fail(Refused(
-                Refusal.Forbidden,
-                s"the certificate chain of client '${client.id}' reached its limit (${policy.maxAge.toDays} days since it was enrolled or last " +
-                  s"extended): an operator extends it with POST /configuration/clients/est/extend?clientId=${client.id}",
-              ))
-          chain <- issue(client, subject, csrPem)
+          // date in every answer since its enrolment. Judged again, with the row locked, when the certificate is recorded.
+          _ <- ZIO.fail(chainLimit(client.id)).when(!policy.autoExtend && recorded.exists(started => ended(started, now)))
+          chain <- sign(subject, csrPem)
+          leaf <- verified(subject, chain)
+          outcome <- est.recordRenewal(thumbprint(presented), record(client.id, leaf, now), known.generation, now, policy.maxAge, policy.autoExtend)
+          begun <- outcome match
+            case RenewalRecorded.Recorded(start) => ZIO.succeed(start)
+            // Revoked, or enrolled again, while the CA was answering: the certificate it signed is not recorded and cannot renew.
+            case RenewalRecorded.GenerationChanged => ZIO.fail(InvalidCredentials)
+            case RenewalRecorded.ChainEnded => ZIO.fail(chainLimit(client.id))
+          _ <- ZIO.logInfo(issuedMessage(client.id, leaf))
         yield Issued(chain, endOf(begun))
 
     override def extend(clientId: ClientId): IO[Refused | Throwable, Unit] =
       for
         _ <- estClient(clientId).orElseFail(Refused(Refusal.Forbidden, s"client '$clientId' is not registered with estEnrollment"))
         now <- Clock.instant
-        _ <- est.startChain(clientId, now)
+        _ <- est.extendChain(clientId, now)
         _ <- ZIO.logInfo(s"the certificate chain of client '$clientId' was extended")
+      yield ()
+
+    override def revoke(clientId: ClientId): IO[Refused | Throwable, Unit] =
+      for
+        _ <- estClient(clientId).orElseFail(Refused(Refusal.Forbidden, s"client '$clientId' is not registered with estEnrollment"))
+        _ <- est.revoke(clientId)
+        _ <- ZIO.logInfo(s"the right of client '$clientId' to renew its certificate was revoked")
       yield ()
 
     override def states: Task[Map[ClientId, State]] =
@@ -285,28 +343,38 @@ object ClientEstService:
           .when(presentedKey.exists(cert => CertificateSubject.sameKey(cert.getPublicKey, key)))
       yield ()
 
-    private def issue(client: OAuthClientRecord, subject: CertificateSubject, csrPem: String): IO[Refused | Throwable, String] =
+    private def sign(subject: CertificateSubject, csrPem: String): Task[String] =
+      issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
+
+    /** What the CA returned must say exactly what the client is registered by, or it would never be accepted at /token
+      * (or worse, name an edge): refuse here rather than hand over a certificate that cannot be used. */
+    private def verified(subject: CertificateSubject, chain: String): IO[Refused | Throwable, X509Certificate] =
       for
-        chain <- issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
         leaf <- ZIO.attempt(parse(chain).head)
-        // What the CA returned must say exactly what the client is registered by, or it would never be accepted at /token
-        // (or worse, name an edge): refuse here rather than hand over a certificate that cannot be used.
         _ <- ZIO.fail(Refused(Refusal.Forbidden, "the issued certificate does not carry exactly the registered subject"))
           .unless(subject.describes(leaf) && !EdgeCertificate.uriNames(leaf).exists(EdgeCertificate.isReserved))
-        now <- Clock.instant
-        _ <- est.recordCertificate(
-          EstCertificate(
-            clientId = client.id,
-            thumbprint = thumbprint(leaf),
-            serial = leaf.getSerialNumber.toString(16),
-            notAfter = leaf.getNotAfter.toInstant,
-            issuedAt = now,
-          ),
-        )
-        _ <- ZIO.logInfo(
-          s"issued certificate ${leaf.getSerialNumber.toString(16)} to client '${client.id}' through EST, valid until ${leaf.getNotAfter.toInstant}",
-        )
-      yield chain
+      yield leaf
+
+    private def record(clientId: ClientId, leaf: X509Certificate, now: Instant): NewEstCertificate =
+      NewEstCertificate(
+        clientId = clientId,
+        thumbprint = thumbprint(leaf),
+        serial = leaf.getSerialNumber.toString(16),
+        notAfter = leaf.getNotAfter.toInstant,
+        issuedAt = now,
+      )
+
+    private def issuedMessage(clientId: ClientId, leaf: X509Certificate): String =
+      s"issued certificate ${leaf.getSerialNumber.toString(16)} to client '$clientId' through EST, valid until ${leaf.getNotAfter.toInstant}"
+
+    private def ended(started: Instant, now: Instant): Boolean = JavaDuration.between(started, now).compareTo(maxAge) > 0
+
+    private def chainLimit(clientId: ClientId): Refused =
+      Refused(
+        Refusal.Forbidden,
+        s"the certificate chain of client '$clientId' reached its limit (${policy.maxAge.toDays} days since it was enrolled or last " +
+          s"extended): an operator extends it with POST /configuration/clients/est/extend?clientId=$clientId",
+      )
 
     private def counted[A](operation: String)(
         effect: IO[Refused | InvalidCredentials.type | Throwable, A],
@@ -316,6 +384,7 @@ object ClientEstService:
           case InvalidCredentials => outcome(operation, "unauthorized")
           case Refused(Refusal.BadRequest, _) => outcome(operation, "bad_request")
           case Refused(Refusal.Forbidden, _) => outcome(operation, "forbidden")
+          case Refused(Refusal.ChainClosed, _) => outcome(operation, "chain_fork")
           case _ => outcome(operation, "error")
         },
         _ => outcome(operation, "issued"),

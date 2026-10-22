@@ -1,7 +1,8 @@
 package versola.oauth.est
 
 import org.scalamock.stubs.ZIOStubs
-import versola.util.TestCertificates
+import versola.auth.TestEnvConfig
+import versola.util.{CoreConfig, TestCertificates}
 import zio.*
 import zio.test.*
 
@@ -25,8 +26,21 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val ca: Option[Array[Byte]] = Some(EstCodec.certsOnly(EstCodec.certificates(issuedChain).get))
 
-  private def service(central: EstCentralClient, enabled: Boolean = true) =
-    EstService.Impl(Option.when(enabled)(ca.get), central)
+  private def limiter(limit: Int) =
+    AttemptLimiter(limit, 1.minute, Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (Instant, Int)])(using _)))
+
+  private def service(central: EstCentralClient, enabled: Boolean = true, attempts: Int = 1000) =
+    EstService.Impl(Option.when(enabled)(ca.get), central, limiter(attempts))
+
+  private def csrWith(algorithm: String, init: java.security.KeyPairGenerator => Unit): String =
+    val generator = java.security.KeyPairGenerator.getInstance(algorithm)
+    init(generator)
+    val keys = generator.generateKeyPair()
+    val signature = if algorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA"
+    java.util.Base64.getEncoder.encodeToString(
+      org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder(javax.security.auth.x500.X500Principal("CN=bank-a"), keys.getPublic)
+        .build(org.bouncycastle.operator.jcajce.JcaContentSignerBuilder(signature).build(keys.getPrivate)).getEncoded,
+    )
 
   /** Valid in real time, so the service's clock is set to it. */
   private val realTime: UIO[Unit] = Clock.ClockLive.instant.flatMap(now => TestClock.setTime(now))
@@ -63,6 +77,35 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           unauthorized == EstError.Unauthorized,
           badRequest == EstError.BadRequest("wrong subject"),
           forbidden == EstError.Forbidden("chain limit"),
+        )
+      },
+      test("a key central would refuse is refused here, without asking central") {
+        val central = stub[EstCentralClient]
+        val weak = csrWith("RSA", _.initialize(1024))
+        val p384 = csrWith("EC", _.initialize(java.security.spec.ECGenParameterSpec("secp384r1")))
+        for
+          weakKey <- service(central).enroll(credentials, weak).flip
+          otherCurve <- service(central).enroll(credentials, p384).flip
+        yield assertTrue(weakKey.isInstanceOf[EstError.BadRequest], otherCurve.isInstanceOf[EstError.BadRequest], central.enroll.calls.isEmpty)
+      },
+      test("attempts at one client id are limited per window, and another client id has its own") {
+        val central = stub[EstCentralClient]
+        val limited = service(central, attempts = 2)
+        for
+          _ <- central.enroll.failsWith(EstError.Unauthorized)
+          first <- limited.enroll(credentials, csrBody).flip
+          second <- limited.enroll(credentials, csrBody).flip
+          third <- limited.enroll(credentials, csrBody).flip
+          other <- limited.enroll(credentials.copy(clientId = Some("bank-b")), csrBody).flip
+          _ <- TestClock.adjust(61.seconds)
+          later <- limited.enroll(credentials, csrBody).flip
+        yield assertTrue(
+          first == EstError.Unauthorized,
+          second == EstError.Unauthorized,
+          third == EstError.TooManyRequests,
+          other == EstError.Unauthorized,
+          later == EstError.Unauthorized,
+          central.enroll.calls.size == 4,
         )
       },
       test("answers as if nothing were there when EST is not enabled") {
@@ -115,6 +158,21 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- central.renew.failsWith(EstError.BadRequest("a renewal needs a new key"))
           failure <- service(central).reenroll(presented.certificate, csrBody).flip
         yield assertTrue(failure == EstError.BadRequest("a renewal needs a new key"))
+      },
+    ),
+    suite("startup")(
+      test("an enabled EST with no CA to hand out does not start: the CA is named, never inferred from the trust anchors") {
+        val config = TestEnvConfig.coreConfig.copy(est = Some(CoreConfig.EstConfig(enabled = true)))
+        for failure <-
+            ZIO.scoped(EstService.live.build).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient)).flip
+        yield assertTrue(failure.getMessage.contains("est.ca-certificates"))
+      },
+      test("a disabled EST needs nothing") {
+        val config = TestEnvConfig.coreConfig.copy(est = None)
+        (for
+          service <- ZIO.scoped(EstService.live.build.map(_.get))
+          failure <- service.caCertificates.flip
+        yield assertTrue(failure == EstError.Disabled)).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient))
       },
     ),
     suite("caCertificates")(

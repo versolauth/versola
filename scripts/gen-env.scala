@@ -1354,24 +1354,38 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       case Some("true") => true
       case Some("false") => false
       case Some(other) => throw RuntimeException(s"EST_ENABLED must be true or false, not '$other'")
+  // The CA `cacerts` hands out: the one central issues clients' certificates from, alone. Never the trust anchors of
+  // the listener, which may hold the CA of edges as well. `local` issues from the terminator's CA
+  // (`centralClientCertificateAuthorityBlock`); elsewhere the operator names the file.
+  val estCaCertificates =
+    if !estEnabled then ""
+    else if isLocal then File(edgeInternalTlsDir, "ca.crt").getAbsolutePath
+    else
+      sys.env.get("EST_CA_CERTIFICATES").map(_.trim).filter(_.nonEmpty).getOrElse(
+        throw RuntimeException(
+          "EST_CA_CERTIFICATES is required when EST_ENABLED=true: the path, in auth's container, of a PEM file with the client CA alone",
+        ),
+      )
   val authEstBlock =
     if estEnabled then
-      """
-        |# RFC 7030 EST (/.well-known/est/): `simpleenroll` on the main listener, `simplereenroll` on the
-        |# mutual-TLS listener. `cacerts` hands out `mutual-tls.trusted-certificates` unless `ca-certificates`
-        |# names a file with the client CA alone.
-        |est {
-        |  enabled = true
-        |}
-        |""".stripMargin
+      s"""
+         |# RFC 7030 EST (/.well-known/est/): `simpleenroll` on the main listener, `simplereenroll` on the
+         |# mutual-TLS listener. `cacerts` hands out `ca-certificates`, the client CA alone.
+         |est {
+         |  enabled         = true
+         |  ca-certificates = "$estCaCertificates"
+         |}
+         |""".stripMargin
     else ""
   // The chain of a client certificate obtained through EST is short here, so that e2e can watch it end and
-  // be extended; every other target keeps central's default (a year, re-approved by an operator).
+  // be extended, and a certificate may be renewed at any time of its life; every other target keeps central's defaults (a year,
+  // re-approved by an operator; the last third of a certificate's life).
   val centralClientIdentityBlock =
     if isLocal then
       """
         |client-identity {
-        |  max-age = "20 seconds"
+        |  max-age     = "20 seconds"
+        |  renew-window = 1.0
         |}
         |""".stripMargin
     else ""

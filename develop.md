@@ -240,8 +240,8 @@ The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment v
 
 ### Client certificates through EST (RFC 7030)
 
-The `local` target also writes `est { enabled = true }` into `auth/dev/env.conf` and a `client-identity { max-age = "20 seconds" }`
-into `central/dev/env.conf`: a client registered with `estEnrollment` enrols at `/.well-known/est/simpleenroll` on auth and renews at
+The `local` target also writes `est { enabled = true, ca-certificates = ... }` (the CA central issues from) into `auth/dev/env.conf`
+and a `client-identity { max-age = "20 seconds", renew-window = 1.0 }` into `central/dev/env.conf`: a client registered with `estEnrollment` enrols at `/.well-known/est/simpleenroll` on auth and renews at
 `/.well-known/est/simplereenroll` on `MPORT`, and the short chain is what lets `EstEnrollmentSpec` watch it end and be extended.
 Central issues from the CA of `client-certificate-authority` (the one `auth/dev/mtls/trusted-clients.crt` trusts). The e2e spec drives
 `openssl` as the client; see [`deploy.md`](deploy.md#client-certificates-through-est-rfc-7030) for the deployment side.

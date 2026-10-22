@@ -42,18 +42,28 @@ object EstService:
       for
         config <- ZIO.service[CoreConfig]
         central <- ZIO.service[EstCentralClient]
-        // Read once, at startup: an EST that cannot say whom to trust is a deployment error, not a request's.
+        // Read once, at startup: an EST that cannot say whom to trust is a deployment error, not a request's. The CA is
+        // named, never inferred: `mutual-tls.trusted-certificates` is every anchor a client chain is validated against and
+        // may hold others (the CA of edges), which a bank must not be told to trust as its own.
         ca <- config.est.filter(_.enabled) match
           case None => ZIO.succeed(None)
           case Some(est) =>
-            val path = est.caCertificates.orElse(config.mutualTls.map(_.trustedCertificates))
-              .getOrElse(throw IllegalStateException("est is enabled but names no CA to hand out: set est.ca-certificates or mutual-tls"))
-            ZIO.attemptBlocking(Files.readString(Path.of(path))).flatMap: pem =>
-              ZIO.fromTry(EstCodec.certificates(pem)).filterOrFail(_.nonEmpty)(IllegalStateException(s"no certificate in $path"))
-                .map(certificates => Some(EstCodec.certsOnly(certificates)))
-      yield Impl(ca, central)
+            for
+              path <- ZIO.fromOption(est.caCertificates).orElseFail(
+                IllegalStateException("est is enabled but names no CA to hand out: set est.ca-certificates to a file with the client CA alone"),
+              )
+              _ <- ZIO.fail(IllegalStateException("est is enabled but there is no mutual-tls block: re-enrolment is served on that listener only"))
+                .when(config.mutualTls.isEmpty)
+              pem <- ZIO.attemptBlocking(Files.readString(Path.of(path)))
+              certificates <- ZIO.fromTry(EstCodec.certificates(pem)).filterOrFail(_.nonEmpty)(IllegalStateException(s"no certificate in $path"))
+            yield Some(EstCodec.certsOnly(certificates))
+        limiter <- AttemptLimiter.make(EnrollAttempts, 1.minute)
+      yield Impl(ca, central, limiter)
 
-  class Impl(ca: Option[Array[Byte]], central: EstCentralClient) extends EstService:
+  /** Attempts at `simpleenroll` per client id and minute: an operator's token is tried once or twice, not dozens of times. */
+  val EnrollAttempts = 30
+
+  class Impl(ca: Option[Array[Byte]], central: EstCentralClient, limiter: AttemptLimiter) extends EstService:
 
     override def caCertificates: IO[EstError, Array[Byte]] =
       ZIO.fromOption(ca).orElseFail(EstError.Disabled)
@@ -62,7 +72,9 @@ object EstService:
       counted("enroll"):
         for
           _ <- caCertificates
-          csr <- ZIO.fromEither(EstCodec.requestPem(body)).mapError(EstError.BadRequest(_))
+          admitted <- limiter.admit(credentials.clientId.getOrElse(""))
+          _ <- ZIO.fail(EstError.TooManyRequests).unless(admitted)
+          csr <- request(body)
           issued <- central.enroll(credentials.token, credentials.clientId, csr)
           result <- respond(issued)
         yield result
@@ -75,10 +87,18 @@ object EstService:
           // The handshake validated the chain; one that has expired, or is not valid yet, is not renewed with itself (an
           // operator enrols the client again).
           _ <- ZIO.fail(EstError.Unauthorized).when(now.isBefore(presented.getNotBefore.toInstant) || !now.isBefore(presented.getNotAfter.toInstant))
-          csr <- ZIO.fromEither(EstCodec.requestPem(body)).mapError(EstError.BadRequest(_))
+          csr <- request(body)
           issued <- central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr)
           result <- respond(issued)
         yield result
+
+    /** A PKCS#10 asking for a key worth issuing for, before central is asked: what an unauthenticated caller sends costs
+      * auth a parse, not central a request. */
+    private def request(body: String): IO[EstError, String] =
+      for
+        csr <- ZIO.fromEither(EstCodec.requestPem(body)).mapError(EstError.BadRequest(_))
+        _ <- ZIO.fromEither(CertificateSubject.requestedKey(csr)).mapError(EstError.BadRequest(_))
+      yield csr
 
     private def respond(issued: EstCentralClient.Issued): IO[Throwable, Issued] =
       ZIO.fromTry(EstCodec.certificates(issued.certificate)).map(certificates => Issued(EstCodec.certsOnly(certificates), issued.chainEndsAt))
@@ -88,6 +108,7 @@ object EstService:
         {
           case EstError.Disabled => ZIO.unit
           case EstError.Unauthorized => count(operation, "unauthorized")
+          case EstError.TooManyRequests => count(operation, "rate_limited")
           case _: EstError.BadRequest => count(operation, "bad_request")
           case _: EstError.Forbidden => count(operation, "forbidden")
           case _ => count(operation, "error")

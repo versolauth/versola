@@ -101,10 +101,13 @@ object CentralConfig:
     *   client is re-approved on a schedule, which is what a partner relationship asks for. On, central extends the chain
     *   itself and the client never stops for want of anyone approving it. The client is told the date in every answer, and
     *   so is the console.
+    * @param renewWindow the part of a certificate's life, at its end, in which it may be renewed: a third by default, so
+    *   that a certificate is not renewed in its first days. A renewal outside it is refused (`403`).
     */
   case class ClientIdentityConfig(
       maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
       autoExtend: Boolean = false,
+      renewWindow: Double = 1.0 / 3,
   )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge

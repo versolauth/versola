@@ -307,6 +307,37 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
         )
     },
     test(
+      "a re-enrolment and a revocation end the right of every earlier certificate to renew; the certificates keep authenticating",
+    ) {
+      withBank: (central, auth, id, token, subject) =>
+        for
+          key1 <- newKey()
+          first <- enrol(auth, id, token, subject, key1).flatMap(issuedIdentity(_, key1, id))
+          // The operator enrols the client again (say the key of the first was copied): a new token, a new certificate.
+          token2 <- enrolmentToken(central, id).map(_._1)
+          key2 <- newKey()
+          second <- enrol(auth, id, token2, subject, key2).flatMap(issuedIdentity(_, key2, id))
+          withFirst <- newKey().flatMap(renew(auth, first, subject, _))
+          withSecond <- newKey().flatMap(renew(auth, second, subject, _))
+          stillWorks <- awaitServed(auth, first, id)
+          // A token not yet used is withdrawn by a revocation, and so is the right to renew.
+          open <- enrolmentToken(central, id).map(_._1)
+          revoked <- central.postEmpty("/configuration/clients/est/revoke", "clientId" -> id)
+          afterRevocation <- newKey().flatMap(renew(auth, second, subject, _))
+          withdrawn <- newKey().flatMap(enrol(auth, id, open, subject, _))
+          listed <- central.get("/configuration/clients", "tenantId" -> tenant).flatMap(_.items("clients"))
+            .map(_.find(_.str("id").contains(id)))
+        yield assertTrue(
+          withFirst._1.status == Status.Unauthorized,
+          withSecond._1.status == Status.Ok,
+          stillWorks.accessToken.nonEmpty,
+          revoked.status == Status.NoContent,
+          afterRevocation._1.status == Status.Unauthorized,
+          withdrawn._1.status == Status.Unauthorized,
+          listed.flatMap(_.obj("est")).exists(_.bool("pending").contains(true)),
+        )
+    },
+    test(
       "cacerts is served without credentials on both listeners, csrattrs says there are none, and a client that holds a secret is not registered for EST",
     ) {
       for

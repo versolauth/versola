@@ -65,18 +65,28 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private class InMemoryEst extends ClientEstRepository:
     var enabled: Map[ClientId, Instant] = Map.empty
+    var generations: Map[ClientId, Int] = Map.empty
     var tokens: Map[String, (ClientId, Instant, Boolean)] = Map.empty
     var chains: Map[ClientId, Instant] = Map.empty
     var certificates: Map[String, EstCertificate] = Map.empty
 
+    private def generationOf(clientId: ClientId) = generations.getOrElse(clientId, 0)
+
     def enable(clientId: ClientId, at: Instant) = ZIO.succeed { enabled += clientId -> at }
     def isEnabled(clientId: ClientId) = ZIO.succeed(enabled.contains(clientId))
+    def generation(clientId: ClientId) = ZIO.succeed(Option.when(enabled.contains(clientId))(generationOf(clientId)))
     def all =
       ZIO.succeed:
         enabled.toVector.map: (id, at) =>
-          EstEnrollmentRow(id, at, chains.get(id), certificates.values.filter(_.clientId == id).map(_.notAfter).maxOption)
+          EstEnrollmentRow(
+            id,
+            at,
+            chains.get(id),
+            certificates.values.filter(c => c.clientId == id && c.generation == generationOf(id)).map(_.notAfter).maxOption,
+          )
     def createToken(tokenHash: String, clientId: ClientId, expiresAt: Instant) =
-      ZIO.succeed { tokens += tokenHash -> (clientId, expiresAt, false) }
+      ZIO.succeed:
+        tokens = tokens.filterNot((_, v) => v._1 == clientId && !v._3) + (tokenHash -> (clientId, expiresAt, false))
     def peekToken(tokenHash: String, now: Instant) =
       ZIO.succeed(tokens.get(tokenHash).collect { case (id, expiresAt, false) if expiresAt.isAfter(now) => id })
     def consumeToken(tokenHash: String, now: Instant) =
@@ -88,10 +98,52 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => None
     def releaseToken(tokenHash: String) =
       ZIO.succeed { tokens = tokens.updatedWith(tokenHash)(_.map((id, expiresAt, _) => (id, expiresAt, false))) }
-    def startChain(clientId: ClientId, at: Instant) = ZIO.succeed { chains += clientId -> at }
+    def revoke(clientId: ClientId) =
+      ZIO.succeed:
+        generations += clientId -> (generationOf(clientId) + 1)
+        chains -= clientId
+        tokens = tokens.filterNot((_, v) => v._1 == clientId && !v._3)
+    def recordEnrollment(certificate: NewEstCertificate, now: Instant) =
+      ZIO.succeed:
+        val generation = generationOf(certificate.clientId) + 1
+        generations += certificate.clientId -> generation
+        chains += certificate.clientId -> now
+        add(certificate, generation)
+    def recordRenewal(
+        presentedThumbprint: String,
+        certificate: NewEstCertificate,
+        generation: Int,
+        now: Instant,
+        maxAge: Duration,
+        autoExtend: Boolean,
+    ) =
+      ZIO.succeed:
+        if generationOf(certificate.clientId) != generation then RenewalRecorded.GenerationChanged
+        else
+          val started = chains.getOrElse(certificate.clientId, now)
+          val ended = started.plus(maxAge).isBefore(now)
+          if ended && !autoExtend then RenewalRecorded.ChainEnded
+          else
+            val start = if ended then now else started
+            chains += certificate.clientId -> start
+            certificates =
+              certificates.updatedWith(presentedThumbprint)(_.map(c => if c.supersededAt.isEmpty then c.copy(supersededAt = Some(now)) else c))
+            add(certificate, generation)
+            RenewalRecorded.Recorded(start)
+    def extendChain(clientId: ClientId, at: Instant) = ZIO.succeed { chains += clientId -> at }
     def chainStartedAt(clientId: ClientId) = ZIO.succeed(chains.get(clientId))
-    def recordCertificate(certificate: EstCertificate) = ZIO.succeed { certificates += certificate.thumbprint -> certificate }
     def findCertificate(thumbprint: String) = ZIO.succeed(certificates.get(thumbprint))
+
+    private def add(certificate: NewEstCertificate, generation: Int): Unit =
+      certificates += certificate.thumbprint -> EstCertificate(
+        certificate.clientId,
+        certificate.thumbprint,
+        certificate.serial,
+        certificate.notAfter,
+        certificate.issuedAt,
+        generation,
+        None,
+      )
 
   private def record(id: ClientId = clientId, mtlsAuth: Option[MutualTlsAuth] = None, authMethod: AuthMethod = AuthMethod.tls_client_auth) =
     OAuthClientRecord(
@@ -133,10 +185,10 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   /** Short chains and certificates that outlive them, so that a chain can end while the certificate in hand is still good. */
-  private def config(autoExtend: Boolean = false) =
+  private def config(autoExtend: Boolean = false, renewWindow: Double = 1.0) =
     TestCentralConfig.config.copy(
       clientCertificates = Some(CentralConfig.ClientCertificatesConfig(validity = 14.days)),
-      clientIdentity = CentralConfig.ClientIdentityConfig(maxAge = 10.days, autoExtend = autoExtend),
+      clientIdentity = CentralConfig.ClientIdentityConfig(maxAge = 10.days, autoExtend = autoExtend, renewWindow = renewWindow),
     )
 
   private class Env(
@@ -144,6 +196,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       enabled: List[ClientId] = List(clientId),
       issuer: ClientCertificateIssuer = FakeCa(),
       autoExtend: Boolean = false,
+      renewWindow: Double = 1.0,
   ):
     val repository = InMemoryEst()
     repository.enabled = enabled.map(_ -> registeredAt).toMap
@@ -153,7 +206,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clientService.findClient.returnsZIO(id => ZIO.succeed(clients.find(_.id == id)))
         _ <- clientService.getAllClients.succeedsWith(clients.toVector)
         random <- ZIO.service[SecureRandom]
-      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend))
+      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend, renewWindow))
 
   private def keyPair(algorithm: String = "EC", size: Int = 2048): KeyPair =
     val generator = KeyPairGenerator.getInstance(algorithm)
@@ -289,6 +342,34 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           rsa.chain.contains("BEGIN CERTIFICATE"),
         )
       },
+      test("a new token replaces the client's earlier ones that were not used") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- service.issueEnrollmentToken(clientId)
+          second <- service.issueEnrollmentToken(clientId)
+          old <- service.enroll(first.token, None, csr()).flip
+          good <- service.enroll(second.token, None, csr())
+        yield assertTrue(old == ClientEstService.InvalidCredentials, good.chain.contains("BEGIN CERTIFICATE"))
+      },
+      test("a token stays spent when the request is interrupted after the CA signed: never a second certificate for one token") {
+        class Hanging extends ClientCertificateIssuer:
+          val signed = Unsafe.unsafe(Promise.unsafe.make[Nothing, Unit](FiberId.None)(using _))
+          override def sign(request: CertificateSigningRequest): Task[String] =
+            FakeCa().sign(request) *> signed.succeed(()) *> ZIO.never
+        val hanging = Hanging()
+        val env = Env(issuer = hanging)
+        for
+          _ <- realTime
+          service <- env.service
+          issued <- service.issueEnrollmentToken(clientId)
+          fiber <- service.enroll(issued.token, None, csr()).fork
+          _ <- hanging.signed.await
+          _ <- fiber.interrupt
+          again <- service.enroll(issued.token, None, csr()).flip
+        yield assertTrue(again == ClientEstService.InvalidCredentials, env.repository.certificates.isEmpty)
+      },
       test("a token spent for an enrolment the CA could not serve is given back, and works once the CA does") {
         class Flaky extends ClientCertificateIssuer:
           var down = true
@@ -329,16 +410,103 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           renewed.chainEndsAt == first.chainEndsAt,
         )
       },
-      test("the old certificate renews again until it expires") {
+      test("the certificate a renewal replaced may ask again within the grace, for a client that did not get the answer") {
         val env = Env()
         for
           _ <- realTime
           service <- env.service
           first <- enrol(env, service)
           _ <- service.renew(first.chain, csr())
-          _ <- TestClock.adjust(7.days)
+          _ <- TestClock.adjust(1.minute)
           again <- service.renew(first.chain, csr())
         yield assertTrue(again.chain.contains("BEGIN CERTIFICATE"))
+      },
+      test("a certificate that was replaced and renews again after the grace closes the chain, for both holders of the key") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          second <- service.renew(first.chain, csr())
+          _ <- TestClock.adjust(ClientEstService.ForkGrace + 1.minute)
+          fork <- service.renew(first.chain, csr()).flip
+          afterwards <- service.renew(second.chain, csr()).flip
+        yield assertTrue(
+          fork.asInstanceOf[ClientEstService.Refused].kind == ClientEstService.Refusal.ChainClosed,
+          afterwards == ClientEstService.InvalidCredentials,
+        )
+      },
+      test("a re-enrolment ends the right of every earlier certificate to renew, and the new one renews") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          second <- service.renew(first.chain, csr())
+          third <- enrol(env, service)
+          withFirst <- service.renew(first.chain, csr()).flip
+          withSecond <- service.renew(second.chain, csr()).flip
+          withThird <- service.renew(third.chain, csr())
+        yield assertTrue(
+          withFirst == ClientEstService.InvalidCredentials,
+          withSecond == ClientEstService.InvalidCredentials,
+          withThird.chain.contains("BEGIN CERTIFICATE"),
+        )
+      },
+      test("a revocation ends the right to renew, withdraws the open token, and the client is pending until it enrols again") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          open <- service.issueEnrollmentToken(clientId)
+          _ <- service.revoke(clientId)
+          renewed <- service.renew(first.chain, csr()).flip
+          withdrawn <- service.enroll(open.token, None, csr()).flip
+          states <- service.states
+          again <- enrol(env, service)
+          renewedAgain <- service.renew(again.chain, csr())
+        yield assertTrue(
+          renewed == ClientEstService.InvalidCredentials,
+          withdrawn == ClientEstService.InvalidCredentials,
+          states(clientId).pending,
+          renewedAgain.chain.contains("BEGIN CERTIFICATE"),
+        )
+      },
+      test("a revocation while the CA is answering means the certificate it signed is not recorded, and the renewal is refused") {
+        class Slow extends ClientCertificateIssuer:
+          val signing = Unsafe.unsafe(Promise.unsafe.make[Nothing, Unit](FiberId.None)(using _))
+          val proceed = Unsafe.unsafe(Promise.unsafe.make[Nothing, Unit](FiberId.None)(using _))
+          var holding = false
+          override def sign(request: CertificateSigningRequest): Task[String] =
+            if holding then signing.succeed(()) *> proceed.await *> FakeCa().sign(request) else FakeCa().sign(request)
+        val slow = Slow()
+        val env = Env(issuer = slow)
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          _ = slow.holding = true
+          renewing <- service.renew(first.chain, csr()).flip.fork
+          _ <- slow.signing.await
+          _ <- service.revoke(clientId)
+          _ <- slow.proceed.succeed(())
+          refused <- renewing.join
+        yield assertTrue(refused == ClientEstService.InvalidCredentials, env.repository.certificates.size == 1)
+      },
+      test("a certificate that is not near its end is not renewed: the last part of its life only") {
+        val env = Env(renewWindow = 1.0 / 3)
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          early <- service.renew(first.chain, csr()).flip
+          _ <- TestClock.adjust(10.days)
+          opened <- service.renew(first.chain, csr())
+        yield assertTrue(
+          early.asInstanceOf[ClientEstService.Refused].reason.contains("too early"),
+          opened.chain.contains("BEGIN CERTIFICATE"),
+        )
       },
       test("a request that reuses the key of the certificate it replaces is refused") {
         val env = Env()
@@ -378,7 +546,16 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           failure <- service.renew(foreign.certificatePem, csr()).flip
         yield assertTrue(failure == ClientEstService.InvalidCredentials)
       },
-      test("a client that is no longer registered with EST is refused, with the certificate it has") {
+      test("a certificate that names an edge is not the start of a chain") {
+        val env = Env()
+        val edgeCertificate = TestCertificates.generate(subject = defaultSubject, uris = List("urn:versola:edge:x"))
+        for
+          _ <- realTime
+          service <- env.service
+          failure <- service.renew(edgeCertificate.certificatePem, csr()).flip
+        yield assertTrue(failure == ClientEstService.InvalidCredentials)
+      },
+      test("a client that is no longer registered with EST is no longer anyone's: its certificates do not renew") {
         val env = Env()
         for
           _ <- realTime
@@ -386,7 +563,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           first <- enrol(env, service)
           _ = env.repository.enabled = Map.empty
           refused <- service.renew(first.chain, csr()).flip
-        yield assertTrue(refused.asInstanceOf[ClientEstService.Refused].kind == ClientEstService.Refusal.Forbidden)
+        yield assertTrue(refused == ClientEstService.InvalidCredentials)
       },
       test("a certificate whose subject is no longer the registered one does not renew") {
         val enrolling = Env()
@@ -397,6 +574,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           changed = record(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=bank-a-renamed")))
           env = Env(clients = List(changed))
           _ = env.repository.certificates = enrolling.repository.certificates
+          _ = env.repository.generations = enrolling.repository.generations
           service <- env.service
           refused <- service.renew(first.chain, csr(subject = "CN=bank-a-renamed")).flip
         yield assertTrue(refused.asInstanceOf[ClientEstService.Refused].kind == ClientEstService.Refusal.Forbidden)
@@ -451,6 +629,14 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           sent.mtlsAuth.contains(ClientCertificateRequests.defaultAuth(tenantId, clientId)),
         )
       },
+      test("refuses a subject in the namespace that names an edge") {
+        val env = Env(enabled = Nil)
+        for
+          service <- env.service
+          refused <-
+            service.registerClient(request(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge:x")))).flip
+        yield assertTrue(refused.isInstanceOf[InvalidRegistrationConfiguration], env.clientService.registerClient.calls.isEmpty)
+      },
       test("refuses a subject another client is registered by already: it would be that client at /token") {
         val taken = record(otherClientId, mtlsAuth = Some(ClientCertificateRequests.defaultAuth(tenantId, clientId)))
         val env = Env(clients = List(taken), enabled = Nil)
@@ -484,6 +670,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       authMethod: AuthMethod = AuthMethod.tls_client_auth,
       applicationType: Option[ApplicationType] = Some(ApplicationType.web),
       enrollEdge: Boolean = false,
+      mtlsAuth: Option[MutualTlsAuth] = None,
   ) =
     CreateClientRequest(
       tenantId = tenantId,
@@ -508,7 +695,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       dpopSigningAlgs = Set.empty,
       dpopMinRsaKeySize = None,
       authMethod = authMethod,
-      mtlsAuth = None,
+      mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = true,
       jwks = None,
       generateJwks = None,

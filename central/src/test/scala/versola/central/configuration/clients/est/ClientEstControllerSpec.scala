@@ -150,6 +150,16 @@ object ClientEstControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(response.status == Status.BadRequest, service.issueEnrollmentToken.calls.isEmpty)
     },
+    test("an operator revokes the right of a client's certificates to renew; a chain closed by a fork is 403") {
+      val service = stub[ClientEstService]
+      val revoke = URL.root / "configuration" / "clients" / "est" / "revoke" ++ QueryParams("clientId" -> "bank-a")
+      for
+        _ <- service.revoke.succeedsWith(())
+        revoked <- call(service, Request.post(revoke, Body.empty).addHeader(TestAdminAuth.basicAuthHeader))
+        _ <- service.renew.failsWith(ClientEstService.Refused(ClientEstService.Refusal.ChainClosed, "closed"))
+        fork <- call(service, json(renewUrl, renewBody))
+      yield assertTrue(revoked.status == Status.NoContent, service.revoke.calls == List(clientId), fork.status == Status.Forbidden)
+    },
     test("an operator extends a chain; the internal token is not an operator's") {
       val service = stub[ClientEstService]
       val extend = URL.root / "configuration" / "clients" / "est" / "extend" ++ QueryParams("clientId" -> "bank-a")

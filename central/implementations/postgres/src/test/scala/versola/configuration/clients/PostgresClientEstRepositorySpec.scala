@@ -3,7 +3,7 @@ package versola.configuration.clients
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.central.configuration.clients.*
-import versola.central.configuration.clients.est.EstCertificate
+import versola.central.configuration.clients.est.{NewEstCertificate, RenewalRecorded}
 import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import versola.util.postgres.PostgresSpec
@@ -100,26 +100,85 @@ object PostgresClientEstRepositorySpec extends PostgresSpec:
         unknown.isEmpty,
       )
     },
-    test("a certificate is found by its thumbprint, and the latest expiry and the chain show in the listing") {
+    test("an enrolment starts a generation and the chain; a renewal replaces the certificate in it, and shows in the listing") {
       for
         (_, _, repository) <- setup
         _ <- repository.enable(clientId, t0)
         pending <- repository.all
-        _ <- repository.recordCertificate(EstCertificate(clientId, "aa", "1", t0.plusSeconds(100), t0))
-        _ <- repository.recordCertificate(EstCertificate(clientId, "bb", "2", t0.plusSeconds(200), t0))
-        _ <- repository.recordCertificate(EstCertificate(clientId, "bb", "2", t0.plusSeconds(200), t0))
-        _ <- repository.startChain(clientId, t0)
-        found <- repository.findCertificate("bb")
+        generation0 <- repository.generation(clientId)
+        _ <- repository.recordEnrollment(NewEstCertificate(clientId, "aa", "1", t0.plusSeconds(100), t0), t0)
+        generation1 <- repository.generation(clientId)
+        outcome <-
+          repository.recordRenewal("aa", NewEstCertificate(clientId, "bb", "2", t0.plusSeconds(200), t0), 1, t0.plusSeconds(10), 1.hour, false)
+        first <- repository.findCertificate("aa")
+        second <- repository.findCertificate("bb")
         missing <- repository.findCertificate("cc")
         chain <- repository.chainStartedAt(clientId)
         listed <- repository.all
       yield assertTrue(
         pending.head.latestNotAfter.isEmpty,
         pending.head.chainStartedAt.isEmpty,
-        found.map(_.serial) == Some("2"),
+        generation0 == Some(0),
+        generation1 == Some(1),
+        outcome == RenewalRecorded.Recorded(t0),
+        first.exists(c => c.generation == 1 && c.supersededAt.contains(t0.plusSeconds(10))),
+        second.exists(c => c.generation == 1 && c.supersededAt.isEmpty && c.serial == "2"),
         missing.isEmpty,
         chain == Some(t0),
         listed.head.latestNotAfter == Some(t0.plusSeconds(200)),
+      )
+    },
+    test("a renewal is not recorded for a generation that is over, or a chain that has ended unless it is extended by itself") {
+      for
+        (_, _, repository) <- setup
+        _ <- repository.enable(clientId, t0)
+        _ <- repository.recordEnrollment(NewEstCertificate(clientId, "aa", "1", t0.plusSeconds(100), t0), t0)
+        ended <-
+          repository.recordRenewal("aa", NewEstCertificate(clientId, "bb", "2", t0.plusSeconds(200), t0), 1, t0.plusSeconds(7200), 1.hour, false)
+        extended <-
+          repository.recordRenewal("aa", NewEstCertificate(clientId, "cc", "3", t0.plusSeconds(300), t0), 1, t0.plusSeconds(7200), 1.hour, true)
+        chain <- repository.chainStartedAt(clientId)
+        _ <- repository.revoke(clientId)
+        revoked <-
+          repository.recordRenewal("cc", NewEstCertificate(clientId, "dd", "4", t0.plusSeconds(400), t0), 1, t0.plusSeconds(7201), 1.hour, true)
+        generation <- repository.generation(clientId)
+        chainAfter <- repository.chainStartedAt(clientId)
+        listed <- repository.all
+      yield assertTrue(
+        ended == RenewalRecorded.ChainEnded,
+        extended == RenewalRecorded.Recorded(t0.plusSeconds(7200)),
+        chain == Some(t0.plusSeconds(7200)),
+        revoked == RenewalRecorded.GenerationChanged,
+        generation == Some(2),
+        chainAfter.isEmpty,
+        listed.head.latestNotAfter.isEmpty,
+      )
+    },
+    test("a new token replaces the unused ones of the client, and a revocation withdraws them") {
+      for
+        (_, _, repository) <- setup
+        _ <- repository.enable(clientId, t0)
+        _ <- repository.enable(other, t0)
+        _ <- repository.createToken("h1", clientId, t0.plusSeconds(3600))
+        _ <- repository.createToken("o1", other, t0.plusSeconds(3600))
+        _ <- repository.createToken("h2", clientId, t0.plusSeconds(3600))
+        first <- repository.peekToken("h1", t0)
+        second <- repository.peekToken("h2", t0)
+        otherClient <- repository.peekToken("o1", t0)
+        _ <- repository.revoke(clientId)
+        revoked <- repository.peekToken("h2", t0)
+        otherAfter <- repository.peekToken("o1", t0)
+        _ <- repository.createToken("h3", clientId, t0.plusSeconds(3600))
+        _ <- repository.consumeToken("h3", t0)
+        _ <- repository.releaseToken("h3")
+        released <- repository.peekToken("h3", t0)
+      yield assertTrue(
+        first.isEmpty,
+        second == Some(clientId),
+        otherClient == Some(other),
+        revoked.isEmpty,
+        otherAfter == Some(other),
+        released == Some(clientId),
       )
     },
     test("deleting a client takes its EST records with it") {
@@ -127,7 +186,7 @@ object PostgresClientEstRepositorySpec extends PostgresSpec:
         (_, clients, repository) <- setup
         _ <- repository.enable(other, t0)
         _ <- repository.createToken("hash-1", other, t0.plusSeconds(3600))
-        _ <- repository.recordCertificate(EstCertificate(other, "aa", "1", t0.plusSeconds(100), t0))
+        _ <- repository.recordEnrollment(NewEstCertificate(other, "aa", "1", t0.plusSeconds(100), t0), t0)
         _ <- clients.deleteClient(other)
         enabled <- repository.isEnabled(other)
         token <- repository.peekToken("hash-1", t0)

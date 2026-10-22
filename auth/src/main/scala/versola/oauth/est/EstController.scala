@@ -98,6 +98,9 @@ object EstController extends Controller:
       case EstError.Unauthorized =>
         Observability.setError("est_unauthorized") *>
           ZIO.succeed(Response.status(Status.Unauthorized).addHeader(Header.Custom("WWW-Authenticate", """Basic realm="est"""")))
+      case EstError.TooManyRequests =>
+        Observability.setError("est_rate_limited") *>
+          ZIO.succeed(Response.status(Status.TooManyRequests).addHeader(Header.Custom("Retry-After", "60")))
       case EstError.BadRequest(reason) =>
         Observability.setError("est_bad_request", Some(reason)) *> ZIO.succeed(Response.text(reason).status(Status.BadRequest))
       case EstError.Forbidden(reason) =>

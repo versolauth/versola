@@ -95,6 +95,14 @@ object EstControllerSpec extends ZIOSpecDefault, ZIOStubs:
           forbidden <- client.batched(enrol(basic)())
         yield assertTrue(bad.status == Status.BadRequest, badText == "the subject is CN=bank-a", forbidden.status == Status.Forbidden)
       },
+      test("too many attempts is 429 with Retry-After") {
+        val service = stub[EstService]
+        for
+          _ <- service.enroll.failsWith(EstError.TooManyRequests)
+          client <- est(service, EstController.routes)
+          response <- client.batched(enrol(basic)())
+        yield assertTrue(response.status == Status.TooManyRequests, response.rawHeader("Retry-After").isDefined)
+      },
       test("is 404 when EST is not enabled") {
         val service = stub[EstService]
         for

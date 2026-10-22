@@ -25,6 +25,7 @@ object ClientEstController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     createEnrollmentTokenEndpoint,
     extendEndpoint,
+    revokeEndpoint,
     enrollEndpoint,
     renewEndpoint,
   )
@@ -59,6 +60,18 @@ object ClientEstController extends Controller:
       yield response
     }
 
+  /** Ends the right of the client's certificates to renew, for an operator who suspects the key is out. */
+  val revokeEndpoint =
+    Method.POST / "configuration" / "clients" / "est" / "revoke" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        clientId <- request.url.queryZIO[ClientId]("clientId")
+        response <- ZIO.serviceWithZIO[ClientEstService](_.revoke(clientId)).as(Response.status(Status.NoContent))
+          .catchSome:
+            case error: ClientEstService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
+    }
+
   /** Internal, for auth: the first certificate, for a token. */
   val enrollEndpoint =
     Method.POST / "est" / "enroll" -> handler { (request: Request) =>
@@ -87,7 +100,7 @@ object ClientEstController extends Controller:
 
   private def statusOf(error: ClientEstService.Refused): Status = error.kind match
     case ClientEstService.Refusal.BadRequest => Status.BadRequest
-    case ClientEstService.Refusal.Forbidden => Status.Forbidden
+    case ClientEstService.Refusal.Forbidden | ClientEstService.Refusal.ChainClosed => Status.Forbidden
 
   private def failure(error: ClientEstService.Refused | ClientEstService.InvalidCredentials.type | Throwable): ZIO[Any, Throwable, Response] =
     error match
@@ -97,7 +110,8 @@ object ClientEstController extends Controller:
         Observability.setError(
           refused.kind match
             case ClientEstService.Refusal.BadRequest => "est_bad_request"
-            case ClientEstService.Refusal.Forbidden => "est_forbidden",
+            case ClientEstService.Refusal.Forbidden => "est_forbidden"
+            case ClientEstService.Refusal.ChainClosed => "est_chain_fork_detected",
           Some(refused.getMessage),
         ) *> ZIO.succeed(Response.text(refused.getMessage).status(statusOf(refused)))
       case other: Throwable => ZIO.fail(other)

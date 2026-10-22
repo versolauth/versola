@@ -22,7 +22,8 @@ info:
       and nowhere else. It is authenticated by the client's current certificate, which that listener's
       handshake validated against `mutual-tls.trusted-certificates`; a certificate in a request header is
       never read. An expired certificate is not renewed with itself: an operator enrols the client again.
-    * **`cacerts`** and **`csrattrs`** are on both and need no credentials (RFC 7030 §4.1.2, §4.5).
+    * **`cacerts`** and **`csrattrs`** are on both and need no credentials (RFC 7030 §4.1.2, §4.5). `cacerts` hands out
+      `est.ca-certificates`, the client CA alone, which the deployment must name.
 
     What is issued is central's decision, and auth holds no CA credentials. The certificate carries
     the subject the client is **registered** by (`mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola`
@@ -37,10 +38,19 @@ info:
     a certificate that has been replaced keeps working until it expires. Renewals form a chain that
     began at the enrolment; at `client-identity.max-age` (a year by default) central refuses a renewal
     with `403` until an operator extends the chain (`POST /configuration/clients/est/extend`), unless
-    `client-identity.auto-extend` is on. The end of the chain is in every answer, in the
+    `client-identity.auto-extend` is on; the end is soft, as a certificate issued just before it is valid for its
+    whole lifetime. A certificate renews only in the last part of its life (`client-identity.renew-window`, a third
+    by default): earlier is `403`, naming when it opens.
+
+    The right to renew is what is revoked, not the certificate. Every certificate belongs to a generation of the
+    client's chain; an enrolment with a new token, or `POST /configuration/clients/est/revoke`, ends the right of
+    every earlier one (`401` when it asks), and a certificate that has been replaced and renews again after three
+    minutes closes the chain (`403`): the key is in two hands. The end of the chain is in every answer, in the
     `Versola-Chain-Ends-At` header, when it has one.
 
-    A request body is at most 16 KiB.
+    A request body is at most 16 KiB. `simpleenroll` is limited to 30 attempts a minute per client id and replica
+    (`429` with `Retry-After`). Auth is in the trust zone of the mutual-TLS terminator, and central takes from it
+    which certificate was presented and which token was sent.
   license:
     name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -57,8 +67,7 @@ paths:
       operationId: estCaCerts
       summary: The CA certificates a client must trust
       description: |
-        RFC 7030 §4.1. The certificates of `est.ca-certificates` (by default
-        `mutual-tls.trusted-certificates`) as a certs-only PKCS#7.
+        RFC 7030 §4.1. The certificates of `est.ca-certificates` as a certs-only PKCS#7.
       tags: [EST]
       security: []
       responses:
@@ -115,6 +124,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           description: EST is not enabled.
+        '429':
+          description: Too many attempts for this client id in the minute. `Retry-After` says when to try again.
 
   /.well-known/est/simplereenroll:
     post:
@@ -141,8 +152,9 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           description: |
-            The presented certificate is expired, was not issued through EST, or is not one this client
-            has any more. No reason is given.
+            The presented certificate is expired, was not issued through EST, belongs to a generation of the
+            client's chain that is over (a re-enrolment or a revocation), or the client is no longer registered for
+            EST. No reason is given.
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -196,7 +208,8 @@ components:
     Forbidden:
       description: |
         The client may not have a certificate now: it is not registered with `estEnrollment`, or its chain has
-        reached `client-identity.max-age` and an operator has to extend it. The body says which.
+        reached `client-identity.max-age` and an operator has to extend it, it is too early to renew (the body says
+        from when), or the chain was closed because a certificate that had been replaced renewed again. The body says which.
       content:
         text/plain:
           schema:

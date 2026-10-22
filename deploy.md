@@ -572,9 +572,11 @@ additive: no existing client, route or key changes (central gets one migration, 
 
 1. **Enable it in `auth`.** `est { enabled = true }` in `auth.conf` (`configure` writes it for `local`;
    on `vps`, `docker-local` and Kubernetes set `EST_ENABLED=true` in `versola-tools`' environment). It needs
-   the `mutual-tls` block, because renewal is served on that listener only. `cacerts` hands out
-   `mutual-tls.trusted-certificates`; where that file also holds the edge CA (the `vps` bundle and the chart do),
-   point `est.ca-certificates` at a file with the **client CA alone** so that a bank is not told to trust more.
+   the `mutual-tls` block, because renewal is served on that listener only. `est.ca-certificates` is **required**
+   (auth does not start without it): a PEM file with the **client CA alone**, which `cacerts` hands out. It is
+   deliberately not defaulted to `mutual-tls.trusted-certificates`, which is every anchor a client chain is validated
+   against and may hold the edge CA as well (the `vps` bundle and the chart do), and a bank must not be told to trust
+   that. On the generated targets: `EST_ENABLED=true` and `EST_CA_CERTIFICATES=<path in auth's container>`.
    The routes are `/.well-known/est/{cacerts,csrattrs,simpleenroll}` on the public name of `auth`, and
    `/.well-known/est/{cacerts,csrattrs,simplereenroll}` on the public name of its mutual-TLS listener (see
    [Remote and partner edges](#remote-and-partner-edges-and-the-public-domains)); the spec is
@@ -583,7 +585,14 @@ additive: no existing client, route or key changes (central gets one migration, 
    edge-fronted clients. `client-certificates.validity` (14 days by default) is how long a certificate lives;
    the client renews before it ends and revocation is expiry. `auth` holds no CA credentials and calls central
    (`POST /est/enroll`, `POST /est/renew`, auth's token only) to have a certificate issued; central's own
-   listeners are not exposed to the client.
+   listeners are not exposed to the client. **Auth is in the same trust zone as the mutual-TLS terminator, not outside
+   it**: it is what tells central which certificate a client presented and which token it sent, and central cannot
+   check either (a certificate is public, and no key is shown to it). Whoever controls auth, or its internal token to
+   central, can therefore renew the certificate of any EST client that has a current one, and enrol with a token they
+   observe. What central narrows: only a certificate issued through EST, of the client's current generation, renews;
+   only in the last third of its life (`client-identity.renew-window`); a replaced certificate that renews again
+   closes the chain; the chain ends at `max-age` whatever is asked; and the certificate carries the registered
+   subject, never one the caller names.
 3. **Register the client** with `estEnrollment: true` (web and service clients; `authMethod` `tls_client_auth`;
    the tenant must set `mtlsCertificateHeader`, as for any `tls_client_auth` client). It holds no certificate yet.
    The certificate's subject is the client's `mtlsAuth`, or `CN=<client>,OU=<tenant>,O=Versola` where it names none;
@@ -594,13 +603,24 @@ additive: no existing client, route or key changes (central gets one migration, 
    that subject. It renews at `simplereenroll` on the mutual-TLS listener with the certificate it has, a new key
    each time; an expired certificate does not renew, enrol the client again with a new token.
 5. **Chains.** Renewals are a chain that begins at the enrolment. `client-identity { max-age = 365d,
-   auto-extend = false }` in `central.conf`: at `max-age` central refuses renewals (`403`) until an operator calls
-   `POST /configuration/clients/est/extend?clientId=<id>`, so every client is re-approved yearly; `auto-extend = true`
-   makes central extend by itself. The client is told the date in every answer (`Versola-Chain-Ends-At`), and
-   `GET /configuration/clients` shows `est.pending`, `est.certificateExpiresAt` and `est.chainEndsAt`.
+   auto-extend = false, renew-window = 0.3333 }` in `central.conf`: at `max-age` central refuses renewals (`403`) until
+   an operator calls `POST /configuration/clients/est/extend?clientId=<id>`, so every client is re-approved yearly;
+   `auto-extend = true` makes central extend by itself. A certificate renews only in the last `renew-window` of its life
+   (earlier is `403`, with the date it opens). The end of the chain is soft: a certificate issued the day before it
+   ends is valid for its whole `validity`, so the client can run up to that long past `Versola-Chain-Ends-At`. The
+   client is told the date in every answer, and `GET /configuration/clients` shows `est.pending`,
+   `est.certificateExpiresAt` and `est.chainEndsAt`.
+6. **If a key is out.** What is revoked is the right to **renew**, not the certificate, which keeps authenticating until
+   it expires (set another `mtlsAuth` subject on the client, or delete it, to cut that too). Every certificate belongs
+   to a generation of the chain; a new enrolment (a new token) starts one, so earlier certificates stop renewing, and
+   so does `POST /configuration/clients/est/revoke?clientId=<id>`, which also withdraws an open token (a new token
+   replaces the earlier unused ones). A certificate that a renewal replaced and that comes to renew again after 3
+   minutes means the key is in two hands: central closes the chain (`403`, `est_chain_fork_detected`, outcome
+   `chain_fork`) and the operator enrols the client again. `simpleenroll` is limited to 30 attempts a minute per
+   client id and replica (`429`).
 
 Metrics: `est_requests_total{operation,outcome}` in `auth` and `est_certificate_requests_total{operation,outcome}`
-in `central` (`outcome`: `issued`, `unauthorized`, `bad_request`, `forbidden`, `error`).
+in `central` (`outcome`: `issued`, `unauthorized`, `bad_request`, `forbidden`, `chain_fork`, `rate_limited` (auth only), `error`).
 
 ### Remote and partner edges, and the public domains
 

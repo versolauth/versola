@@ -13,3 +13,6 @@ enum EstError(message: String) extends RuntimeException(message):
 
   /** The client may not have a certificate now: EST is not enabled for it, or its chain has reached its limit. */
   case Forbidden(reason: String) extends EstError(reason)
+
+  /** Too many enrolment attempts for this client id in the window: auth does not ask central. */
+  case TooManyRequests extends EstError("too many requests")
