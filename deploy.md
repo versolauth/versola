@@ -379,6 +379,17 @@ a name, `gen-env` says so), edge certificates are short-lived (vps: 30 days, ren
 refresh**, not at expiry. Rotate the edge CA like any other, and make auth's mutual-TLS listener reachable
 only from the network the edges run in.
 
+In plain words: an edge certificate lets its holder call `/userinfo` **without proof of possession, for any
+token of the tenants assigned to that edge**. A certificate's own validity cannot be shortened after
+issuance; deleting the edge in central cuts it off at `auth` only **after the next configuration refresh**
+(`configuration-cache-refresh-interval` in `auth.conf`, one minute in `docker-local`, five elsewhere), and if
+central is unreachable `auth` keeps the last registry it had (with none loaded, no certificate is an edge's:
+it fails closed). **The edge CA must be dedicated.** If `edge-trusted-certificates` names the CA that also issues
+client certificates (`docker-local`, or a `client-certificates` backend sharing a CA), the only thing keeping a
+client from presenting an edge name is central refusing `urn:versola:edge:` names in client certificates
+(`ClientCertificateServiceSpec`); `auth` logs a warning at startup when the listener trusts nothing else, and
+`gen-env` warns for `docker-local`.
+
 Edge's own mutual-TLS listener is opt-in and its certificates are yours to provide for now (`versola
 configure` does not issue them): a server certificate for the public name callers use, and
 `trusted-certificates` naming the CA(s) that issue your callers' client certificates.

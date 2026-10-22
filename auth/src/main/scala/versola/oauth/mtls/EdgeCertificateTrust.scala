@@ -62,11 +62,25 @@ object EdgeCertificateTrust:
           case Some(path) =>
             for
               issuers <- load(path)
+              _ <- warnIfOneCaServesBothRoles(config.mutualTls.map(_.trustedCertificates), issuers)
               sync <- (CentralSyncTokenService.live >>> EdgeRegistrySyncClient.live).build
               registry <- ReloadingCache
                 .make[Map[String, Set[TenantId]]](config.configurationCacheRefreshInterval, fromSnapshot = true)
                 .provideSomeEnvironment[Scope](_.add[CacheSource[Map[String, Set[TenantId]]]](sync.get[EdgeRegistrySyncClient]))
             yield Impl(issuers, registry.get, sync.get[EdgeRegistrySyncClient].getAll.flatMap(registry.set).ignoreLogged)
+
+  /** If the listener trusts nothing but the edge issuers, one CA serves edges and clients alike (docker-local),
+    * and only the issuer of client certificates refusing `urn:versola:edge:` names keeps a client from passing for
+    * an edge. Not detectable otherwise, so the deployment docs say the edge CA must be dedicated. */
+  private def warnIfOneCaServesBothRoles(trusted: Option[String], issuers: List[X509Certificate]): ZIO[Any, Throwable, Unit] =
+    ZIO.foreachDiscard(trusted): path =>
+      load(path, requireAuthority = false).flatMap: all =>
+        ZIO.logWarning(
+          "mutual-tls.edge-trusted-certificates names the only certificates the listener trusts: one CA issues both edge " +
+            "and client certificates, so only that issuer refusing urn:versola:edge: names in client certificates keeps a " +
+            "client from passing for an edge. Use a dedicated edge CA.",
+        ).when(all.forall(cert => issuers.exists(_.getEncoded.sameElements(cert.getEncoded))))
+    .ignoreLogged
 
   /** No certificate is an edge's. */
   val none: EdgeCertificateTrust = new EdgeCertificateTrust:
@@ -75,20 +89,21 @@ object EdgeCertificateTrust:
 
   /** Every certificate has to be a certificate authority that may sign certificates, so that a leaf
     * (a client's certificate) listed here by mistake cannot act as an edge issuer. */
-  private[mtls] def load(path: String): ZIO[Any, Throwable, List[X509Certificate]] =
+  private[mtls] def load(path: String, requireAuthority: Boolean = true): ZIO[Any, Throwable, List[X509Certificate]] =
     ZIO.attemptBlocking:
       val factory = CertificateFactory.getInstance("X.509")
       val certificates = Using.resource(FileInputStream(path)): stream =>
         factory.generateCertificates(stream).asScala.toList.collect { case x509: X509Certificate => x509 }
       if certificates.isEmpty then
         throw IllegalArgumentException(s"mutual-tls.edge-trusted-certificates ($path) holds no certificate")
-      certificates.foreach: certificate =>
-        val usage = Option(certificate.getKeyUsage)
-        if certificate.getBasicConstraints < 0 || usage.exists(bits => !(bits.length > KeyCertSignBit && bits(KeyCertSignBit))) then
-          throw IllegalArgumentException(
-            s"mutual-tls.edge-trusted-certificates ($path) holds ${certificate.getSubjectX500Principal.getName}, " +
-              "which is not a certificate authority allowed to sign certificates: it is a leaf or lacks keyCertSign",
-          )
+      if requireAuthority then
+        certificates.foreach: certificate =>
+          val usage = Option(certificate.getKeyUsage)
+          if certificate.getBasicConstraints < 0 || usage.exists(bits => !(bits.length > KeyCertSignBit && bits(KeyCertSignBit))) then
+            throw IllegalArgumentException(
+              s"mutual-tls.edge-trusted-certificates ($path) holds ${certificate.getSubjectX500Principal.getName}, " +
+                "which is not a certificate authority allowed to sign certificates: it is a leaf or lacks keyCertSign",
+            )
       certificates
 
   class Impl(

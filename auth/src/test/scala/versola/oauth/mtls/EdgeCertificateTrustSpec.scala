@@ -63,6 +63,11 @@ object EdgeCertificateTrustSpec extends UnitSpecBase:
         empty <- EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map.empty)).edgeOf(issuedBy(edgeIssuer, edgeOne))
       yield assertTrue(edge.isEmpty, empty.isEmpty)
     },
+    // Central unreachable at startup with no snapshot leaves the cache empty: nothing is vouched for.
+    test("with an empty registry (central unreachable) an edge certificate is a client's, not failing open") {
+      for edge <- EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map.empty)).edgeOf(issuedBy(edgeIssuer, edgeOne))
+      yield assertTrue(edge.isEmpty)
+    },
     test("follows the registry as it changes") {
       for
         registry <- Ref.make(Map.empty[String, Set[TenantId]])
