@@ -227,6 +227,44 @@ object EdgeWebLoginSpec extends EdgeSpec(
         result <- edgeApi.complete("error" -> "access_denied", "state" -> state)
       yield assertTrue(EdgeApi.sessionCookie(result).isEmpty)
     },
+    test("a login that asked to return to a page ends there, not on the preset's post-login page") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("/resources/auth/settings?tab=passkeys"))
+        completed <- edgeApi.complete("code" -> callback.code, "state" -> callback.state)
+        location = completed.header(Header.Location).map(_.url.encode).getOrElse("")
+      yield assertTrue(completed.status == Status.SeeOther) &&
+        assertTrue(location == s"${originOf(f.postLoginRedirectUri)}/resources/auth/settings?tab=passkeys")
+          .label(s"back to the page that asked, on the preset's origin: $location") &&
+        assertTrue(EdgeApi.sessionCookie(completed).nonEmpty)
+    },
+    test("a return_to that is not a path of the preset's origin is ignored") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        other <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("https://attacker.test/steal"))
+        otherDone <- edgeApi.complete("code" -> other.code, "state" -> other.state)
+        relative <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("//attacker.test/steal"))
+        relativeDone <- edgeApi.complete("code" -> relative.code, "state" -> relative.state)
+        locations = List(otherDone, relativeDone).map(_.header(Header.Location).map(_.url.encode).getOrElse(""))
+      yield assertTrue(locations.forall(_.startsWith(f.postLoginRedirectUri)))
+        .label(s"the preset's own page, never another host: $locations")
+    },
+    test("an OP error returns to the page that asked for the login too") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        started <- edgeApi.login(f.presetId, "return_to" -> "/resources/auth/settings")
+        state <- stateOf(started)
+        result <- edgeApi.complete("error" -> "unmet_authentication_requirements", "state" -> state)
+        location = result.header(Header.Location).map(_.url.encode).getOrElse("")
+      yield assertTrue(
+        location == s"${originOf(f.postLoginRedirectUri)}/resources/auth/settings?error=unmet_authentication_requirements",
+      ).label(s"the page shows the failure itself: $location")
+    },
     test("a code from one login cannot be completed under another login's state") {
       for
         edgeApi <- edge
@@ -240,6 +278,9 @@ object EdgeWebLoginSpec extends EdgeSpec(
         .label("the PKCE verifier stored under the other state cannot redeem this code")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
+
+  /** `scheme://host:port` of a URI, without the path. */
+  private def originOf(uri: String): String = uri.split('/').take(3).mkString("/")
 
   private def stateOf(response: zio.http.Response): Task[String] =
     for

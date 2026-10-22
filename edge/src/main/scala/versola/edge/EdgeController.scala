@@ -49,7 +49,9 @@ object EdgeController extends Controller:
           request.url.queryParams.map.get(key).flatMap(_.headOption).map(key -> _)
         }.toMap
 
-        response <- edgeService.authorize(PresetId(presetId), overrideParams)
+        returnTo = request.url.queryParams.map.get("return_to").flatMap(_.headOption)
+
+        response <- edgeService.authorize(PresetId(presetId), overrideParams, returnTo)
           .either.flatMap:
             case Left(error: PresetNotFound) =>
               ZIO.succeed(Response.notFound)
@@ -70,7 +72,9 @@ object EdgeController extends Controller:
         // whose `getAll` is a request to central with every call: on the Yandex Cloud step-load test every
         // web logout cost one (11/s of `/configuration/auth-request-presets/sync` against 0.02/s for each
         // routine refresh) and logout stopped working whenever central was unreachable.
-        preset <- ZIO.serviceWithZIO[OAuthClientService](_.findPreset(PresetId(presetId))).someOrFail(PresetNotFound).mapError(_ => RuntimeException("Preset not found"))
+        preset <- ZIO.serviceWithZIO[OAuthClientService](_.findPreset(PresetId(presetId))).someOrFail(PresetNotFound).mapError(_ =>
+          RuntimeException("Preset not found"),
+        )
         redirect <- ZIO.fromEither(URL.decode(config.versolaUrl.toString + "/logout"))
         target = preset.postLogoutRedirectUri.fold(redirect)(uri => redirect.addQueryParam("post_logout_redirect_uri", uri.toString))
       yield Response.seeOther(target)
@@ -100,7 +104,7 @@ object EdgeController extends Controller:
                   for
                     now <- Clock.instant
                   yield Response
-                    .seeOther(completion.postLoginRedirectUri.toUrl)
+                    .seeOther(completion.redirectUrl)
                     .addCookie(
                       EdgeSessionCookie(
                         presetId = completion.presetId,

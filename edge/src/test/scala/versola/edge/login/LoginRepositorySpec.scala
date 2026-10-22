@@ -32,6 +32,16 @@ trait LoginRepositorySpec extends DatabaseSpecBase[LoginRepositorySpec.Env]:
           found <- env.repository.findByState(state1)
         yield assertTrue(found == Some(r))
       },
+      test("create stores where the login returns to, and a login with none reads back with none") {
+        val returning = record(state1, "verifier-1", "preset-1").copy(returnTo = Some("/resources/auth/settings"))
+        val plain = record(state2, "verifier-2", "preset-1")
+        for
+          _ <- env.repository.create(returning, ttl = 1.hour)
+          _ <- env.repository.create(plain, ttl = 1.hour)
+          foundReturning <- env.repository.findByState(state1)
+          foundPlain <- env.repository.findByState(state2)
+        yield assertTrue(foundReturning == Some(returning), foundPlain.map(_.returnTo) == Some(None))
+      },
       test("create upserts on state, replacing codeVerifier and presetId") {
         val first = record(state1, "verifier-1", "preset-1")
         val second = record(state1, "verifier-2", "preset-2")

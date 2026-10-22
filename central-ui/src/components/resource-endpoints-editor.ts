@@ -16,6 +16,9 @@ import './nav-toggle';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 const INJECT_TARGETS: InjectTarget[] = ['header', 'query', 'body'];
+// Step-up classes auth defines itself. They are not in a tenant's vocabulary: which factor they ask for
+// depends on the user, so a vocabulary entry, the same for everyone, cannot say it.
+const builtInAcrs = ['sensitive'];
 
 /** An endpoint being edited. `baseline` is what the server has (null for one added here). */
 type Draft = {
@@ -1039,7 +1042,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
 
   private renderStepUp(draft: Draft) {
     const selected = acrValues(draft.stepUpAcr);
-    const choices = [...new Set([...Object.keys(this.acrVocabulary), ...selected])];
+    const choices = [...new Set([...Object.keys(this.acrVocabulary), ...builtInAcrs, ...selected])];
     const maxAgeError = this.maxAgeError(draft);
     return html`
       <section class="editor-box" aria-labelledby="panel-stepup">
@@ -1064,7 +1067,9 @@ export class VersolaResourceEndpointsEditor extends LitElement {
                       const next = (e.target as HTMLInputElement).checked ? [...selected, value] : selected.filter(candidate => candidate !== value);
                       this.patch(draft.key, { stepUpAcr: next.join(' ') });
                     }} />
-                  ${value}${value in this.acrVocabulary ? '' : html` <span class="muted">(not registered)</span>`}
+                  ${value}${value in this.acrVocabulary ? '' : builtInAcrs.includes(value)
+                    ? html` <span class="muted" title="Defined by Versola: the strongest sign-in the user has, a passkey if they have one.">(built in)</span>`
+                    : html` <span class="muted">(not registered)</span>`}
                 </label>`)}
             </div>
             <div class="hint">The access token must carry at least one of the chosen values in its <code>acr</code> claim.</div>`
