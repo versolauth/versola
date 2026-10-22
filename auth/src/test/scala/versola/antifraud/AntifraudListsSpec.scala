@@ -21,7 +21,8 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
       ZIO.succeed:
-        val same = entries.find(e => e.listType == entry.listType && e.valueType == entry.valueType && e.value == entry.value && e.tenantId == entry.tenantId)
+        val same =
+          entries.find(e => e.listType == entry.listType && e.valueType == entry.valueType && e.value == entry.value && e.tenantId == entry.tenantId)
         val stored = same.fold(entry)(e => e.copy(expiresAt = entry.expiresAt, reason = entry.reason, source = entry.source))
         entries = stored :: entries.filterNot(e => same.exists(_.id == e.id))
         stored
@@ -48,7 +49,7 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
-  private val settings = AntifraudLists.Settings(enabled = true)
+  private val settings = AntifraudLists.Settings.default.copy(enabled = true)
 
   // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
   private val engine = Antifraud.Settings(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
@@ -58,14 +59,43 @@ object AntifraudListsSpec extends UnitSpecBase:
       deviceId: Option[String] = None,
       destPrefix: Option[String] = None,
       tenantId: Option[TenantId] = Some(tenant),
-  ) = AntifraudContext(tenantId, ClientId("c"), AntifraudAction.otp_request, deviceId = deviceId, ip = ip, destPrefix = destPrefix)
+  ) = AntifraudContext(
+    tenantId = tenantId,
+    clientId = ClientId("c"),
+    action = AntifraudAction.otp_request,
+    subjectHash = None,
+    destPrefix = destPrefix,
+    deviceId = deviceId,
+    ip = ip,
+    asn = None,
+    userAgent = None,
+    ja4 = None,
+    signals = Map.empty,
+  )
 
   private def make(repository: FakeRepository, config: AntifraudLists.Settings = settings) =
     val cache = AntifraudLists.ListCache()
     (AntifraudLists.Impl(repository, config, cache), cache)
 
-  private def add(lists: AntifraudLists, listType: AntifraudListType, valueType: AntifraudValueType, value: String, tenantId: Option[TenantId] = None) =
-    lists.create(NewListEntry(listType, valueType, value, tenantId = tenantId), "tester")
+  private def add(
+      lists: AntifraudLists,
+      listType: AntifraudListType,
+      valueType: AntifraudValueType,
+      value: String,
+      tenantId: Option[TenantId] = None,
+  ) =
+    lists.create(
+      NewListEntry(
+        listType = listType,
+        valueType = valueType,
+        value = value,
+        tenantId = tenantId,
+        expiresAt = None,
+        reason = None,
+        source = "manual",
+      ),
+      "tester",
+    )
 
   /** The weight-only rule of a source that is not the lists, here a score of 60 (a challenge). */
   private val scoring = new Antifraud.RuleSet:
@@ -81,7 +111,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     test("contributes no rule while off, whatever the table holds") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
-      val (off, _) = make(repository, AntifraudLists.Settings())
+      val (off, _) = make(repository, AntifraudLists.Settings.default)
       for
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
         offRules <- off.ruleSet.rules
@@ -99,9 +129,9 @@ object AntifraudListsSpec extends UnitSpecBase:
         watched <- decide(lists)(ctx(ip = Some("10.2.3.4")))
         clean <- decide(lists)(ctx(ip = Some("192.0.2.1"), deviceId = Some("fine")))
       yield assertTrue(
-        blocked == Decision(DecisionAction.Block, 0, List("list_deny")),
-        faked == Decision(DecisionAction.Fake, 0, List("list_fake")),
-        watched == Decision(DecisionAction.Delay, 20, List("list_watch")),
+        blocked == Decision(DecisionAction.Block, 0, List("deny_list:device_id")),
+        faked == Decision(DecisionAction.Fake, 0, List("fake_list:prefix")),
+        watched == Decision(DecisionAction.Delay, 20, List("watch_list:cidr")),
         clean == Decision.allow,
       )
     },
@@ -115,7 +145,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(
         unlisted.action == DecisionAction.Challenge,
         allowed.action == DecisionAction.Allow,
-        allowed.firedRules.contains("list_allow"),
+        allowed.firedRules.contains("allow_list:device_id"),
       )
     },
     test("an allow does not override a rule of another source that forces an action") {
@@ -162,7 +192,18 @@ object AntifraudListsSpec extends UnitSpecBase:
       val (lists, _) = make(FakeRepository())
       for
         now <- Clock.instant
-        _ <- lists.create(NewListEntry(AntifraudListType.deny, AntifraudValueType.device_id, "d", expiresAt = Some(now.plusSeconds(60))), "tester")
+        _ <- lists.create(
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.device_id,
+            value = "d",
+            tenantId = None,
+            expiresAt = Some(now.plusSeconds(60)),
+            reason = None,
+            source = "manual",
+          ),
+          "tester",
+        )
         before <- decide(lists)(ctx(deviceId = Some("d")))
         _ <- TestClock.adjust(61.seconds)
         after <- decide(lists)(ctx(deviceId = Some("d")))
@@ -189,7 +230,20 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- lists.start
           _ <- ZIO.succeed {
             repository.entries = List(
-              AntifraudListEntry(UUID.randomUUID(), AntifraudListType.deny, AntifraudValueType.device_id, "d", None, None, None, "manual", "t", Instant.EPOCH),
+              AntifraudListEntry(
+                id = UUID.randomUUID(),
+                listType = AntifraudListType.deny,
+                valueType = AntifraudValueType.device_id,
+                value = "d",
+                tenantId = None,
+                expiresAt = None,
+                reason = None,
+                source = "manual",
+                createdBy = "t",
+                createdAt = Instant.EPOCH,
+                hitCount = 0,
+                lastHitAt = None,
+              ),
             )
           }
           before <- decide(lists)(ctx(deviceId = Some("d")))
@@ -223,7 +277,18 @@ object AntifraudListsSpec extends UnitSpecBase:
       val (lists, _) = make(FakeRepository())
       for
         bad <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/40").either
-        past <- lists.create(NewListEntry(AntifraudListType.deny, AntifraudValueType.device_id, "d", expiresAt = Some(Instant.EPOCH)), "t").either
+        past <- lists.create(
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.device_id,
+            value = "d",
+            tenantId = None,
+            expiresAt = Some(Instant.EPOCH),
+            reason = None,
+            source = "manual",
+          ),
+          "t",
+        ).either
       yield assertTrue(bad.left.exists(_.isInstanceOf[InvalidListEntry]), past.left.exists(_.isInstanceOf[InvalidListEntry]))
     },
     test("adding a value again refreshes it, and deleting it lifts the effect at once") {

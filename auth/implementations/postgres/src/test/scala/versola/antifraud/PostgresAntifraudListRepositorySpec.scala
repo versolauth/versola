@@ -31,6 +31,8 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
     source = "manual",
     createdBy = "alice",
     createdAt = at,
+    hitCount = 0,
+    lastHitAt = None,
   )
 
   private val clean: ZIO[TransactorZIO, Throwable, PostgresAntifraudListRepository] =
@@ -47,23 +49,37 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         tenant = Some(TenantId("tenant-a"))
         e = entry(AntifraudListType.fake, AntifraudValueType.cidr, "10.0.0.0/8", tenant, Some(at.plusSeconds(3600)))
         stored <- repository.upsert(e, "alice", at)
-        listed <- repository.list(AntifraudListFilter(), 10, 0)
+        listed <- repository.list(AntifraudListFilter.all, 10, 0)
         audit <- repository.audit(None, 10)
       yield assertTrue(
         stored == e,
         listed == List(e),
         audit.map(a => (a.action, a.actor, a.entryId, a.listType, a.valueType, a.value, a.tenantId, a.expiresAt, a.reason)) ==
-          List((AntifraudListAction.create, "alice", e.id, AntifraudListType.fake, AntifraudValueType.cidr, "10.0.0.0/8", tenant, e.expiresAt, e.reason)),
+          List((
+            AntifraudListAction.create,
+            "alice",
+            e.id,
+            AntifraudListType.fake,
+            AntifraudValueType.cidr,
+            "10.0.0.0/8",
+            tenant,
+            e.expiresAt,
+            e.reason,
+          )),
       )
     },
     test("adding the same value in the same scope again refreshes it and keeps the id; another scope is another entry") {
       for
         repository <- clean
         first <- repository.upsert(entry(), "alice", at)
-        again <- repository.upsert(entry().copy(expiresAt = Some(at.plusSeconds(60)), reason = Some("again"), source = "rule", createdBy = "bob"), "bob", at.plusSeconds(1))
+        again <- repository.upsert(
+          entry().copy(expiresAt = Some(at.plusSeconds(60)), reason = Some("again"), source = "rule", createdBy = "bob"),
+          "bob",
+          at.plusSeconds(1),
+        )
         tenantScoped <- repository.upsert(entry(tenantId = Some(TenantId("t"))), "alice", at)
         otherList <- repository.upsert(entry(AntifraudListType.watch), "alice", at)
-        listed <- repository.list(AntifraudListFilter(), 10, 0)
+        listed <- repository.list(AntifraudListFilter.all, 10, 0)
         audit <- repository.audit(Some(first.id), 10)
       yield assertTrue(
         again.id == first.id,
@@ -83,11 +99,11 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         global <- repository.upsert(entry(value = "a"), "x", at)
         scoped <- repository.upsert(entry(value = "b", tenantId = Some(TenantId("t"))), "x", at)
         watch <- repository.upsert(entry(AntifraudListType.watch, AntifraudValueType.asn, "64500"), "x", at)
-        denies <- repository.list(AntifraudListFilter(listType = Some(AntifraudListType.deny)), 10, 0)
-        asns <- repository.list(AntifraudListFilter(valueType = Some(AntifraudValueType.asn)), 10, 0)
-        globals <- repository.list(AntifraudListFilter(tenantId = Some(None)), 10, 0)
-        tenants <- repository.list(AntifraudListFilter(tenantId = Some(Some(TenantId("t")))), 10, 0)
-        page <- repository.list(AntifraudListFilter(), 2, 2)
+        denies <- repository.list(AntifraudListFilter.all.copy(listType = Some(AntifraudListType.deny)), 10, 0)
+        asns <- repository.list(AntifraudListFilter.all.copy(valueType = Some(AntifraudValueType.asn)), 10, 0)
+        globals <- repository.list(AntifraudListFilter.all.copy(tenantId = Some(None)), 10, 0)
+        tenants <- repository.list(AntifraudListFilter.all.copy(tenantId = Some(Some(TenantId("t")))), 10, 0)
+        page <- repository.list(AntifraudListFilter.all, 2, 2)
       yield assertTrue(
         denies.map(_.id).toSet == Set(global.id, scoped.id),
         asns.map(_.id) == List(watch.id),
@@ -115,13 +131,16 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         e <- repository.upsert(entry(), "alice", at)
         removed <- repository.delete(e.id, "bob", at.plusSeconds(5))
         again <- repository.delete(e.id, "bob", at.plusSeconds(6))
-        listed <- repository.list(AntifraudListFilter(), 10, 0)
+        listed <- repository.list(AntifraudListFilter.all, 10, 0)
         audit <- repository.audit(Some(e.id), 10)
       yield assertTrue(
         removed,
         !again,
         listed.isEmpty,
-        audit.map(a => (a.action, a.actor, a.value)) == List((AntifraudListAction.delete, "bob", "dev-1"), (AntifraudListAction.create, "alice", "dev-1")),
+        audit.map(a => (a.action, a.actor, a.value)) == List(
+          (AntifraudListAction.delete, "bob", "dev-1"),
+          (AntifraudListAction.create, "alice", "dev-1"),
+        ),
       )
     },
     test("removes expired entries and records each as expired") {
@@ -130,7 +149,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         live <- repository.upsert(entry(value = "live", expiresAt = Some(at.plusSeconds(60))), "x", at)
         old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
         n <- repository.purgeExpired(at.plusSeconds(2))
-        listed <- repository.list(AntifraudListFilter(), 10, 0)
+        listed <- repository.list(AntifraudListFilter.all, 10, 0)
         audit <- repository.audit(Some(old.id), 10)
       yield assertTrue(n == 1, listed.map(_.id) == List(live.id), audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"))
     },
@@ -140,7 +159,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         e <- repository.upsert(entry(), "x", at)
         _ <- repository.addHits(List(ListHit(e.id, 3, at.plusSeconds(10)), ListHit(UUID.randomUUID(), 5, at)))
         _ <- repository.addHits(List(ListHit(e.id, 2, at.plusSeconds(5))))
-        listed <- repository.list(AntifraudListFilter(), 10, 0)
+        listed <- repository.list(AntifraudListFilter.all, 10, 0)
       yield assertTrue(listed.map(l => (l.hitCount, l.lastHitAt)) == List((5L, Some(at.plusSeconds(10)))))
     },
     test("the table refuses a list or value type it does not know") {

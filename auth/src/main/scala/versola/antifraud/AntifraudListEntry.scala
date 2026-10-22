@@ -9,10 +9,13 @@ import java.util.UUID
 enum AntifraudListType:
   /** Block. */
   case deny
+
   /** Outweighs the score of the other rules; never a deny of the same specificity. */
   case allow
+
   /** Adds its weight to the score and nothing else. */
   case watch
+
   /** Answer as if the step succeeded and do nothing. */
   case fake
 
@@ -20,19 +23,26 @@ enum AntifraudListType:
 enum AntifraudValueType:
   /** The keyed hash of a destination, as the event log stores it ([[AntifraudContext.subjectHash]]). */
   case phone_hash
+
   /** Leading digits of a phone number (at most [[AntifraudEvents.destPrefixLength]]), against [[AntifraudContext.destPrefix]]. */
   case prefix
+
   /** One IPv4 or IPv6 address. */
   case ip
+
   /** A network, `address/length`. */
   case cidr
+
   /** An autonomous system number. */
   case asn
   case device_id
+
   /** Lower-case hex SHA-256 of the user agent. */
   case ua_hash
+
   /** A JA4 fingerprint, as it is in [[AntifraudContext.ja4]]. */
   case ja4_hash
+
   /** The domain of an address, from the context signal [[AntifraudLists.EmailDomainSignal]]. */
   case email_domain
 
@@ -54,8 +64,8 @@ case class AntifraudListEntry(
     source: String,
     createdBy: String,
     createdAt: Instant,
-    hitCount: Long = 0,
-    lastHitAt: Option[Instant] = None,
+    hitCount: Long,
+    lastHitAt: Option[Instant],
 )
 
 /** What the cache needs of an entry: the key and how it applies, not the bookkeeping. */
@@ -76,10 +86,10 @@ case class NewListEntry(
     listType: AntifraudListType,
     valueType: AntifraudValueType,
     value: String,
-    tenantId: Option[TenantId] = None,
-    expiresAt: Option[Instant] = None,
-    reason: Option[String] = None,
-    source: String = "manual",
+    tenantId: Option[TenantId],
+    expiresAt: Option[Instant],
+    reason: Option[String],
+    source: String,
 )
 
 enum AntifraudListAction:
@@ -102,7 +112,10 @@ case class AntifraudListAudit(
 
 /** @param tenantId `None` does not filter; `Some(None)` is the global entries only */
 case class AntifraudListFilter(
-    listType: Option[AntifraudListType] = None,
-    valueType: Option[AntifraudValueType] = None,
-    tenantId: Option[Option[TenantId]] = None,
+    listType: Option[AntifraudListType],
+    valueType: Option[AntifraudValueType],
+    tenantId: Option[Option[TenantId]],
 )
+
+object AntifraudListFilter:
+  val all: AntifraudListFilter = AntifraudListFilter(listType = None, valueType = None, tenantId = None)

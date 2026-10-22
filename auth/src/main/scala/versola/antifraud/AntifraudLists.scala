@@ -23,11 +23,11 @@ import java.util.concurrent.atomic.AtomicReference
   *     so on, a longer network or prefix beats a shorter one). On a tie `deny` beats `fake` beats `allow`: an allow
   *     is never stronger than a deny of the same specificity. So an allowed address inside a denied network is
   *     allowed, and a denied address inside an allowed network is denied.
-  *  1. The winner becomes a rule: deny `list_deny` (forces Block), fake `list_fake` (forces Fake), allow
-  *     `list_allow` (weight `-allow-weight`, which outweighs the score of the other rules, so that the step goes
+  *  1. The winner becomes a rule: deny `deny_list:<value type>` (forces Block), fake `fake_list:<value type>` (forces Fake), allow
+  *     `allow_list:<value type>` (weight `-allow-weight`, which outweighs the score of the other rules, so that the step goes
   *     on unless one of them forces an action: allow never overrides a forcing rule of another source, such as a
   *     blocked destination range).
-  *  1. `watch` entries are independent of that: any match fires `list_watch` with weight `watch-weight`, which an
+  *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
   */
 trait AntifraudLists:
@@ -41,9 +41,9 @@ trait AntifraudLists:
 
   def delete(id: UUID, actor: String): Task[Boolean]
 
-  def list(filter: AntifraudListFilter = AntifraudListFilter(), limit: Int = 100, offset: Int = 0): Task[List[AntifraudListEntry]]
+  def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
-  def audit(entryId: Option[UUID] = None, limit: Int = 100): Task[List[AntifraudListAudit]]
+  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
 
 /** The value of a new entry is not valid for its type. */
 final class InvalidListEntry(message: String) extends RuntimeException(message)
@@ -60,15 +60,21 @@ object AntifraudLists:
     * @param allowWeight      what a matching `allow` entry takes off it; larger than any score the other rules reach
     */
   case class Settings(
-      enabled: Boolean = false,
-      refreshInterval: Duration = 5.seconds,
-      hitFlushInterval: Duration = 30.seconds,
-      watchWeight: Int = 20,
-      allowWeight: Int = 1000,
+      enabled: Boolean,
+      refreshInterval: Duration,
+      hitFlushInterval: Duration,
+      watchWeight: Int,
+      allowWeight: Int,
   )
 
   object Settings:
-    val default: Settings = Settings()
+    val default: Settings = Settings(
+      enabled = false,
+      refreshInterval = 5.seconds,
+      hitFlushInterval = 30.seconds,
+      watchWeight = 20,
+      allowWeight = 1000,
+    )
 
   val live: ZLayer[AntifraudListRepository & Settings & Scope, Nothing, AntifraudLists] =
     ZLayer.fromZIO:
@@ -124,27 +130,46 @@ object AntifraudLists:
 
       def matched(ctx: AntifraudContext): ListMatch =
         val seen = last.get
-        if seen != null && (seen.nn._1 eq ctx) then seen.nn._2
+        if seen != null && (seen.nn._1.eq(ctx)) then seen.nn._2
         else
           val found = snapshot.lookup(ctx, now)
           last.set((ctx, found))
           found
 
-      def decisive(listType: AntifraudListType)(ctx: AntifraudContext): Boolean =
-        matched(ctx).decisive.filter(_.listType == listType).exists: entry =>
+      def decisive(listType: AntifraudListType, valueType: AntifraudValueType)(ctx: AntifraudContext): Boolean =
+        matched(ctx).decisive.filter(e => e.listType == listType && e.valueType == valueType).exists: entry =>
           cache.hit(entry.id, now)
           true
 
-      List(
-        AntifraudRule("list_deny", 0, Some(DecisionAction.Block), decisive(AntifraudListType.deny)),
-        AntifraudRule("list_fake", 0, Some(DecisionAction.Fake), decisive(AntifraudListType.fake)),
-        AntifraudRule("list_allow", -settings.allowWeight, None, decisive(AntifraudListType.allow)),
-        AntifraudRule("list_watch", settings.watchWeight, None, ctx =>
-          matched(ctx).watch.exists: entry =>
-            cache.hit(entry.id, now)
-            true,
-        ),
-      )
+      def watched(valueType: AntifraudValueType)(ctx: AntifraudContext): Boolean =
+        matched(ctx).watch.filter(_.valueType == valueType).exists: entry =>
+          cache.hit(entry.id, now)
+          true
+
+      // One rule per list and kind of value, so that the fired rule names in the decision say what matched
+      // (`deny_list:ip`); there are few kinds, and the answer of the lookup is shared.
+      AntifraudValueType.values.toList.flatMap: valueType =>
+        List(
+          AntifraudRule(
+            name = s"deny_list:$valueType",
+            weight = 0,
+            forces = Some(DecisionAction.Block),
+            test = decisive(AntifraudListType.deny, valueType),
+          ),
+          AntifraudRule(
+            name = s"fake_list:$valueType",
+            weight = 0,
+            forces = Some(DecisionAction.Fake),
+            test = decisive(AntifraudListType.fake, valueType),
+          ),
+          AntifraudRule(
+            name = s"allow_list:$valueType",
+            weight = -settings.allowWeight,
+            forces = None,
+            test = decisive(AntifraudListType.allow, valueType),
+          ),
+          AntifraudRule(name = s"watch_list:$valueType", weight = settings.watchWeight, forces = None, test = watched(valueType)),
+        )
 
     override def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry] =
       for
@@ -163,6 +188,8 @@ object AntifraudLists:
             source = entry.source,
             createdBy = actor,
             createdAt = now,
+            hitCount = 0,
+            lastHitAt = None,
           ),
           actor,
           now,
@@ -183,12 +210,13 @@ object AntifraudLists:
     private[antifraud] val refresh: UIO[Unit] =
       Clock.instant.flatMap: now =>
         repository.loadActive(now).foldCauseZIO(
-          cause => AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause("could not refresh the antifraud lists, keeping the previous ones", cause),
+          cause =>
+            AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause("could not refresh the antifraud lists, keeping the previous ones", cause),
           values =>
             ZIO.succeed(ListSnapshot.build(values)).flatMap: snapshot =>
               ZIO.succeed(cache.replace(snapshot)) *>
                 ZIO.logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
-                  .when(snapshot.skipped > 0).unit
+                  .when(snapshot.skipped > 0).unit,
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
