@@ -486,7 +486,12 @@ object UserInfoControllerSpec extends UnitSpecBase:
           issuer = Some(edgeIssuer),
           uris = List(EdgeIdentityNames.edgeUri("edge-1"), EdgeIdentityNames.groupUri("default")),
         ).certificate
-        val trustingEdges = EdgeCertificateTrust.Impl(List(edgeIssuer.certificate))
+        // Central assigned edge-1 to this client's tenant.
+        val trustingEdges = EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map("edge-1" -> Set(tenantId1))))
+        // The same edge, assigned to some other tenant only; or deleted in central altogether.
+        val edgeOfAnotherTenant =
+          EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map("edge-1" -> Set(TenantId("tenant-b")))))
+        val deletedEdge = EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map.empty))
 
         // A client's issuer, trusted by the listener for clients: whatever name it signs into a
         // certificate, it is not the edge issuer.
@@ -586,7 +591,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
             dispatchDirectly = true,
             verify = refusedWith("invalid_token"),
           ),
-        ) +
+        ) @@ TestAspect.withLiveClock +
           suite("a call that is not a trusted edge's")(
             userInfoTestCase(
               description = "refuse a key-bound token under Bearer over a certificate the edge issuer did not sign",
@@ -597,7 +602,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               verify = refusedWith("invalid_dpop_proof"),
             ),
             userInfoTestCase(
-              description = "refuse a certificate-bound token over a certificate the edge issuer did not sign",
+              description =
+                "refuse a certificate-bound token over a certificate the edge issuer did not sign (an EST-issued client certificate with an edge-looking name is one)",
               request = bearer(token(x5t = Some(boundThumbprint1)), Some(forgedEdgeName)),
               expectedStatus = Status.Unauthorized,
               edgeTrust = trustingEdges,
@@ -628,6 +634,34 @@ object UserInfoControllerSpec extends UnitSpecBase:
               dispatchDirectly = true,
               verify = refusedWith("invalid_dpop_proof"),
             ),
+            // A genuine edge, with a certificate the issuer signed, vouching for a token of a tenant
+            // it was not assigned to: judged as a client's call, so the missing proof refuses it.
+            userInfoTestCase(
+              description = "refuse a key-bound token under Bearer from an edge assigned to another tenant",
+              request = bearer(token(jkt = Some(boundJkt1)), Some(edgeCertificate)),
+              expectedStatus = Status.Unauthorized,
+              edgeTrust = edgeOfAnotherTenant,
+              dispatchDirectly = true,
+              verify = refusedWith("invalid_dpop_proof"),
+            ),
+            // The certificate outlives the edge; central no longer lists it.
+            userInfoTestCase(
+              description = "refuse a key-bound token under Bearer from an edge central has deleted",
+              request = bearer(token(jkt = Some(boundJkt1)), Some(edgeCertificate)),
+              expectedStatus = Status.Unauthorized,
+              edgeTrust = deletedEdge,
+              dispatchDirectly = true,
+              verify = refusedWith("invalid_dpop_proof"),
+            ),
+            userInfoTestCase(
+              description = "judge a certificate-bound token from a deleted edge by the binding rules of a client",
+              request = bearer(token(x5t = Some(boundThumbprint1)), Some(edgeCertificate)),
+              expectedStatus = Status.Unauthorized,
+              edgeTrust = deletedEdge,
+              clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(ClientCertificate.of(edgeCertificate))),
+              dispatchDirectly = true,
+              verify = refusedWith("invalid_token"),
+            ),
             userInfoTestCase(
               description = "refuse a key-bound token under Bearer with no certificate",
               request = bearer(token(jkt = Some(boundJkt1)), None),
@@ -635,7 +669,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
               edgeTrust = trustingEdges,
               verify = refusedWith("invalid_dpop_proof"),
             ),
-          )
+          ) @@ TestAspect.withLiveClock
       },
       userInfoTestCase(
         description = "fail with invalid_dpop_proof when a DPoP-bound token is presented under the Bearer scheme",

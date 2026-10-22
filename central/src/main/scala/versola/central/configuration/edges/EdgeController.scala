@@ -23,6 +23,7 @@ object EdgeController extends Controller:
     rotateEdgeKeyEndpoint,
     deleteOldEdgeKeyEndpoint,
     deleteEdgeEndpoint,
+    edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
     setEdgeOverloadEndpoint,
     createEdgeGroupEndpoint,
@@ -187,6 +188,34 @@ object EdgeController extends Controller:
       yield response
     }
 
+  /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
+    * certificate that names an edge (`urn:versola:edge:<id>`) belongs to one central still
+    * knows: the certificate's own validity cannot be shortened from here, so deleting an edge
+    * has to reach auth some other way (see `versola.oauth.mtls.EdgeCertificateTrust`). No
+    * keys: auth recognises an edge by its certificate, not by a key it holds.
+    *
+    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has no
+    * use for its peers' identities.
+    */
+  val edgesRegistryEndpoint =
+    Method.GET / "configuration" / "edges" / "registry" -> handler { (request: Request) =>
+      for
+        callerEdgeId <- authorizeInternal(request)
+        _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
+        service <- ZIO.service[EdgeService]
+        edges <- service.getAllEdges
+        tenants <- ZIO.serviceWithZIO[TenantRepository](_.getAll)
+        response = GetEdgesRegistryResponse(
+          edges = edges.map(edge =>
+            EdgeRegistryEntry(
+              id = edge.id,
+              tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
+            ),
+          ).toList,
+        )
+      yield Response.json(response.toJson)
+    }
+
 case class RegisterEdgeRequest(
     id: EdgeId,
     /** The group the edge joins and never leaves; absent means `default`. */
@@ -231,6 +260,15 @@ case class OverloadPolicyError(
 case class GetAllEdgesResponse(
     edges: List[EdgeResponse],
 ) derives Schema, JsonCodec
+
+case class EdgeRegistryEntry(
+    id: EdgeId,
+    tenantIds: List[TenantId],
+) derives JsonCodec
+
+case class GetEdgesRegistryResponse(
+    edges: List[EdgeRegistryEntry],
+) derives JsonCodec
 
 case class ServiceKeyResponse(
     keyId: String,

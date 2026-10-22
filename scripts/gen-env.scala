@@ -1424,6 +1424,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // for everything, and central never issues a client a name in the edge namespace, so it is the CA named there.
   val mtlsEdgeTrustedCertificates =
     if isKubernetes then "/app/mtls/edge-trust/ca.crt" else if isVps then "/app/mtls/edge-ca.crt" else "/app/mtls/ca.crt"
+  if isDockerLocal then
+    println(
+      "  WARNING: docker-local has one CA for edges and clients, and auth's `mutual-tls.edge-trusted-certificates` names it. " +
+        "Only central refusing to issue a client a `urn:versola:edge:` name keeps a client from passing for an edge; " +
+        "use vps or k8s (a dedicated edge CA) for anything but development.",
+    )
   // Pins are lists: `.next.crt` is the certificate that replaces the leaf at the next rotation (a
   // copy of the current one while none is staged), so edge accepts both across the switch.
   val mtlsAuthPins =

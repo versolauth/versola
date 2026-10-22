@@ -1,6 +1,7 @@
 package versola.util
 
-import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames, KeyUsage}
+import org.bouncycastle.asn1.ASN1ObjectIdentifier
+import org.bouncycastle.asn1.x509.{BasicConstraints, ExtendedKeyUsage, Extension, GeneralName, GeneralNames, KeyPurposeId, KeyUsage}
 import org.bouncycastle.x509.X509V3CertificateGenerator
 import zio.json.*
 import zio.json.ast.Json
@@ -65,6 +66,8 @@ object TestCertificates:
       validity: Option[(Date, Date)] = None,
       uri: Option[String] = None,
       uris: List[String] = Nil,
+      /** `ExtendedKeyUsage` purposes as OIDs (`1.3.6.1.5.5.7.3.2` is clientAuth); omitted when `None`. */
+      extendedKeyUsage: Option[List[String]] = None,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -88,6 +91,13 @@ object TestCertificates:
       generator.addExtension(Extension.subjectAlternativeName.nn, false, GeneralNames(names.toArray))
     if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
     keyUsage.foreach(bits => generator.addExtension(Extension.keyUsage.nn, true, KeyUsage(bits)))
+    extendedKeyUsage.foreach(oids =>
+      generator.addExtension(
+        Extension.extendedKeyUsage.nn,
+        false,
+        ExtendedKeyUsage(oids.map(oid => KeyPurposeId.getInstance(ASN1ObjectIdentifier(oid))).toArray),
+      ),
+    )
     Generated(generator.generate(signingKey).nn, keyPair.getPrivate.nn)
 
   private def keys(algorithm: String): KeyPair =

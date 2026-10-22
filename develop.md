@@ -272,7 +272,9 @@ Auth cannot verify the caller's token holder for such a request, so edge calls `
 certificate (the one it presents to central) to auth's mutual-TLS listener (`native.auth-mutual-tls-url`).
 Auth takes it as the proof when the certificate names exactly one edge (`urn:versola:edge:<id>`) and was
 signed by a certificate in `mutual-tls.edge-trusted-certificates` -- a CA that issues edge certificates and
-nothing else; the listener's `trusted-certificates` must also contain it, so that the handshake succeeds. The
+nothing else, which `auth` checks is a CA at startup; the listener's `trusted-certificates` must also contain it, so
+that the handshake succeeds. Central must still list the edge (`GET /configuration/edges/registry`, which `auth` syncs)
+and have assigned it the tenant of the token's client, so deleting an edge cuts its certificate off. The
 `local` target sets it to `central/dev/mtls/ca.crt` (which signed `edge-client.*`) and adds that CA to
 `auth/dev/mtls/trusted-clients.crt`. Without it, a key-bound token or a certificate-bound token of a caller
 fails on an endpoint with `fetchUserInfo`.

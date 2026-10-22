@@ -335,16 +335,19 @@ with a FAPI 2.0 client (`tls_client_auth`, PAR, certificate-bound tokens).
 1. **`/userinfo` over mutual TLS.** An edge no longer sends `Versola-Edge-Assertion`, and `auth` no longer
    reads it. When an edge-served endpoint needs `/userinfo` for a key-bound (DPoP) token, or for a token
    bound to a caller's certificate, the edge calls auth's mutual-TLS listener with **its own** certificate
-   (the one it presents to central: issued by central, `urn:versola:edge:<id>`), and `auth` serves the call
-   without the DPoP proof and without the holder's certificate **only if that certificate was signed by one
-   of the certificates in the new `auth` setting `mutual-tls.edge-trusted-certificates`** and names exactly
-   one edge. The edge has already verified the holder at its own boundary; the certificate is the proof that
-   an edge `auth` trusts did so. A token bound to *both* a key and a certificate is refused anyway, a
-   certificate in a forwarded header is never taken for an edge's, and signature, revocation and the
-   `openid` scope are checked as always. Without `edge-trusted-certificates` no certificate is an edge's and
-   `/userinfo` behaves as before. Removed: `EdgeAssertion`, `EdgeAssertionService`, auth's edge-registry sync,
-   central's `GET /configuration/edges/registry`, the `dpop_edge_assertion_*` metrics (and their dashboard
-   panels), and the assertion-sized floor on `dpop_proofs` eviction.
+   (the one it presents to central: issued by central, `urn:versola:edge:<id>`). `auth` serves the call
+   without the DPoP proof and without the holder's certificate **only if all of these hold**: the
+   certificate was signed by one of the certificates in the new `auth` setting
+   `mutual-tls.edge-trusted-certificates` (certificate authorities, valid now; checked at startup) and names
+   exactly one edge; **central still lists that edge** (auth syncs `GET /configuration/edges/registry`, ids
+   and assigned tenants, with the rest of its configuration); and the edge is **assigned to the tenant of
+   the token's client**. Otherwise the call is judged as any client's. A token bound to *both* a key and a
+   certificate is refused anyway, a certificate in a forwarded header is never taken for an edge's, and
+   signature, revocation and the `openid` scope are checked as always. Without `edge-trusted-certificates`
+   no certificate is an edge's and `/userinfo` behaves as before. Removed: `EdgeAssertion`,
+   `EdgeAssertionService`, the signing keys in central's registry (it now serves ids and tenants only), the
+   `dpop_edge_assertion_*` metrics (and their dashboard panels), and the assertion-sized floor on
+   `dpop_proofs` eviction.
 2. **A mutual-TLS listener on `edge`** (`mutual-tls { certificate, private-key, trusted-certificates,
    external-url }` in `edge.conf`, shaped like auth's; `MPORT`, default 8083, `MBIND_HOST`). It serves
    `/resources/{resourceId}/{path}` and nothing else, requires a client certificate in the handshake, and
@@ -363,16 +366,18 @@ What breaks, and how to migrate:
   to sign a client a name in the edge namespace. Add the line to an existing `auth.conf` that predates it.
   An edge with no `native` block cannot make this call (the certificate is only ever sent to auth's own
   listener, never to `versola-internal-url`) and answers `500` for such a token.
-- `dpop_edge_assertion_*` metrics and `GET /configuration/edges/registry` are gone.
+- `dpop_edge_assertion_*` metrics are gone, and `GET /configuration/edges/registry` no longer carries keys (`auth` reads ids and tenants from it).
 
 Security implication: **the edge's certificate private key becomes the most sensitive key of the
-deployment.** Whoever holds it can call `/userinfo` as an edge, for any token, with no proof of possession.
-Keep the edge CA dedicated (never the CA that issues clients' certificates: a client whose issuer can sign
-`urn:versola:edge:<id>` could otherwise impersonate an edge, which is why `auth` also checks the issuer and
-not only the name), keep edge certificates short-lived (vps: 30 days, renewed by the edge) and rotate them,
-and make auth's mutual-TLS listener reachable only from the network the edges run in. Deleting an edge in
-central, or rotating its key, cuts it off from central at once; its certificate stays valid at `auth` until it
-expires, which is the reason for short lifetimes.
+deployment.** Whoever holds it can call `/userinfo` as that edge, for any token of the tenants the edge is
+assigned to, with no proof of possession: that is the blast radius of a stolen edge certificate. What limits
+it: the edge CA must be dedicated (never the CA that issues clients' certificates: a client whose issuer
+can sign `urn:versola:edge:<id>` could otherwise impersonate an edge, which is why `auth` checks the issuer
+and not only the name; `docker-local` has a single CA and relies on central refusing to issue a client such
+a name, `gen-env` says so), edge certificates are short-lived (vps: 30 days, renewed by the edge), and
+**deleting an edge in central (or unassigning its tenants) cuts it off at `auth` within one configuration
+refresh**, not at expiry. Rotate the edge CA like any other, and make auth's mutual-TLS listener reachable
+only from the network the edges run in.
 
 Edge's own mutual-TLS listener is opt-in and its certificates are yours to provide for now (`versola
 configure` does not issue them): a server certificate for the public name callers use, and

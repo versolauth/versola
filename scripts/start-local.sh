@@ -68,7 +68,7 @@ on run argv
   delay 10
 
   tell application "Terminal"
-    do script "echo '[start-local] Starting Edge'; cd " & root & " && PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt --no-server -Denv.path=edge/dev/env.conf 'project edge-postgres-impl; run'"
+    do script "echo '[start-local] Starting Edge'; cd " & root & " && PORT=9005 DPORT=9006 MPORT=8083 RUN_MIGRATIONS=true sbt --no-server -Denv.path=edge/dev/env.conf 'project edge-postgres-impl; run'"
     do script "echo '[start-local] Starting Central UI'; cd " & uiRoot & " && npm run dev"
     activate
   end tell

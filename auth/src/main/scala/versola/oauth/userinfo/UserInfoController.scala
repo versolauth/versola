@@ -78,7 +78,7 @@ object UserInfoController extends Controller:
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setUserId(userId.toString)
 
-        trustedEdge <- trustedEdgeOf(request)
+        trustedEdge <- trustedEdgeOf(request, token.clientId)
         _ <- trustedEdge match
           // Edge already verified the holder at its own boundary (see `trustedEdgeOf`): the
           // two checks below are the holder's to pass, and this call is not the holder's.
@@ -201,17 +201,26 @@ object UserInfoController extends Controller:
           (token.stringValue, AuthScheme.Dpop)
     .orElseFail(UserInfoError.Unauthorized)
 
-  /** The edge this call comes from, when it comes from one auth trusts.
+  /** The edge this call comes from, when it comes from one auth trusts for this token.
     *
     * Only the certificate of the TLS session of auth's own mutual-TLS listener counts -- never one
     * a proxy forwarded in a header, which is an assertion by whatever spoke HTTP to this process --
-    * and only when it names an edge and was signed by the issuer configured for edges
-    * (`EdgeCertificateTrust`). Anything else is not an edge, and the request is judged as
-    * it always was.
+    * and only when it names an edge central still knows, signed by the issuer configured for edges
+    * (`EdgeCertificateTrust`), **and** that edge is assigned to the tenant of the token's client: a
+    * genuine edge may not vouch for another tenant's tokens. Anything else is not an edge for this
+    * call, and the request is judged as it always was, as a client's.
     */
-  private def trustedEdgeOf(request: Request): URIO[EdgeCertificateTrust, Option[String]] =
+  private def trustedEdgeOf(
+      request: Request,
+      clientId: ClientId,
+  ): ZIO[EdgeCertificateTrust & OAuthConfigurationService, Nothing, Option[String]] =
     request.remoteCertificate match
-      case Some(certificate: X509Certificate) => ZIO.serviceWith[EdgeCertificateTrust](_.edgeOf(certificate))
+      case Some(certificate: X509Certificate) =>
+        ZIO.serviceWithZIO[EdgeCertificateTrust](_.edgeOf(certificate)).flatMap:
+          case None => ZIO.none
+          case Some(edge) =>
+            ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
+              .map(_.filter(client => edge.tenantIds.contains(client.tenantId)).map(_ => edge.id))
       case _ => ZIO.none
 
   /** A token bound to both a key and a certificate is the one an edge cannot vouch for: the key is
