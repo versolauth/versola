@@ -93,6 +93,10 @@ object CoreConfig:
       userAgentCookieSecret: Secret.Bytes32,
       parRequestsSecret: Secret.Bytes32,
       dpopNoncesSecret: Secret.Bytes32,
+      /** Keys the hash of a phone number or address in the antifraud event log. Absent in a config written
+        * before it existed, which then derives the key from [[sessionsSecret]]; a new deployment holds a key of
+        * its own, so rotating the sessions secret does not break the match between old and new events. */
+      antifraudSubjectSecret: Option[Secret.Bytes32] = None,
   )
 
   /** RFC 9126 pushed authorization request endpoint settings. */

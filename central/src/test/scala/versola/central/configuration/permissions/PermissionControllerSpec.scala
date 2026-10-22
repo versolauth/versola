@@ -159,7 +159,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.createPermission.calls.map(_.permission) == List(Permission("billing:invoice:read_all")))),
     ),
     controllerTestCase(
-      description = "refuse to create a permission whose ID uses a dot, naming the colon-only rule",
+      description = "refuse to create a permission whose ID uses a dot, naming the rule",
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "permissions",
@@ -171,17 +171,15 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(service.createPermission.calls.isEmpty, body.contains("separated by ':'")),
     ),
     controllerTestCase(
-      description = "still accept an update of an existing permission whose ID uses a dot",
+      description = "refuse to update a permission whose ID uses a dot",
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "permissions",
         body = Body.fromString(updateRequest.copy(permission = Permission("legacy.read")).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service =>
-        service.updatePermission.succeedsWith(()),
+      expectedStatus = Status.BadRequest,
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.updatePermission.calls.map(_.permission) == List(Permission("legacy.read")))),
+        ZIO.succeed(assertTrue(service.updatePermission.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "update permission",

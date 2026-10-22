@@ -150,6 +150,21 @@ object RoleApiSpec extends CentralApiSpec:
         _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> second)
       yield assertTrue(record.map(_.strings("permissions")).contains(Set(first, second)))
     },
+    test("a role granting a permission with a dot is refused on create and on update") {
+      for
+        central <- api
+        roleId <- CentralApi.id("e2e-role")
+        created <- central.post(path, Fixtures.role(roleId, permissions = Set("probe.orders")))
+        updated <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(add = Set("probe.orders"))))
+        removed <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(remove = Set("probe.orders"))))
+        record <- central.get(path, "tenantId" -> Fixtures.suiteTenant)
+      yield assertTrue(
+        created.status == Status.BadRequest,
+        updated.status == Status.BadRequest,
+        removed.status == Status.BadRequest,
+      ) && assertTrue(!record.body.contains(roleId))
+        .label("a dotted ID cannot be stored any more, so no role may reference one")
+    },
     test("a role id outside the documented alphabet is refused") {
       for
         central <- api

@@ -266,12 +266,7 @@ export class VersolaPermissionsList extends LitElement {
   }
 
   private get editorMode(): 'view' | 'edit' | 'create' {
-    return this.route.create ? 'create' : this.route.edit && this.openPermission && !this.isLegacy(this.openPermission) ? 'edit' : 'view';
-  }
-
-  /** An ID the colon-only rule would refuse today (a dot): it stays listed and read-only (Delete works) until it is recreated. */
-  private isLegacy(permission: Permission): boolean {
-    return !validatePermission(permission.id);
+    return this.route.create ? 'create' : this.route.edit && this.openPermission ? 'edit' : 'view';
   }
 
   private get editGroup(): PermissionGroup | null {
@@ -324,7 +319,7 @@ export class VersolaPermissionsList extends LitElement {
   private get draftIdError(): string {
     const id = this.draftId.trim();
     if (!id) return this.submitted ? 'A permission ID is required.' : '';
-    if (!validatePermission(id)) return 'Lowercase segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.';
+    if (!validatePermission(id)) return 'Lowercase letters, numbers, underscores and hyphens in segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.';
     if (this.permissions.some(permission => permission.id === id)) return 'A permission with this ID already exists.';
     return '';
   }
@@ -443,7 +438,7 @@ export class VersolaPermissionsList extends LitElement {
       { id: 'permission', label: 'Permission', cell: permission => html`
         <button type="button" class="row-link" aria-label=${`Open permission ${getLocalizedDescription(permission.description) || permission.id} ${permission.id}`}>
           <span class="row-title">${getLocalizedDescription(permission.description) || permission.id}</span>
-          <span class="row-id">${permission.id}${this.isLegacy(permission) ? html` <span class="chip warn">Legacy ID</span>` : nothing}</span>
+          <span class="row-id">${permission.id}</span>
         </button>` },
       { id: 'resources', label: 'Resources', cell: permission => {
         const { groups } = this.resolve(permission);
@@ -495,7 +490,7 @@ export class VersolaPermissionsList extends LitElement {
     const { groups, detached } = this.resolve(permission);
     const roles = this.roles?.filter(role => role.permissions.some(candidate => candidate.id === permission.id)) ?? null;
     const clients = this.clients?.filter(client => client.permissions.includes(permission.id)) ?? null;
-    const editable = this.canManage && !this.isLegacy(permission);
+    const editable = this.canManage;
     const loading = html`<span class="muted">Loading…</span>`;
     const retry = html`<span class="muted">Could not load.</span> <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.loadGrantedBy()}>Retry</button>`;
     return html`
@@ -530,14 +525,8 @@ export class VersolaPermissionsList extends LitElement {
 
   private renderBanner(permission: Permission) {
     const { detached } = this.resolve(permission);
-    const legacy = this.isLegacy(permission) ? html`
-      <div class="banner warn" role="status">
-        <div class="banner-text">
-          <div>${statusIcon('alert')} This ID uses dots, which are no longer allowed. Recreate the permission with a colon ID (orders:read) and move its roles and clients.</div>
-        </div>
-      </div>` : '';
-    if (detached.length === 0) return legacy;
-    return html`${legacy}
+    if (detached.length === 0) return nothing;
+    return html`
       <div class="banner warn" role="status">
         <div class="banner-text">
           <div class="banner-title">${statusIcon('alert')}${detached.length} linked ${detached.length === 1 ? 'endpoint' : 'endpoints'} no longer ${detached.length === 1 ? 'exists' : 'exist'} in Resources</div>
@@ -549,7 +538,7 @@ export class VersolaPermissionsList extends LitElement {
 
   private renderMeta(permission: Permission) {
     const { detached } = this.resolve(permission);
-    return html`${this.isLegacy(permission) ? html`<span class="chip warn">Legacy ID</span>` : ''}${detached.length ? html`<span class="chip warn">Detached endpoints</span>` : ''}`;
+    return html`${detached.length ? html`<span class="chip warn">Detached endpoints</span>` : ''}`;
   }
 
   private renderRecordPage(permission: Permission) {
@@ -608,7 +597,7 @@ export class VersolaPermissionsList extends LitElement {
                 aria-invalid=${idError ? 'true' : nothing} aria-describedby="permission-id-hint" placeholder="e.g. orders:read"
                 @input=${(e: Event) => this.draftId = (e.target as HTMLInputElement).value} />
               ${idError ? html`<div class="error-message" id="permission-id-hint" role="alert">${idError}</div>`
-                : html`<div class="hint" id="permission-id-hint">Lowercase segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.</div>`}
+                : html`<div class="hint" id="permission-id-hint">Lowercase letters, numbers, underscores and hyphens in segments separated by colons, each starting with a letter (orders:read). Dots are not allowed.</div>`}
             </div>
             ${this.renderDescriptionField()}
           </div>

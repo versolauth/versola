@@ -399,6 +399,33 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
+  the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
+  `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
+  only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
+  read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
+  different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
+  keep the partitions and every write fails. The service takes at most 5 seconds for the lock the change needs
+  (a long query on `af_event` makes it give up, not queue the writes behind it) and tries again after a minute.
+  **Alert on `antifraud_partition_maintenance_failed_total` increasing**: a failed run is only a warning in the log,
+  and once the days ahead are used up the events are dropped (`antifraud_events_dropped_total{reason="write_failed"}`).
+  Events are queued in memory and written in batches: a full queue or a failed write drops events and counts them,
+  never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
+  estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
+  (`reason="throttled_shed"`), and what is still dropped is counted, so read statistics together with that counter.
+  Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
+  (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
+  the match between events before and after it, nothing else. A config written before the secret existed has no
+  such key and falls back on `security.sessions-secret`, so an upgrade needs no change, but rotating the sessions
+  secret then changes the hashes too. `versola configure` generates the secret for a deployment that wants its own;
+  the Helm chart reads it from the release's Secret as an optional key, so a release whose Secret predates it keeps
+  starting (an `env.conf` regenerated to reference `${ANTIFRAUD_SUBJECT_SECRET}` needs the key in the Secret too: add the
+  key together with the new config). **The hash is pseudonymous, not anonymous:** the space of phone numbers is small enough to be tried
+  against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
+  Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
+  retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
+  optional `antifraud` block of `auth`'s config.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
@@ -679,7 +706,7 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 | Outbound field | Default | Environment base |
 |---|---|---|
 | `mode` | `shadow` | `HTTP_CLIENT_GUARD_MODE` |
-| `maxConcurrent` | the connection pool size (128) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
+| `maxConcurrent` | the connection pool size (128, the maximum of the default `dynamic` pool; `HTTP_CLIENT_POOL_*` in k8s/README.md) | `HTTP_CLIENT_GUARD_MAX_CONCURRENT` |
 | `maxQueue` / `queueTimeoutMillis` / `requestTimeoutMillis` | 256 / 1000 / 10000 | `HTTP_CLIENT_GUARD_MAX_QUEUE`, `_QUEUE_TIMEOUT`, `_REQUEST_TIMEOUT` |
 | `breaker` | off; failureRatio 0.5, minCalls 20, window 10 s, open 5 s, probeCalls 3 | policy only |
 | `retryBudget` | ratio 0.1, minPerSecond 5 | policy only |

@@ -14,5 +14,5 @@
 # not chosen here: a seeded table in a service not listed below fails the guard until its
 # directory is added. That is why edge is absent -- the seeder writes no edge table yet.
 
-auth/implementations/postgres/migrations 8e3331bb3d6969d5656b3558ec61b56c4d6bb8ab4b9a56f0a3038e056456d7cb
+auth/implementations/postgres/migrations 22293287a1cd8e7453673bc60da7a78fab31c31bc7fc963fb65563c64ac650df
 central/implementations/postgres/migrations 34ecc55a449cf80b7fad726eadf05b5e374b6476e15d99c593ab286772d09835

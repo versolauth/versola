@@ -151,6 +151,20 @@ else
   [ -n "$extra" ] && echo "    ${REMOTE_EDGE_CHART}: injected by the chart but NOT generated: $(echo "$extra" | tr '\n' ' ')" >&2
 fi
 
+# A key added after a release shipped must not stop that release's pods: its own Secret
+# (secrets.existingSecret) lacks the key, and a required secretKeyRef then fails the pod with
+# CreateContainerConfigError. ANTIFRAUD_SUBJECT_SECRET is optional (auth falls back on
+# SESSIONS_SECRET), so the chart has to render it that way.
+optional_rendered="$(helm template check "$repo_root/$CHART" \
+    --set secrets.existingSecret=ci-check --set console.enabled=false \
+    --set services.central.enabled=false --set services.edge.enabled=false \
+    --set services.auth.config.existingSecret=ci-check \
+  | grep -A5 'name: ANTIFRAUD_SUBJECT_SECRET' | grep -c 'optional: true' || true)"
+if [ "$optional_rendered" -ne 1 ]; then
+  echo "FAIL: ANTIFRAUD_SUBJECT_SECRET must be rendered with 'optional: true' (an upgrade with an older Secret would break)." >&2
+  exit 1
+fi
+
 echo
 if [ "$failed" -ne 0 ]; then
   cat >&2 <<'MSG'
