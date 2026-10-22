@@ -355,12 +355,15 @@ object ConversationService:
                           )
                           written <- conversationRepository.overwrite(authId, updatedConversation)
                           sentResult <- if written then
-                            otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
+                            // The flag goes up in the same uninterruptible step in which the send is known to have
+                            // succeeded, so an interruption cannot fall between the two and give back a code that went.
+                            ZIO.uninterruptibleMask(sending =>
+                              sending(otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)) <* sentOut.set(true),
+                            )
                               .tapBoth(
                                 _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error),
                                 _ =>
-                                  sentOut.set(true) *>
-                                    otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
+                                  otpRequested(authId, conversation, credential, if sentStep.isFake then AntifraudOutcome.suppressed else AntifraudOutcome.sent),
                               )
                               .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
                           else
