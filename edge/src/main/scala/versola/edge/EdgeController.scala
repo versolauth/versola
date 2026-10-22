@@ -55,7 +55,9 @@ object EdgeController extends Controller:
           request.url.queryParams.map.get(key).flatMap(_.headOption).map(key -> _)
         }.toMap
 
-        response <- edgeService.authorize(PresetId(presetId), overrideParams)
+        returnTo = request.url.queryParams.map.get("return_to").flatMap(_.headOption)
+
+        response <- edgeService.authorize(PresetId(presetId), overrideParams, returnTo)
           .either.flatMap:
             case Left(error: PresetNotFound) =>
               ZIO.succeed(Response.notFound)
@@ -108,7 +110,7 @@ object EdgeController extends Controller:
                   for
                     now <- Clock.instant
                   yield Response
-                    .seeOther(completion.postLoginRedirectUri.toUrl)
+                    .seeOther(completion.redirectUrl)
                     .addCookie(
                       EdgeSessionCookie(
                         presetId = completion.presetId,
