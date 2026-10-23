@@ -144,6 +144,11 @@ object ObservabilitySpec extends ZIOSpecDefault:
           Method.GET / "error" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
           },
+          Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None))(
+              _.copy(decision = "Block", score = 12, rules = List("deny_list"), outcome = Some("blocked")),
+            ).as(Response.text("ok"))
+          },
           Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setRouteLabel("grant_type", "client_credentials").as(Response.text("ok"))
           },
@@ -313,6 +318,22 @@ object ObservabilitySpec extends ZIOSpecDefault:
           "receive-http" -> Some("auth-1"),
           "receive-http" -> None,
         ),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("renders the antifraud check on the receive-http line, under the antifraud key") {
+      val format = List(label("message", quoted(line)), logAnnotation(Observability.antifraud)).reduce(_ |-| _)
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        _ <- client.batched(Request.get(URL.empty / "antifraud"))
+        logs <- ZTestLogger.logOutput
+        rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+          .orElseFail(new RuntimeException("Missing receive-http log"))
+        rendered = rawLog.call(format.toJsonLogger)
+      yield assertTrue(
+        rendered.contains("\"antifraud\":{\"action\":\"otp_request\",\"decision\":\"Block\",\"score\":12,\"rules\":[\"deny_list\"]"),
+        rendered.contains("\"outcome\":\"blocked\""),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     // Closes the ErrorDetails.description default-None gap (line 530): every other error test

@@ -1,7 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.antifraud.{AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository}
+import versola.antifraud.{Antifraud, AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -304,6 +304,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserService.live >++>
       ConsentService.live >++>
       antifraudSettings >++>
+      Antifraud.live(Nil) >++>
       AntifraudEvents.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>

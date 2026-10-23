@@ -5,8 +5,10 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, TenantId}
 import versola.oauth.conversation.model.AuthId
+import versola.util.http.Observability
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
+import zio.logging.logContext
 import zio.test.*
 
 import java.time.{Instant, LocalDate}
@@ -40,6 +42,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       e: Env,
       settings: AntifraudEvents.Settings,
       config: versola.util.CoreConfig = TestEnvConfig.coreConfig,
+      antifraud: Antifraud = Antifraud.off,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
@@ -51,6 +54,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed(settings),
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
+      ZLayer.succeed[Antifraud](antifraud),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
@@ -197,6 +201,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed(small),
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
+            ZLayer.succeed[Antifraud](Antifraud.off),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -251,6 +256,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -275,6 +281,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -346,6 +353,46 @@ object AntifraudEventsSpec extends UnitSpecBase:
           yield assertTrue(
             rolled == List((Instant.parse("2026-10-21T09:59:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
             pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
+          )
+      },
+    ),
+    suite("the request's log")(
+      test("a decision, the rules that fired and the outcome are put on the request's own log context, with its IP") {
+        val e = env
+        val seen = new java.util.concurrent.atomic.AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] =
+            ZIO.succeed(seen.set(Some(ctx))) *> ZIO.succeed(Decision(DecisionAction.Block, 12, List("deny_list")))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true)), antifraud = engine)
+            _ <- Observability.setIp("203.0.113.7")
+            decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.blocked, Some(decision))
+            details <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(
+            seen.get.flatMap(_.ip) == Some("203.0.113.7"),
+            seen.get.flatMap(_.destPrefix) == Some("491512"),
+            details == Some(
+              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked")),
+            ),
+          )
+      },
+      test("with the engine off no decision is made and the outcome alone is put on the log context") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small)
+            decision <- events.decideOtpRequest(clientId, None, Right(phone))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            details <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(
+            decision == Decision.allow,
+            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"))),
           )
       },
     ),
