@@ -8,17 +8,13 @@ import java.time.temporal.ChronoUnit
 
 /** Mirrors central's `PasskeyEnrollmentMode` -- see there for what each case means. */
 enum PasskeyEnrollmentMode derives JsonCodec:
-  @jsonHint("off")
-  case off
+  @jsonHint("off") case off
 
-  @jsonHint("offered")
-  case offered
+  @jsonHint("offered") case offered
 
-  @jsonHint("required_after_grace")
-  case requiredAfterGrace
+  @jsonHint("required_after_grace") case requiredAfterGrace
 
-  @jsonHint("required")
-  case required
+  @jsonHint("required") case required
 
 /** What the user is shown after a sign-in that left them without a passkey. */
 enum PasskeyOffer:

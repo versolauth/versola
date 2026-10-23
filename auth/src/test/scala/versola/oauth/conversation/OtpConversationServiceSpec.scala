@@ -53,7 +53,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeChallengeMethod = CodeChallengeMethod.S256
 
-  class Env(smsAllowed: Boolean = true, afterRequested: zio.UIO[Unit] = ZIO.unit, decision: Decision = Decision.allow, fakeDelay: zio.Duration = zio.Duration.Zero):
+  class Env(
+      smsAllowed: Boolean = true,
+      afterRequested: zio.UIO[Unit] = ZIO.unit,
+      decision: Decision = Decision.allow,
+      fakeDelay: zio.Duration = zio.Duration.Zero,
+  ):
     val otpService = stub[OtpService]
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
@@ -226,7 +231,15 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           steps = env.antifraud.steps
         yield assertTrue(
           steps == List(
-            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent, None),
+            RecordingAntifraudEvents.Step(
+              AntifraudAction.otp_request,
+              authId,
+              clientId,
+              Some("Mozilla/5.0"),
+              Left(email),
+              AntifraudOutcome.sent,
+              None,
+            ),
           ),
         )
       },

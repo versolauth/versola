@@ -46,10 +46,16 @@ object PasskeyPolicySpec extends UnitSpecBase:
         )
       },
       test("required_after_grace by skips only ignores time") {
-        assertTrue(policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None).offer(state(2), first.plusSeconds(1_000_000_000L)) == PasskeyOffer.Skippable)
+        assertTrue(policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None).offer(
+          state(2),
+          first.plusSeconds(1_000_000_000L),
+        ) == PasskeyOffer.Skippable)
       },
       test("required_after_grace by days only ignores the skip count") {
-        assertTrue(policy(PasskeyEnrollmentMode.requiredAfterGrace, None, Some(7)).offer(state(50), first.plusSeconds(86400L)) == PasskeyOffer.Skippable)
+        assertTrue(policy(PasskeyEnrollmentMode.requiredAfterGrace, None, Some(7)).offer(
+          state(50),
+          first.plusSeconds(86400L),
+        ) == PasskeyOffer.Skippable)
       },
       test("required_after_grace without any limit fails closed") {
         assertTrue(policy(PasskeyEnrollmentMode.requiredAfterGrace, None, None).offer(None, first) == PasskeyOffer.Mandatory)
