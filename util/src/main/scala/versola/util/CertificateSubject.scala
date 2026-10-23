@@ -47,17 +47,23 @@ case class CertificateSubject(
 
   /** Whether `certificate` is for exactly this subject: the same distinguished name and the same alternative names, no
     * name more and none fewer. The certificate-side counterpart of [[CertificateSubject.matches]], for deciding that a
-    * certificate presented today still says what the client is registered by. */
-  def describes(certificate: X509Certificate): Boolean =
+    * certificate presented today still says what the client is registered by.
+    *
+    * A subject that registers no alternative name at all may come back from step-ca with one DNS name, the common name:
+    * a JWK provisioner whose one-time token lists no `sans` falls back to the token's subject. `tolerateCommonNameDns`
+    * accepts exactly that (and nothing else) for such a subject, for the certificates a CA of that kind issues. */
+  def describes(certificate: X509Certificate, tolerateCommonNameDns: Boolean = false): Boolean =
     val names = scala.util.Try(Option(certificate.getSubjectAlternativeNames).map(_.asScala.toList).getOrElse(Nil)).toOption
     def of(tag: Int): Set[String] =
       names.getOrElse(Nil).filter(_.get(0) == Integer.valueOf(tag)).map(_.get(1).toString).toSet
     def ip(value: String): String = InetAddress.getByName(value).getHostAddress
     names.isDefined && certificate.getSubjectX500Principal == principal &&
-    of(GeneralName.dNSName) == dnsNames.toSet &&
+    (of(GeneralName.dNSName) == dnsNames.toSet || (tolerateCommonNameDns && hasNoNames && of(GeneralName.dNSName) == Set(commonName))) &&
     of(GeneralName.uniformResourceIdentifier) == uris.toSet &&
     of(GeneralName.rfc822Name) == emailAddresses.toSet &&
     of(GeneralName.iPAddress).map(ip) == ipAddresses.map(ip).toSet
+
+  private def hasNoNames: Boolean = dnsNames.isEmpty && uris.isEmpty && emailAddresses.isEmpty && ipAddresses.isEmpty
 
   private def alternativeNames: List[GeneralName] =
     dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++

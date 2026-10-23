@@ -107,7 +107,13 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - `versola-cli`: `curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh`,
   then `export PATH="$HOME/.local/bin:$PATH"`. `versola upgrade` updates it later.
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
-  `versola-edge`); they are public, no `docker login` needed.
+  `versola-edge`); they are public, no `docker login` needed. Test builds pushed to another registry
+  are deployed with `versola-cli`'s `--registry <prefix>` (`configure`, `bootstrap`, `secrets plan`): it hands the
+  prefix to `versola-tools` as `IMAGE_REGISTRY`, which writes it in front of `versola-central`,
+  `-auth`, `-edge` and `-tools` in the compose file (default `ghcr.io/versolauth`). The tag stays the
+  tools image's own `VERSION`, so build it with `--build-arg VERSION=<the tag you push it under>`; the
+  CLI refuses a compose file whose images are not under the prefix at that tag. `docker login` for a
+  private registry is the operator's.
 - A client of the server's major version for `psql`/`pg_dump`: Debian 12's is 15 and `pg_dump`
   refuses a version 18 server, so install `postgresql-client-18` from `apt.postgresql.org`.
 
