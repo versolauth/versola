@@ -8,18 +8,19 @@
 -- open for antifraud.detectors.open-for and then expires). tenant_id is never empty: a range seen under no tenant
 -- is not proposed, since the entry would have to be global.
 --
+-- The columns that hold a kind (kind, value_type, suggested_action, status) carry no CHECK: the set of kinds is the service's,
+-- and a new kind must not need a migration.
 -- status: open until decided; approved and rejected carry who decided and when; expired means nobody did.
 CREATE TABLE af_proposal (
     id               UUID        NOT NULL PRIMARY KEY,
     tenant_id        TEXT        NOT NULL,
     kind             TEXT        NOT NULL,
-    value_type       TEXT        NOT NULL CHECK (value_type IN
-                         ('phone_hash', 'prefix', 'ip', 'cidr', 'asn', 'device_id', 'ua_hash', 'ja4_hash', 'email_domain')),
+    value_type       TEXT        NOT NULL,
     value            TEXT        NOT NULL,
     evidence         JSONB       NOT NULL,
-    suggested_action TEXT        NOT NULL CHECK (suggested_action IN ('deny', 'watch', 'fake')),
+    suggested_action TEXT        NOT NULL,
     ttl_seconds      BIGINT      NOT NULL,
-    status           TEXT        NOT NULL CHECK (status IN ('open', 'approved', 'rejected', 'expired')),
+    status           TEXT        NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL,
     decided_by       TEXT,
     decided_at       TIMESTAMPTZ
