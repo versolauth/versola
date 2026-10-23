@@ -62,7 +62,7 @@ services:
   # time, not passed again here, so this only needs the same network
   # namespace those services already run in to reach it.
   migrate:
-    image: ghcr.io/versolauth/versola-tools:${VERSION}
+    image: ${REGISTRY}/versola-tools:${VERSION}
     # No `platform:` pin, same reasoning as central/auth/edge below.
     network_mode: host
     command: ["migrate"]
@@ -89,7 +89,7 @@ services:
       - ./postgres-ca:/etc/versola/postgres-ca:ro
 
   central:
-    image: ghcr.io/versolauth/versola-central:${VERSION}
+    image: ${REGISTRY}/versola-central:${VERSION}
     # No `platform:` pin here or on auth/edge below -- these images are
     # published as multi-arch manifest lists now, so Docker resolves them
     # natively on an arm64 VPS (Graviton/Ampere) instead of being forced
@@ -149,7 +149,7 @@ services:
       - versola-mtls-vps:/app/mtls:ro
 
   auth:
-    image: ghcr.io/versolauth/versola-auth:${VERSION}
+    image: ${REGISTRY}/versola-auth:${VERSION}
     container_name: versola-auth
     restart: unless-stopped
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
@@ -193,7 +193,7 @@ services:
       - versola-mtls-vps:/app/mtls:ro
 
   edge:
-    image: ghcr.io/versolauth/versola-edge:${VERSION}
+    image: ${REGISTRY}/versola-edge:${VERSION}
     container_name: versola-edge
     restart: unless-stopped
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s

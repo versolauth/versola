@@ -269,7 +269,7 @@ object ClientEstService:
             case _ => ZIO.unit
           subject <- subjectOf(client)
           _ <- ZIO.fail(Refused(Refusal.Forbidden, "the presented certificate does not carry the subject the client is registered by"))
-            .unless(subject.describes(presented))
+            .unless(subject.describes(presented, tolerateCommonNameDns = true))
           // Only in the last part of its life: a certificate that is not near its end has no need of a successor, and a
           // caller that asks early is not the client's own routine.
           lifetime = JavaDuration.between(presented.getNotBefore.toInstant, presented.getNotAfter.toInstant)
@@ -352,7 +352,7 @@ object ClientEstService:
       for
         leaf <- ZIO.attempt(parse(chain).head)
         _ <- ZIO.fail(Refused(Refusal.Forbidden, "the issued certificate does not carry exactly the registered subject"))
-          .unless(subject.describes(leaf) && !EdgeCertificate.uriNames(leaf).exists(EdgeCertificate.isReserved))
+          .unless(subject.describes(leaf, tolerateCommonNameDns = true) && !EdgeCertificate.uriNames(leaf).exists(EdgeCertificate.isReserved))
       yield leaf
 
     private def record(clientId: ClientId, leaf: X509Certificate, now: Instant): NewEstCertificate =
