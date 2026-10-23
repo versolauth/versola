@@ -168,7 +168,7 @@ The script first asks for the environment **Name** (default `local`):
   Postgres is a throwaway container this same run also creates, while vps's Postgres
   role lives on a server this script doesn't control — the password generated here
   becomes the real one only on the first `configure` against an empty OpenBao, and
-  `versola-cli` then prints the SQL to give the role that password (deploy.md, "Database, role and schemas").
+  `versola-cli` then writes the SQL that gives the role that password to a file and prints the command to run it (deploy.md, "Database, role and schemas").
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).
@@ -517,11 +517,13 @@ enable KV v2 and AppRole, write a policy limited to `secret/data/versola/<target
 
 | File | Holds |
 |---|---|
-| `<target>.json` | the AppRole `role-id`/`secret-id` it reads and writes secrets with (also printed on every `configure`) |
+| `<target>.json` | the AppRole `role-id`/`secret-id` it reads and writes secrets with (`configure` prints only this file's path) |
 | `<target>-admin.json` | the root token and unseal key |
 
-OpenBao comes back **sealed** after every container restart (there is no auto-unseal); `configure`
-unseals it with the key in `<target>-admin.json`, and recreates the container if it was stopped or its
+OpenBao comes back **sealed** after every container restart; every command that logs in to it
+(`configure`, `rollout`, `secrets plan|test|login`) first unseals it with the key in
+`<target>-admin.json`, but only on a loopback address, and with `--setup-openbao` you unseal it yourself.
+`configure` also recreates the container if it was stopped or its
 `openbao.hcl` went away with an old bundle. **Keep a copy of both files off the machine** — neither value
 is recoverable if lost. On `vps`, if saving `-admin.json` fails right after init, `configure` stops
 instead of printing a root token into a server terminal; that instance is then unusable and its volume
@@ -570,8 +572,8 @@ value is correct.
 Existing values in OpenBao always win, but with automatic setup OpenBao exists only once `configure` has
 run, and that first run already stores generated values. So the order is:
 
-1. Run `versola configure vps …` once. It provisions OpenBao and stores generated values. It also prints
-   a `CREATE ROLE`/`ALTER ROLE` for a new Postgres password — **don't run it**: the existing role keeps
+1. Run `versola configure vps …` once. It provisions OpenBao and stores generated values. It also writes
+   a SQL file with a `CREATE ROLE`/`ALTER ROLE` for a new Postgres password and prints the command to run it — **don't run it**: the existing role keeps
    its real password, which goes into OpenBao in the next step. Don't run `migrate` or `up` yet.
 2. Overwrite the generated values with the real ones (root token from `~/.versola/openbao/vps-admin.json`):
    ```bash
