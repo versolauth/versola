@@ -208,7 +208,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         offset == 20,
       )
     },
-    test("GET lists: global=true asks for the global entries; with a tenant, an unknown value or a bad page it is 400") {
+    test(
+      "GET lists: global=true asks for the global entries; with a tenant, an unknown value, a bad number or flag, an empty actor or a page the service refuses it is 400",
+    ) {
       val lists = stub[AntifraudLists]
       def get(params: (String, String)*) = call(lists, Request.get(base.addQueryParams(QueryParams(("actor" -> "root"), params*))))
       for
@@ -216,9 +218,11 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         global <- get("global" -> "true")
         both <- get("global" -> "true", "tenantId" -> "tenant-a")
         badType <- get("listType" -> "nope")
-        zero <- get("limit" -> "0")
-        huge <- get("limit" -> "100000")
-        negative <- get("offset" -> "-1")
+        notANumber <- get("limit" -> "many")
+        notAFlag <- get("global" -> "maybe")
+        noActor <- call(lists, Request.get(base.addQueryParams(QueryParams("actor" -> ""))))
+        _ <- lists.list.failsWith(InvalidListEntry("limit is 1 to 500, offset is 0 or more"))
+        outOfRange <- get("limit" -> "100000")
       yield assertTrue(
         global.status == Status.Ok,
         lists.list.calls.head._1.tenantId == Some(None),
@@ -226,10 +230,11 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         lists.list.calls.head._3 == 100,
         both.status == Status.BadRequest,
         badType.status == Status.BadRequest,
-        zero.status == Status.BadRequest,
-        huge.status == Status.BadRequest,
-        negative.status == Status.BadRequest,
-        lists.list.calls.size == 1,
+        notANumber.status == Status.BadRequest,
+        notAFlag.status == Status.BadRequest,
+        noActor.status == Status.BadRequest,
+        outOfRange.status == Status.BadRequest,
+        lists.list.calls.size == 2,
       )
     },
     test("DELETE answers 204, 404 for an entry that is not there, 403 for one the actor may not change, 400 for a bad id") {

@@ -19,7 +19,6 @@ object AntifraudListController extends Controller:
   type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents
 
   private val DefaultLimit = 100
-  private val MaxLimit = 500
 
   def routes: Routes[Env, Throwable] = Routes(createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint)
 
@@ -46,25 +45,28 @@ object AntifraudListController extends Controller:
     }
 
   /** `tenantId` narrows to one tenant, `global=true` to the global entries; a tenant's admin sees their own either way. */
+  /** `tenantId` narrows to one tenant, `global=true` to the global entries; a tenant's admin sees their own either way. */
   val listEndpoint =
     Method.GET / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         actor <- actorOf(request)
-        listType <- optional(request, "listType")(parseEnum("listType", AntifraudListType.valueOf))
-        valueType <- optional(request, "valueType")(parseEnum("valueType", AntifraudValueType.valueOf))
-        tenant = request.url.queryParams.queryParam("tenantId")
-        global = request.url.queryParams.queryParam("global").contains("true")
-        _ <- ZIO.fail(BadRequest("tenantId and global exclude each other")).when(global && tenant.isDefined)
-        limit <- limitOf(request)
-        offset <- offsetOf(request)
+        listType <- request.queryZIO[Option[AntifraudListType]]("listType")
+        valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
+        tenant <- request.queryZIO[Option[TenantId]]("tenantId")
+        global <- request.queryZIO[Option[Boolean]]("global")
+        limit <- request.queryZIO[Option[Int]]("limit")
+        offset <- request.queryZIO[Option[Int]]("offset")
         lists <- ZIO.service[AntifraudLists]
         filter = AntifraudListFilter(
           listType = listType,
           valueType = valueType,
-          tenantId = if global then Some(None) else tenant.map(t => Some(TenantId(t))),
+          tenantId = if global.contains(true) then Some(None) else tenant.map(Some(_)),
         )
-        response <- guarded(lists.list(filter, actor, limit, offset).map(entries => Response.json(entries.toJson)))
+        response <- guarded(
+          ZIO.fail(InvalidListEntry("tenantId and global exclude each other")).when(global.contains(true) && tenant.isDefined) *>
+            lists.list(filter, actor, limit.getOrElse(DefaultLimit), offset.getOrElse(0)).map(entries => Response.json(entries.toJson)),
+        )
       yield response
     }
 
@@ -73,7 +75,7 @@ object AntifraudListController extends Controller:
       for
         _ <- authorizeInternal(request)
         actor <- actorOf(request)
-        id <- uuidOf(request, "id")
+        id <- request.queryZIO[UUID]("id")
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
           lists.delete(id, actor).flatMap:
@@ -88,10 +90,10 @@ object AntifraudListController extends Controller:
       for
         _ <- authorizeInternal(request)
         actor <- actorOf(request)
-        entryId <- optional(request, "entryId")(_ => uuidOf(request, "entryId"))
-        limit <- limitOf(request)
+        entryId <- request.queryZIO[Option[UUID]]("entryId")
+        limit <- request.queryZIO[Option[Int]]("limit")
         lists <- ZIO.service[AntifraudLists]
-        response <- guarded(lists.audit(entryId, actor, limit).map(records => Response.json(records.toJson)))
+        response <- guarded(lists.audit(entryId, actor, limit.getOrElse(DefaultLimit)).map(records => Response.json(records.toJson)))
       yield response
     }
 
@@ -122,31 +124,12 @@ object AntifraudListController extends Controller:
       shadow = entry.shadow.getOrElse(false),
     )
 
-  private def actorOf(request: Request): IO[BadRequest, ListActor] =
-    ZIO.fromOption(request.url.queryParams.queryParam("actor").filter(_.nonEmpty))
-      .orElseFail(BadRequest("actor is required"))
-      .map(name => ListActor(name = name, tenantId = request.url.queryParams.queryParam("actorTenantId").filter(_.nonEmpty).map(TenantId(_))))
-
-  private def uuidOf(request: Request, name: String): IO[BadRequest, UUID] =
-    ZIO.fromOption(request.url.queryParams.queryParam(name))
-      .orElseFail(BadRequest(s"$name is required"))
-      .flatMap(raw => ZIO.attempt(UUID.fromString(raw)).orElseFail(BadRequest(s"$name is not a UUID")))
-
-  private def optional[A](request: Request, name: String)(parse: String => IO[BadRequest, A]): IO[BadRequest, Option[A]] =
-    ZIO.foreach(request.url.queryParams.queryParam(name))(parse)
-
-  private def parseEnum[A](name: String, parse: String => A)(raw: String): IO[BadRequest, A] =
-    ZIO.attempt(parse(raw)).orElseFail(BadRequest(s"$name is not one of the known values"))
-
-  private def intOf(request: Request, name: String, default: Int, max: Int): IO[BadRequest, Int] =
-    request.url.queryParams.queryParam(name) match
-      case None => ZIO.succeed(default)
-      case Some(raw) =>
-        ZIO.fromOption(raw.toIntOption.filter(n => n >= 0 && n <= max)).orElseFail(BadRequest(s"$name must be between 0 and $max"))
-
-  private def limitOf(request: Request) = intOf(request, "limit", DefaultLimit, MaxLimit).filterOrFail(_ > 0)(BadRequest("limit must be positive"))
-
-  private def offsetOf(request: Request) = intOf(request, "offset", 0, Int.MaxValue)
+  /** Who central says is calling: the admin's name and, unless they are an operator, their tenant. */
+  private def actorOf(request: Request): ZIO[Any, Throwable, ListActor] =
+    for
+      name <- request.queryZIO[String]("actor").filterOrFail(_.nonEmpty)(BadRequest("actor is required"))
+      tenantId <- request.queryZIO[Option[TenantId]]("actorTenantId")
+    yield ListActor(name = name, tenantId = tenantId)
 
   case class ListActorPayload(name: String, tenantId: Option[TenantId]) derives JsonCodec:
     def toActor: ListActor = ListActor(name = name, tenantId = tenantId)
