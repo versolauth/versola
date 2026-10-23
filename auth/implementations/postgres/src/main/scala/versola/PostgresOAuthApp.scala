@@ -12,6 +12,7 @@ import versola.antifraud.{
   PostgresVelocityRepository,
   VelocityCounters,
   VelocityRepository,
+  VelocityRules,
 }
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
@@ -115,10 +116,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService &
       AntifraudEvents &
       AntifraudEventRepository &
-      AntifraudListRepository &
-      AntifraudLists &
       VelocityRepository &
       VelocityCounters &
+      AntifraudListRepository &
+      AntifraudLists &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -231,8 +232,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
-      PostgresAntifraudListRepository.live >++>
       PostgresVelocityRepository.live >++>
+      PostgresAntifraudListRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -325,13 +326,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       antifraudSettings >++>
       antifraudListSettings >++>
       AntifraudLists.live >++>
-      // Each component that adds rules is listed here.
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
-        Antifraud.Impl(settings.decision, List(lists.ruleSet)): Antifraud,
-      ) >++>
-      AntifraudEvents.live >++>
       ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
       VelocityCounters.live >++>
+      // Each component that adds rules is listed here.
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
+        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity))): Antifraud,
+      ) >++>
+      AntifraudEvents.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
