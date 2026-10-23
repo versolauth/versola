@@ -7,7 +7,7 @@ import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
-import versola.util.{CoreConfig, Email, FormDecoder, Phone}
+import versola.util.{ClientIp, CoreConfig, Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -144,7 +144,7 @@ object ConversationController extends Controller:
         cookie <- extractCookie(request)
         _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
-        ip = extractIp(request, ipHeader)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         body <- request.formAs[Body]
@@ -237,13 +237,6 @@ object ConversationController extends Controller:
         UiLocales.resolve(request),
       )
     yield response
-
-  /** Extracts the client IP from the header configured in submission limits. Returns None when no
-    * header is configured, causing IP-based throttling to be skipped entirely. For multi-value
-    * headers such as X-Forwarded-For only the first (leftmost) value is used.
-    */
-  private def extractIp(request: Request, ipHeader: String): Option[String] =
-    request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for

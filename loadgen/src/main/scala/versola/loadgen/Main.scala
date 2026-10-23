@@ -1,5 +1,6 @@
 package versola.loadgen
 
+import versola.loadgen.antifraud.AntifraudRun
 import versola.loadgen.calibrate.Calibration
 import versola.loadgen.config.{LoadgenConfig, LoadgenRole}
 import versola.loadgen.coordinator.{Coordinator, CoordinatorRoutes, CoordinatorService}
@@ -20,6 +21,9 @@ import zio.telemetry.opentelemetry.tracing.Tracing
   * `role = seed`, `role = provision` and `role = calibrate` are the one-shot subcommands of §10,
   * §4 and §9/§13: each runs to completion and exits, so they take over `run` rather than standing
   * up the servers `VersolaApp` otherwise waits on forever.
+  *
+  * `role = antifraud` is a one-shot as well (#771, P0-7): it drives the OTP flow with and without antifraud, writes its report
+  * and exits; see `loadgen/antifraud/README.md`.
   *
   * `role = driver` takes `run` over too, for a different reason: the campaign is the process's
   * work, not something it answers requests about, and it ends when the coordinator stops the
@@ -50,6 +54,7 @@ object Main extends VersolaApp("loadgen"):
         case LoadgenRole.Provision => Provisioner.provision(config)
         case LoadgenRole.Seed => Seeder.seed(config)
         case LoadgenRole.Calibrate => Calibration.calibrate(config)
+        case LoadgenRole.Antifraud => ZIO.scoped(AntifraudRun.run(config))
         // The driver's load generation and `VersolaApp`'s server are raced rather than sequenced:
         // the server never returns, and the campaign has to be able to end the process when the
         // coordinator stops it or the run latches an abort.
