@@ -25,12 +25,13 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
   override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
     xa.transactMeasured("upsert-antifraud-list-entry"):
       val stored = sql"""
-        INSERT INTO af_list_entry (id, type, value_type, value, tenant_id, expires_at, reason, source, created_by, created_at)
+        INSERT INTO af_list_entry (id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at)
         VALUES (${entry.id}, ${entry.listType.toString}, ${entry.valueType.toString}, ${entry.value},
                 ${entry.tenantId.map(identity[String])}, ${entry.expiresAt}, ${entry.reason}, ${entry.source},
-                ${entry.createdBy}, ${entry.createdAt})
+                ${entry.shadow}, ${entry.createdBy}, ${entry.createdAt})
         ON CONFLICT (type, value_type, value, COALESCE(tenant_id, '')) DO UPDATE
-          SET expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason, source = EXCLUDED.source
+          SET expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason, source = EXCLUDED.source,
+              shadow = EXCLUDED.shadow
         RETURNING $EntryColumns
       """.query[EntryRow].run().head
       audited(AntifraudListAction.create, actor, at, stored)
@@ -41,6 +42,31 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       val removed = sql"DELETE FROM af_list_entry WHERE id = $id RETURNING $EntryColumns".query[EntryRow].run().headOption
       removed.foreach(row => audited(AntifraudListAction.delete, actor, at, row))
       removed.isDefined
+
+  override def find(id: UUID): Task[Option[AntifraudListEntry]] =
+    xa.connectMeasured("find-antifraud-list-entry"):
+      sql"SELECT $EntryColumns FROM af_list_entry WHERE id = $id".query[EntryRow].run().headOption.map(_.toEntry)
+
+  override def preview(valueType: AntifraudValueType, value: String, since: Instant): Task[ListPreview] =
+    xa.connectMeasured("preview-antifraud-list-entry"):
+      // Only the columns the event log has can say what an entry would have matched.
+      val counts = valueType match
+        case AntifraudValueType.phone_hash =>
+          Some(sql"SELECT COUNT(*) FILTER (WHERE subject_hash = $value), COUNT(*) FROM af_event WHERE at >= $since".query[Counts].run().head)
+        case AntifraudValueType.prefix =>
+          Some(
+            sql"SELECT COUNT(*) FILTER (WHERE left(dest_prefix, ${value.length}) = $value), COUNT(*) FROM af_event WHERE at >= $since"
+              .query[Counts].run().head,
+          )
+        case AntifraudValueType.ua_hash =>
+          Some(
+            sql"SELECT COUNT(*) FILTER (WHERE encode(sha256(convert_to(user_agent, 'UTF8')), 'hex') = $value), COUNT(*) FROM af_event WHERE at >= $since"
+              .query[Counts].run().head,
+          )
+        case _ => None
+      counts match
+        case Some(c) => ListPreview(matched = Some(c.matched), total = c.total)
+        case None => ListPreview(matched = None, total = sql"SELECT COUNT(*) FROM af_event WHERE at >= $since".query[Long].run().head)
 
   override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
     xa.connectMeasured("list-antifraud-list-entries"):
@@ -61,7 +87,7 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
   override def loadActive(now: Instant): Task[List[ListedValue]] =
     xa.connectMeasured("load-antifraud-list-entries"):
       sql"""
-        SELECT id, type, value_type, value, tenant_id, expires_at
+        SELECT id, type, value_type, value, tenant_id, expires_at, shadow
         FROM af_list_entry WHERE expires_at IS NULL OR expires_at > $now
       """.query[ListedRow].run().iterator.flatMap(_.toListed).toList
 
@@ -103,6 +129,7 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       expiresAt: Option[Instant],
       reason: Option[String],
       source: String,
+      shadow: Boolean,
       createdBy: String,
       createdAt: Instant,
       hitCount: Long,
@@ -117,11 +144,14 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       expiresAt = expiresAt,
       reason = reason,
       source = source,
+      shadow = shadow,
       createdBy = createdBy,
       createdAt = createdAt,
       hitCount = hitCount,
       lastHitAt = lastHitAt,
     )
+
+  private case class Counts(matched: Long, total: Long) derives DbCodec
 
   private case class ListedRow(
       id: UUID,
@@ -130,13 +160,22 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       value: String,
       tenantId: Option[String],
       expiresAt: Option[Instant],
+      shadow: Boolean,
   ) derives DbCodec:
     /** A row whose type this version does not know is skipped, not fatal: the table is read for every refresh. */
     def toListed: Option[ListedValue] =
       for
         lt <- AntifraudListType.values.find(_.toString == listType)
         vt <- AntifraudValueType.values.find(_.toString == valueType)
-      yield ListedValue(id = id, listType = lt, valueType = vt, value = value, tenantId = tenantId.map(TenantId(_)), expiresAt = expiresAt)
+      yield ListedValue(
+        id = id,
+        listType = lt,
+        valueType = vt,
+        value = value,
+        tenantId = tenantId.map(TenantId(_)),
+        expiresAt = expiresAt,
+        shadow = shadow,
+      )
 
   private case class AuditRow(
       id: UUID,
@@ -170,5 +209,5 @@ object PostgresAntifraudListRepository:
     ZLayer.fromFunction(PostgresAntifraudListRepository(_))
 
   private val EntryColumns = SqlLiteral(
-    "id, type, value_type, value, tenant_id, expires_at, reason, source, created_by, created_at, hit_count, last_hit_at",
+    "id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at, hit_count, last_hit_at",
   )

@@ -11,7 +11,7 @@ import scala.collection.mutable
 
 /** The outcome of looking a context up in the lists: the entry that decides (deny, fake or allow, the most specific,
   * and on a tie the harshest) and one watch entry, if any matched. */
-case class ListMatch(decisive: Option[ListedValue], watch: Option[ListedValue])
+case class ListMatch(decisive: Option[ListedValue], watch: Option[ListedValue], shadow: Option[ListedValue])
 
 /** An address as two longs, the same for both families: an IPv4 address fills the high half. */
 private[antifraud] case class IpKey(hi: Long, lo: Long)
@@ -43,10 +43,11 @@ final class ListSnapshot private (
   def isEmpty: Boolean = size == 0
 
   def lookup(ctx: AntifraudContext, now: Instant): ListMatch =
-    if isEmpty then ListMatch(None, None)
+    if isEmpty then ListMatch(None, None, None)
     else
       var decisive: Indexed | Null = null
       var watch: ListedValue | Null = null
+      var shadow: ListedValue | Null = null
 
       def offer(found: List[Indexed]): Unit =
         var rest = found
@@ -55,7 +56,9 @@ final class ListSnapshot private (
           rest = rest.tail
           val entry = candidate.entry
           if entry.tenantId.forall(ctx.tenantId.contains) && entry.expiresAt.forall(_.isAfter(now)) then
-            if entry.listType == AntifraudListType.watch then
+            if entry.shadow then
+              if shadow == null then shadow = entry
+            else if entry.listType == AntifraudListType.watch then
               if watch == null then watch = entry
             else if decisive == null || candidate.outranks(decisive.nn) then decisive = candidate
 
@@ -79,7 +82,7 @@ final class ListSnapshot private (
       ctx.ip.flatMap(parseIp).foreach: (v6, key) =>
         nets.get(v6).foreach(_.lookup(key, offer))
 
-      ListMatch(Option(decisive).map(_.nn.entry), Option(watch).map(_.nn))
+      ListMatch(Option(decisive).map(_.nn.entry), Option(watch).map(_.nn), Option(shadow).map(_.nn))
 
 object ListSnapshot:
 
@@ -90,9 +93,10 @@ object ListSnapshot:
 
   /** An entry with how specific its value is.
     *
-    * Specificity, from the most to the least: an exact address, destination, or device (1000), a JA4 fingerprint
-    * (900), a user agent (800), a network (500 plus its prefix length), a number prefix (300 plus its length), an
-    * autonomous system (200), a mail domain (100). Only entries of one request are compared, so the numbers say
+    * Specificity, from the most to the least: an exact address, destination, or device (1000), a network (500 plus
+    * its prefix length), a JA4 fingerprint (450), a user agent (400), a number prefix (300 plus its length), an
+    * autonomous system (200), a mail domain (100). A fingerprint and a user agent rank below any network: they are
+    * easily copied and one value covers many real clients, so they must not outvote an address. Only entries of one request are compared, so the numbers say
     * "this value names fewer clients than that one", nothing more.
     */
   private[antifraud] case class Indexed(entry: ListedValue, specificity: Int):
@@ -151,8 +155,8 @@ object ListSnapshot:
               add(level, key, Indexed(v, 500 + bits))
             case other =>
               val specificity = other match
-                case AntifraudValueType.ja4_hash => 900
-                case AntifraudValueType.ua_hash => 800
+                case AntifraudValueType.ja4_hash => 450
+                case AntifraudValueType.ua_hash => 400
                 case AntifraudValueType.email_domain => 100
                 case _ => 1000
               add(exactIndex.getOrElseUpdate(other, mutable.Map.empty), value, Indexed(v, specificity))
@@ -176,7 +180,8 @@ object ListSnapshot:
     * reach the resolver. An IPv4-mapped IPv6 address is the IPv4 address. */
   private[antifraud] def parseIp(text: String): Option[(Boolean, IpKey)] =
     val trimmed = text.trim
-    val literal = trimmed.nonEmpty && trimmed.length <= 45 && trimmed.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f'))
+    val literal =
+      trimmed.nonEmpty && trimmed.length <= 45 && trimmed.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f'))
     if !literal || !(trimmed.contains(':') || trimmed.count(_ == '.') == 3) then None
     else
       scala.util.Try(InetAddress.getByName(trimmed).getAddress).toOption.collect:
@@ -221,6 +226,22 @@ object ListValues:
                 bits <- length.toIntOption.filter(n => n >= 0 && n <= (if parsed._1 then 128 else 32)).toRight("the prefix length is out of range")
               yield canonical(parsed, Some(bits))
             case _ => Left("a network is address/length")
+
+  /** `allow` is for exact subjects only: an allow on a network, an ASN, a prefix, a mail domain, a fingerprint or a
+    * user agent would exempt a whole population from the score. A network is exact at /32 or /128. */
+  def allowable(valueType: AntifraudValueType, normalized: String): Boolean = valueType match
+    case AntifraudValueType.phone_hash | AntifraudValueType.device_id | AntifraudValueType.ip => true
+    case AntifraudValueType.cidr => normalized.endsWith("/32") || normalized.endsWith("/128")
+    case _ => false
+
+  /** Entries that name many clients (anything but an exact subject, and a network wider than /24 or /48) must
+    * expire, so that a wrong one does not outlive the attack it was made for. */
+  def broad(valueType: AntifraudValueType, normalized: String): Boolean = valueType match
+    case AntifraudValueType.phone_hash | AntifraudValueType.device_id | AntifraudValueType.ip => false
+    case AntifraudValueType.cidr =>
+      val bits = normalized.substring(normalized.indexOf('/') + 1).toInt
+      bits < (if normalized.contains(':') then 48 else 24)
+    case _ => true
 
   /** The address with the bits beyond the prefix cleared, as text. */
   private def canonical(parsed: (Boolean, IpKey), bits: Option[Int]): String =

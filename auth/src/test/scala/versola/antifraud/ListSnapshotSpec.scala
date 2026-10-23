@@ -42,7 +42,8 @@ object ListSnapshotSpec extends UnitSpecBase:
       value: String,
       tenantId: Option[TenantId] = None,
       expiresAt: Option[Instant] = None,
-  ) = ListedValue(UUID.randomUUID(), listType, valueType, value, tenantId, expiresAt)
+      shadow: Boolean = false,
+  ) = ListedValue(UUID.randomUUID(), listType, valueType, value, tenantId, expiresAt, shadow)
 
   private def snapshot(entries: ListedValue*) = ListSnapshot.build(entries)
 
@@ -187,6 +188,21 @@ object ListSnapshotSpec extends UnitSpecBase:
           s.lookup(ctx(destPrefix = Some("491512"), asn = Some(64500)), now).decisive.map(_.listType).contains(AntifraudListType.deny),
         )
       },
+      test("a user agent or a JA4 fingerprint never outvotes a network or an address") {
+        val ua = "Mozilla/5.0 (test)"
+        val s = snapshot(
+          entry(AntifraudListType.deny, AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua)),
+          entry(AntifraudListType.deny, AntifraudValueType.ja4_hash, "t13d"),
+          entry(AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.0/24"),
+        )
+        val m = s.lookup(ctx(ip = Some("203.0.113.9"), userAgent = Some(ua), ja4 = Some("t13d")), now)
+        assertTrue(m.decisive.map(_.listType).contains(AntifraudListType.allow))
+      },
+      test("a shadow entry is reported apart and never competes") {
+        val s = snapshot(entry(AntifraudListType.deny, AntifraudValueType.device_id, "d", shadow = true))
+        val m = s.lookup(ctx(deviceId = Some("d")), now)
+        assertTrue(m.decisive.isEmpty, m.shadow.isDefined)
+      },
       test("watch is reported alongside the decision, never competing with it") {
         val s = snapshot(
           entry(AntifraudListType.watch, AntifraudValueType.device_id, "d"),
@@ -242,8 +258,12 @@ object ListSnapshotSpec extends UnitSpecBase:
         val s = snapshot(entries*)
         val contexts = (0 until 1000).map: i =>
           ctx(
-            subjectHash = Some(s"hash-${i * 5}"), deviceId = Some(s"dev-${i * 5 + 1}"), destPrefix = Some("491512"),
-            ip = Some(s"10.${i % 256}.1.2"), userAgent = Some("Mozilla/5.0 (X11; Linux x86_64)"), asn = Some(i),
+            subjectHash = Some(s"hash-${i * 5}"),
+            deviceId = Some(s"dev-${i * 5 + 1}"),
+            destPrefix = Some("491512"),
+            ip = Some(s"10.${i % 256}.1.2"),
+            userAgent = Some("Mozilla/5.0 (X11; Linux x86_64)"),
+            asn = Some(i),
           )
         // Warm the JIT, then time many lookups; the bound is generous so that a slow CI machine passes it, and a
         // lookup that scanned the entries (100k of them) would exceed it by orders of magnitude.

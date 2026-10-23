@@ -14,6 +14,11 @@ trait AntifraudListRepository:
   /** Removes the entry and records it; false when there was none. */
   def delete(id: UUID, actor: String, at: Instant): Task[Boolean]
 
+  def find(id: UUID): Task[Option[AntifraudListEntry]]
+
+  /** How many of the events since `since` the value would have matched, and how many there were. */
+  def preview(valueType: AntifraudValueType, value: String, since: Instant): Task[ListPreview]
+
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
   /** Every entry that has not expired at `now`: what the cache is built from. */

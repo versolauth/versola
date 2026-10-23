@@ -20,6 +20,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
       value: String = "dev-1",
       tenantId: Option[TenantId] = None,
       expiresAt: Option[Instant] = None,
+      shadow: Boolean = false,
   ) = AntifraudListEntry(
     id = UUID.randomUUID(),
     listType = listType,
@@ -29,6 +30,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
     expiresAt = expiresAt,
     reason = Some("seen in an attack"),
     source = "manual",
+    shadow = shadow,
     createdBy = "alice",
     createdAt = at,
     hitCount = 0,
@@ -162,6 +164,60 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
       yield assertTrue(listed.map(l => (l.hitCount, l.lastHitAt)) == List((5L, Some(at.plusSeconds(10)))))
     },
+    test("keeps the shadow flag, refreshes it on a repeat, and loads it for the cache") {
+      for
+        repository <- clean
+        first <- repository.upsert(entry(shadow = true), "x", at)
+        loaded <- repository.loadActive(at)
+        again <- repository.upsert(entry(shadow = false), "x", at)
+        found <- repository.find(first.id)
+        missing <- repository.find(UUID.randomUUID())
+      yield assertTrue(first.shadow, loaded.map(_.shadow) == List(true), !again.shadow, found.map(_.shadow).contains(false), missing.isEmpty)
+    },
+    test("previews what an entry would have matched of the event log, for the values the log has a column for") {
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        events = PostgresAntifraudEventRepository(xa)
+        today = at.atZone(java.time.ZoneOffset.UTC).toLocalDate
+        _ <- events.maintainPartitions(today.minusDays(2), 3, today.minusDays(30))
+        ua = "Mozilla/5.0 (preview)"
+        base = AntifraudEvent(
+          id = UUID.randomUUID(),
+          at = at.minusSeconds(60),
+          tenantId = None,
+          clientId = versola.oauth.client.model.ClientId("c"),
+          conversationId = UUID.randomUUID(),
+          action = AntifraudAction.otp_request,
+          outcome = AntifraudOutcome.sent,
+          channel = AntifraudChannel.sms,
+          subjectHash = "h1",
+          destPrefix = Some("491512"),
+          userAgent = Some(ua),
+        )
+        _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
+        _ <- events.insertBatch(
+          List(
+            base,
+            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other")),
+            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None),
+            base.copy(id = UUID.randomUUID(), at = at.minusSeconds(48 * 3600), subjectHash = "h1"),
+          ),
+        )
+        since = at.minusSeconds(3600)
+        byPhone <- repository.preview(AntifraudValueType.phone_hash, "h1", since)
+        byPrefix <- repository.preview(AntifraudValueType.prefix, "4915", since)
+        byUa <- repository.preview(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua), since)
+        byIp <- repository.preview(AntifraudValueType.ip, "10.0.0.1", since)
+      yield assertTrue(
+        byPhone == ListPreview(matched = Some(1), total = 3),
+        byPrefix == ListPreview(matched = Some(1), total = 3),
+        byUa == ListPreview(matched = Some(1), total = 3),
+        byIp == ListPreview(matched = None, total = 3),
+      )
+      // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
+      // does so in the middle of this, the test is repeated.
+    } @@ TestAspect.eventually,
     test("the table refuses a list or value type it does not know") {
       for
         repository <- clean

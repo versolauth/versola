@@ -1,7 +1,8 @@
 package versola.antifraud
 
+import versola.oauth.client.model.TenantId
 import zio.*
-import zio.metrics.Metric
+import zio.metrics.{Metric, MetricLabel}
 
 import java.time.Instant
 import java.util.UUID
@@ -27,8 +28,32 @@ import java.util.concurrent.atomic.AtomicReference
   *     `allow_list:<value type>` (weight `-allow-weight`, which outweighs the score of the other rules, so that the step goes
   *     on unless one of them forces an action: allow never overrides a forcing rule of another source, such as a
   *     blocked destination range).
+  *  1. **Allow is for exact subjects only** (a destination hash, a device, an address or a /32 or /128 network):
+  *     an allow outweighs the whole score, so one on a network, ASN, prefix, mail domain, fingerprint or user agent
+  *     would exempt a population from every score-based rule. Such an entry is refused at creation. It never
+  *     cancels a forcing rule, nor the SMS budget, which is decided outside the score.
   *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
+  *
+  * ==Safety of an entry==
+  *  - An entry that names many clients (anything but an exact subject, a network wider than /24 or /48) must have an
+  *    `expiresAt`, and so must one whose `source` is not `manual` (an automated entry).
+  *  - `shadow` entries are matched and counted but enforce nothing (rule `shadow_list:<value type>`, no weight):
+  *    a dry run to read in the fired rules before the entry is made real.
+  *  - [[AntifraudLists.preview]] says how many events of the last 24 hours an entry would have matched (for the
+  *    values the event log has a column for); `create` refuses an enforcing entry that matches more than
+  *    `max-traffic-share` of them.
+  *  - Only an operator may change a global entry or another tenant's ([[ListActor]]).
+  *
+  * ==Fake==
+  * `fake` is invisible to a real person who lands on it (a recycled number, a shared device): they are told the
+  * code was sent and nothing arrives. Use it for confirmed fraud only, and have a support path for "why am I not
+  * getting a code". The fake send imitates the latency of a real one (`SendLatency`). Hits are counted by list and
+  * kind of value in `antifraud_list_hits_total` (never by value).
+  *
+  * ==Key rotation==
+  * A `phone_hash` is made with the key of `security.antifraud-subject-secret`: rotating the key silently stops every
+  * such entry from matching. Re-create them after a rotation.
   */
 trait AntifraudLists:
   /** The rules the lists contribute; empty while the lists are off. */
@@ -37,16 +62,24 @@ trait AntifraudLists:
   /** Adds an entry, or refreshes the one for the same list, value and tenant. Fails with [[InvalidListEntry]]
     * for a value that is not valid for its type. The snapshot of this instance is refreshed at once; the others
     * pick it up within the refresh interval. */
-  def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry]
+  def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry]
 
-  def delete(id: UUID, actor: String): Task[Boolean]
+  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). */
+  def preview(entry: NewListEntry): Task[ListPreview]
 
-  def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
+  def delete(id: UUID, actor: ListActor): Task[Boolean]
 
-  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
+  /** A tenant's admin sees their own tenant's entries only. */
+  def list(filter: AntifraudListFilter, actor: ListActor, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
-/** The value of a new entry is not valid for its type. */
+  /** Operators only. */
+  def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]]
+
+/** The new entry is not valid: a value that does not fit its type, or one the safety rules refuse. */
 final class InvalidListEntry(message: String) extends RuntimeException(message)
+
+/** The actor may not change or read that part of the lists. */
+final class ListForbidden(message: String) extends RuntimeException(message)
 
 object AntifraudLists:
 
@@ -58,6 +91,9 @@ object AntifraudLists:
     * @param hitFlushInterval how often the hit counters are written
     * @param watchWeight      what a matching `watch` entry adds to the score
     * @param allowWeight      what a matching `allow` entry takes off it; larger than any score the other rules reach
+    * @param maxTrafficShare  an enforcing entry that would have matched more than this share of the last 24 hours of events is refused; 0 disables
+    * @param shareMinEvents   the share is judged only over at least this many events
+    * @param startupTimeout   how long starting waits for the first successful load of the lists
     */
   case class Settings(
       enabled: Boolean,
@@ -65,6 +101,9 @@ object AntifraudLists:
       hitFlushInterval: Duration,
       watchWeight: Int,
       allowWeight: Int,
+      maxTrafficShare: Double,
+      shareMinEvents: Long,
+      startupTimeout: Duration,
   )
 
   object Settings:
@@ -74,6 +113,9 @@ object AntifraudLists:
       hitFlushInterval = 30.seconds,
       watchWeight = 20,
       allowWeight = 1000,
+      maxTrafficShare = 0.05,
+      shareMinEvents = 100,
+      startupTimeout = 30.seconds,
     )
 
   val live: ZLayer[AntifraudListRepository & Settings & Scope, Nothing, AntifraudLists] =
@@ -98,9 +140,18 @@ object AntifraudLists:
     private def add(a: ListHit, b: ListHit): ListHit =
       ListHit(a.id, a.count + b.count, if a.lastAt.isAfter(b.lastAt) then a.lastAt else b.lastAt)
 
-    def hit(id: UUID, at: Instant): Unit =
-      hits.merge(id, ListHit(id, 1, at), add)
+    private val kinds = ConcurrentHashMap[(AntifraudListType, AntifraudValueType), java.lang.Long]()
+
+    def hit(entry: ListedValue, at: Instant): Unit =
+      hits.merge(entry.id, ListHit(entry.id, 1, at), add)
+      kinds.merge((entry.listType, entry.valueType), 1L, _ + _)
       ()
+
+    /** Hits by list and kind of value since the last call, for the metric. */
+    def drainKinds(): List[((AntifraudListType, AntifraudValueType), Long)] =
+      val taken = List.newBuilder[((AntifraudListType, AntifraudValueType), Long)]
+      kinds.keySet.forEach(k => Option(kinds.remove(k)).foreach(n => taken += k -> n.longValue))
+      taken.result()
 
     /** Takes the hits counted so far. Nothing that is counted while this runs is lost: it is taken by the next one. */
     def drain(): List[ListHit] =
@@ -138,12 +189,17 @@ object AntifraudLists:
 
       def decisive(listType: AntifraudListType, valueType: AntifraudValueType)(ctx: AntifraudContext): Boolean =
         matched(ctx).decisive.filter(e => e.listType == listType && e.valueType == valueType).exists: entry =>
-          cache.hit(entry.id, now)
+          cache.hit(entry, now)
+          true
+
+      def shadowed(valueType: AntifraudValueType)(ctx: AntifraudContext): Boolean =
+        matched(ctx).shadow.filter(_.valueType == valueType).exists: entry =>
+          cache.hit(entry, now)
           true
 
       def watched(valueType: AntifraudValueType)(ctx: AntifraudContext): Boolean =
         matched(ctx).watch.filter(_.valueType == valueType).exists: entry =>
-          cache.hit(entry.id, now)
+          cache.hit(entry, now)
           true
 
       // One rule per list and kind of value, so that the fired rule names in the decision say what matched
@@ -168,14 +224,46 @@ object AntifraudLists:
             forces = None,
             test = decisive(AntifraudListType.allow, valueType),
           ),
+          AntifraudRule(name = s"shadow_list:$valueType", weight = 0, forces = None, test = shadowed(valueType)),
           AntifraudRule(name = s"watch_list:$valueType", weight = settings.watchWeight, forces = None, test = watched(valueType)),
         )
 
-    override def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry] =
+    private def forbid(actor: ListActor, tenantId: Option[TenantId]): IO[ListForbidden, Unit] =
+      ZIO.fail(ListForbidden(if tenantId.isEmpty then "only an operator may change a global entry" else "not an entry of the actor's tenant"))
+        .unless(actor.mayChange(tenantId)).unit
+
+    /** Checks the value and the safety rules, and returns the canonical value. */
+    private def validate(entry: NewListEntry, now: Instant): IO[InvalidListEntry, String] =
       for
         value <- ZIO.fromEither(ListValues.normalize(entry.valueType, entry.value)).mapError(InvalidListEntry(_))
-        now <- Clock.instant
         _ <- ZIO.fail(InvalidListEntry("expiresAt is not in the future")).when(entry.expiresAt.exists(!_.isAfter(now)))
+        _ <- ZIO
+          .fail(InvalidListEntry("an allow is for an exact subject only: a phone_hash, device_id, ip or a /32 or /128 network"))
+          .when(entry.listType == AntifraudListType.allow && !ListValues.allowable(entry.valueType, value))
+        _ <- ZIO
+          .fail(InvalidListEntry("an entry that names many clients, or an automated one, needs expiresAt"))
+          .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != "manual"))
+      yield value
+
+    override def preview(entry: NewListEntry): Task[ListPreview] =
+      for
+        now <- Clock.instant
+        value <- validate(entry, now)
+        result <- repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600))
+      yield result
+
+    override def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry] =
+      for
+        _ <- forbid(actor, entry.tenantId)
+        now <- Clock.instant
+        value <- validate(entry, now)
+        _ <- ZIO.when(!entry.shadow && settings.maxTrafficShare > 0):
+          repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600)).flatMap: p =>
+            ZIO
+              .fail(
+                InvalidListEntry(s"it would have matched ${p.matched.get} of ${p.total} events of the last 24 hours: add it as a shadow entry first"),
+              )
+              .when(p.total >= settings.shareMinEvents && p.matched.exists(_.toDouble / p.total > settings.maxTrafficShare))
         stored <- repository.upsert(
           AntifraudListEntry(
             id = UUID.randomUUID(),
@@ -186,59 +274,73 @@ object AntifraudLists:
             expiresAt = entry.expiresAt,
             reason = entry.reason,
             source = entry.source,
-            createdBy = actor,
+            shadow = entry.shadow,
+            createdBy = actor.name,
             createdAt = now,
             hitCount = 0,
             lastHitAt = None,
           ),
-          actor,
+          actor.name,
           now,
         )
         _ <- refresh
       yield stored
 
-    override def delete(id: UUID, actor: String): Task[Boolean] =
-      Clock.instant.flatMap(repository.delete(id, actor, _)) <* refresh
+    override def delete(id: UUID, actor: ListActor): Task[Boolean] =
+      repository.find(id).flatMap:
+        case None => ZIO.succeed(false)
+        case Some(found) =>
+          forbid(actor, found.tenantId) *> Clock.instant.flatMap(repository.delete(id, actor.name, _)) <* refresh
 
-    override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
-      repository.list(filter, limit, offset)
+    override def list(filter: AntifraudListFilter, actor: ListActor, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
+      repository.list(if actor.isOperator then filter else filter.copy(tenantId = Some(actor.tenantId)), limit, offset)
 
-    override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
-      repository.audit(entryId, limit)
+    override def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]] =
+      ZIO.fail(ListForbidden("only an operator reads the audit")).unless(actor.isOperator) *> repository.audit(entryId, limit)
 
     /** Rebuilds the snapshot. A failure keeps the one there is. */
-    private[antifraud] val refresh: UIO[Unit] =
+    private[antifraud] val refresh: UIO[Boolean] =
       Clock.instant.flatMap: now =>
         repository.loadActive(now).foldCauseZIO(
           cause =>
-            AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause("could not refresh the antifraud lists, keeping the previous ones", cause),
+            AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
+              "could not refresh the antifraud lists, keeping the previous ones",
+              cause,
+            ).as(false),
           values =>
             ZIO.succeed(ListSnapshot.build(values)).flatMap: snapshot =>
               ZIO.succeed(cache.replace(snapshot)) *>
                 ZIO.logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
-                  .when(snapshot.skipped > 0).unit,
+                  .when(snapshot.skipped > 0).as(true),
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
-      ZIO.succeed(cache.drain()).flatMap: hits =>
-        ZIO.when(hits.nonEmpty):
-          repository.addHits(hits).foldCauseZIO(
-            cause =>
-              ZIO.succeed(cache.restore(hits)) *> AntifraudListMetrics.flushFailed *>
-                ZIO.logWarningCause("could not write the antifraud list hit counters", cause),
-            _ => ZIO.unit,
-          )
-        .unit
+      ZIO.succeed(cache.drainKinds()).flatMap(kinds => ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, n))) *>
+        ZIO.succeed(cache.drain()).flatMap: hits =>
+          ZIO.when(hits.nonEmpty):
+            repository.addHits(hits).foldCauseZIO(
+              cause =>
+                ZIO.succeed(cache.restore(hits)) *> AntifraudListMetrics.flushFailed *>
+                  ZIO.logWarningCause("could not write the antifraud list hit counters", cause),
+              _ => ZIO.unit,
+            )
+          .unit
 
     private val purgeExpired: UIO[Unit] =
       Clock.instant.flatMap(repository.purgeExpired).unit.catchAllCause(ZIO.logWarningCause("could not remove expired antifraud list entries", _))
 
-    /** Loads once so that the lists apply from the first request, then refreshes, writes the counters and removes
-      * expired entries in the background; the last flush happens on the way out. */
+    /** Waits for the first successful load, up to `startup-timeout`, so that the lists are enforced from the first
+      * request (the layer is built before the server listens). If the table cannot be read in time the service
+      * starts anyway, with no lists, says so, and retries every second until it succeeds, not at the steady
+      * interval. Then it refreshes, writes the counters and removes expired entries in the background; the last
+      * flush happens on the way out. */
     private[antifraud] val start: URIO[Scope, Unit] =
       for
-        _ <- refresh
-        _ <- (ZIO.sleep(settings.refreshInterval) *> refresh).forever.forkScoped
+        loaded <- refresh.repeat(Schedule.spaced(1.second) *> Schedule.recurWhile[Boolean](!_)).timeout(settings.startupTimeout)
+        _ <- ZIO
+          .logWarning("the antifraud lists could not be read in time: no list is enforced until a refresh succeeds")
+          .when(!loaded.contains(true))
+        _ <- (ZIO.sleep(if loaded.contains(true) then settings.refreshInterval else 1.second) *> refresh).forever.forkScoped
         _ <- (ZIO.sleep(settings.hitFlushInterval) *> flushHits *> purgeExpired).forever.forkScoped
         _ <- ZIO.addFinalizer(flushHits.timeout(5.seconds))
       yield ()
@@ -249,3 +351,10 @@ object AntifraudListMetrics:
 
   val refreshFailed: UIO[Unit] = refreshFailedTotal.increment
   val flushFailed: UIO[Unit] = flushFailedTotal.increment
+
+  /** By list and kind of value, never by value. */
+  def hits(listType: AntifraudListType, valueType: AntifraudValueType, n: Long): UIO[Unit] =
+    Metric.counter("antifraud_list_hits_total").tagged(Set(
+      MetricLabel("list_type", listType.toString),
+      MetricLabel("value_type", valueType.toString),
+    )).incrementBy(n)

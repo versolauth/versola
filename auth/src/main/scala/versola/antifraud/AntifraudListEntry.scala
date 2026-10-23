@@ -51,6 +51,7 @@ enum AntifraudValueType:
   * @param tenantId   `None` applies to every tenant
   * @param expiresAt  `None` never expires
   * @param source     who or what put it on the list (`manual`, a detection rule, an import)
+  * @param shadow     matched and counted, never enforced: the rule it fires is `shadow_list:<value type>` with no weight
   * @param hitCount   how many times it decided or scored a step; kept in memory by the instances and written in batches, so it lags
   */
 case class AntifraudListEntry(
@@ -62,6 +63,7 @@ case class AntifraudListEntry(
     expiresAt: Option[Instant],
     reason: Option[String],
     source: String,
+    shadow: Boolean,
     createdBy: String,
     createdAt: Instant,
     hitCount: Long,
@@ -76,6 +78,7 @@ case class ListedValue(
     value: String,
     tenantId: Option[TenantId],
     expiresAt: Option[Instant],
+    shadow: Boolean,
 )
 
 /** Hits of one entry since the last flush. */
@@ -90,7 +93,18 @@ case class NewListEntry(
     expiresAt: Option[Instant],
     reason: Option[String],
     source: String,
+    shadow: Boolean,
 )
+
+/** Who changes the lists. An operator (no tenant) may change any entry, including global ones, which apply to every
+  * tenant; a tenant's admin only the entries of their own tenant. The HTTP endpoint maps the caller to this. */
+case class ListActor(name: String, tenantId: Option[TenantId]):
+  def isOperator: Boolean = tenantId.isEmpty
+  def mayChange(entryTenant: Option[TenantId]): Boolean = isOperator || (entryTenant.isDefined && entryTenant == tenantId)
+
+/** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
+  * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
+case class ListPreview(matched: Option[Long], total: Long)
 
 enum AntifraudListAction:
   case create, delete, expire

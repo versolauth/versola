@@ -16,6 +16,8 @@ CREATE TABLE af_list_entry (
     expires_at  TIMESTAMPTZ,
     reason      TEXT,
     source      TEXT        NOT NULL,
+    -- A shadow entry is matched and counted but enforces nothing: a dry run before it is turned on.
+    shadow      BOOLEAN     NOT NULL DEFAULT FALSE,
     created_by  TEXT        NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL,
     hit_count   BIGINT      NOT NULL DEFAULT 0,
