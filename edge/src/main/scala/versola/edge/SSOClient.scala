@@ -45,6 +45,19 @@ trait SSOClient:
       credential: ClientCredential,
   ): Task[TokenResponse]
 
+  /** Makes the first call this client's credential has to make cheap, before a user waits for it.
+    *
+    * What is slow is not auth but this process: the first call over a certificate builds the TLS
+    * context and handshakes, which on a freshly started edge was ~0.5 s of the first login. A
+    * credential that authenticates in the request has no such first call, so for it this does
+    * nothing.
+    *
+    * Only the connection is wanted, never the answer: the request carries no token and auth
+    * refuses it, and a refusal is as good as an answer for this. A failure to connect is the caller's
+    * to ignore -- the login that would have used the connection fails or succeeds on its own terms.
+    */
+  def warmUp(client: OAuthClient): Task[Unit]
+
   def exchangeRefreshToken(
       refreshToken: RefreshToken,
       clientId: ClientId,
@@ -60,6 +73,9 @@ trait SSOClient:
   ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
 
 object SSOClient:
+  /** How much of a warm-up's answer is read before the connection is let go of, in bytes. */
+  private[edge] val WarmUpBodyLimit: Int = 4096
+
   case object InvalidGrant
   case object UserInfoUnauthorized
 
@@ -442,6 +458,23 @@ object SSOClient:
       *            own configuration alone -- every other call this edge makes shares it. */
     private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig] = None):
       def over(client: Client): Client = ssl.fold(client)(client.ssl)
+
+    override def warmUp(client: OAuthClient): Task[Unit] =
+      client.credential match
+        case credential: ClientCredential.MutualTls =>
+          val url = endpoint(credential, "userinfo")
+          for
+            connection <- mutualTlsConnection(client.id, credential.certificate, url)
+            // Not `Authenticated`: no form and no `client_id` -- nothing is being asked of auth.
+            // The body is read so the connection goes back to the pool open; one left unread is
+            // closed with the scope, and the warm connection is the point of this. Bounded, because
+            // the answer is of no interest and an error body is a few dozen bytes.
+            _ <- ZIO.scoped(
+              httpClient.ssl(connection).request(Request.get(url))
+                .flatMap(_.body.asStream.take(SSOClient.WarmUpBodyLimit).runDrain),
+            )
+          yield ()
+        case _ => ZIO.unit
 
     override def exchangeAuthorizationCode(
         code: Code,
