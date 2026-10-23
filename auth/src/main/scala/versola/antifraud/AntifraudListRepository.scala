@@ -21,14 +21,21 @@ trait AntifraudListRepository:
 
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
+  /** A number that changes with every change made through this repository (`upsert`, `delete`, `purgeExpired`). */
+  def version: Task[Long]
+
   /** Every entry that has not expired at `now`: what the cache is built from. */
   def loadActive(now: Instant): Task[List[ListedValue]]
 
   /** Adds the hits to the counters of the entries; one that is gone is skipped. */
   def addHits(hits: List[ListHit]): Task[Unit]
 
-  /** Removes the entries that expired at or before `now` and records each as expired. Returns how many. */
-  def purgeExpired(now: Instant): Task[Int]
+  /** Removes up to `limit` entries that expired at or before `now` and records each as expired. Returns how many;
+    * fewer than `limit` means no more are due. Safe to run on several instances at once. */
+  def purgeExpired(now: Instant, limit: Int): Task[Int]
+
+  /** Removes up to `limit` audit records older than `before`; fewer than `limit` means no more are due. */
+  def pruneAudit(before: Instant, limit: Int): Task[Int]
 
   /** The changes of one entry, or of all, the latest first. */
   def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]

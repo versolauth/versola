@@ -22,6 +22,14 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
     """.update.run()
     ()
 
+  private def bumped()(using DbCon): Unit =
+    sql"UPDATE af_list_version SET version = version + 1 WHERE id = 1".update.run()
+    ()
+
+  override def version: Task[Long] =
+    xa.connectMeasured("antifraud-list-version"):
+      sql"SELECT version FROM af_list_version WHERE id = 1".query[Long].run().head
+
   override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
     xa.transactMeasured("upsert-antifraud-list-entry"):
       val stored = sql"""
@@ -35,12 +43,14 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
         RETURNING $EntryColumns
       """.query[EntryRow].run().head
       audited(AntifraudListAction.create, actor, at, stored)
+      bumped()
       stored.toEntry
 
   override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
     xa.transactMeasured("delete-antifraud-list-entry"):
       val removed = sql"DELETE FROM af_list_entry WHERE id = $id RETURNING $EntryColumns".query[EntryRow].run().headOption
       removed.foreach(row => audited(AntifraudListAction.delete, actor, at, row))
+      if removed.isDefined then bumped()
       removed.isDefined
 
   override def find(id: UUID): Task[Option[AntifraudListEntry]] =
@@ -103,21 +113,39 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
           """.update
       .unit
 
-  override def purgeExpired(now: Instant): Task[Int] =
+  override def purgeExpired(now: Instant, limit: Int): Task[Int] =
     xa.transactMeasured("purge-antifraud-list-entries"):
-      val removed = sql"DELETE FROM af_list_entry WHERE expires_at <= $now RETURNING $EntryColumns".query[EntryRow].run()
+      val removed = sql"""
+        DELETE FROM af_list_entry WHERE id IN (
+          SELECT id FROM af_list_entry WHERE expires_at <= $now ORDER BY expires_at LIMIT $limit FOR UPDATE SKIP LOCKED
+        ) RETURNING $EntryColumns
+      """.query[EntryRow].run()
       removed.foreach(row => audited(AntifraudListAction.expire, "system", now, row))
+      if removed.nonEmpty then bumped()
       removed.size
 
+  override def pruneAudit(before: Instant, limit: Int): Task[Int] =
+    xa.connectMeasured("prune-antifraud-list-audit"):
+      sql"""
+        DELETE FROM af_list_audit WHERE id IN (
+          SELECT id FROM af_list_audit WHERE at < $before ORDER BY at LIMIT $limit FOR UPDATE SKIP LOCKED
+        )
+      """.update.run()
+
+  // Two statements, not one with `$x IS NULL OR entry_id = $x`: a cached generic plan would have to serve both.
   override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
     xa.connectMeasured("list-antifraud-list-audit"):
-      sql"""
-        SELECT id, at, action, actor, entry_id, type, value_type, value, tenant_id, expires_at, reason
-        FROM af_list_audit
-        WHERE (${entryId.isEmpty} OR entry_id = ${entryId.getOrElse(UUID(0, 0))})
-        ORDER BY at DESC, id
-        LIMIT $limit
-      """.query[AuditRow].run().map(_.toAudit).toList
+      entryId match
+        case Some(id) =>
+          sql"""
+            SELECT id, at, action, actor, entry_id, type, value_type, value, tenant_id, expires_at, reason
+            FROM af_list_audit WHERE entry_id = $id ORDER BY at DESC, id LIMIT $limit
+          """.query[AuditRow].run().map(_.toAudit).toList
+        case None =>
+          sql"""
+            SELECT id, at, action, actor, entry_id, type, value_type, value, tenant_id, expires_at, reason
+            FROM af_list_audit ORDER BY at DESC, id LIMIT $limit
+          """.query[AuditRow].run().map(_.toAudit).toList
 
   // Read with the instant codec in scope, so the rows are defined here and not in the companion.
   private case class EntryRow(

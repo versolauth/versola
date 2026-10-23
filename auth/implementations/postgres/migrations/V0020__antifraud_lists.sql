@@ -22,7 +22,10 @@ CREATE TABLE af_list_entry (
     created_at  TIMESTAMPTZ NOT NULL,
     hit_count   BIGINT      NOT NULL DEFAULT 0,
     last_hit_at TIMESTAMPTZ
-);
+)
+-- The hit counters are updated in place every few seconds; no indexed column changes, so with room on the page the
+-- update stays on it (HOT) and leaves no dead tuple in an index.
+WITH (fillfactor = 80);
 
 -- One entry per value and list in a scope; adding it again refreshes it.
 CREATE UNIQUE INDEX af_list_entry_value_idx ON af_list_entry (type, value_type, value, COALESCE(tenant_id, ''));
@@ -44,5 +47,15 @@ CREATE TABLE af_list_audit (
     reason     TEXT
 );
 
-CREATE INDEX af_list_audit_at_idx ON af_list_audit (at);
-CREATE INDEX af_list_audit_entry_idx ON af_list_audit (entry_id);
+-- Newest first for the whole log, and for one entry; the service removes records older than antifraud.lists.audit-retention.
+CREATE INDEX af_list_audit_at_idx ON af_list_audit (at DESC, id);
+CREATE INDEX af_list_audit_entry_idx ON af_list_audit (entry_id, at DESC, id);
+
+-- Bumped in the transaction of every change to af_list_entry, so that an instance asks "has anything changed?" with
+-- one tiny query and rebuilds its snapshot only when it has. A change made by hand in SQL does not bump it; the
+-- instances reload everything once a minute regardless.
+CREATE TABLE af_list_version (
+    id      SMALLINT NOT NULL PRIMARY KEY CHECK (id = 1),
+    version BIGINT   NOT NULL
+);
+INSERT INTO af_list_version (id, version) VALUES (1, 0);

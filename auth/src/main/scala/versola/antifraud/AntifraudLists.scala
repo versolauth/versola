@@ -7,7 +7,7 @@ import zio.metrics.{Metric, MetricLabel}
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 /** The lists (`af_list_entry`) as the rules see them, and the internal API that changes them.
   *
@@ -83,6 +83,11 @@ final class ListForbidden(message: String) extends RuntimeException(message)
 
 object AntifraudLists:
 
+  private val PurgeBatch = 1000
+
+  /** An unchanged table is reloaded after this long anyway. */
+  private val FullReloadSeconds = 60L
+
   /** The [[AntifraudContext.signals]] key a mail domain is read from (`email_domain` entries). */
   val EmailDomainSignal = "email_domain"
 
@@ -93,6 +98,7 @@ object AntifraudLists:
     * @param allowWeight      what a matching `allow` entry takes off it; larger than any score the other rules reach
     * @param maxTrafficShare  an enforcing entry that would have matched more than this share of the last 24 hours of events is refused; 0 disables
     * @param shareMinEvents   the share is judged only over at least this many events
+    * @param auditRetention   how long the audit records of changes are kept
     * @param startupTimeout   how long starting waits for the first successful load of the lists
     */
   case class Settings(
@@ -103,6 +109,7 @@ object AntifraudLists:
       allowWeight: Int,
       maxTrafficShare: Double,
       shareMinEvents: Long,
+      auditRetention: Duration,
       startupTimeout: Duration,
   )
 
@@ -115,6 +122,7 @@ object AntifraudLists:
       allowWeight = 1000,
       maxTrafficShare = 0.05,
       shareMinEvents = 100,
+      auditRetention = 365.days,
       startupTimeout = 30.seconds,
     )
 
@@ -134,6 +142,10 @@ object AntifraudLists:
     private val hits = ConcurrentHashMap[UUID, ListHit]()
 
     def snapshot: ListSnapshot = current.get
+
+    /** The version of `af_list_version` the snapshot was built at, and when it was built. */
+    val loadedVersion = AtomicLong(-1L)
+    val loadedAt = AtomicReference(Instant.MIN)
 
     def replace(snapshot: ListSnapshot): Unit = current.set(snapshot)
 
@@ -298,20 +310,30 @@ object AntifraudLists:
     override def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]] =
       ZIO.fail(ListForbidden("only an operator reads the audit")).unless(actor.isOperator) *> repository.audit(entryId, limit)
 
-    /** Rebuilds the snapshot. A failure keeps the one there is. */
+    /** Rebuilds the snapshot when the table has changed (one tiny query says so), and in any case once a minute, for a
+      * change made by hand in SQL. A failure keeps the snapshot there is. */
     private[antifraud] val refresh: UIO[Boolean] =
       Clock.instant.flatMap: now =>
-        repository.loadActive(now).foldCauseZIO(
+        (for
+          version <- repository.version
+          due = version != cache.loadedVersion.get || now.isAfter(cache.loadedAt.get.plusSeconds(FullReloadSeconds))
+          _ <- ZIO.when(due):
+            repository.loadActive(now).flatMap: values =>
+              ZIO.succeed(ListSnapshot.build(values)).flatMap: snapshot =>
+                ZIO.succeed:
+                  cache.replace(snapshot)
+                  cache.loadedVersion.set(version)
+                  cache.loadedAt.set(now)
+                *> ZIO
+                  .logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
+                  .when(snapshot.skipped > 0)
+        yield true).foldCauseZIO(
           cause =>
             AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
               "could not refresh the antifraud lists, keeping the previous ones",
               cause,
             ).as(false),
-          values =>
-            ZIO.succeed(ListSnapshot.build(values)).flatMap: snapshot =>
-              ZIO.succeed(cache.replace(snapshot)) *>
-                ZIO.logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
-                  .when(snapshot.skipped > 0).as(true),
+          ZIO.succeed(_),
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
@@ -326,8 +348,14 @@ object AntifraudLists:
             )
           .unit
 
-    private val purgeExpired: UIO[Unit] =
-      Clock.instant.flatMap(repository.purgeExpired).unit.catchAllCause(ZIO.logWarningCause("could not remove expired antifraud list entries", _))
+    /** Runs `step` in batches of [[PurgeBatch]] with a rest in between, until one comes back short. */
+    private def inBatches(step: Instant => Task[Int]): UIO[Unit] =
+      def loop: Task[Unit] = Clock.instant.flatMap(step).flatMap(n => if n >= PurgeBatch then ZIO.sleep(100.millis) *> loop else ZIO.unit)
+      loop.catchAllCause(ZIO.logWarningCause("could not clean up the antifraud lists", _))
+
+    private val cleanUp: UIO[Unit] =
+      inBatches(repository.purgeExpired(_, PurgeBatch)) *>
+        inBatches(now => repository.pruneAudit(now.minusSeconds(settings.auditRetention.toSeconds), PurgeBatch))
 
     /** Waits for the first successful load, up to `startup-timeout`, so that the lists are enforced from the first
       * request (the layer is built before the server listens). If the table cannot be read in time the service
@@ -341,7 +369,7 @@ object AntifraudLists:
           .logWarning("the antifraud lists could not be read in time: no list is enforced until a refresh succeeds")
           .when(!loaded.contains(true))
         _ <- (ZIO.sleep(if loaded.contains(true) then settings.refreshInterval else 1.second) *> refresh).forever.forkScoped
-        _ <- (ZIO.sleep(settings.hitFlushInterval) *> flushHits *> purgeExpired).forever.forkScoped
+        _ <- (ZIO.sleep(settings.hitFlushInterval) *> flushHits *> cleanUp).forever.forkScoped
         _ <- ZIO.addFinalizer(flushHits.timeout(5.seconds))
       yield ()
 

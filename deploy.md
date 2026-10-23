@@ -503,7 +503,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
   change made through another instance shows within that time, and a refresh that fails keeps the previous lists
   (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
-  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then; a restart loses at most that
+  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
   interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
   an `allow` takes off. There is no HTTP endpoint for the lists yet: they are changed through the service API in
   `auth` (central's endpoint is a follow-up), so for now by SQL, which skips the audit; put the change in `af_list_audit`

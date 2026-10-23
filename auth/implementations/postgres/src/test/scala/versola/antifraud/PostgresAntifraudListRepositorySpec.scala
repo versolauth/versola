@@ -150,10 +150,57 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         repository <- clean
         live <- repository.upsert(entry(value = "live", expiresAt = Some(at.plusSeconds(60))), "x", at)
         old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
-        n <- repository.purgeExpired(at.plusSeconds(2))
+        n <- repository.purgeExpired(at.plusSeconds(2), 1000)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
         audit <- repository.audit(Some(old.id), 10)
       yield assertTrue(n == 1, listed.map(_.id) == List(live.id), audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"))
+    },
+    test("every change bumps the version and nothing else does") {
+      for
+        repository <- clean
+        v0 <- repository.version
+        e <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(1))), "x", at)
+        v1 <- repository.version
+        _ <- repository.addHits(List(ListHit(e.id, 1, at)))
+        _ <- repository.list(AntifraudListFilter.all, 10, 0)
+        v2 <- repository.version
+        _ <- repository.purgeExpired(at, 10)
+        v3 <- repository.version
+        _ <- repository.purgeExpired(at.plusSeconds(5), 10)
+        v4 <- repository.version
+        _ <- repository.purgeExpired(at.plusSeconds(5), 10)
+        v5 <- repository.version
+        _ <- repository.delete(e.id, "x", at)
+        v6 <- repository.version
+        e2 <- repository.upsert(entry(), "x", at)
+        _ <- repository.delete(e2.id, "x", at)
+        v7 <- repository.version
+      yield assertTrue(v1 == v0 + 1, v2 == v1, v3 == v2, v4 == v3 + 1, v5 == v4, v6 == v5, v7 == v6 + 2)
+    },
+    test("purges and prunes in batches of at most the limit, oldest first, and does not touch what is not yet due") {
+      for
+        repository <- clean
+        _ <- ZIO.foreachDiscard(1 to 5)(i => repository.upsert(entry(value = s"d$i", expiresAt = Some(at.plusSeconds(i))), "x", at.plusSeconds(i)))
+        first <- repository.purgeExpired(at.plusSeconds(100), 2)
+        second <- repository.purgeExpired(at.plusSeconds(100), 2)
+        third <- repository.purgeExpired(at.plusSeconds(100), 2)
+        fourth <- repository.purgeExpired(at.plusSeconds(100), 2)
+        // 5 'create' audit records at +1..+5 s and 5 'expire' at +100 s
+        none <- repository.pruneAudit(at, 10)
+        some <- repository.pruneAudit(at.plusSeconds(50), 3)
+        rest <- repository.pruneAudit(at.plusSeconds(50), 3)
+        left <- repository.audit(None, 100)
+      yield assertTrue(
+        first == 2,
+        second == 2,
+        third == 1,
+        fourth == 0,
+        none == 0,
+        some == 3,
+        rest == 2,
+        left.size == 5,
+        left.forall(_.action == AntifraudListAction.expire),
+      )
     },
     test("adds the hits to the counters, and keeps the latest time") {
       for

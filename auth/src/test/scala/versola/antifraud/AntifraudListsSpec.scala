@@ -16,6 +16,9 @@ object AntifraudListsSpec extends UnitSpecBase:
   /** The repository, in memory. */
   private class FakeRepository(var entries: List[AntifraudListEntry] = Nil) extends AntifraudListRepository:
     var failLoad = false
+    var ver = 0L
+    var loads = 0
+    def changed(): Unit = ver += 1
     var failHits = false
     var written: List[ListHit] = Nil
     var audits: List[AntifraudListAudit] = Nil
@@ -26,12 +29,14 @@ object AntifraudListsSpec extends UnitSpecBase:
           entries.find(e => e.listType == entry.listType && e.valueType == entry.valueType && e.value == entry.value && e.tenantId == entry.tenantId)
         val stored = same.fold(entry)(e => e.copy(expiresAt = entry.expiresAt, reason = entry.reason, source = entry.source))
         entries = stored :: entries.filterNot(e => same.exists(_.id == e.id))
+        changed()
         stored
 
     override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
       ZIO.succeed:
         val found = entries.exists(_.id == id)
         entries = entries.filterNot(_.id == id)
+        changed()
         found
 
     override def find(id: UUID): Task[Option[AntifraudListEntry]] = ZIO.succeed(entries.find(_.id == id))
@@ -42,7 +47,14 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] = ZIO.succeed(entries)
 
+    override def version: Task[Long] = if failLoad then ZIO.fail(RuntimeException("db down")) else ZIO.succeed(ver)
+
+    override def purgeExpired(now: Instant, limit: Int): Task[Int] = ZIO.succeed(0)
+
+    override def pruneAudit(before: Instant, limit: Int): Task[Int] = ZIO.succeed(0)
+
     override def loadActive(now: Instant): Task[List[ListedValue]] =
+      loads += 1
       if failLoad then ZIO.fail(RuntimeException("db down"))
       else
         ZIO.succeed:
@@ -51,8 +63,6 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def addHits(hits: List[ListHit]): Task[Unit] =
       if failHits then ZIO.fail(RuntimeException("db down")) else ZIO.succeed { written = written ++ hits }
-
-    override def purgeExpired(now: Instant): Task[Int] = ZIO.succeed(0)
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
@@ -228,7 +238,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         _ <- ZIO.succeed { repository.failLoad = true }
         _ <- lists.refresh
         kept <- decide(lists)(ctx(deviceId = Some("d")))
-        _ <- ZIO.succeed { repository.failLoad = false; repository.entries = Nil }
+        _ <- ZIO.succeed { repository.failLoad = false; repository.entries = Nil; repository.changed() }
         _ <- lists.refresh
         gone <- decide(lists)(ctx(deviceId = Some("d")))
       yield assertTrue(kept.action == DecisionAction.Block, gone == Decision.allow)
@@ -240,6 +250,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         for
           _ <- lists.start
           _ <- ZIO.succeed {
+            repository.changed()
             repository.entries = List(
               AntifraudListEntry(
                 id = UUID.randomUUID(),
@@ -454,6 +465,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         for
           _ <- ZIO.succeed {
             repository.failLoad = true
+            repository.changed()
             repository.entries = List(
               AntifraudListEntry(
                 id = UUID.randomUUID(),
@@ -480,6 +492,23 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- fiber.join
           d <- decide(lists)(ctx(deviceId = Some("d")))
         yield assertTrue(stillStarting, d.action == DecisionAction.Block)
+    },
+    test("an unchanged table is not read again, except once a minute for a change made behind the service's back") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      for
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
+        afterCreate <- ZIO.succeed(repository.loads)
+        _ <- lists.refresh.repeatN(9)
+        unchanged <- ZIO.succeed(repository.loads)
+        // by hand in SQL: no version bump
+        _ <- ZIO.succeed { repository.entries = Nil }
+        _ <- lists.refresh
+        stillThere <- decide(lists)(ctx(deviceId = Some("d")))
+        _ <- TestClock.adjust(61.seconds)
+        _ <- lists.refresh
+        gone <- decide(lists)(ctx(deviceId = Some("d")))
+      yield assertTrue(unchanged == afterCreate, stillThere.action == DecisionAction.Block, gone == Decision.allow)
     },
     test("counts hits by list and kind of value, for the metric") {
       val (lists, cache) = make(FakeRepository())
