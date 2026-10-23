@@ -231,17 +231,6 @@ server {
 }
 ```
 
-- **Which address `auth` takes as the client's** (throttling, the antifraud rules): the header named by the tenant's
-  `ipHeader` (`X-Real-IP` by default). For `X-Forwarded-For` it takes the value `trusted-proxy-hops` places from the
-  right (config key `trusted-proxy-hops`, default **1**), because each proxy appends the address it saw and whatever is
-  further left was written by the client. **This changes behaviour: `auth` used to take the leftmost value, which a client
-  can choose.** Set the number of proxies that append to `X-Forwarded-For` in front of `auth`: **1** for one proxy (the
-  bundled `versola-proxy` alone, a Kubernetes ingress), **2** for a CDN or an external web server in front of
-  `versola-proxy` or of a load balancer (the nginx block above, then `versola-proxy`), and so on. A header with fewer
-  values than that gives **no address**: per-IP throttling is skipped for that request, and the leftmost value is never
-  used instead. Other headers (`X-Real-IP`, a custom one) are read as a single address and are not affected. Before
-  upgrading a deployment with `ipHeader = X-Forwarded-For` and more than one proxy, set the key, or every client will
-  appear at the address of the proxy next to `auth`.
 - `Host` is passed through but not trusted: issuer, redirect URLs and the DPoP `htu` come from
   `--auth-url`.
 - `X-Forwarded-For` is trusted by `versola-proxy` only from `127.0.0.1`; `auth` rate-limits by the

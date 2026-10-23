@@ -144,8 +144,7 @@ object ConversationController extends Controller:
         cookie <- extractCookie(request)
         _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
-        config <- ZIO.service[CoreConfig]
-        ip = ClientIp.fromRequest(request, ipHeader, config.trustedProxyHops)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         body <- request.formAs[Body]

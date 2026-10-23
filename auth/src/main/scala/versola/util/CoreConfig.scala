@@ -19,11 +19,6 @@ case class CoreConfig(
     argon2: Option[Argon2Config],
     mutualTls: Option[CoreConfig.MutualTlsConfig],
     est: Option[CoreConfig.EstConfig] = None,
-    /** How many proxies that append to `X-Forwarded-For` stand in front of this service: the client's address is the
-      * value this many places from the right of the header ([[ClientIp]]). 1 is one proxy (the usual); a CDN in front of
-      * a load balancer is 2. Applies to `X-Forwarded-For` only. Before it existed the leftmost value was taken, which
-      * the client chooses. */
-    trustedProxyHops: Int = 1,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 

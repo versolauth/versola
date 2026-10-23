@@ -156,7 +156,7 @@ object AuthorizeRequestParser:
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
         ipHeader <- oauthClientService.getIpHeader(clientId)
-        ip = ClientIp.fromRequest(request, ipHeader, config.trustedProxyHops)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         stateForErrors = params.get("state")
