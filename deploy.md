@@ -556,7 +556,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
   `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
   day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
-  reads the whole day, in 24 queries of an hour each, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
+  reads the whole day, in 24 queries of an hour each, starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
   `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
   instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
   too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is

@@ -514,7 +514,10 @@ object VelocityCounters:
         _ <- (ZIO.sleep(settings.flushInterval) *> flush).forever.forkScoped
         slice <- Ref.make(0)
         first <- Ref.make(true)
-        _ <- (load(slice, first) *> ZIO.sleep(settings.loadInterval)).forever.forkScoped
+        // The first load is the heavy one (the day, in slices), and a deploy starts every instance at once: they begin
+        // at different moments within half a load interval.
+        jitter <- Random.nextLongBetween(0L, math.max(1L, settings.loadInterval.toMillis / 2))
+        _ <- (ZIO.sleep(jitter.millis) *> (load(slice, first) *> ZIO.sleep(settings.loadInterval)).forever).forkScoped
         _ <- (ZIO.sleep(10.minutes) *> upkeep).forever.forkScoped
         // What is written last is written once more on the way out, so a deploy loses no more than the interval.
         _ <- ZIO.addFinalizer(flush.timeout(5.seconds).unit)
