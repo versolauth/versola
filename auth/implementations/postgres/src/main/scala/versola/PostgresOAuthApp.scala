@@ -1,7 +1,18 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.antifraud.{Antifraud, AntifraudEventRepository, AntifraudEvents, PostgresAntifraudEventRepository, PostgresVelocityRepository, VelocityCounters, VelocityRepository}
+import versola.antifraud.{
+  Antifraud,
+  AntifraudEventRepository,
+  AntifraudEvents,
+  AntifraudListRepository,
+  AntifraudLists,
+  PostgresAntifraudEventRepository,
+  PostgresAntifraudListRepository,
+  PostgresVelocityRepository,
+  VelocityCounters,
+  VelocityRepository,
+}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -104,6 +115,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService &
       AntifraudEvents &
       AntifraudEventRepository &
+      AntifraudListRepository &
+      AntifraudLists &
       VelocityRepository &
       VelocityCounters &
       ConversationRenderService &
@@ -218,6 +231,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
+      PostgresAntifraudListRepository.live >++>
       PostgresVelocityRepository.live >++>
       PostgresCleanupManager.live
   )
@@ -235,6 +249,16 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](
         _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
+      )
+
+  /** `antifraud.lists`, optional like the rest of the block. */
+  private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(
+          Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]).withDefault(AntifraudLists.Settings.default))
+            .withDefault(AntifraudLists.Settings.default),
+        ),
       )
 
   /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
@@ -299,7 +323,12 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserService.live >++>
       ConsentService.live >++>
       antifraudSettings >++>
-      Antifraud.live(Nil) >++>
+      antifraudListSettings >++>
+      AntifraudLists.live >++>
+      // Each component that adds rules is listed here.
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
+        Antifraud.Impl(settings.decision, List(lists.ruleSet)): Antifraud,
+      ) >++>
       AntifraudEvents.live >++>
       ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
       VelocityCounters.live >++>
