@@ -501,6 +501,31 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
   optional `antifraud` block of `auth`'s config.
 
+- **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
+  recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
+  hash, a mail domain): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
+  outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
+  are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
+  turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
+  change made through another instance shows within that time, and a refresh that fails keeps the previous lists
+  (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
+  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
+  interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
+  an `allow` takes off. There is no HTTP endpoint for the lists yet: they are changed through the service API in
+  `auth` (central's endpoint is a follow-up), so for now by SQL, which skips the audit; put the change in `af_list_audit`
+  by hand or wait for the endpoint.
+  Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
+  entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
+  (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
+  `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
+  `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  `shadow_list:<type>` in the fired rules). Only an operator may change global entries. **`fake` is for confirmed fraud only:**
+  a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
+  I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
+  `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
+  request; if it fails it starts without them, logs it and retries every second. **Rotating
+  `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
+
 - **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
   minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it

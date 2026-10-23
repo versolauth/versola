@@ -143,7 +143,7 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -152,6 +152,7 @@ object AntifraudEvents:
         repository <- ZIO.service[AntifraudEventRepository]
         settings <- ZIO.service[Settings]
         antifraud <- ZIO.service[Antifraud]
+        velocity <- ZIO.service[VelocityCounters]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
@@ -163,7 +164,7 @@ object AntifraudEvents:
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
         budget = SmsBudget(settings.smsBudget)
-        events = Impl(queue, settings.queueCapacity, budget, antifraud, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
+        events = Impl(queue, settings.queueCapacity, budget, antifraud, velocity, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
@@ -175,6 +176,7 @@ object AntifraudEvents:
       queueCapacity: Int,
       budget: SmsBudget,
       antifraud: Antifraud,
+      velocity: VelocityCounters,
       latency: SendLatency,
       settings: Settings,
       securityService: SecurityService,
@@ -211,21 +213,24 @@ object AntifraudEvents:
           client <- configService.find(clientId)
           hash <- subjectHash(credential)
           ip <- Observability.currentIp
-          decision <- antifraud.evaluate(
-            AntifraudContext(
-              tenantId = client.map(_.tenantId),
-              clientId = clientId,
-              action = AntifraudAction.otp_request,
-              subjectHash = Some(hash),
-              destPrefix = credential.toOption.map(destPrefix),
-              deviceId = None,
-              ip = ip,
-              asn = None,
-              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
-              ja4 = None,
-              signals = Map.empty,
-            ),
+          context = AntifraudContext(
+            tenantId = client.map(_.tenantId),
+            clientId = clientId,
+            action = AntifraudAction.otp_request,
+            subjectHash = Some(hash),
+            destPrefix = credential.toOption.map(destPrefix),
+            deviceId = None,
+            ip = ip,
+            asn = None,
+            userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+            ja4 = None,
+            signals = Map.empty,
           )
+          // Decided on the counts with this request in them, and counted only if it is let through: a request that is
+          // refused, or one aimed at somebody else's number, must not raise the count used against that number's owner.
+          counted <- velocity.snapshot(context)
+          decision <- antifraud.evaluate(counted)
+          _ <- ZIO.unless(decision.action == DecisionAction.Block)(velocity.record(context))
           _ <- AntifraudMetrics.decided(decision.action)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(

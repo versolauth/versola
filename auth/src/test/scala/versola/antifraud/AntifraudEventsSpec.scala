@@ -43,6 +43,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       settings: AntifraudEvents.Settings,
       config: versola.util.CoreConfig = TestEnvConfig.coreConfig,
       antifraud: Antifraud = Antifraud.off,
+      velocity: VelocityCounters = VelocityCounters.off,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
@@ -55,6 +56,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
       ZLayer.succeed[Antifraud](antifraud),
+      ZLayer.succeed[VelocityCounters](velocity),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
@@ -202,6 +204,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
             ZLayer.succeed[Antifraud](Antifraud.off),
+            ZLayer.succeed[VelocityCounters](VelocityCounters.off),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -257,6 +260,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[VelocityCounters](VelocityCounters.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -282,6 +286,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[VelocityCounters](VelocityCounters.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -393,6 +398,34 @@ object AntifraudEventsSpec extends UnitSpecBase:
           yield assertTrue(
             decision == Decision.allow,
             details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"))),
+          )
+      },
+    ),
+    suite("velocity in the decision")(
+      test("an allowed request is counted, and the limit fires on the one over it") {
+        val e = env
+        val thresholds = VelocityRules.Thresholds(phone = VelocityRules.Limit(perMinute = 2, weight = 60))
+        val vsettings = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
+        val velocity = VelocityCounters(vsettings)
+        val engine = Antifraud.Impl(
+          Antifraud.Settings(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(VelocityRules.ruleSet(vsettings)),
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            first <- events.decideOtpRequest(clientId, None, Right(phone))
+            second <- events.decideOtpRequest(clientId, None, Right(phone))
+            third <- events.decideOtpRequest(clientId, None, Right(phone))
+            fourth <- events.decideOtpRequest(clientId, None, Right(phone))
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            second.action == DecisionAction.Allow,
+            third.action == DecisionAction.Block,
+            third.firedRules == List("velocity_phone_1m"),
+            fourth.action == DecisionAction.Block,
           )
       },
     ),
