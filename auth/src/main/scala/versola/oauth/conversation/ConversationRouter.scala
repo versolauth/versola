@@ -371,7 +371,7 @@ object ConversationRouter:
       */
     private def passkeyPending(conversation: ConversationRecord): Task[Boolean] =
       configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
-        conversation.targetAcr.flatMap(vocabulary.get).exists(_.exists(_ == PassedAuthFactor.passkey)) &&
+        conversation.requiredFactors(vocabulary).exists(_.contains(PassedAuthFactor.passkey)) &&
           !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.passkey, conversation.authFlow.equivalents))
 
     private def afterFactorSteps(
@@ -400,11 +400,26 @@ object ConversationRouter:
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           conversationService.offerPasskeyEnroll(authId, conversation)
 
-        case None if conversation.needsPasswordChange =>
-          conversationService.offerSetPassword(authId, conversation)
-
         case None =>
-          conversationService.finish(authId, conversation)
+          inlinePasswordPending(conversation).flatMap:
+            case true =>
+              conversationService.preparePasswordStep(authId, conversation, conversation.authFlow.primary.factors.size)
+            case false if conversation.needsPasswordChange => conversationService.offerSetPassword(authId, conversation)
+            case false => conversationService.finish(authId, conversation)
+
+    /** Whether the ACR this conversation pursues needs a password that has not been passed yet, in a flow
+      * that takes it on the credential card. No factor in `primary.factors` would ask for it again, and the
+      * card is skipped for a user the conversation already knows, so without this the conversation would
+      * finish with nothing having verified them. The password step goes after the listed factors.
+      */
+    private def inlinePasswordPending(conversation: ConversationRecord): Task[Boolean] =
+      configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
+        val flow = conversation.authFlow
+        conversation.userId.isDefined &&
+        flow.primary.inlinePassword &&
+        !flow.primary.factors.exists(_.`type` == AuthFactorType.password) &&
+        conversation.requiredFactors(vocabulary).exists(_.contains(PassedAuthFactor.password)) &&
+        !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.password, flow.equivalents))
 
     private def nextNeededFactor(
         conversation: ConversationRecord,
@@ -412,7 +427,7 @@ object ConversationRouter:
     ): Task[Option[(AuthFactor, Int)]] =
       for
         vocabulary <- configService.getAcrVocabulary(conversation.clientId)
-        reqFactors = conversation.targetAcr.flatMap(vocabulary.get).map(_.toList.toSet).getOrElse(Set.empty)
+        reqFactors = conversation.requiredFactors(vocabulary).map(_.toSet).getOrElse(Set.empty)
       yield factors.find { case (factor, _) =>
         val passed = isSatisfied(conversation, factor)
         val needed = factor.required || PassedAuthFactor.fromFactorType(factor.`type`).exists(reqFactors.contains)

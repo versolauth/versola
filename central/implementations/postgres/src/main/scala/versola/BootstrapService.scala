@@ -287,7 +287,44 @@ object BootstrapService:
   private[versola] def accountAllowExpression(method: String, path: String): Option[String] =
     Option.when(method == "DELETE" && path == "/settings/sessions")("token.sid != request.body.targetSessionId")
 
+  /** The class `auth` defines itself (`AcrResolutionService.Sensitive`): the strongest sign-in the user has,
+    * a passkey if they have one. Which factor that is depends on the user, so it is named here and resolved
+    * by `auth`, not listed in the tenant's vocabulary. */
+  private val sensitiveAcr = "sensitive"
+
+  /** How old the sign-in behind a request to a step-up endpoint may be. */
+  private val accountStepUpMaxAgeSeconds = 300
+
+  /** The calls that change who can sign in to the account or who is signed in: removing a passkey, starting
+    * to add one, and signing another session out. Seeded asking for [[sensitiveAcr]], so a session that
+    * only passed a one-time code cannot do them for an account that has a passkey. Reading the page and
+    * renaming a passkey change neither, the second half of an enrollment is bound by the ticket its first
+    * half returned, and a password change asks for the current password, which is what an attacker holding only a
+    * one-time code lacks, so none of those asks. An operator can change any of this; a restart keeps what they set. */
+  private val accountStepUpEndpoints: Set[(String, String)] = Set(
+    "DELETE" -> "/settings/sessions",
+    "DELETE" -> "/settings/passkeys",
+    "POST" -> "/settings/passkeys/register/start",
+  )
+
+  /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
+    * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
+    * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
+    * operator turns on for it. */
+  private[versola] def mergeAccountEndpoints(
+      desired: List[ResourceEndpointRecord],
+      existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
+  ): List[ResourceEndpointRecord] =
+    desired.map: endpoint =>
+      existingById.get(endpoint.id).fold(endpoint): current =>
+        endpoint.copy(
+          stepUpCondition = current.stepUpCondition,
+          stepUpAcr = current.stepUpAcr,
+          maxAge = current.maxAge,
+        )
+
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
+    val stepUp = accountStepUpEndpoints.contains(method -> path)
     ResourceEndpointRecord(
       id = endpointId(method, path),
       path = path,
@@ -295,9 +332,9 @@ object BootstrapService:
       fetchUserInfo = false,
       allowExpression = accountAllowExpression(method, path),
       inject = accountCallerInjects(method, path),
-      stepUpCondition = None,
-      stepUpAcr = None,
-      maxAge = None,
+      stepUpCondition = Option.when(stepUp)("true"),
+      stepUpAcr = Option.when(stepUp)(sensitiveAcr),
+      maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
     )
 
   private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
@@ -945,7 +982,7 @@ object BootstrapService:
     * and nothing is lost; a token row is the administrator's and is left alone.
     */
   private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
-    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None))
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None, variables = None))
     for
       _ <- ZIO.logInfo("Seeding default theme...")
       themes <- themeRepo.getAll
@@ -1597,15 +1634,7 @@ object BootstrapService:
             )
           case Some(existing) =>
             val existingById = existing.endpoints.map(endpoint => endpoint.id -> endpoint).toMap
-            // The catalog, its injects and its access rules belong to bootstrap and have to
-            // converge on every start; step-up policy is operator-tuned and is kept as found.
-            val mergedEndpoints = desiredEndpoints.map: desired =>
-              existingById.get(desired.id).fold(desired): current =>
-                desired.copy(
-                  stepUpCondition = current.stepUpCondition,
-                  stepUpAcr = current.stepUpAcr,
-                  maxAge = current.maxAge,
-                )
+            val mergedEndpoints = mergeAccountEndpoints(desiredEndpoints, existingById)
             val staleEndpoints = existingById.keySet -- desiredEndpoints.map(_.id).toSet
             val desiredUrl = ResourceUri(bootstrapConfig.authAdditionalUrl.encode)
             val needsUpdate = existing.resource != desiredUrl || existing.endpoints != mergedEndpoints

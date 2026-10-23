@@ -3,7 +3,7 @@ package versola.central.configuration.themes
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
-import versola.util.theme.{Background, BrandColor, Mode, Shape, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Background, BrandColor, Mode, Shape, ThemeOverrides, ThemeTokens, VariableValue}
 import zio.test.*
 
 /** Conformance suite for any [[ThemeRepository]] implementation. A backend module extends
@@ -14,6 +14,8 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
   private val tenantId = TenantId("tenant-a")
+  private val variables: Map[String, VariableValue] =
+    Map("--rs" -> VariableValue.Single("8px"), "--btn" -> VariableValue.Pair(light = "#112233", dark = "#ddeeff"))
 
   override def testCases(env: ThemeRepositorySpec.Env) =
     List(
@@ -52,14 +54,31 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
       },
       test("create stores the tokens of a theme built from them, and reads them back whole") {
         val tokens = ThemeTokens(
-          "studio",
-          Some(ThemeOverrides(BrandColor.parse("#112233").toOption, Some(Shape.sharp), None, Some(Mode.dark), background = Some(Background.horizon))),
+          base = "studio",
+          overrides = Some(ThemeOverrides(
+            BrandColor.parse("#112233").toOption,
+            Some(Shape.sharp),
+            None,
+            Some(Mode.dark),
+            background = Some(Background.horizon),
+          )),
+          variables = None,
         )
         val theme = ThemeRecord("studio-dark", "a { color: red; }", Some(tenantId), Some(tokens))
         for
           _ <- env.repository.create(theme)
           all <- env.repository.getAll
         yield assertTrue(all == Vector(theme))
+      },
+      test("stores the variables of a theme and reads them back, and a theme stored before them has none") {
+        val withVariables =
+          ThemeRecord("rounded", "", None, Some(ThemeTokens(base = "studio", overrides = None, variables = Some(variables))))
+        val before = ThemeRecord("older", "", None, Some(ThemeTokens(base = "studio", overrides = None, variables = None)))
+        for
+          _ <- env.repository.create(withVariables)
+          _ <- env.repository.create(before)
+          all <- env.repository.getAll
+        yield assertTrue(all.map(_.tokens.flatMap(_.variables)).toSet == Set(Some(variables), None))
       },
       test("a theme stored without tokens reads back without them") {
         val theme = ThemeRecord("plain", "body {}", None, tokens = None)
@@ -69,9 +88,13 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         yield assertTrue(all.map(_.tokens) == Vector(None))
       },
       test("update changes the tokens, and can turn a token theme back into a plain stylesheet") {
-        val theme = ThemeRecord("brand", "", None, Some(ThemeTokens("fintech", overrides = None)))
+        val theme = ThemeRecord("brand", "", None, Some(ThemeTokens(base = "fintech", overrides = None, variables = None)))
         val retokened =
-          ThemeTokens("berry", Some(ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None, background = None)))
+          ThemeTokens(
+            base = "berry",
+            overrides = Some(ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None, background = None)),
+            variables = None,
+          )
         for
           _ <- env.repository.create(theme)
           _ <- env.repository.update(theme.copy(tokens = Some(retokened)))

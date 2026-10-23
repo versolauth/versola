@@ -11,6 +11,7 @@ import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
   ClientCertificateFiles,
   ConfigurationSource,
+  EdgeCertificateHolder,
   EdgeConfig,
   EdgeController,
   EdgeIdentity,
@@ -53,6 +54,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SecureRandom &
       SecurityService &
       ConfigurationSource &
+      EdgeCertificateHolder &
       EdgeIdentity &
       DpopPolicyService &
       OverloadPolicyService &
@@ -84,6 +86,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   override protected def guardExemptPeers =
     ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
+  override protected def internalPeers =
+    ZIO.serviceWith[EdgeConfig]: config =>
+      import versola.util.http.OutboundGuard.peerOf
+      Set(config.central.url, config.internalUrl, config.versolaUrl).map(peerOf)
+
   /** The surface every mode serves. The internal one is added by [[mountedRoutes]], which is
     * where the mode is known. */
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
@@ -91,6 +98,30 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeController.routes,
       NativeController.routes,
     ).reduce(_ ++ _)
+
+  /** The proxy alone, on the listener that reads the caller's certificate (`EdgeConfig.mutualTls`). */
+  override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(EdgeController.resourceRoutes)
+
+  /** `ClientAuth.Required`, for the reason auth's listener gives (zio-http 3.6.0 drops a connection with an
+    * optional certificate the peer did not present). A caller with no certificate has nothing to prove here
+    * that the plain listener would not serve, and is refused in the handshake. */
+  override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
+    ZIO.serviceWith[EdgeConfig](
+      _.mutualTls.map(mtls =>
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+          SSLConfig.fromFile(
+            behaviour = SSLConfig.HttpBehaviour.Fail,
+            certPath = mtls.certificate,
+            keyPath = mtls.privateKey,
+            clientAuth = Some(ClientAuth.Required),
+            trustCertCollectionPath = Some(mtls.trustedCertificates),
+            // Without this the handshake still validates the certificate and the handler cannot see which one.
+            includeClientCert = true,
+          ),
+        ),
+      ),
+    )
 
   override def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
     ZIO.serviceWith[EdgeConfig](config => routes ++ InternalSurface.routes(config.mode))

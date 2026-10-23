@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{ClientCredential, ClientId, Code, CodeVerifier, EdgeId}
+import versola.edge.model.{AccessToken, ClientCredential, ClientId, Code, CodeVerifier, EdgeId}
 import versola.util.{PrivateClientCertificate, RedirectUri, Secret, TestCertificates}
 import zio.*
 import zio.http.*
@@ -51,6 +51,12 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
 
   private val clientId = ClientId("web-app")
   private val redirectUri = RedirectUri("https://app.example/callback")
+
+  private def identityOf(held: Option[PrivateClientCertificate.Material]): EdgeIdentity =
+    new EdgeIdentity:
+      override def certificate = ZIO.succeed(held)
+
+  private val noIdentity: EdgeIdentity = identityOf(None)
 
   private def material(generated: TestCertificates.Generated): PrivateClientCertificate.Material =
     PrivateClientCertificate(generated.bundle).material.toOption.get
@@ -167,7 +173,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
       config = edgeConfig(port, trust)
-      sso = SSOClient.Impl(httpClient, config, files, EdgeIdentity.Registered(config))
+      sso = SSOClient.Impl(httpClient, config, files, noIdentity)
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
@@ -203,7 +209,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
       config = chartEdgeConfig(port, listenerTrust, internalTrust)
-      sso = SSOClient.Impl(httpClient, config, files, EdgeIdentity.Registered(config))
+      sso = SSOClient.Impl(httpClient, config, files, noIdentity)
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
@@ -242,6 +248,41 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
         // RFC 8705 §3.1 binds a token to, and two certificates can share a subject.
         presented.contains(client.certificate),
       )
+    },
+    // A token whose holder only this edge verified: auth reads the certificate of the handshake as the
+    // proof, so it has to be edge's own that the far side sees -- not a client's.
+    test("the certificate edge holds for itself is the one the server sees for a key-bound token's userinfo") {
+      for
+        pem <- ZIO.service[Pem]
+        listening <- ZIO.service[Listener]
+        httpClient <- ZIO.service[Client]
+        files <- ZIO.service[ClientCertificateFiles]
+        _ <- listening.seen.set(None)
+        config = chartEdgeConfig(listening.port, pem.serverTrust, pem.foreignTrust)
+        edgeIdentity = identityOf(Some(material(client)))
+        sso = SSOClient.Impl(httpClient, config, files, edgeIdentity)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
+        presented <- listening.seen.get
+      yield assertTrue(presented.contains(client.certificate))
+    },
+    // What `versola configure vps` writes: `versola-internal-url` is auth's public https name (nothing here
+    // answers it), no terminator is pinned, and the mutual-TLS listener is named by `native`. The first attempt at
+    // this took the public name for a terminator and sent the certificate there; it has to reach the listener.
+    test("with auth's public https name as the internal url the edge's certificate still reaches the listener") {
+      for
+        pem <- ZIO.service[Pem]
+        listening <- ZIO.service[Listener]
+        httpClient <- ZIO.service[Client]
+        files <- ZIO.service[ClientCertificateFiles]
+        _ <- listening.seen.set(None)
+        vps = chartEdgeConfig(listening.port, pem.serverTrust, pem.foreignTrust).copy(
+          versolaInternalUrl = Some(URL.decode("https://localhost:1").toOption.get),
+          versolaInternalTrustedCertificates = Set.empty,
+        )
+        sso = SSOClient.Impl(httpClient, vps, files, identityOf(Some(material(client))))
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.CallerCertificate)
+        presented <- listening.seen.get
+      yield assertTrue(presented.contains(client.certificate))
     },
     // The chart's topology (#551): a plaintext `versola-internal-url` and the native back channel.
     // The certificate client's call has to leave the plaintext url for the listener, and what it

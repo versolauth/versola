@@ -81,12 +81,12 @@ test('choosing an override asks central for the client\'s effective stylesheet a
   expect(last).toEqual({ tokens: { base: 'fintech', overrides: { shape: 'sharp' } }, css: 'MONEY-CSS', overrides: { shape: 'round' } });
 });
 
-test('a stylesheet theme is rendered without tokens, with the overrides on top', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: clientsPath, state: stateWith({}, { ...partnerClient, theme: 'legacy', themeOverrides: { brand: '#112233' } }) });
+test('a theme with only custom CSS is rendered without tokens, with the overrides on top', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: stateWith({}, { ...partnerClient, theme: 'css-only', themeOverrides: { brand: '#112233' } }) });
   await openBranding(page);
-  await expect.poll(async () => srcdoc(page)).toContain('LEGACY-CSS');
+  await expect.poll(async () => srcdoc(page)).toContain('CSS-ONLY');
 
-  expect(renders(api)[0]).toEqual({ css: 'LEGACY-CSS', overrides: { brand: '#112233' } });
+  expect(renders(api)[0]).toEqual({ css: 'CSS-ONLY', overrides: { brand: '#112233' } });
   expect(await srcdoc(page)).not.toContain('BASE-STYLESHEET');
 });
 
@@ -116,6 +116,22 @@ test('a look fixed to one scheme disables the other, and Mobile and Desktop chan
   expect(await width()).toBeCloseTo(390, 0);
   await page.getByRole('group', { name: 'Preview width' }).getByRole('button', { name: 'Desktop' }).click();
   await expect.poll(width).toBeGreaterThan(600);
+});
+
+test('the background thumbnails are drawn in the scheme the preview shows, and in a fixed one', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await loadAdminApp(page, { path: clientsPath, state: stateWith() });
+  await openBranding(page);
+  const swatches = page.locator('versola-theme-token-controls .bg-swatch');
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+  await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
+  await scheme.getByRole('button', { name: 'Dark' }).click();
+  await expect(swatches.first()).toHaveAttribute('data-scheme', 'dark');
+  await scheme.getByRole('button', { name: 'Light' }).click();
+  await expect(swatches.first()).toHaveAttribute('data-scheme', 'light');
+
+  await page.getByRole('group', { name: 'Colour scheme' }).getByRole('button', { name: 'Dark' }).click();
+  await expect(swatches.first()).toHaveAttribute('data-scheme', 'dark');
 });
 
 test('shows why the preview is missing when central refuses to render, instead of a blank frame', async ({ page }) => {

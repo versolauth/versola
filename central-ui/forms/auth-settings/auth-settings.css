@@ -6,6 +6,10 @@
   max-height: min(720px, calc(100dvh - 40px));
   text-align: left;
   overflow-y: auto;
+  /* The card is a centred column; content taller than the card would overflow its top as well, where
+   * nothing can scroll to it, and the heading would be lost. Centre only while it fits. */
+  justify-content: flex-start;
+  justify-content: safe center;
 }
 .account-container h1 {
   text-align: center;
@@ -122,7 +126,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(21, 23, 28, 0.35);
+  background: var(--scrim);
   z-index: 300;
 }
 .confirmation-dialog {
@@ -153,4 +157,7 @@
   width: auto;
   padding: 10px 16px;
   font-size: 0.9rem;
+}
+.account-notice {
+  margin-bottom: 16px;
 }

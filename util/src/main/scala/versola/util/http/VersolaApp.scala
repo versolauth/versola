@@ -79,6 +79,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
 
+  /** Whether `HTTP_ACCESS_LOG*` (and later a policy from central) may thin out this service's `receive-http` lines.
+    * `false`: every request is logged whatever the setting; auth does this, its lines are few and it is where an
+    * investigation of a login ends up.
+    */
+  protected def accessLogConfigurable: Boolean = true
+
+  /** The peers (`host:port`) of this deployment's own services, whose successful `send-http` lines are DEBUG (see
+    * [[Observability.internalPeers]]). Every other peer, a message provider above all, is external and logged at INFO.
+    */
+  protected def internalPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
+
   /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
     * without and whose configuration it waits for at start-up (central). */
   protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
@@ -208,6 +219,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
+      _ <- ZIO.unless(accessLogConfigurable)(Observability.updateAccessLog(AccessLogSettings.default))
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
@@ -257,6 +269,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       guard <- ZIO.service[OutboundGuard]
       _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
+      _ <- internalPeers.provideEnvironment(appDependencies).flatMap(Observability.setInternalPeers)
       baseOutbound <- guard.current
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
@@ -470,6 +483,7 @@ object VersolaApp:
         formats <- ZIO.service[LogFormats]
         env <- ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env")))
         config = ConsoleLoggerConfig.default.copy(
+          filter = LogFilter.LogLevelByNameConfig(Observability.minLogLevel),
           format =
             List(
               label("timestamp", timestamp.fixed(32)),
@@ -485,6 +499,7 @@ object VersolaApp:
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),
               logAnnotation(Observability.error),
+              logAnnotation(Observability.antifraud),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )

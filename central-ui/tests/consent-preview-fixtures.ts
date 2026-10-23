@@ -49,7 +49,7 @@ export const previewPresets = [
 export const previewThemes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'money', css: 'MONEY-CSS', tenantId: null, tokens: { base: 'fintech', overrides: { shape: 'sharp' } } },
-  { id: 'legacy', css: 'LEGACY-CSS', tenantId: null },
+  { id: 'css-only', css: 'CSS-ONLY', tenantId: null },
 ];
 
 /** A central that can draw the consent screen: its form, the catalog's scenarios, and the themes. */

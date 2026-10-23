@@ -130,6 +130,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
+      versola.antifraud.AntifraudEvents.noop,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -241,6 +242,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.secureRandom),
             ZLayer.succeed(env.userService),
             ZLayer.succeed(env.consentService),
+            ZLayer.succeed[versola.antifraud.AntifraudEvents](versola.antifraud.AntifraudEvents.noop),
             ConversationService.live,
           )
           _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))
@@ -484,6 +486,50 @@ object ConversationServiceSpec extends UnitSpecBase:
           yield assertTrue(
             result.isInstanceOf[ConversationResult.Complete],
             env.authorizationCodeRepository.create.calls.head._2.acr == Some(passkeyAcr),
+          )
+        },
+        test("issues the code for a class the server defines itself, on the factors fixed when the conversation started") {
+          val env = Env()
+          val sensitive = pursuingPasskey.copy(
+            targetAcr = Some(AcrResolutionService.Sensitive),
+            targetFactors = Some(List(PassedAuthFactor.password)),
+          )
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, Map.empty)
+            result <- env.service.finish(authId, sensitive.copy(amr = Map(passedFactor(PassedAuthFactor.password))))
+          yield assertTrue(
+            result.isInstanceOf[ConversationResult.Complete],
+            env.authorizationCodeRepository.create.calls.head._2.acr == Some(AcrResolutionService.Sensitive),
+          )
+        },
+        test("denies the code for a built-in class when a factor it asks for was not passed") {
+          val env = Env()
+          val sensitive = pursuingPasskey.copy(
+            targetAcr = Some(AcrResolutionService.Sensitive),
+            targetFactors = Some(List(PassedAuthFactor.passkey)),
+          )
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, Map.empty)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            result <- env.service.finish(authId, sensitive.copy(amr = Map(passedFactor(PassedAuthFactor.otp))))
+          yield assertTrue(
+            result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+            env.authorizationCodeRepository.create.calls.isEmpty,
+          )
+        },
+        test("denies the code for a built-in class when no factors were fixed, rather than claiming the class") {
+          val env = Env()
+          val sensitive = pursuingPasskey.copy(targetAcr = Some(AcrResolutionService.Sensitive), targetFactors = None)
+          for
+            _ <- TestClock.setTime(acrNow)
+            _ <- issueCodeStubs(env, Map.empty)
+            _ <- env.conversationRepository.overwrite.succeedsWith(true)
+            result <- env.service.finish(authId, sensitive.copy(amr = Map(passedFactor(PassedAuthFactor.passkey))))
+          yield assertTrue(
+            result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+            env.authorizationCodeRepository.create.calls.isEmpty,
           )
         },
         test("counts a factor the flow lists as equivalent") {

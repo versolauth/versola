@@ -66,6 +66,7 @@ export class VersolaFormRecord extends LitElement {
   @state() private previewScenarioId = '';
   @state() private previewWidth = 390;
   @state() private propertyValues: Record<string, PropertyValue> = {};
+  @state() private sheetsReady = true;
   @state() private themeStylesheets: Record<string, string> = {};
   @state() private frameDoc = '';
   @state() private saving = false;
@@ -546,7 +547,12 @@ export class VersolaFormRecord extends LitElement {
   }
 
   willUpdate(changed: PropertyValues) {
-    if (changed.has('themes')) void previewStylesheets(this.themes).then(sheets => { this.themeStylesheets = sheets; });
+    if (changed.has('themes')) {
+      // The first frame waits for the stylesheets central renders: drawn with the fallback and then redrawn, the preview would
+      // reload under a person who has already opened its language list.
+      this.sheetsReady = this.themes.length === 0;
+      void previewStylesheets(this.themes).then(sheets => { this.themeStylesheets = sheets; this.sheetsReady = true; });
+    }
     const previous = changed.get('versions') as FormRecord[] | undefined;
     const idChanged = changed.has('versions') && (previous?.[0]?.id ?? '') !== (this.versions[0]?.id ?? '');
     const newer = changed.has('versions') && (this.versions[0]?.version ?? 0) > (previous?.[0]?.version ?? 0);
@@ -615,6 +621,7 @@ export class VersolaFormRecord extends LitElement {
 
   /** The frame is redrawn a moment after the last keystroke, not on every one. */
   private scheduleFrame() {
+    if (!this.sheetsReady) return;
     const next = this.buildSrcdoc();
     if (next === this.pendingDoc) return;
     const first = this.pendingDoc === '';

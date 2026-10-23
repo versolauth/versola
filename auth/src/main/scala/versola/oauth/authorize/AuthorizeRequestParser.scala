@@ -19,7 +19,7 @@ import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
+import versola.util.{Base64, ClientIp, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -156,7 +156,7 @@ object AuthorizeRequestParser:
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
         ipHeader <- oauthClientService.getIpHeader(clientId)
-        ip = request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         stateForErrors = params.get("state")
@@ -447,14 +447,14 @@ object AuthorizeRequestParser:
           )
 
     /** OIDC Core §3.1.2.1: `acr_values` is a *voluntary* request -- the server tries to satisfy it
-      * and reports what was achieved in the `acr` claim. A value the tenant's vocabulary does not
-      * define can never be satisfied, so it is dropped; when none is left the request carries no
+      * and reports what was achieved in the `acr` claim. A value neither the tenant's vocabulary nor
+      * the server itself ([[AcrResolutionService.builtIn]]) defines can never be satisfied, so it is dropped; when none is left the request carries no
       * acr requirement at all. Values the tenant does define are kept as before, and one that
       * cannot be met for this user is still refused downstream (a step-up has to be able to fail).
       */
     private def voluntaryAcrValues(clientId: ClientId, requested: NonEmptyList[Acr]): UIO[Option[NonEmptyList[Acr]]] =
       oauthClientService.getAcrVocabulary(clientId).map: vocabulary =>
-        NonEmptyList.fromIterableOption(requested.toList.filter(vocabulary.contains))
+        NonEmptyList.fromIterableOption(requested.toList.filter(acr => vocabulary.contains(acr) || AcrResolutionService.isBuiltIn(acr)))
 
     /** OIDC Core §3.1.2.1: `login_hint` is a hint, which the server may act on or not. One that
       * names no identifier this client's flow accepts -- or is not one at all -- is therefore

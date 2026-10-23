@@ -277,14 +277,14 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpSubmission(otpCode, ""), None, Some("9.9.9.9")),
     ),
     successfulSubmitTestCase(
-      description = "submit reads the tenant-configured header (X-Forwarded-For), taking the first value",
+      description = "submit reads the tenant-configured header (X-Forwarded-For), taking the rightmost value, not one the client wrote on the left",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         ),
       ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
-      submission = (authId, OtpSubmission(otpCode, ""), None, Some("7.7.7.7")),
+      submission = (authId, OtpSubmission(otpCode, ""), None, Some("10.0.0.1")),
       ipHeader = "X-Forwarded-For",
     ),
     successfulSubmitTestCase(

@@ -1,5 +1,5 @@
 import { render } from 'solid-js/web';
-import { createMemo, createSignal, For, Show } from 'solid-js';
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import { PasswordInput } from '../shared/password-input';
@@ -56,6 +56,78 @@ function apiBase(): string {
   return path.endsWith('/') ? path : `${path}/`;
 }
 
+// What the user was doing when a step-up took them away, kept for the sign-in's return: sessionStorage,
+// so it is this tab's and ends with it, and only for as long as a sign-in takes.
+type PendingAction =
+  | { kind: 'session'; id: string }
+  | { kind: 'passkey'; id: string }
+  | { kind: 'enroll'; name: string };
+
+const pendingKey = 'versola.account.pending';
+const pendingMaxAgeMs = 10 * 60 * 1000;
+
+function savePending(action: PendingAction) {
+  try {
+    sessionStorage.setItem(pendingKey, JSON.stringify({ ...action, at: Date.now() }));
+  } catch (_) {
+    // Storage is unavailable: the sign-in still happens, the user repeats the action.
+  }
+}
+
+function clearPending() {
+  try {
+    sessionStorage.removeItem(pendingKey);
+  } catch (_) {
+    // Nothing to clear.
+  }
+}
+
+function readPending(): PendingAction | null {
+  try {
+    const raw = sessionStorage.getItem(pendingKey);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingAction> & { at?: number };
+    if (typeof value.at !== 'number' || Date.now() - value.at > pendingMaxAgeMs) return null;
+    if ((value.kind === 'session' || value.kind === 'passkey') && typeof value.id === 'string') return { kind: value.kind, id: value.id };
+    if (value.kind === 'enroll' && typeof value.name === 'string') return { kind: 'enroll', name: value.name };
+  } catch (_) {
+    // A value this page did not write is not an action to resume.
+  }
+  return null;
+}
+
+// The sign-in sends the browser back here, and an error it ends with (RFC 6749 §4.1.2.1) arrives as
+// query parameters; they are read once and taken off the address.
+function takeReturnError(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('error');
+  if (!error) return null;
+  for (const name of ['error', 'error_description', 'error_uri']) params.delete(name);
+  const query = params.toString();
+  window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : ''));
+  return error;
+}
+
+// An action that asks for a stronger or fresher sign-in than the session has is answered with 401 and
+// the edge login URL that asks for exactly that (RFC 9470); the page goes there, asking to be sent back
+// to this very address, and keeps `action` to carry out when it is back: the user already confirmed it.
+// Only a path on this origin is followed, so a response can never send the browser elsewhere.
+function followStepUp(res: Response, action: PendingAction | null, resumed: boolean, giveUp: () => void): boolean {
+  if (res.status !== 401) return false;
+  const location = res.headers.get('Location');
+  if (!location || !location.startsWith('/') || location.startsWith('//')) return false;
+  // The sign-in has just ended and the very same call is still refused: going round again would never end.
+  if (resumed) {
+    clearPending();
+    giveUp();
+    return true;
+  }
+  if (action) savePending(action);
+  const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.assign(`${location}${location.includes('?') ? '&' : '?'}return_to=${returnTo}`);
+  return true;
+}
+
 function formatDate(value: string, locale: string): string {
   try {
     return new Date(value).toLocaleString(locale);
@@ -100,6 +172,15 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [passwordErrors, setPasswordErrors] = createSignal<PasswordFieldErrors>({});
   const [passwordChanged, setPasswordChanged] = createSignal(false);
   const [deletionRequest, setDeletionRequest] = createSignal<DeletionRequest | null>(null);
+  // The sign-in that was asked for has ended, one way or the other, and sent the browser back here.
+  const returnError = takeReturnError();
+  const [stepUpError, setStepUpError] = createSignal<string | null>(returnError);
+  // What the user was doing when the sign-in took them away, to carry out once the page is up.
+  const interrupted = returnError ? null : readPending();
+  clearPending();
+  let resumedNow = false;
+  const stepUp = (res: Response, action: PendingAction | null) =>
+    followStepUp(res, action, resumedNow, () => setStepUpError('step_up_failed'));
 
   const revokeSession = async (session: AccountSession) => {
     if (busySessionId()) return;
@@ -111,6 +192,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetSessionId: session.id }),
       });
+      if (stepUp(res, { kind: 'session', id: session.id })) return;
       if (res.ok) {
         setSessions(sessions().filter((s) => s.id !== session.id));
       }
@@ -139,6 +221,8 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: id, name: trimmed || null }),
       });
+      // A rename is not resumed: the new name is only in the field the user was typing in.
+      if (stepUp(res, null)) return;
       if (res.ok) {
         setPasskeys(passkeys().map((p) => (p.id === id ? { ...p, name: trimmed || undefined } : p)));
         setRenamingId(null);
@@ -157,6 +241,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: id }),
       });
+      if (stepUp(res, { kind: 'passkey', id })) return;
       if (res.ok) setPasskeys(passkeys().filter((p) => p.id !== id));
     } finally {
       setBusyPasskeyId(null);
@@ -193,6 +278,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
+      if (stepUp(startRes, { kind: 'enroll', name: trimmed })) return;
       if (!startRes.ok) throw new Error('start failed');
       const { publicKeyOptions, ticket } = await startRes.json();
       const response = JSON.parse(await getRegistrationResponse(publicKeyOptions));
@@ -201,6 +287,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket, response, name: trimmed }),
       });
+      if (stepUp(finishRes, { kind: 'enroll', name: trimmed })) return;
       if (!finishRes.ok) throw new Error('finish failed');
       const passkey = (await finishRes.json()) as AccountPasskey;
       setPasskeys([...passkeys(), passkey]);
@@ -211,6 +298,30 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       setEnrolling(false);
     }
   };
+
+  // The action was confirmed before the sign-in, so it is carried out, not asked about again. Adding a
+  // passkey asks the browser for one, which some refuse without a click of its own: the name stays in the
+  // field and the button is the one the user already knows.
+  const resume = async (action: PendingAction) => {
+    resumedNow = true;
+    try {
+      if (action.kind === 'session') {
+        const session = sessions().find((candidate) => candidate.id === action.id);
+        if (session) await revokeSession(session);
+      } else if (action.kind === 'passkey') {
+        await deletePasskey(action.id);
+      } else {
+        setEnrollName(action.name);
+        await enroll();
+      }
+    } finally {
+      resumedNow = false;
+    }
+  };
+
+  onMount(() => {
+    if (interrupted) void resume(interrupted);
+  });
 
   const refusalText = (refusal: PasswordRefusal | undefined) => {
     if (!refusal) return undefined;
@@ -276,6 +387,14 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     <div class="container account-container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
       <h1>{t().page_title}</h1>
+
+      <Show when={stepUpError()}>
+        {(error) => (
+          <div class="error-text account-notice" role="alert">
+            {error() === 'unmet_authentication_requirements' ? t().step_up_unavailable : t().step_up_failed}
+          </div>
+        )}
+      </Show>
 
       <section class="account-section">
         <h2>{t().sessions_title}</h2>

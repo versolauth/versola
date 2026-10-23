@@ -23,6 +23,7 @@ object SecretSchemaSpec extends ZIOSpecDefault:
     "USER_AGENT_COOKIE_SECRET",
     "PAR_REQUESTS_SECRET",
     "DPOP_NONCES_SECRET",
+    "ANTIFRAUD_SUBJECT_SECRET",
     "JWT_PRIVATE_KEY",
     "CENTRAL_SECRET_KEY",
   )
@@ -240,6 +241,7 @@ object SecretSchemaSpec extends ZIOSpecDefault:
             "SESSION_COOKIE_SECRET",
             "USER_AGENT_COOKIE_SECRET",
             "DPOP_NONCES_SECRET",
+            "ANTIFRAUD_SUBJECT_SECRET",
             "EDGE_SESSIONS_SECRET",
             "EDGE_INTERNAL_SECRET",
             "EDGE_DPOP_NONCE_SALT",
