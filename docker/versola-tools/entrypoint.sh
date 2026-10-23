@@ -141,6 +141,28 @@ if [ -n "$MTLS_CERT_DAYS" ]; then
 fi
 export MTLS_CERT_DAYS
 
+# IMAGE_REGISTRY (optional, both targets): the registry prefix of the images the compose fragment pulls
+# (versola-central, versola-auth, versola-edge and this image, for `migrate` and `mtls-init`), for test
+# builds pushed somewhere other than ghcr.io/versolauth -- versola-cli's `--registry`. The tag is still
+# this image's own VERSION, so a build pushed to another registry has to be built with that VERSION.
+# Goes into the compose file with sed (delimiter '|'), so only what is certainly a registry host and
+# path is accepted: lowercase letters, digits, '.', '_', '-', '/' and, in the host, a ':port'.
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/versolauth}"
+case "$IMAGE_REGISTRY" in
+  *[!a-z0-9._:/-]*|/*|*/|*//*|-*|.*|:*)
+    echo "versola-tools: IMAGE_REGISTRY is not a registry host and path (e.g. ghcr.io/versolauth or registry.example.com:5000/versola: lowercase letters, digits, '.', '_', '-', '/', and a ':port' after the host)" >&2
+    exit 1
+    ;;
+esac
+registry_host=${IMAGE_REGISTRY%%/*}
+case "${IMAGE_REGISTRY#"$registry_host"}" in
+  *:*)
+    echo "versola-tools: IMAGE_REGISTRY has a ':' outside the host (a tag does not go here: the tag is this image's VERSION)" >&2
+    exit 1
+    ;;
+esac
+export IMAGE_REGISTRY
+
 # POSTGRES_DB (vps only; gen-env.scala validates the name and defaults to `auth`).
 export POSTGRES_DB="${POSTGRES_DB:-}"
 # POSTGRES_CA_FILE (vps only): a CA bundle versola-cli mounted into this container (its
@@ -241,8 +263,8 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
 rm -f "$OUT_DIR"/secrets.schema.json
 cp .local/env/"$TARGET"/secrets.schema.json "$OUT_DIR"/secrets.schema.json
 
-# Bake this image's own version into the compose fragment so it pulls the
-# matching auth/central/edge/gateway images. sed instead of envsubst: fewer
+# Bake this image's own version (and IMAGE_REGISTRY, validated above) into the compose fragment so
+# it pulls the matching auth/central/edge/gateway images. sed instead of envsubst: fewer
 # assumptions about what's installed in the base image, and there are no
 # other "$" characters in the template to worry about mangling.
 if [ "$TARGET" = "vps" ]; then
@@ -252,10 +274,10 @@ else
 fi
 if [ "$TARGET" = "vps" ]; then
   # The validated public names (possibly empty) become `mtls-init`'s environment.
-  sed -e "s/\${VERSION}/$VERSION/g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
+  sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
     "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 else
-  sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
+  sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 fi
 
 # Same split as the compose template just above, same reason: vps's
