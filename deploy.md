@@ -575,9 +575,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   An IP address is stored as a keyed hash of its network (`/32` of an IPv4 address, `/64` of an IPv6 one; IPv4-mapped
   addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
   the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
-  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`, chosen by the
-  tenant's `ipHeader` and `trusted-proxy-hops` (see "Behind an existing web server", PR #813): it is the client's only
-  when the proxies in front set the header as described there and `trusted-proxy-hops` matches their number.
+  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
