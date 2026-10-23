@@ -1,0 +1,14 @@
+versola-edge installed: {{ include "versola-edge.fullname" . }}
+
+It enrolls with central at {{ .Values.central.enrollment.url }} on its first start, using the token in
+Secret {{ include "versola-edge.tokenSecret" . }}, and then talks to central at {{ .Values.central.mtlsUrl }} with the
+certificate it got. A token works once and lives an hour: if the pod did not come up inside that,
+issue a new one and recreate the pod.
+{{ if not .Values.persistence.enabled }}
+WARNING: persistence.enabled is false. The identity is lost with the pod, so the edge enrolls again
+at every restart and each restart needs a new token.
+{{- end }}
+
+The edge's env.conf must include the file this chart renders:
+
+  include file("/app/remote-edge/central.conf")

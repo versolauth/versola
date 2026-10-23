@@ -152,16 +152,24 @@ describe('identifier validators match the server patterns', () => {
     expect(validateRoleId('1admin')).toBe(false);
   });
 
-  it('scope IDs allow underscores and reject hyphens and colons', () => {
+  it('scope IDs allow underscores and reject hyphens, dots and colons', () => {
     expect(validateScopeId('user_data')).toBe(true);
     expect(validateScopeId('user-data')).toBe(false);
     expect(validateScopeId('users:read')).toBe(false);
+    expect(validateScopeId('users.read')).toBe(false);
   });
 
-  it('permissions allow dot and colon separators', () => {
-    expect(validatePermission('billing:invoice.read')).toBe(true);
+  it('permissions use only the colon as a separator', () => {
+    expect(validatePermission('orders:read')).toBe(true);
+    expect(validatePermission('billing:invoice:read')).toBe(true);
+    expect(validatePermission('orders')).toBe(true);
+    expect(validatePermission('orders.read')).toBe(false);
+    expect(validatePermission('billing:invoice.read')).toBe(false);
     expect(validatePermission('billing:')).toBe(false);
-    expect(validatePermission('billing-invoice')).toBe(false);
+    expect(validatePermission('billing-invoice')).toBe(true);
+    expect(validatePermission('auth-settings:manage')).toBe(true);
+    expect(validatePermission('-billing')).toBe(false);
+    expect(validatePermission('Billing')).toBe(false);
   });
 });
 

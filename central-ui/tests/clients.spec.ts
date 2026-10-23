@@ -8,7 +8,7 @@ const alphaClient = {
   clientName: { en: 'Alpha Web' },
   redirectUris: ['https://alpha.example/callback'],
   scope: ['openid'],
-  permissions: ['alpha.read'],
+  permissions: ['alpha:read'],
   secretRotation: false,
   // Required and NaN-checked by the Access Token TTL input - omitting it leaves the field's
   // native "required" constraint failing on an empty value, which silently swallows every
@@ -30,7 +30,7 @@ const serviceClient = {
   clientName: { en: 'Service Client' },
   redirectUris: ['https://service.example/callback'],
   scope: ['email'],
-  permissions: ['alpha.write'],
+  permissions: ['alpha:write'],
   secretRotation: false,
 };
 
@@ -196,8 +196,8 @@ test('renders client details and filters by client id', async ({ page }) => {
       scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
       permissions: {
         'tenant-alpha': [
-          { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-          { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
         ],
       },
     },
@@ -220,7 +220,7 @@ test('renders client details and filters by client id', async ({ page }) => {
   // A web client has scopes; permissions are a service client's alone, so the page does not list any.
   await expect(alpha.getByRole('region', { name: 'Scopes' })).toBeVisible();
   await expect(alpha.getByRole('region', { name: 'Permissions' })).toHaveCount(0);
-  await expect(alpha).not.toContainText('alpha.read');
+  await expect(alpha).not.toContainText('alpha:read');
   await expect(alpha).toContainText('1h');
   await expect(alpha.getByRole('region', { name: 'Sign-in' })).toBeVisible();
   await expect(alpha.getByRole('region', { name: 'Branding and logout' })).toContainText('Forms theme');
@@ -1410,8 +1410,8 @@ const patchState = {
   scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
   permissions: {
     'tenant-alpha': [
-      { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-      { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
     ],
   },
 };
@@ -1449,7 +1449,7 @@ test('sends scopes as a patch when they are saved, with no permissions for a web
   await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
-  await expect(page.locator('.checkbox-item', { hasText: 'alpha.read' })).toHaveCount(0);
+  await expect(page.locator('.checkbox-item', { hasText: 'alpha:read' })).toHaveCount(0);
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
@@ -1900,27 +1900,27 @@ for (const width of [375, 320]) {
 
 test('lists the permissions of a service client, and sends them when they are saved', async ({ page }) => {
   const batch = { ...alphaClient, id: 'batch-job', clientName: { en: 'Batch Job' }, redirectUris: [], authFlow: null,
-    scope: [], permissions: ['alpha.read'], template: { kind: 'service' } };
+    scope: [], permissions: ['alpha:read'], template: { kind: 'service' } };
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
       clients: { 'tenant-alpha': [batch] },
       permissions: { 'tenant-alpha': [
-        { permission: 'alpha.read', description: { en: 'Read' }, endpointIds: [101] },
-        { permission: 'alpha.write', description: { en: 'Write' }, endpointIds: [101] },
+        { permission: 'alpha:read', description: { en: 'Read' }, endpointIds: [101] },
+        { permission: 'alpha:write', description: { en: 'Write' }, endpointIds: [101] },
       ] },
     },
   });
   await openClientPage(page, 'batch-job');
-  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha.read');
+  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha:read');
   await expect(page.getByRole('region', { name: 'Scopes' })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Edit permissions', exact: true }).click();
-  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
+  await page.locator('.checkbox-item', { hasText: 'alpha:write' }).getByRole('checkbox').check();
   await saveEdit(page);
   const update = await findClientWrite(api.requests, 'PUT');
   expect(update.pathname).toBe('/configuration/clients/service');
-  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha.write'], remove: [] } });
+  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha:write'], remove: [] } });
 });
 
 
@@ -2089,7 +2089,7 @@ const appearancePresets = [
 const appearanceThemes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'money', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { shape: 'sharp' } } },
-  { id: 'legacy', css: 'LEGACY-CSS', tenantId: null },
+  { id: 'css-only', css: 'CSS-ONLY', tenantId: null },
 ];
 const appearanceState = (client: Record<string, unknown>) => ({
   clients: { 'tenant-alpha': [client] },
@@ -2132,8 +2132,8 @@ test('shows the values of the theme the app uses as inherited, and sends only wh
 
   await block.getByLabel('Brand colour, #rrggbb').fill('112233');
   await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
-  await expect(block.getByText('Overridden · base: #5b5bd6')).toBeVisible();
-  await expect(block.getByText('Overridden · base: sharp')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: #5b5bd6')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: sharp')).toBeVisible();
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233', shape: 'round' });
@@ -2150,7 +2150,7 @@ test('the background of an app starts at the theme\'s, is overridden from the pr
   await expect(cards.getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
 
   await cards.getByRole('button', { name: 'Horizon' }).click();
-  await expect(block.getByText('Overridden · base: linear')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: linear')).toBeVisible();
   await block.getByRole('button', { name: 'Reset background to the base' }).click();
   await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
 
@@ -2185,28 +2185,28 @@ test('resets one override, and clears all of them with an empty object', async (
   await expect(page.getByText('Same as the theme')).toBeVisible();
 });
 
-test('says that overrides apply on top of a stylesheet theme, and sends nothing when none was set', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+test('says that overrides apply on top of a theme that has only custom CSS, and sends nothing when none was set', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
 
   await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Branding and logout');
-  await expect(appearanceBlock(page).getByText('The theme is a stylesheet')).toBeVisible();
+  await expect(appearanceBlock(page).getByText('The theme is only custom CSS')).toBeVisible();
   // Its values are not known, so none is claimed: no preset's values stand in for them.
   await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
-  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(5);
+  await expect(appearanceBlock(page).getByText('Set by the theme\'s CSS')).toHaveCount(5);
   await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"], .bg-card[aria-pressed="true"]')).toHaveCount(0);
 
   await saveEdit(page);
   expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');
 });
 
-test('over a stylesheet theme, a choice equal to the default theme is still saved as an override', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+test('over a theme that has only custom CSS, a choice equal to the default theme is still saved as an override', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
 
   await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Branding and logout');
   const block = appearanceBlock(page);
-  // Soft is the default theme's shape: over a token theme that would be no override, over a stylesheet it is one.
+  // Soft is the default theme's shape: over a token theme that would be no override, over a CSS-only theme it is one.
   await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' }).click();
   await block.getByLabel('Brand colour, #rrggbb').fill('155e75');
   await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' })).toHaveAttribute('aria-pressed', 'true');

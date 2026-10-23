@@ -162,11 +162,23 @@ export interface OAuthClient {
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
+  /** Where the client stands when it obtains its mTLS certificate through EST (RFC 7030);
+   *  absent or null when it does not. */
+  est?: ClientEstState | null;
   /** What this client changes in the theme it uses (a partner app with its own brand); absent or
    *  null when it changes nothing. */
   themeOverrides?: ThemeOverrides | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
+}
+
+/** A client that obtains its certificate through EST: `pending` until its first certificate is
+ *  issued, then when the latest one expires and, where chains end, when the chain does (renewing is
+ *  refused from then until an operator extends it). */
+export interface ClientEstState {
+  pending: boolean;
+  certificateExpiresAt?: string | null;
+  chainEndsAt?: string | null;
 }
 
 // OTP Template
@@ -256,6 +268,10 @@ export interface ChallengeSettingsRecord {
   logoLight?: string | null;
   logoDark?: string | null;
 }
+
+/** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`
+ * clears an optional member. The tenant is named beside them and the profile cannot be patched. */
+export type ChallengeSettingsChanges = Partial<Omit<ChallengeSettingsRecord, 'tenantId' | 'securityProfile'>>;
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the
 // private half needed to sign with it. Never carries the key material itself.
@@ -382,10 +398,14 @@ export interface PaginatedResponse<T> {
 }
 
 // Edge
+export type { OverloadPolicy } from '../utils/overload-policy';
+import type { OverloadPolicy } from '../utils/overload-policy';
+import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
   requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
+  overloadPolicy?: OverloadPolicy;  // absent when none is set: the edge uses its deployment's values
 }
 
 export interface ServiceKey {
@@ -430,6 +450,8 @@ export interface ThemeOverrides {
 export interface ThemeTokens {
   base: string;
   overrides?: ThemeOverrides;
+  /** Token overrides: CSS variables of the forms' theming API (`--rs` -> `8px`), laid after the five values. */
+  variables?: Record<string, VariableValue>;
 }
 
 // Every token with a value: a built-in theme's own.
@@ -448,8 +470,8 @@ export interface ThemePreset {
   tokens: ResolvedThemeTokens;
 }
 
-// A theme is a stylesheet, or -- with `tokens` -- a built-in base with overrides, in which case
-// `css` holds only the theme's own additions and may be empty.
+// A theme is a built-in base with overrides (`tokens`) and optional custom CSS (`css`), which is laid after the CSS
+// generated from the tokens. A theme stored before tokens existed has `css` and no `tokens`.
 export interface ThemeRecord {
   id: string;
   css: string;
@@ -527,6 +549,20 @@ export interface SessionClientEntry {
   expiresAt: string;
 }
 
+/** The user agent (browser or app install) as auth stores it. */
+export interface UserAgent {
+  id: string;
+  /** The raw `User-Agent` header as last seen on sign-in. */
+  userAgent?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+  createdAt: string;
+  /** The device is remembered until then; it slides forward on every sign-in. */
+  expiresAt: string;
+}
+
 export interface UserSession {
   /** What `endUserSession` takes to end this one session. */
   publicId?: string;
@@ -536,6 +572,21 @@ export interface UserSession {
   os?: string;
   browser?: string;
   version?: string;
+  /** When the session ends regardless of activity. */
+  expiresAt?: string;
+  /** When it ends if it stays idle; absent when no idle timeout applies. */
+  idleExpiresAt?: string;
+  userAgent?: UserAgent;
+}
+
+/** One remembered device: its user agent and the session under it, `null` once signed out. */
+export interface UserDevice {
+  /** Absent only for a live session whose user agent row has expired and been swept. */
+  userAgent?: UserAgent;
+  session: UserSession | null;
+  /** Public ids of this user agent's sessions that ended and are still stored: what ties a refresh
+   *  token (it names only its session) to a signed-out device. */
+  endedSessionIds: string[];
 }
 
 /** A live refresh token, one per grant; it outlives the session it was issued under. */

@@ -300,10 +300,6 @@ export class VersolaTenantsList extends LitElement {
       .sort((a, b) => (a.id === this.selectedTenantId ? -1 : b.id === this.selectedTenantId ? 1 : a.id.localeCompare(b.id)));
   }
 
-  private count(filter: TenantFilter): number {
-    return this.tenants.filter(tenant => this.matchesFilter(tenant, filter)).length;
-  }
-
   /** The edge as a chip (the table renders cells with its own styles, which carry chips, not tags). */
   private edgeValue(tenant: Tenant) {
     if (!tenant.edgeId) return html`<span class="chip warn">Not assigned</span>`;
@@ -322,7 +318,7 @@ export class VersolaTenantsList extends LitElement {
         <input class="search-input" type="search" aria-label="Search tenant list" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter tenants"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as TenantFilter}></versola-filter-bar>
       </div>
@@ -351,7 +347,7 @@ export class VersolaTenantsList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredTenants}
         .rowKey=${(tenant: Tenant) => tenant.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(tenant: Tenant) => `Actions for ${tenant.id}`}
         @row-select=${(e: CustomEvent<{ row: Tenant }>) => this.openView(e.detail.row)}

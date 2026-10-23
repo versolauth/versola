@@ -38,6 +38,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   import SqlArrayCodec.ListSqlArrayCodec
 
   given amrCodec: DbCodec[Map[PassedAuthFactor, PassedFactorRecord]] = jsonBCodec[Map[PassedAuthFactor, PassedFactorRecord]]
+  given targetFactorsCodec: DbCodec[List[PassedAuthFactor]] = jsonBCodec[List[PassedAuthFactor]]
 
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
@@ -90,7 +91,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt, target_factors
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -137,6 +138,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 granted_scope,
                 prompt_consent,
                 dpop_jkt,
+                target_factors,
                 expires_at
             ) values (
                 $authId,
@@ -175,6 +177,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.grantedScope}::text[],
                 ${record.promptConsent},
                 ${record.dpopJkt},
+                ${record.targetFactors},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()

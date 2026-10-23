@@ -9,13 +9,16 @@ import zio.test.*
   * bound to it, and the two resource servers that have to check that binding -- edge on a
   * proxied call, auth on `/userinfo`.
   *
-  * The first test is the one only this level can give. An endpoint with `fetchUserInfo` makes
-  * edge call auth's `/userinfo` on its own behalf with the user's token, and once that token is
-  * key-bound auth refuses it without a proof, which edge cannot produce (the key belongs to the
-  * client). Auth honours the call only over the certificate of an edge-fronted native client's
-  * handshake, so a web client that authenticates by secret has no way to make it, and edge
-  * refuses rather than sending a `Bearer` downgrade it knows will fail. The native case, where
-  * the call does go through, is `NativeAppFlowSpec`.
+  * The test that only this level can give is the first one. An endpoint with `fetchUserInfo`
+  * makes edge call auth's `/userinfo` on its own behalf, presenting the user's token over
+  * `Bearer` -- which, once the token is key-bound, is precisely the downgrade auth refuses.
+  * Edge cannot produce a proof for it: the key belongs to the client. It calls auth's
+  * mutual-TLS listener with its own certificate instead (the one central issued it, naming
+  * `urn:versola:edge:<id>`), and auth honours the call without a proof because that
+  * certificate chains to the issuer of edge certificates it trusts
+  * (`mutual-tls.edge-trusted-certificates`). Every component spec on that path stubs the one
+  * next to it; here central really issues the certificate, edge really presents it in a real
+  * handshake, and auth really recognises it.
   *
   * Requires an edge with a `dpop { }` block configured (as `scripts/gen-env.scala` generates
   * by default) -- without one, edge refuses the `DPoP` scheme outright and the bound-token
@@ -119,18 +122,24 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
     upstream.flatMap(_.reset) *> effect
 
   def spec = suite("Edge + auth: DPoP-bound tokens")(
-    test("a key-bound token of a client with no certificate is refused where userinfo is needed, not downgraded") {
+    test("a bound token reaches an endpoint whose authorization needs userinfo") {
       clean:
         for
+          f <- fixture
           stub <- upstream
           prover <- DpopProver.make
           token <- accessToken(dpop = Some(prover))
           result <- dpopProxy(Method.GET, "/profile", token, prover)
           seen <- stub.lastRequest
-        yield assertTrue(result.status != Status.Ok, seen.isEmpty)
-          .label("edge has no certificate to present for this client, so auth would refuse the call as a Bearer downgrade")
+        yield assertTrue(result.status == Status.Ok)
+          .label(
+            "edge has to fetch userinfo for this endpoint, and it can only present the user's " +
+              "bound token over Bearer -- a 401 here means auth did not recognise edge's certificate",
+          ) &&
+          assertTrue(seen.flatMap(_.header("X-User-Sub")).contains(f.userId.toString))
+            .label("the injected header is built from the userinfo response, so it proves the call came back")
     },
-    test("an unbound token reaches the same endpoint over Bearer, with no assertion involved") {
+    test("an unbound token reaches the same endpoint over Bearer, with no certificate involved") {
       clean:
         for
           edgeApi <- edge
@@ -141,7 +150,7 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
           seen <- stub.lastRequest
         yield assertTrue(result.status == Status.Ok) &&
           assertTrue(seen.flatMap(_.header("X-User-Sub")).contains(f.userId.toString))
-            .label("nothing about the assertion may cost the common case: this token was never bound")
+            .label("nothing about edge's certificate may cost the common case: this token was never bound")
     },
     test("a bound token presented over Bearer at the edge is still refused") {
       clean:
@@ -154,7 +163,7 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
           result <- edgeApi.proxy(Method.GET, f.resourceId, "/items", EdgeAuth.Bearer(token))
           seen <- stub.requests
         yield assertTrue(result.status == Status.Unauthorized)
-          .label("§7.2: the downgrade edge refuses -- the assertion is not a way to turn DPoP off")
+          .label("§7.2: the downgrade edge refuses -- edge's certificate is not a way to turn DPoP off")
           && assertTrue(seen.isEmpty)
     },
     test("auth refuses a bound token at /userinfo over Bearer and accepts it with a proof") {

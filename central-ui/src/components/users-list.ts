@@ -1,568 +1,116 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { theme } from '../styles/theme';
-import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { PasskeyInfo, Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
-import { getPermissions, getResources, getRoles } from '../utils/central-api';
-import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { bannerStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
+import type { User, UserSearchField } from '../types';
 import { copyToClipboard } from '../utils/helpers';
-import {
-  createUser,
-  deletePasskey,
-  fetchUserRoles,
-  listPasskeys,
-  fetchUserSessions,
-  invalidateUserSession,
-  patchUserClaims,
-  renamePasskey,
-  resetPassword,
-  resetUserLimits,
-  searchUsers,
-  updateUser,
-  updateUserRoles,
-  DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
-} from '../utils/users-api';
+import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { userDisplayName } from '../utils/user-display';
+import { createUser, searchUsers } from '../utils/users-api';
 import './content-header';
+import './data-table';
+import './empty-state';
 import './error-card';
 import './loading-cards';
-import './user-form';
-import './claim-edit';
+import './nav-toggle';
+import './user-record';
+import type { DataTableColumn, RowMenuItem } from './data-table';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Users. There is no list-all endpoint, so the list is a search: a field (login, email, phone,
+ * ID; detected from what is typed), a query and Search. A result opens the user's page
+ * (`?view=users&id=<id>`, see `versola-user-record`); `+ Create User` is a single-page form.
+ */
 @customElement('versola-users-list')
 export class VersolaUsersList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
   /** Whether the generated password may be shown instead of delivered — non-prod only. */
   @property({ type: Boolean }) canRevealPassword = false;
+  @property({ attribute: false }) route: RecordRoute = EMPTY_RECORD_ROUTE;
 
   @state() private users: User[] = [];
   @state() private searchField: UserSearchField = 'login';
   @state() private searchQuery = '';
   @state() private isLoading = false;
   @state() private errorMessage = '';
-  @state() private showCreateForm = false;
-  @state() private rolesOnlyForm = false;
-  @state() private isEditingClaims = false;
-  @state() private editingUser: User | null = null;
-  @state() private editingUserAssignments: UserRoleAssignment[] = [];
-  @state() private availableRoles: Role[] = [];
-  @state() private availableResources: Resource[] = [];
-  @state() private isPreparingForm = false;
-  @state() private formError = '';
   @state() private hasSearched = false;
-  @state() private userRoles: Record<string, UserRoleAssignment[]> = {};
-  @state() private loadingRoles = new Set<string>();
-  @state() private userSessions: Record<string, UserSession[]> = {};
-  @state() private loadingSessions = new Set<string>();
-  @state() private expandedClaims = new Set<string>();
-  @state() private resettingLimits = new Set<string>();
-  @state() private resetLimitsDone = new Set<string>();
-  @state() private resettingPassword = new Set<string>();
-  @state() private passwordResetDone = new Set<string>();
-  @state() private pendingResetUser: User | null = null;
-  @state() private pendingResetChannel: 'email' | 'sms' | 'show' | null = null;
-  @state() private pendingResetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
-  @state() private revealedPassword: { userId: string; password: string; ttlHours: number } | null = null;
-  @state() private copyFeedback = '';
-  @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
-  @state() private loadingPasskeys = new Set<string>();
-  @state() private errorPopup = '';
-  @state() private openInfoKey: string | null = null;
+  @state() private deletedLabel = '';
+  @state() private createForm = { email: '', phone: '', login: '' };
+  @state() private createError = '';
+  @state() private phoneError = '';
+  @state() private isCreating = false;
   private loadRequestId = 0;
-  private rolesTenantId: string | null = null;
-
 
   static styles = [
     theme,
     buttonStyles,
     cardStyles,
     formStyles,
+    bannerStyles,
     css`
       :host {
         display: block;
+        --compact-field-max-width: 22.8rem;
       }
 
       .search-bar {
         display: flex;
+        flex-wrap: wrap;
         gap: var(--spacing-sm);
         margin-bottom: var(--spacing-lg);
         max-width: 36rem;
       }
 
       .search-bar select {
-        max-width: 8rem;
+        flex: 0 0 8rem;
+        width: 8rem;
       }
 
-      .user-card {
-        background: var(--surface);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-lg);
-        margin-bottom: var(--spacing-md);
-        transition: border-color var(--transition-base);
-      }
-
-      .user-card:hover {
-        border-color: var(--accent);
-      }
-
-      .user-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: var(--spacing-lg);
-      }
-
-      .user-info {
-        flex: 1;
+      .search-bar input {
+        flex: 1 1 14rem;
         min-width: 0;
       }
 
-      .user-name {
-        font-size: 1.125rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-bottom: 0.25rem;
-      }
-
-
-
-      .user-id {
-        color: var(--accent);
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        word-break: break-all;
-      }
-
-      .user-actions {
-        display: flex;
-        gap: 0.5rem;
-        margin-left: var(--spacing-md);
-      }
-
-      .icon-action {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: none;
-        border: none;
-        margin: 0;
-        padding: 0.25rem;
-        cursor: pointer;
-        color: var(--text-secondary);
-        font-size: 1.125rem;
-        transition: all var(--transition-fast);
-      }
-
-      .icon-action:hover { color: var(--accent); transform: scale(1.15); }
-      .icon-action.danger:hover { color: var(--danger); }
-
-      .password-value {
-        margin: 0;
-        padding: 0.875rem 1rem;
-        background: var(--surface-inset);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
-        color: var(--text-primary);
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        line-height: 1.5;
-        word-break: break-all;
-      }
-
-      .temporary-password-ttl {
-        width: 8rem !important;
-        max-width: 100%;
-        box-sizing: border-box;
-      }
-
-      .copy-feedback {
-        font-size: 0.8125rem;
-        color: var(--success);
-      }
-
-      .user-body {
-        border-top: 1px solid var(--border-default);
-        padding: var(--spacing-lg);
-        display: flex;
-        flex-direction: column;
-        gap: var(--spacing-sm);
-      }
-
-      .prop-row {
-        display: grid;
-        grid-template-columns: 11rem 1fr;
-        gap: var(--spacing-md);
-        align-items: baseline;
-        font-size: 0.875rem;
-      }
-
-      .prop-label {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .prop-value {
-        color: var(--text-primary);
-        word-break: break-word;
-        overflow-wrap: anywhere;
-        min-width: 0;
-      }
-
-      .prop-value.muted {
-        color: var(--text-secondary);
-        font-style: italic;
-      }
-
-      .card-action-row {
-        display: flex;
-        gap: var(--spacing-sm);
-        padding: var(--spacing-md) var(--spacing-lg);
-        border-top: 1px solid var(--border-default);
-      }
-
-      .expand-section {
-        border-top: 1px solid var(--border-default);
-      }
-
-      .expand-section-header {
+      .form-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: var(--spacing-md) var(--spacing-lg);
+        margin-bottom: var(--spacing-xl);
       }
 
-      .expand-section-title {
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-secondary);
+      .form-title {
+        font-size: var(--text-4xl);
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--text-primary);
         margin: 0;
       }
 
-      .expand-section-content {
-        padding: 0 var(--spacing-lg) var(--spacing-md);
-        display: flex;
-        flex-direction: column;
-        gap: var(--spacing-sm);
-      }
-
-      .role-row {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm);
-        padding: var(--spacing-xs) 0;
-        font-size: 0.875rem;
-      }
-
-      .session-card {
-        background: var(--bg-page);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
-        overflow: hidden;
-      }
-
-      .session-card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: var(--spacing-md) var(--spacing-md);
-        border-bottom: 1px solid var(--border-default);
-        gap: var(--spacing-md);
-      }
-
-      .session-card-name {
-        font-size: 0.9375rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        text-transform: capitalize;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .session-card-body {
-        padding: var(--spacing-md) var(--spacing-md);
+      .form-grid {
         display: grid;
-        grid-template-columns: 9rem 1fr;
-        gap: var(--spacing-sm) var(--spacing-md);
-        font-size: 0.8125rem;
+        gap: var(--spacing-lg);
       }
 
-      .session-prop-label {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 600;
-        align-self: center;
-      }
-
-      .session-prop-value {
-        color: var(--text-primary);
-        word-break: break-all;
-        overflow-wrap: anywhere;
-        min-width: 0;
-        align-self: center;
-      }
-
-      .session-prop-value.muted {
-        color: var(--text-secondary);
-        font-style: italic;
-      }
-
-      .session-prop-value.mono {
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        color: var(--text-primary);
-      }
-
-      .role-tag {
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-        color: var(--accent);
-      }
-
-      .role-tenant {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-      }
-
-      .claim-value {
-        color: var(--text-primary);
-        word-break: break-word;
-        overflow-wrap: anywhere;
-        min-width: 0;
-      }
-
-      .claim-value.bool-true  { color: var(--success); }
-      .claim-value.bool-false { color: var(--danger); }
-
-      .no-data {
-        color: var(--text-secondary);
-        font-style: italic;
-        font-size: 0.875rem;
-      }
-
-      .passkey-card {
-        background: var(--bg-page);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
-        overflow: hidden;
-      }
-
-      .passkey-card-header {
+      .form-actions {
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: var(--spacing-md) var(--spacing-md);
-        border-bottom: 1px solid var(--border-default);
-        gap: var(--spacing-md);
+        gap: 1rem;
+        justify-content: flex-end;
+        margin-top: var(--spacing-xl);
+        padding-top: var(--spacing-xl);
+        border-top: 1px solid var(--border-default);
       }
-
-      .passkey-card-name {
-        font-size: 0.9375rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .passkey-card-name.muted {
-        font-weight: 400;
-        font-style: italic;
-        color: var(--text-secondary);
-      }
-
-      .passkey-card-actions {
-        display: flex;
-        gap: var(--spacing-xs);
-        flex-shrink: 0;
-      }
-
-      .passkey-card-body {
-        padding: var(--spacing-md) var(--spacing-md);
-        display: grid;
-        grid-template-columns: 9rem 1fr;
-        gap: var(--spacing-sm) var(--spacing-md);
-        font-size: 0.8125rem;
-      }
-
-      .passkey-prop-label {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 600;
-        align-self: center;
-      }
-
-      .passkey-prop-value {
-        color: var(--text-primary);
-        word-break: break-all;
-        overflow-wrap: anywhere;
-        min-width: 0;
-        align-self: center;
-      }
-
-      .passkey-prop-value.muted {
-        color: var(--text-secondary);
-        font-style: italic;
-      }
-
-      .passkey-prop-value.mono {
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        color: var(--accent);
-      }
-
-      .passkey-badges {
-        display: flex;
-        gap: var(--spacing-xs);
-        flex-wrap: wrap;
-      }
-
-      .passkey-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        padding: 0.125rem 0.5rem;
-        border-radius: 999px;
-        font-size: var(--text-xs);
-        font-weight: 600;
-        letter-spacing: 0.03em;
-        background: var(--accent-subtle);
-        color: var(--accent);
-        border: 1px solid var(--accent-border);
-      }
-
-      .passkey-badge.synced {
-        background: var(--success-subtle);
-        color: var(--success);
-        border-color: var(--success-border);
-      }
-
-      .passkey-badge.not-backed-up {
-        background: var(--surface-inset);
-        color: var(--text-secondary);
-        border-color: var(--border-default);
-      }
-
-      .option-info {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-        flex: none;
-      }
-
-      .option-info-button {
-        flex: none;
-        border: 1px solid var(--accent-border);
-        border-radius: 999px;
-        background: var(--accent-subtle);
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 700;
-        line-height: 1;
-        width: 1.25rem;
-        height: 1.25rem;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        padding: 0;
-      }
-
-      .option-info-button:hover {
-        background: var(--accent-subtle);
-        border-color: var(--accent);
-      }
-
-      .option-info-button:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
-      }
-
-      .option-tooltip {
-        position: absolute;
-        left: 0;
-        top: calc(100% + 0.4rem);
-        z-index: var(--z-dropdown);
-        min-width: 20rem;
-        max-width: min(30rem, 75vw);
-        max-height: 22rem;
-        overflow: auto;
-        padding: 0.75rem;
-        border: 1px solid var(--accent-border);
-        border-radius: var(--radius-md);
-        background: var(--surface-raised);
-        box-shadow: var(--shadow-lg);
-        display: none;
-      }
-
-      .option-info.option-info-open .option-tooltip {
-        display: block;
-      }
-
-      .option-tooltip-title {
-        margin-bottom: 0.5rem;
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .option-tooltip-group {
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-sm);
-        background: var(--surface-inset);
-        padding: 0.5rem 0.625rem;
-        margin-bottom: 0.375rem;
-      }
-
-      .option-tooltip-group-title {
-        font-size: var(--text-xs);
-        font-weight: 600;
-        color: var(--accent);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.25rem;
-      }
-
-      .option-tooltip-item {
-        color: var(--text-primary);
-        font-size: 0.75rem;
-        line-height: 1.4;
-        overflow-wrap: anywhere;
-      }
-
-      .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: var(--text-secondary);
-      }
-
-      .empty-state-icon { font-size: 3rem; margin-bottom: 1rem; }
     `,
   ];
 
-
-  updated(changedProperties: Map<string, unknown>) {
-    if (changedProperties.has('tenantId')) {
-      this.availableRoles = [];
-      this.availableResources = [];
-      this.rolesTenantId = null;
-      this.userRoles = {};
+  willUpdate(changed: Map<PropertyKey, unknown>) {
+    if (changed.has('route')) {
+      const previous = changed.get('route') as RecordRoute | undefined;
+      if (this.route.create && !previous?.create) this.resetCreateForm();
+      if (this.route.id) this.deletedLabel = '';
     }
   }
 
@@ -571,6 +119,7 @@ export class VersolaUsersList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     this.hasSearched = true;
+    this.deletedLabel = '';
     try {
       const result = await searchUsers(this.searchField, this.searchQuery);
       if (requestId !== this.loadRequestId) return;
@@ -584,57 +133,12 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
-  private async ensureRolesLoaded() {
-    const tenantId = this.tenantId;
-    if (!tenantId || this.rolesTenantId === tenantId) return;
-    const [, resources, roles] = await Promise.all([
-      getPermissions(tenantId),
-      getResources(tenantId),
-      getRoles(tenantId),
-    ]);
-    if (this.tenantId === tenantId) {
-      this.availableRoles = roles;
-      this.availableResources = resources;
-      this.rolesTenantId = tenantId;
-    }
-  }
-
-  private async loadUserAssignments(userId: string) {
-    if (!this.tenantId) {
-      this.editingUserAssignments = [];
-      return;
-    }
-    this.editingUserAssignments = await fetchUserRoles(userId, this.tenantId);
-  }
-
   private detectSearchField(query: string): UserSearchField {
     const trimmed = query.trim();
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(trimmed)) return 'id';
     if (trimmed.startsWith('+')) return 'phone';
     if (trimmed.includes('@')) return 'email';
     return 'login';
-  }
-
-  private resolveDisplayName(user: User): string {
-    const claims = user.claims;
-    const str = (key: string) => {
-      const v = claims[key];
-      return typeof v === 'string' ? v.trim() : '';
-    };
-    const name = str('name');
-    if (name) return name;
-    const given = str('given_name');
-    const family = str('family_name');
-    const middle = str('middle_name');
-    if (middle) {
-      const parts = [given, middle, family].filter(Boolean);
-      if (parts.length) return parts.join(' ');
-    } else {
-      const parts = [family, given].filter(Boolean);
-      if (parts.length) return parts.join(' ');
-    }
-    return '';
   }
 
   private handleSearchSubmit(e: Event) {
@@ -643,701 +147,167 @@ export class VersolaUsersList extends LitElement {
     void this.loadUsers();
   }
 
-  private handleCreateClick() {
-    this.editingUser = null;
-    this.editingUserAssignments = [];
-    this.showCreateForm = true;
+  private open(user: User) {
+    dispatchRecordRoute(this, { id: user.id, edit: null, create: false });
   }
 
-  private async handleEditClick(user: User, e: Event) {
-    e.stopPropagation();
-    this.isPreparingForm = true;
-    try {
-      await Promise.all([
-        this.loadUserAssignments(user.id),
-        this.ensureRolesLoaded(),
-      ]);
-      this.editingUser = user;
-      this.rolesOnlyForm = false;
-      this.showCreateForm = true;
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to open user';
-    } finally {
-      this.isPreparingForm = false;
+  private handleUserDeleted(e: CustomEvent<{ id: string; label: string }>) {
+    this.users = this.users.filter(user => user.id !== e.detail.id);
+    this.deletedLabel = e.detail.label;
+    dispatchRecordRoute(this, { id: null, edit: null, create: false });
+  }
+
+  // ── create ─────────────────────────────────────────────────────────────
+
+  private resetCreateForm() {
+    this.createForm = { email: '', phone: '', login: '' };
+    this.createError = '';
+    this.phoneError = '';
+    this.isCreating = false;
+  }
+
+  private validatePhone(value: string): boolean {
+    if (!value.trim() || parsePhoneNumberFromString(value)?.isValid()) {
+      this.phoneError = '';
+      return true;
     }
+    this.phoneError = 'Invalid phone number (use E.164 format, e.g. +15551234567)';
+    return false;
   }
 
-  private async handleEditRolesClick(user: User, e: Event) {
-    e.stopPropagation();
-    this.isPreparingForm = true;
-    try {
-      await Promise.all([
-        this.loadUserAssignments(user.id),
-        this.ensureRolesLoaded(),
-      ]);
-      this.editingUser = user;
-      this.rolesOnlyForm = true;
-      this.showCreateForm = true;
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to open roles editor';
-    } finally {
-      this.isPreparingForm = false;
-    }
-  }
-
-  private handleEditClaimsClick(user: User, e: Event) {
-    e.stopPropagation();
-    this.editingUser = user;
-    this.isEditingClaims = true;
-  }
-
-  private handleClaimsClose() {
-    this.isEditingClaims = false;
-    this.editingUser = null;
-  }
-
-  private async handleClaimsSave(e: CustomEvent) {
-    const { userId, patch } = e.detail;
-    try {
-      await patchUserClaims(userId, patch);
-      // Update local state
-      this.users = this.users.map(u => {
-        if (u.id === userId) {
-          const updatedClaims = { ...u.claims };
-          for (const [k, v] of Object.entries(patch)) {
-            if (v === null) delete updatedClaims[k];
-            else updatedClaims[k] = v;
-          }
-          return { ...u, claims: updatedClaims };
-        }
-        return u;
-      });
-      this.handleClaimsClose();
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to update claims';
-    }
-  }
-
-  private handleFormClose() {
-    this.showCreateForm = false;
-    this.rolesOnlyForm = false;
-    this.editingUser = null;
-    this.editingUserAssignments = [];
-    this.formError = '';
-  }
-
-  private async handleFormSubmit(e: CustomEvent) {
-    this.formError = '';
-    const user = e.detail.user as Omit<User, 'id'> & { id?: string };
-    try {
-      if (this.editingUser) {
-        const updated = user as User;
-        await updateUser(this.editingUser, updated);
-        this.users = this.users.map(existing => existing.id === updated.id ? updated : existing);
-        this.handleFormClose();
-      } else {
-        const created = await createUser(user);
-        this.users = [created, ...this.users];
-        this.hasSearched = true;
-        this.handleFormClose();
-      }
-    } catch (error) {
-      this.formError = error instanceof Error ? error.message : 'Failed to save user';
-    }
-  }
-
-  private async handleSaveRoles(e: CustomEvent) {
-    const user = this.editingUser;
-    if (!user) return;
-    const { tenantId, adds, removes } = e.detail as { tenantId: string; adds: string[]; removes: string[] };
-    try {
-      await updateUserRoles(user.id, tenantId, adds, removes);
-      const removeSet = new Set(removes);
-      const kept = this.editingUserAssignments.filter(a => a.tenantId !== tenantId || !removeSet.has(a.roleId));
-      const existing = new Set(kept.filter(a => a.tenantId === tenantId).map(a => a.roleId));
-      const added = adds.filter(roleId => !existing.has(roleId)).map(roleId => ({ tenantId, roleId }));
-      const updated = [...kept, ...added];
-      this.editingUserAssignments = updated;
-      if (user.id in this.userRoles) {
-        this.userRoles = { ...this.userRoles, [user.id]: updated };
-      }
-      this.handleFormClose();
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to update roles';
-    }
-  }
-
-  private async toggleUserRoles(userId: string) {
-    if (!this.tenantId) {
-      this.errorPopup = 'Select a tenant first to view user roles.';
+  private async handleCreateSubmit(e: Event) {
+    e.preventDefault();
+    if (this.isCreating) return;
+    if (!this.validatePhone(this.createForm.phone)) return;
+    const email = this.createForm.email.trim() || undefined;
+    const phone = this.createForm.phone.trim() || undefined;
+    const login = this.createForm.login.trim() || undefined;
+    if (!email && !phone && !login) {
+      this.createError = 'Enter at least one of email, phone or login.';
       return;
     }
-    const tenantId = this.tenantId;
-    this.loadingRoles = new Set([...this.loadingRoles, userId]);
+    this.isCreating = true;
+    this.createError = '';
     try {
-      const roles = await fetchUserRoles(userId, tenantId);
-      this.userRoles = { ...this.userRoles, [userId]: roles };
+      const created = await createUser({ email, phone, login, claims: {} });
+      this.users = [created, ...this.users.filter(user => user.id !== created.id)];
+      this.hasSearched = true;
+      this.errorMessage = '';
+      dispatchRecordRoute(this, { id: created.id, edit: null, create: false });
     } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to load roles';
+      this.createError = error instanceof Error ? error.message : 'Failed to create user';
     } finally {
-      this.loadingRoles = new Set([...this.loadingRoles].filter(id => id !== userId));
+      this.isCreating = false;
     }
   }
 
-  private async toggleUserSessions(userId: string) {
-    this.loadingSessions = new Set([...this.loadingSessions, userId]);
-    try {
-      const sessions = await fetchUserSessions(userId);
-      this.userSessions = { ...this.userSessions, [userId]: sessions };
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to load sessions';
-    } finally {
-      this.loadingSessions = new Set([...this.loadingSessions].filter(id => id !== userId));
-    }
-  }
-
-  private async handleInvalidateSession(user: User) {
-    const confirmed = await confirmDestructiveAction({
-      title: 'Invalidate all sessions',
-      messagePrefix: 'Sign ',
-      messageSubject: this.resolveDisplayName(user) || user.email || user.login || user.id,
-      messageSuffix: ' out of all active sessions? This cannot be undone.',
-      confirmLabel: 'Invalidate all',
-    });
-    if (!confirmed) return;
-    try {
-      await invalidateUserSession(user.id);
-      const sessions = await fetchUserSessions(user.id);
-      this.userSessions = {...this.userSessions, [user.id]: sessions};
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
-    }
-  }
-  private async handleResetLimits(user: User) {
-    if (!this.tenantId) {
-      this.errorPopup = 'Select a tenant first to reset limits.';
-      return;
-    }
-    const tenantId = this.tenantId;
-    this.resettingLimits = new Set([...this.resettingLimits, user.id]);
-    this.resetLimitsDone = new Set([...this.resetLimitsDone].filter(id => id !== user.id));
-    try {
-      await resetUserLimits(user.id, tenantId, user.email, user.phone);
-      this.resetLimitsDone = new Set([...this.resetLimitsDone, user.id]);
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to reset limits';
-    } finally {
-      this.resettingLimits = new Set([...this.resettingLimits].filter(id => id !== user.id));
-    }
-  }
-
-  private handleResetPassword(user: User) {
-    if (!this.tenantId) {
-      this.errorPopup = 'Select a tenant first to reset password.';
-      return;
-    }
-    this.pendingResetUser = user;
-    this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : this.canRevealPassword ? 'show' : null;
-    this.pendingResetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
-    this.revealedPassword = null;
-    this.copyFeedback = '';
-  }
-
-  private async confirmResetPassword() {
-    const user = this.pendingResetUser;
-    if (!user || !this.tenantId) return;
-    const ttlHours = this.pendingResetTtlHours;
-    if (!Number.isFinite(ttlHours) || ttlHours <= 0) return;
-    this.pendingResetUser = null;
-    this.resettingPassword = new Set([...this.resettingPassword, user.id]);
-    try {
-      const channel = this.pendingResetChannel ?? undefined;
-      const password = await resetPassword(user.id, channel, ttlHours * 60 * 60);
-      this.passwordResetDone = new Set([...this.passwordResetDone, user.id]);
-      this.revealedPassword = password === null ? null : { userId: user.id, password, ttlHours };
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to reset password';
-    } finally {
-      this.resettingPassword = new Set([...this.resettingPassword].filter(id => id !== user.id));
-    }
-  }
-
-  private async handleCopyPassword() {
-    if (!this.revealedPassword) return;
-    const copied = await copyToClipboard(this.revealedPassword.password);
-    this.copyFeedback = copied ? 'Password copied to clipboard.' : 'Could not copy password.';
-  }
-
-  private dismissRevealedPassword() {
-    this.revealedPassword = null;
-    this.copyFeedback = '';
-  }
-
-  private async toggleUserPasskeys(userId: string) {
-    if (userId in this.userPasskeys) {
-      const { [userId]: _removed, ...rest } = this.userPasskeys;
-      this.userPasskeys = rest;
-      return;
-    }
-    this.loadingPasskeys = new Set([...this.loadingPasskeys, userId]);
-    try {
-      const passkeys = await listPasskeys(userId);
-      this.userPasskeys = { ...this.userPasskeys, [userId]: passkeys };
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to load passkeys';
-    } finally {
-      this.loadingPasskeys = new Set([...this.loadingPasskeys].filter(id => id !== userId));
-    }
-  }
-
-  private async handleRenamePasskey(userId: string, passkey: PasskeyInfo) {
-    const next = window.prompt('Passkey name', passkey.name ?? '');
-    if (next === null) return;
-    const trimmed = next.trim();
-    const name = trimmed.length > 0 ? trimmed : null;
-    try {
-      await renamePasskey(userId, passkey.id, name);
-      this.userPasskeys = {
-        ...this.userPasskeys,
-        [userId]: (this.userPasskeys[userId] ?? []).map(p => p.id === passkey.id ? { ...p, name } : p),
-      };
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to rename passkey';
-    }
-  }
-
-  private async handleDeletePasskey(userId: string, passkey: PasskeyInfo) {
-    const confirmed = await confirmDestructiveAction({
-      title: 'Delete passkey',
-      messagePrefix: 'Delete passkey ',
-      messageSubject: passkey.name ?? passkey.id,
-      messageSuffix: '?',
-      confirmLabel: 'Delete',
-    });
-    if (!confirmed) return;
-    try {
-      await deletePasskey(userId, passkey.id);
-      this.userPasskeys = {
-        ...this.userPasskeys,
-        [userId]: (this.userPasskeys[userId] ?? []).filter(p => p.id !== passkey.id),
-      };
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to delete passkey';
-    }
-  }
-
-  private toggleInfo(key: string) {
-    this.openInfoKey = this.openInfoKey === key ? null : key;
-  }
-
-  private renderUserPasskeys(user: User) {
-    const passkeys = this.userPasskeys[user.id] ?? [];
+  private renderCreateForm() {
+    const field = (key: 'email' | 'phone' | 'login') => (e: Event) => {
+      const value = (e.target as HTMLInputElement).value;
+      this.createForm = { ...this.createForm, [key]: value };
+      if (key === 'phone') this.validatePhone(value);
+    };
     return html`
-      <div class="expand-section">
-        <div class="expand-section-header">
-          <div style="display:flex;align-items:center;gap:var(--spacing-xs)">
-            <div class="expand-section-title">Passkeys</div>
-            <div class=${`option-info ${this.openInfoKey === 'passkey-info' ? 'option-info-open' : ''}`}
-              @click=${(e: Event) => e.stopPropagation()}>
-              <button
-                type="button"
-                class="option-info-button"
-                aria-label="Passkey properties explained"
-                aria-expanded=${this.openInfoKey === 'passkey-info' ? 'true' : 'false'}
-                @click=${() => this.toggleInfo('passkey-info')}
-              >i</button>
-              <div class="option-tooltip" role="tooltip">
-                <div class="option-tooltip-title">Passkey properties</div>
-                <div class="option-tooltip-group">
-                  <div class="option-tooltip-group-title">Device type</div>
-                  <div class="option-tooltip-item"><strong>Multi-device</strong> — synced via a cloud keychain; works on all the user's devices.</div>
-                  <div class="option-tooltip-item"><strong>Single-device</strong> — bound to one authenticator (e.g. a hardware key); cannot be transferred.</div>
-                </div>
-                <div class="option-tooltip-group">
-                  <div class="option-tooltip-group-title">Synced</div>
-                  <div class="option-tooltip-item">The credential has been backed up to a cloud provider (iCloud Keychain, Google Password Manager, …). If not synced, losing that device loses this credential.</div>
-                </div>
-                <div class="option-tooltip-group">
-                  <div class="option-tooltip-group-title">Backup eligible</div>
-                  <div class="option-tooltip-item">The authenticator can be backed up. Software passkeys (Touch ID, Windows Hello) usually are; hardware keys (YubiKey) usually are not. Eligible does not mean it has already synced.</div>
-                </div>
-                <div class="option-tooltip-group">
-                  <div class="option-tooltip-group-title">Transports</div>
-                  <div class="option-tooltip-item"><strong>internal</strong> — built into the device (Touch ID, Face ID).</div>
-                  <div class="option-tooltip-item"><strong>hybrid</strong> — phone used as a key for another device via QR / Bluetooth.</div>
-                  <div class="option-tooltip-item"><strong>usb</strong> — security key over USB.</div>
-                  <div class="option-tooltip-item"><strong>nfc</strong> — key tapped over NFC.</div>
-                  <div class="option-tooltip-item"><strong>ble</strong> — key over Bluetooth Low Energy.</div>
-                </div>
-              </div>
+      <div class="form-header">
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">Create New User</h1>
+            <div class="form-subtitle">Any one identifier is enough; the user can sign in with whichever you set.</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <form @submit=${this.handleCreateSubmit} novalidate>
+          ${this.createError ? html`<div class="banner warn" role="alert"><div class="banner-text">${this.createError}</div></div>` : nothing}
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="user-email">Email</label>
+              <input id="user-email" class="compact-input" type="email" autocomplete="off" placeholder="user@example.com"
+                .value=${this.createForm.email} @input=${field('email')} />
+            </div>
+            <div class="form-group">
+              <label for="user-phone">Phone</label>
+              <input id="user-phone" class="compact-input ${this.phoneError ? 'input-error' : ''}" type="text" autocomplete="off" placeholder="+15551234567"
+                aria-invalid=${this.phoneError ? 'true' : 'false'} aria-describedby=${this.phoneError ? 'user-phone-error' : nothing}
+                .value=${this.createForm.phone} @input=${field('phone')} />
+              ${this.phoneError ? html`<div id="user-phone-error" class="error-message">${this.phoneError}</div>` : nothing}
+            </div>
+            <div class="form-group">
+              <label for="user-login">Login</label>
+              <input id="user-login" class="compact-input" type="text" autocomplete="off" placeholder="alice"
+                .value=${this.createForm.login} @input=${field('login')} />
             </div>
           </div>
-        </div>
-        <div class="expand-section-content">
-          ${passkeys.length === 0
-            ? html`<div class="no-data">No passkeys registered.</div>`
-            : passkeys.map(passkey => html`
-              <div class="passkey-card">
-                <div class="passkey-card-header">
-                  <div class="passkey-card-name ${passkey.name ? '' : 'muted'}">
-                    ${passkey.name ?? 'Unnamed passkey'}
-                  </div>
-                  <div class="passkey-card-actions">
-                    <button class="icon-action" title="Rename"
-                      @click=${() => this.handleRenamePasskey(user.id, passkey)}>✎</button>
-                    <button class="icon-action danger" title="Delete"
-                      @click=${() => this.handleDeletePasskey(user.id, passkey)}>✕</button>
-                  </div>
-                </div>
-                <div class="passkey-card-body">
-                  <span class="passkey-prop-label">Device type</span>
-                  <span class="passkey-prop-value">${passkey.deviceType}</span>
-
-                  <span class="passkey-prop-label">Status</span>
-                  <span class="passkey-prop-value">
-                    <span class="passkey-badges">
-                      ${passkey.backedUp
-                        ? html`<span class="passkey-badge synced">✓ synced</span>`
-                        : html`<span class="passkey-badge not-backed-up">not synced</span>`}
-                      ${passkey.backupEligible
-                        ? html`<span class="passkey-badge">backup eligible</span>`
-                        : ''}
-                    </span>
-                  </span>
-
-                  ${passkey.transports.length > 0 ? html`
-                    <span class="passkey-prop-label">Transports</span>
-                    <span class="passkey-prop-value">
-                      <span class="passkey-badges">
-                        ${passkey.transports.map(t => html`<span class="passkey-badge">${t}</span>`)}
-                      </span>
-                    </span>
-                  ` : ''}
-
-                  <span class="passkey-prop-label">Last used</span>
-                  <span class="passkey-prop-value ${passkey.lastUsedAt ? '' : 'muted'}">
-                    ${passkey.lastUsedAt ? this.formatDate(passkey.lastUsedAt) : '—'}
-                  </span>
-
-                  <span class="passkey-prop-label">Created</span>
-                  <span class="passkey-prop-value">${this.formatDate(passkey.createdAt)}</span>
-
-                  <span class="passkey-prop-label">ID</span>
-                  <span class="passkey-prop-value mono">${passkey.id}</span>
-                </div>
-              </div>
-            `)}
-        </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" @click=${() => dispatchRecordRoute(this, { create: false })}>Cancel</button>
+            <button type="submit" class="btn btn-primary" ?disabled=${this.isCreating}>Create User</button>
+          </div>
+        </form>
       </div>
     `;
   }
 
-  private formatDate(value: string): string {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-  }
+  // ── search ─────────────────────────────────────────────────────────────
 
-  private formatDateTime(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  private renderUserRoles(user: User) {
-    const assignments = this.userRoles[user.id] ?? [];
+  private renderResults() {
+    const muted = (value: string | undefined) => value ?? html`<span class="muted">—</span>`;
+    const columns: DataTableColumn<User>[] = [
+      { id: 'user', label: 'User', class: 'full-id', cell: user => {
+        const name = userDisplayName(user);
+        return html`
+          <button type="button" class="row-link" @click=${() => this.open(user)}
+            aria-label=${`Open user ${name || 'No name'} ${user.id}`}>
+            <span class="row-title">${name || 'No name'}</span>
+            <span class="row-id">${user.id}</span>
+          </button>`;
+      } },
+      { id: 'email', label: 'Email', cell: user => muted(user.email) },
+      { id: 'phone', label: 'Phone', cell: user => muted(user.phone) },
+      { id: 'login', label: 'Login', cell: user => muted(user.login) },
+    ];
+    const menuItems = (user: User): RowMenuItem[] => [
+      { label: 'Open', onSelect: () => this.open(user) },
+      { label: 'Copy ID', ariaLabel: `Copy user ID ${user.id}`, onSelect: () => void copyToClipboard(user.id) },
+    ];
     return html`
-      <div class="expand-section">
-        <div class="expand-section-header">
-          <div class="expand-section-title">Roles</div>
-          <button class="icon-action" title="Edit Roles"
-            @click=${(e: Event) => this.handleEditRolesClick(user, e)}>✎</button>
-        </div>
-        ${assignments.length > 0 ? html`
-          <div class="expand-section-content">
-            ${assignments.map(a => html`
-              <div class="role-row">
-                <span class="role-tag">${a.roleId}</span>
-              </div>
-            `)}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  private renderUserSessions(user: User) {
-    const sessions = this.userSessions[user.id] ?? [];
-
-    return html`
-      <div class="expand-section">
-        <div class="expand-section-header">
-          <div class="expand-section-title">Sessions</div>
-          <button class="icon-action danger" title="Invalidate all sessions"
-                  @click=${() => this.handleInvalidateSession(user)}>✕</button>
-        </div>
-        ${sessions.length > 0 ? html`
-          <div class="expand-section-content">
-            ${sessions.map(s => html`
-              <div class="session-card">
-                <div class="session-card-header">
-                  <div class="session-card-name">${s.platform ?? 'unknown'}</div>
-                </div>
-                <div class="session-card-body">
-                  <span class="session-prop-label">OS</span>
-                  <span class="session-prop-value ${s.os ? '' : 'muted'}">${s.os ?? '—'}</span>
-
-                  <span class="session-prop-label">Browser</span>
-                  <span class="session-prop-value ${s.browser ? '' : 'muted'}">
-                    ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
-                  </span>
-
-                  <span class="session-prop-label">Clients</span>
-                  <span class="session-prop-value mono">
-                    ${s.clients.map(c => html`<div>${c.clientId} — ${this.formatDateTime(c.enteredAt)}${c.expiresAt ? html` (expires ${this.formatDateTime(c.expiresAt)})` : ''}</div>`)}
-                  </span>
-
-                  ${s.createdAt ? html`
-                    <span class="session-prop-label">Created</span>
-                    <span class="session-prop-value">${this.formatDateTime(s.createdAt)}</span>
-                  ` : ''}
-                </div>
-              </div>
-            `)}
-          </div>
-        ` : html`
-          <div class="expand-section-content">
-            <span class="no-data">No active sessions</span>
-          </div>
-        `}
-      </div>
-    `;
-  }
-
-  private toggleUserClaims(userId: string) {
-    const next = new Set(this.expandedClaims);
-    if (next.has(userId)) next.delete(userId);
-    else next.add(userId);
-    this.expandedClaims = next;
-  }
-
-  private renderUserClaims(user: User) {
-    const entries = Object.entries(user.claims);
-    return html`
-      <div class="expand-section">
-        <div class="expand-section-header">
-          <div class="expand-section-title">Claims</div>
-          <button class="icon-action" title="Edit Claims"
-            @click=${(e: Event) => this.handleEditClaimsClick(user, e)}>✎</button>
-        </div>
-        ${entries.length > 0 ? html`
-          <div class="expand-section-content">
-            ${entries.map(([key, value]) => {
-              const isBool = typeof value === 'boolean';
-              const valueClass = isBool
-                ? (value ? 'claim-value bool-true' : 'claim-value bool-false')
-                : 'claim-value';
-              return html`
-                <div class="prop-row">
-                  <span class="prop-label">${key}</span>
-                  <span class="${valueClass}">${String(value)}</span>
-                </div>
-              `;
-            })}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-
-
-  private renderErrorPopup() {
-    if (!this.errorPopup) return '';
-    return html`
-      <dialog open style="
-        position:fixed;inset:0;margin:auto;
-        border:1px solid var(--danger);
-        border-radius:var(--radius-lg);
-        background:var(--surface);
-        color:var(--text-primary);
-        padding:var(--spacing-xl);
-        max-width:28rem;width:90%;
-        box-shadow:var(--shadow-lg);
-        z-index:var(--z-modal);
-      ">
-        <p style="margin:0 0 var(--spacing-lg)">${this.errorPopup}</p>
-        <div style="display:flex;justify-content:flex-end">
-          <button class="btn btn-primary" @click=${() => { this.errorPopup = ''; }}>OK</button>
-        </div>
-      </dialog>
-    `;
-  }
-
-  private renderResetPasswordConfirmDialog() {
-    const user = this.pendingResetUser;
-    if (!user) return '';
-    return html`
-      <dialog open style="
-        position:fixed;inset:0;margin:auto;
-        border:1px solid var(--border-default);
-        border-radius:var(--radius-lg);
-        background:var(--surface);
-        color:var(--text-primary);
-        padding:var(--spacing-xl);
-        max-width:26rem;width:90%;
-        box-shadow:var(--shadow-lg);
-        z-index:var(--z-modal);
-      ">
-        <p style="margin:0 0 var(--spacing-md);font-weight:600">Reset password</p>
-        <div class="form-group" style="margin-bottom:var(--spacing-lg)">
-          <label for="temporary-password-ttl">Temporary password lifetime (hours)</label>
-          <input id="temporary-password-ttl" class="temporary-password-ttl" type="number" min="1" step="1"
-            .value=${String(this.pendingResetTtlHours)}
-            @input=${(e: Event) => {
-              const value = Number((e.target as HTMLInputElement).value);
-              this.pendingResetTtlHours = Number.isFinite(value) ? value : 0;
-            }} />
-        </div>
-        ${user.email || user.phone || this.canRevealPassword ? html`
-        <fieldset style="border:none;padding:0;margin:0 0 var(--spacing-lg)">
-          <legend style="font-size:0.875rem;margin-bottom:var(--spacing-sm)">Deliver via</legend>
-          ${user.email ? html`
-            <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-bottom:var(--spacing-xs)">
-              <input type="radio" name="channel" value="email"
-                ?checked=${this.pendingResetChannel === 'email'}
-                @change=${() => { this.pendingResetChannel = 'email'; }}>
-              Email — ${user.email}
-            </label>` : ''}
-          ${user.phone ? html`
-            <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-bottom:var(--spacing-xs)">
-              <input type="radio" name="channel" value="sms"
-                ?checked=${this.pendingResetChannel === 'sms'}
-                @change=${() => { this.pendingResetChannel = 'sms'; }}>
-              SMS — ${user.phone}
-            </label>` : ''}
-          ${this.canRevealPassword ? html`
-            <label style="display:flex;align-items:center;gap:var(--spacing-sm)">
-              <input type="radio" name="channel" value="show"
-                ?checked=${this.pendingResetChannel === 'show'}
-                @change=${() => { this.pendingResetChannel = 'show'; }}>
-              Show — display it here
-            </label>` : ''}
-        </fieldset>` : html`
-        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
-          No phone or email configured for this user.
-        </p>`}
-        <div style="display:flex;justify-content:flex-end;gap:var(--spacing-sm)">
-          <button class="btn btn-secondary" @click=${() => { this.pendingResetUser = null; }}>Cancel</button>
-          <button class="btn btn-primary"
-            ?disabled=${this.pendingResetChannel === null
-              || !Number.isInteger(this.pendingResetTtlHours)
-              || this.pendingResetTtlHours <= 0}
-            @click=${this.confirmResetPassword}>Confirm</button>
-        </div>
-      </dialog>
-    `;
-  }
-
-  private renderRevealedPasswordDialog() {
-    const revealed = this.revealedPassword;
-    if (!revealed) return '';
-    return html`
-      <dialog open style="
-        position:fixed;inset:0;margin:auto;
-        border:1px solid var(--border-default);
-        border-radius:var(--radius-lg);
-        background:var(--surface);
-        color:var(--text-primary);
-        padding:var(--spacing-xl);
-        max-width:28rem;width:90%;
-        box-shadow:var(--shadow-lg);
-        z-index:var(--z-modal);
-      ">
-        <p style="margin:0 0 var(--spacing-md);font-weight:600">Temporary password</p>
-        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
-          Valid for ${revealed.ttlHours} hour${revealed.ttlHours === 1 ? '' : 's'}. Copy it now — it is not shown again.
-        </p>
-        <pre class="password-value">${revealed.password}</pre>
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-top:var(--spacing-md)">
-          <button class="btn btn-primary btn-sm" @click=${this.handleCopyPassword}>Copy password</button>
-          ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
-        </div>
-        <div style="display:flex;justify-content:flex-end;margin-top:var(--spacing-lg)">
-          <button class="btn btn-secondary" @click=${this.dismissRevealedPassword}>Close</button>
-        </div>
-      </dialog>
+      <versola-data-table
+        .columns=${columns}
+        .rows=${this.users}
+        .rowKey=${(user: User) => user.id}
+        .menuItems=${menuItems}
+        .menuLabel=${(user: User) => `Actions for ${user.id}`}
+      ></versola-data-table>
     `;
   }
 
   render() {
-    if (this.showCreateForm) {
-      return html`
-        ${this.renderErrorPopup()}
-        ${this.renderResetPasswordConfirmDialog()}
-        ${this.renderRevealedPasswordDialog()}
-        ${this.formError ? html`
-          <dialog open style="
-            position:fixed;inset:0;margin:auto;
-            border:1px solid var(--danger);
-            border-radius:var(--radius-lg);
-            background:var(--surface);
-            color:var(--text-primary);
-            padding:var(--spacing-xl);
-            max-width:28rem;width:90%;
-            box-shadow:var(--shadow-lg);
-            z-index:var(--z-modal);
-          ">
-            <p style="margin:0 0 var(--spacing-lg)">${this.formError}</p>
-            <div style="display:flex;justify-content:flex-end">
-              <button class="btn btn-primary" @click=${() => { this.formError = ''; }}>OK</button>
-            </div>
-          </dialog>
-        ` : ''}
-        <versola-user-form
-          .userData=${this.editingUser}
-          .tenantId=${this.tenantId}
-          .availableRoles=${this.availableRoles}
-          .availableResources=${this.availableResources}
-          .roleAssignments=${this.editingUserAssignments}
-          ?rolesOnly=${this.rolesOnlyForm}
-          @close=${this.handleFormClose}
-          @submit=${this.handleFormSubmit}
-          @save-roles=${this.handleSaveRoles}
-        ></versola-user-form>
-      `;
-    }
+    if (this.route.create && this.canManage) return this.renderCreateForm();
 
-    if (this.isEditingClaims && this.editingUser) {
+    if (this.route.id) {
       return html`
-        <versola-claim-edit
-          .user=${this.editingUser}
+        <versola-user-record
+          .userId=${this.route.id}
           .tenantId=${this.tenantId}
-          @close=${this.handleClaimsClose}
-          @save=${this.handleClaimsSave}
-        ></versola-claim-edit>
-      `;
+          .canManage=${this.canManage}
+          .canRevealPassword=${this.canRevealPassword}
+          .edit=${this.route.edit}
+          @user-deleted=${this.handleUserDeleted}
+        ></versola-user-record>`;
     }
 
     return html`
-      ${this.renderErrorPopup()}
-      ${this.renderResetPasswordConfirmDialog()}
-      ${this.renderRevealedPasswordDialog()}
-      <content-header title="Users" description="Search, create, and assign roles to users">
-        ${this.canManage ? html`<button slot="actions" class="btn btn-primary" ?disabled=${this.isPreparingForm}
-          @click=${this.handleCreateClick}>+ Create User</button>` : ''}
+      <content-header title="Users" description="Search for a user to see their devices, roles and claims">
+        ${this.canManage ? html`<button slot="actions" class="btn btn-primary"
+          @click=${() => dispatchRecordRoute(this, { id: null, edit: null, create: true })}>+ Create User</button>` : nothing}
       </content-header>
 
-      <form class="search-bar" @submit=${this.handleSearchSubmit}>
+      ${this.deletedLabel ? html`<div class="banner ok" role="status"><div class="banner-text">Deleted ${this.deletedLabel}.</div>
+        <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.deletedLabel = ''; }}>Dismiss</button></div>` : nothing}
+
+      <form class="search-bar" role="search" @submit=${this.handleSearchSubmit}>
         <select aria-label="Search by" .value=${this.searchField}
-          @change=${(e: Event) => {
-            this.searchField = (e.target as HTMLSelectElement).value as UserSearchField;
-          }}>
+          @change=${(e: Event) => { this.searchField = (e.target as HTMLSelectElement).value as UserSearchField; }}>
           <option value="login">Login</option>
           <option value="email">Email</option>
           <option value="phone">Phone</option>
@@ -1352,103 +322,19 @@ export class VersolaUsersList extends LitElement {
       </form>
 
       ${!this.hasSearched ? html`
-          <div class="card">
-            <div class="empty-state">
-              <div class="empty-state-icon">🔍</div>
-              <h3>Search for a user</h3>
-              <p>Enter a query above to find users by login, email, phone, or ID.</p>
-            </div>
-          </div>
-        ` : this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
-        : this.errorMessage ? html`
-          <versola-error-card heading="Could not load users" .message=${this.errorMessage} @retry=${() => this.loadUsers()}></versola-error-card>
-        ` : this.users.length === 0 ? html`
-          <div class="card">
-            <div class="empty-state">
-              <h3>No users found</h3>
-              <p>Adjust your search or create a new user.</p>
-            </div>
-          </div>
-        ` : html`
-          ${this.users.map(user => html`
-            <div class="user-card">
-              <div class="user-header">
-                <div class="user-info">
-                  ${(() => {
-                    const name = this.resolveDisplayName(user);
-                    return name
-                      ? html`<div class="user-name">${name}</div>`
-                      : html`<div class="user-name no-name">No Name</div>`;
-                  })()}
-                  <div class="user-id">${user.id}</div>
-                </div>
-                ${this.canManage ? html`
-                <div class="user-actions">
-                  <button class="icon-action" title="Edit" ?disabled=${this.isPreparingForm}
-                    @click=${(e: Event) => this.handleEditClick(user, e)}>✎</button>
-                </div>` : ''}
-              </div>
-              <div class="user-body">
-                <div class="prop-row">
-                  <span class="prop-label">Email</span>
-                  <span class="prop-value ${user.email ? '' : 'muted'}">${user.email ?? '—'}</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">Phone</span>
-                  <span class="prop-value ${user.phone ? '' : 'muted'}">${user.phone ?? '—'}</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">Login</span>
-                  <span class="prop-value ${user.login ? '' : 'muted'}">${user.login ?? '—'}</span>
-                </div>
-              </div>
-              ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
-              ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
-              ${user.id in this.userSessions ? this.renderUserSessions(user) : ''}
-              ${user.id in this.userPasskeys ? this.renderUserPasskeys(user) : ''}
-              <div class="card-action-row">
-                ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
-                  @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
-                ${!(user.id in this.userRoles) ? html`<button class="btn btn-secondary btn-sm"
-                  ?disabled=${this.loadingRoles.has(user.id) || !this.tenantId}
-                  title=${!this.tenantId ? 'Select a tenant to view roles' : ''}
-                  @click=${() => this.toggleUserRoles(user.id)}>
-                  ${this.loadingRoles.has(user.id) ? 'Loading…' : 'Get Roles'}
-                </button>` : ''}
-                ${!(user.id in this.userSessions) ? html`<button class="btn btn-secondary btn-sm"
-                  ?disabled=${this.loadingSessions.has(user.id)}
-                  @click=${() => this.toggleUserSessions(user.id)}>
-                  ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
-                </button>` : ''}
-                ${!(user.id in this.userPasskeys) ? html`<button class="btn btn-secondary btn-sm"
-                  ?disabled=${this.loadingPasskeys.has(user.id)}
-                  @click=${() => this.toggleUserPasskeys(user.id)}>
-                  ${this.loadingPasskeys.has(user.id) ? 'Loading…' : 'Get Passkeys'}
-                </button>` : ''}
-                <button class="btn btn-secondary btn-sm"
-                  ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}
-                  title=${!this.tenantId ? 'Select a tenant to reset limits' : 'Clear rate-limit counters for this user'}
-                  @click=${() => this.handleResetLimits(user)}>
-                  ${this.resettingLimits.has(user.id)
-                    ? 'Resetting…'
-                    : this.resetLimitsDone.has(user.id)
-                      ? 'Limits Reset ✓'
-                      : 'Reset Limits'}
-                </button>
-                ${this.canManage ? html`<button class="btn btn-secondary btn-sm"
-                  ?disabled=${this.resettingPassword.has(user.id) || !this.tenantId}
-                  title=${!this.tenantId ? 'Select a tenant to reset password' : 'Generate a temporary password for this user'}
-                  @click=${() => this.handleResetPassword(user)}>
-                  ${this.resettingPassword.has(user.id)
-                    ? 'Resetting…'
-                    : this.passwordResetDone.has(user.id)
-                      ? 'Password Reset ✓'
-                      : 'Reset Password'}
-                </button>` : ''}
-              </div>
-            </div>
-          `)}
-          `}
+        <versola-empty-state heading="Search for a user" text="Enter a query above to find a user by login, email, phone or ID."></versola-empty-state>
+      ` : this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+      : this.errorMessage ? html`
+        <versola-error-card heading="Could not load users" .message=${this.errorMessage} @retry=${() => this.loadUsers()}></versola-error-card>
+      ` : this.users.length === 0 ? html`
+        <versola-empty-state heading="No users found" text="Adjust your search or create a new user."></versola-empty-state>
+      ` : this.renderResults()}
     `;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'versola-users-list': VersolaUsersList;
   }
 }

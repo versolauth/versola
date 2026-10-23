@@ -18,6 +18,11 @@ object SecretConfigSpec extends ZIOSpecDefault:
     generator.initialize(2048)
     Base64.getEncoder.encodeToString(generator.generateKeyPair().getPrivate.getEncoded)
 
+  private val ecKey: String =
+    val generator = KeyPairGenerator.getInstance("EC")
+    generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+    Base64.getEncoder.encodeToString(generator.generateKeyPair().getPrivate.getEncoded)
+
   def spec = suite("SecretConfig")(
     suite("base64Url")(
       test("accepts a value with and without `=` padding") {
@@ -70,6 +75,21 @@ object SecretConfigSpec extends ZIOSpecDefault:
         assertTrue(
           message(SecretConfig.rsaPrivateKey(longMarker)) == Left("not a base64-encoded PKCS#8 RSA private key"),
           message(SecretConfig.rsaPrivateKey(marker + "-")) == Left("not a base64-encoded PKCS#8 RSA private key"),
+        )
+      },
+    ),
+    suite("signingPrivateKey")(
+      test("accepts a base64-encoded PKCS#8 RSA key, as before") {
+        assertTrue(SecretConfig.signingPrivateKey(rsaKey).map(_.getAlgorithm) == Right("RSA"))
+      },
+      test("accepts a base64-encoded PKCS#8 EC key") {
+        assertTrue(SecretConfig.signingPrivateKey(ecKey).map(_.getAlgorithm) == Right("EC"))
+      },
+      test("reports a fixed reason for what is not a key") {
+        val reason = "not a base64-encoded PKCS#8 RSA or EC private key"
+        assertTrue(
+          message(SecretConfig.signingPrivateKey(longMarker)) == Left(reason),
+          message(SecretConfig.signingPrivateKey(marker + "-")) == Left(reason),
         )
       },
     ),

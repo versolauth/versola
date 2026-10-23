@@ -309,6 +309,98 @@ def genAuthMutualTlsCertificate(dir: File): Unit =
     "copy",
   )
 
+/** The listener edge serves its `/resources` routes on for callers that bring their own certificate: a CA and the server
+  * certificate it presents. What the callers are validated against is not generated here -- e2e's callers are
+  * [[genAuthMutualTlsCertificate]]'s clients, so `edge.conf` names that CA.
+  */
+def genEdgeMutualTlsCertificate(dir: File): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  val serverKey = File(dir, "server.key").getPath
+  val serverCsr = File(dir, "server.csr").getPath
+  val serverCert = File(dir, "server.crt").getPath
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCert, "-days", "3650", "-subj", "/CN=versola-edge-mtls-ca")
+  run(
+    "req",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    serverKey,
+    "-out",
+    serverCsr,
+    "-subj",
+    "/CN=localhost",
+    "-addext",
+    "subjectAltName=DNS:localhost",
+  )
+  run(
+    "x509",
+    "-req",
+    "-in",
+    serverCsr,
+    "-CA",
+    caCert,
+    "-CAkey",
+    caKey,
+    "-CAcreateserial",
+    "-out",
+    serverCert,
+    "-days",
+    "3650",
+    "-copy_extensions",
+    "copy",
+  )
+
+/** The listener central serves the edge surface on (#554), plus the certificate edge presents to
+  * it: a CA that issues edge certificates and nothing else, central's own leaf (edge pins it), and
+  * `edge-default`'s client certificate, which names it with the URI `urn:versola:edge:edge-default`
+  * -- what `authorizeEdge` requires the handshake's certificate to carry for the edge the token
+  * names. Their own CA, not [[genAuthMutualTlsCertificate]]'s: the listener's trust anchors must
+  * vouch for edges alone, so that nothing else's certificate, however legitimately issued, can
+  * be presented to it.
+  */
+def genCentralMutualTlsCertificate(dir: File, edgeId: String): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  def leaf(name: String, subject: String, san: String): Unit =
+    val key = File(dir, s"$name.key").getPath
+    val csr = File(dir, s"$name.csr").getPath
+    run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", subject, "-addext", s"subjectAltName=$san")
+    run(
+      "x509",
+      "-req",
+      "-in",
+      csr,
+      "-CA",
+      caCert,
+      "-CAkey",
+      caKey,
+      "-CAcreateserial",
+      "-out",
+      File(dir, s"$name.crt").getPath,
+      "-days",
+      "3650",
+      "-copy_extensions",
+      "copy",
+    )
+
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCert, "-days", "3650", "-subj", "/CN=versola-central-mtls-ca")
+  leaf("server", "/CN=localhost", "DNS:localhost")
+  leaf("edge-client", s"/CN=$edgeId/OU=edge/O=Versola", s"URI:urn:versola:edge:$edgeId")
+
 /** The certificate edge presents as `central-admin` (#353): RFC 8705 §2.1 `tls_client_auth`,
   * which is what the default tenant's FAPI 2.0 profile admits for an edge-fronted web client.
   * Written to `dir/central-admin.{crt,key}` and returned as the one PEM (certificate, then its
@@ -494,6 +586,11 @@ enum SecretType(val json: String):
     * be 3072 or 4096, so the modulus is not a promise about every value the store may hold. */
   case RsaPrivateKey extends SecretType("rsa-private-key")
 
+  /** A signing private key, PKCS#8 DER in standard base64, RSA or EC: gen-env generates an EC P-256
+    * key, an existing deployment may still hold an RSA one, and `SecretConfig.signingPrivateKey`
+    * accepts both. No `size` for the same reason as [[RsaPrivateKey]]. */
+  case SigningPrivateKey extends SecretType("signing-private-key")
+
   /** `{"keys":[...]}`: public JWKs, wrapped the way central's bootstrap.jwks expects. */
   case JwkSet extends SecretType("jwk-set")
 
@@ -668,10 +765,14 @@ object SecretSchema:
     base64Url("USER_AGENT_COOKIE_SECRET", List("auth"), 32),
     base64Url("PAR_REQUESTS_SECRET", List("auth"), 32),
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
+    // Keys the hash of a phone number or address in the antifraud event log. A new one does no harm beyond
+    // events before and after it no longer matching, so it stays `generate`.
+    base64Url("ANTIFRAUD_SUBJECT_SECRET", List("auth"), 32),
     // The signing key auth holds and the public JWKS central serves for it: auth matches the
-    // key to its JWKS entry by RSA modulus, and the entry needs a usable `alg`.
+    // key to its JWKS entry (RSA modulus, or proof of possession for EC), and the entry needs a
+    // usable `alg`. EC P-256 (ES256) from gen-env; an older deployment may still hold an RSA key.
     // (a fresh pair next to the real one leaves two kids in play -- develop.md, "Onboarding")
-    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
+    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.SigningPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
     // central
     // central decodes it as a plain `Secret` (any length), and keeps the stored one once the
@@ -905,7 +1006,7 @@ def defaultServerMetadata(authUrl: String): String =
      |  "code_challenge_methods_supported": ["S256"],
      |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
      |  "subject_types_supported": ["public"],
-     |  "id_token_signing_alg_values_supported": ["PS256"],
+     |  "id_token_signing_alg_values_supported": ["ES256"],
      |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
      |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
      |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
@@ -918,74 +1019,78 @@ def defaultServerMetadata(authUrl: String): String =
      |  "authorization_response_iss_parameter_supported": true
      |}""".stripMargin
 
+case class RsaKey(privateB64: String, jwk: String, kid: String)
+
+/** `alg` only changes the JWK's own claim about itself -- an RSA key pair signs the same
+  * way under RS256 or PS256, so this is what decides which one a deployment publishes.
+  */
+def genRsaKey(rng: SecureRandom, kid: String, alg: String = "RS256"): RsaKey =
+  val kpg = KeyPairGenerator.getInstance("RSA")
+  kpg.initialize(2048, rng)
+  val kp = kpg.generateKeyPair()
+  val privKey = kp.getPrivate.asInstanceOf[RSAPrivateCrtKey]
+  val pubKey = kp.getPublic.asInstanceOf[RSAPublicKey]
+  val n = b64url(pubKey.getModulus)
+  val e = b64url(pubKey.getPublicExponent)
+  val jwk = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
+  RsaKey(b64std(privKey.getEncoded), jwk, kid)
+
+/** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
+  * from a JWK rather than PKCS#8 -- loadgen's `provision.provisioner-private-key`. */
+case class EcKey(privateB64: String, jwk: String, kid: String, privateJwk: String)
+
+/** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
+  * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
+  * strip a genuine leading zero byte instead, so coordinates get their own encoding.
+  */
+def genEcKey(rng: SecureRandom, kid: String): EcKey =
+  val kpg = KeyPairGenerator.getInstance("EC")
+  kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
+  val kp = kpg.generateKeyPair()
+  val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+  val pubKey = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+  def coordinate(value: java.math.BigInteger): String =
+    val raw = value.toByteArray
+    val fixed =
+      if raw.length == 32 then raw
+      else if raw.length > 32 then raw.takeRight(32)
+      else Array.fill[Byte](32 - raw.length)(0) ++ raw
+    Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
+  val x = coordinate(pubKey.getW.getAffineX)
+  val y = coordinate(pubKey.getW.getAffineY)
+  val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
+  val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
+  EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
+
+/** The deployment's JWT signing key: an EC P-256 key under ES256, with a `jwt-es256-<date>` kid. */
+def genJwtSigningKey(rng: SecureRandom, today: String): EcKey = genEcKey(rng, s"jwt-es256-$today")
+
+/** The JWKS central is bootstrapped with: only the public half of the key auth holds. */
+def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
+
 @main def genEnv(args: String*): Unit =
   cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
 
   // ── Key pairs ─────────────────────────────────────────────────────────────────
-  println("Generating RSA-2048 and EC (P-256) key pairs...")
-
-  case class RsaKey(privateB64: String, jwk: String, kid: String)
-
-  /** `alg` only changes the JWK's own claim about itself -- an RSA key pair signs the same
-    * way under RS256 or PS256, so this is what decides which one a deployment publishes.
-    */
-  def genRsaKey(kid: String, alg: String = "RS256"): RsaKey =
-    val kpg = KeyPairGenerator.getInstance("RSA")
-    kpg.initialize(2048, rng)
-    val kp = kpg.generateKeyPair()
-    val privKey = kp.getPrivate.asInstanceOf[RSAPrivateCrtKey]
-    val pubKey = kp.getPublic.asInstanceOf[RSAPublicKey]
-    val n = b64url(pubKey.getModulus)
-    val e = b64url(pubKey.getPublicExponent)
-    val jwk = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
-    RsaKey(b64std(privKey.getEncoded), jwk, kid)
-
-  /** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
-    * from a JWK rather than PKCS#8 -- loadgen's `provision.provisioner-private-key`. */
-  case class EcKey(privateB64: String, jwk: String, kid: String, privateJwk: String)
-
-  /** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
-    * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
-    * strip a genuine leading zero byte instead, so coordinates get their own encoding.
-    */
-  def genEcKey(kid: String): EcKey =
-    val kpg = KeyPairGenerator.getInstance("EC")
-    kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
-    val kp = kpg.generateKeyPair()
-    val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
-    val pubKey = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
-    def coordinate(value: java.math.BigInteger): String =
-      val raw = value.toByteArray
-      val fixed =
-        if raw.length == 32 then raw
-        else if raw.length > 32 then raw.takeRight(32)
-        else Array.fill[Byte](32 - raw.length)(0) ++ raw
-      Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
-    val x = coordinate(pubKey.getW.getAffineX)
-    val y = coordinate(pubKey.getW.getAffineY)
-    val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
-    val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
-    EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
+  println("Generating EC (P-256) and RSA-2048 key pairs...")
 
   val today = java.time.LocalDate.now.toString
-  // JWT signing key: auth signs access tokens with the private half; central serves the
-  // public half in the JWKS so auth/edge/admin-console can verify those tokens. PS256, not
-  // RS256: FAPI 1.0 Advanced §8.6 and FAPI 2.0 both require PS256 or ES256 and disallow
-  // RS256's PKCS#1 v1.5 padding, and there is no reason a fresh deployment should start out
-  // non-compliant with that. The key itself is still RSA -- PS256 is the same key, read with
-  // RSASSA-PSS padding instead of PKCS#1 v1.5.
-  val jwtKey = genRsaKey(s"jwt-$today", "PS256")
-  // A second, EC signing key published alongside it: FAPI's other permitted algorithm, so a
-  // fresh deployment demonstrates verifying both rather than only the one it happens to sign
-  // with. Verify-only from central's perspective -- see `BootstrapService.seedJwks` -- same as
-  // `jwtKey`; nothing here is `bootstrap.jwks`'s private half, only auth's own `JWT_PRIVATE_KEY`
-  // is, so this key can be rotated in for real signing later without this script's involvement.
-  val esKey = genEcKey(s"jwt-es256-$today")
+  // JWT signing key: auth signs access tokens and ID tokens with the private half; central serves
+  // the public half in the JWKS so auth/edge/admin-console can verify those tokens. ES256, the
+  // product's default (`JwksRecord.algorithmPreference`): FAPI 1.0 Advanced §8.6 and FAPI 2.0
+  // permit ES256 or PS256, and with the native crypto provider ES256 costs ~14% fewer cores per
+  // request. It is an EC P-256 key: auth matches its `jwt.private-key` to this JWKS entry by
+  // proof of possession (`JwksService.resolveSigningKey`), and central stores the entry
+  // verify-only (`BootstrapService.seedJwks`).
+  // Only this key is published: an extra verify-only key whose private half nobody holds would
+  // be confusing (develop.md, "Onboarding"). An operator who wants PS256 generates a key in
+  // central and selects it for the tenant, which publishes it then.
+  val jwtKey = genJwtSigningKey(rng, today)
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
-  val edgeKey = genRsaKey(s"edge-$today")
-  val jwks = s"""{"keys":[${jwtKey.jwk}, ${esKey.jwk}]}"""
+  val edgeKey = genRsaKey(rng, s"edge-$today")
+  val jwks = jwtJwks(jwtKey)
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
@@ -1003,9 +1108,10 @@ def defaultServerMetadata(authUrl: String): String =
   val userAgentCookieSecret = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey = rand(rng, 32)
   val edgeSessionsSecret = rand(rng, 32)
-  val edgeInternalSecret = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
-  val parRequestsSecret = rand(rng, 32)  // auth only: keys the stored request_uri references
-  val dpopNoncesSecret = rand(rng, 32)   // auth only: authenticates DPoP-Nonce values
+  val edgeInternalSecret = rand(rng, 32)     // authorizes edge's non-prod /service/configuration/sync
+  val parRequestsSecret = rand(rng, 32)      // auth only: keys the stored request_uri references
+  val dpopNoncesSecret = rand(rng, 32)       // auth only: authenticates DPoP-Nonce values
+  val antifraudSubjectSecret = rand(rng, 32) // auth only: keys the hash of a destination in the antifraud event log
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
   val edgeDpopNonceSalt = rand(rng, 32)
@@ -1015,7 +1121,7 @@ def defaultServerMetadata(authUrl: String): String =
     rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
   // central: seeds bootstrap.utility-client with the public half; the private half is loadgen's
   // provision.provisioner-private-key. See `utilityKey`'s use below for where each half goes.
-  val utilityKey = genEcKey("utils")
+  val utilityKey = genEcKey(rng, "utils")
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -1291,6 +1397,54 @@ def defaultServerMetadata(authUrl: String): String =
          |}
          |""".stripMargin
     else ""
+  // RFC 7030 EST under /.well-known/est/: a client registered with `estEnrollment` gets and renews its mTLS
+  // client certificate from auth, which central issues. Needs the `mutual-tls` block above (renewal is
+  // served on that listener only), so it is written wherever that is. `local` has it on, for e2e; elsewhere
+  // it is opt-in with EST_ENABLED=true, because it opens a route on the public listener.
+  val estEnabled =
+    sys.env.get("EST_ENABLED").map(_.trim).filter(_.nonEmpty) match
+      case None => isLocal
+      case Some("true") => true
+      case Some("false") => false
+      case Some(other) => throw RuntimeException(s"EST_ENABLED must be true or false, not '$other'")
+  // The CA `cacerts` hands out: the one central issues clients' certificates from, alone. Never the trust anchors of
+  // the listener, which may hold the CA of edges as well. `local` issues from the terminator's CA
+  // (`centralClientCertificateAuthorityBlock`); elsewhere the operator names the file.
+  val estCaCertificates =
+    if !estEnabled then ""
+    else if isLocal then File(edgeInternalTlsDir, "ca.crt").getAbsolutePath
+    // The chart mounts the client CA alone (`<release>-client-only-ca`); with `pki.issuerRef` set for every role the edge and
+    // client CA are the same CA, and so is this file.
+    else if isKubernetes then "/app/mtls/client-trust/ca.crt"
+    else
+      sys.env.get("EST_CA_CERTIFICATES").map(_.trim).filter(_.nonEmpty).getOrElse(
+        throw RuntimeException(
+          "EST_CA_CERTIFICATES is required when EST_ENABLED=true: the path, in auth's container, of a PEM file with the client CA alone",
+        ),
+      )
+  val authEstBlock =
+    if estEnabled then
+      s"""
+         |# RFC 7030 EST (/.well-known/est/): `simpleenroll` on the main listener, `simplereenroll` on the
+         |# mutual-TLS listener. `cacerts` hands out `ca-certificates`, the client CA alone.
+         |est {
+         |  enabled         = true
+         |  ca-certificates = "$estCaCertificates"
+         |}
+         |""".stripMargin
+    else ""
+  // The chain of a client certificate obtained through EST is short here, so that e2e can watch it end and
+  // be extended, and a certificate may be renewed at any time of its life; every other target keeps central's defaults (a year,
+  // re-approved by an operator; the last third of a certificate's life).
+  val centralClientIdentityBlock =
+    if isLocal then
+      """
+        |client-identity {
+        |  max-age     = "20 seconds"
+        |  renew-window = 1.0
+        |}
+        |""".stripMargin
+    else ""
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
@@ -1310,13 +1464,42 @@ def defaultServerMetadata(authUrl: String): String =
   // chart's `pki` block, which mounts a cert-manager Secret per purpose.
   val mtlsServerCertificate = if isKubernetes then "/app/mtls/server/tls.crt" else "/app/mtls/server.crt"
   val mtlsServerKey = if isKubernetes then "/app/mtls/server/tls.key" else "/app/mtls/server.key"
-  val mtlsTrustedCertificates = if isKubernetes then "/app/mtls/trust/ca.crt" else "/app/mtls/ca.crt"
-  val mtlsAuthPin = if isKubernetes then "/app/mtls/auth-pin/tls.crt" else "/app/mtls/server.crt"
+  // vps: auth's handshake accepts client certificates (client intermediate) and edge identities
+  // (edge intermediate) -- one file holding both, never the root, which would accept every
+  // intermediate. An edge's certificate is accepted by `/userinfo` as the proof that the edge verified a
+  // token's holder (`edge-trusted-certificates`, the edge intermediate alone).
+  val mtlsTrustedCertificates =
+    if isKubernetes then "/app/mtls/trust/ca.crt" else if isVps then "/app/mtls/auth-trust.crt" else "/app/mtls/ca.crt"
+  // The issuer of edge identities, on its own: a call to `/userinfo` over a certificate it signed (naming
+  // `urn:versola:edge:<id>`) is taken as an edge's, which verified the token's holder itself. It must be a CA
+  // that issues edge certificates and nothing else: vps and k8s have a dedicated one. docker-local has one CA
+  // for everything, and central never issues a client a name in the edge namespace, so it is the CA named there.
+  val mtlsEdgeTrustedCertificates =
+    if isKubernetes then "/app/mtls/edge-trust/ca.crt" else if isVps then "/app/mtls/edge-ca.crt" else "/app/mtls/ca.crt"
+  if isDockerLocal then
+    println(
+      "  WARNING: docker-local has one CA for edges and clients, and auth's `mutual-tls.edge-trusted-certificates` names it. " +
+        "Only central refusing to issue a client a `urn:versola:edge:` name keeps a client from passing for an edge; " +
+        "use vps or k8s (a dedicated edge CA) for anything but development.",
+    )
+  // Pins are lists: `.next.crt` is the certificate that replaces the leaf at the next rotation (a
+  // copy of the current one while none is staged), so edge accepts both across the switch.
+  val mtlsAuthPins =
+    if isKubernetes then Seq("/app/mtls/auth-pin/tls.crt")
+    else if isVps then Seq("/app/mtls/server.crt", "/app/mtls/server.next.crt")
+    else Seq("/app/mtls/server.crt")
   // vps: authInternalUrl is the public domain there, which nothing proxies to this port -- edge
   // is on the same host and reaches the listener (bound to BIND_HOST) on loopback.
   val mtlsExternalUrl =
     if isVps then "https://127.0.0.1:8083" else s"https://${URI.create(authInternalUrl).getHost}:8083"
+  // vps, opt-in: the public name remote edges and external mTLS clients reach the listener on
+  // (versola-cli publishes it through its proxy; `mtls-init` adds it to the leaf's SAN). Only
+  // what auth advertises (`mtls_endpoint_aliases`) changes: the local edge keeps `mtlsExternalUrl`.
+  // versola-tools' entrypoint has already validated the name as a bare DNS name.
+  val mtlsPublicDomain = sys.env.get("MTLS_DOMAIN").filter(_.nonEmpty).filter(_ => isVps)
+  val mtlsAdvertisedUrl = mtlsPublicDomain.fold(mtlsExternalUrl)(domain => s"https://$domain")
   val authMutualTlsDir = File("auth/dev/mtls")
+  val centralMutualTlsDir = File("central/dev/mtls")
   val authMutualTlsPort = 9008
   val authMutualTlsUrl = s"https://localhost:$authMutualTlsPort"
   // The listener's own CA, which e2e's client certificate chains to, and the terminator's, which
@@ -1330,6 +1513,9 @@ def defaultServerMetadata(authUrl: String): String =
          |  certificate            = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
          |  private-key            = "${File(authMutualTlsDir, "server.key").getAbsolutePath}"
          |  trusted-certificates   = "${authMutualTlsTrustedClients.getAbsolutePath}"
+         |  # The CA that issued edge's own certificate (central/dev/mtls): /userinfo over a certificate it
+         |  # signed is an edge's call, which verified the token's holder itself.
+         |  edge-trusted-certificates = "${File(centralMutualTlsDir, "ca.crt").getAbsolutePath}"
          |  external-url           = "$authMutualTlsUrl"
          |}
          |""".stripMargin
@@ -1342,7 +1528,10 @@ def defaultServerMetadata(authUrl: String): String =
          |  certificate            = "$mtlsServerCertificate"
          |  private-key            = "$mtlsServerKey"
          |  trusted-certificates   = "$mtlsTrustedCertificates"
-         |  external-url           = "$mtlsExternalUrl"
+         |  # The issuer of edges' certificates, alone (see develop.md "Certificate storage and rotation"): what
+         |  # lets an edge's call to /userinfo stand for the checks it made on the token's holder.
+         |  edge-trusted-certificates = "$mtlsEdgeTrustedCertificates"
+         |  external-url           = "$mtlsAdvertisedUrl"
          |}
          |""".stripMargin
 
@@ -1364,10 +1553,107 @@ def defaultServerMetadata(authUrl: String): String =
          |# pin is a list so auth's listener certificate can be rotated with an overlap window.
          |native {
          |  auth-mutual-tls-url   = "$mtlsExternalUrl"
-         |  trusted-certificates  = ["$mtlsAuthPin"]
+         |  trusted-certificates  = [${mtlsAuthPins.map(pin => s"\"$pin\"").mkString(", ")}]
          |  blob-key              = ${secretField(useOpenBao, edgeNativeBlobKey, "EDGE_NATIVE_BLOB_KEY")}
          |}
          |""".stripMargin
+
+  // Edge's own mutual-TLS listener: the `/resources` routes for callers whose token is bound to their own certificate
+  // (RFC 8705 §3) -- the plain listener cannot see it. Opt-in; written for `local` only, where e2e's callers are
+  // `auth/dev/mtls`'s client certificates, so that CA is what the handshake validates them against. Served on
+  // MPORT (default 8083). docker-local, vps and k8s write none: the operator names the certificates (develop.md).
+  val edgeMutualTlsDir = File("edge/dev/mtls")
+  val edgeMutualTlsBlock =
+    if isLocal then
+      s"""
+         |# The `/resources` routes for callers that bring a certificate-bound token (RFC 8705 §3), on MPORT.
+         |mutual-tls {
+         |  certificate          = "${File(edgeMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  private-key          = "${File(edgeMutualTlsDir, "server.key").getAbsolutePath}"
+         |  trusted-certificates = "${File(authMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |  external-url         = "https://localhost:8083"
+         |}
+         |""".stripMargin
+    else ""
+
+  // #554: central serves the edge surface (`/edge/*`) on its own mutual-TLS listener (MPORT), the
+  // only place it does, and a public one: an edge connects from wherever it runs. The handshake
+  // demands a certificate from the CA that issues edge certificates (`trusted-certificates`),
+  // and `authorizeEdge` requires it to carry `urn:versola:edge:<edge id>` for the edge the token
+  // names. Edge pins central's own leaf. docker-local/vps: issued by the bundle's `mtls-init`
+  // into the shared volume at /app/mtls; k8s: by the chart's `pki` block (cert-manager); local:
+  // generated here.
+  val centralMutualTlsPort = 9011
+  val edgeId = "edge-default"
+  val centralMutualTlsCertificate =
+    if isKubernetes then "/app/central-mtls/server/tls.crt" else "/app/mtls/central-server.crt"
+  val centralMutualTlsKey =
+    if isKubernetes then "/app/central-mtls/server/tls.key" else "/app/mtls/central-server.key"
+  // vps: central trusts edge identities only (the edge intermediate), so a client certificate does
+  // not even complete the handshake.
+  val centralMutualTlsTrust =
+    if isKubernetes then "/app/central-mtls/trust/ca.crt" else if isVps then "/app/mtls/edge-ca.crt" else "/app/mtls/ca.crt"
+  val edgeCentralCertificate =
+    if isKubernetes then "/app/central-mtls/client/tls.crt" else "/app/mtls/edge-client.crt"
+  val edgeCentralKey =
+    if isKubernetes then "/app/central-mtls/client/tls.key" else "/app/mtls/edge-client.key"
+  val edgeCentralPins =
+    if isKubernetes then Seq("/app/central-mtls/server-pin/tls.crt")
+    else if isVps then Seq("/app/mtls/central-server.crt", "/app/mtls/central-server.next.crt")
+    else Seq("/app/mtls/central-server.crt")
+  val centralMutualTlsUrlDefault =
+    if isDockerLocal then "https://central:8093"
+    else if isVps then "https://127.0.0.1:8093"
+    // k8s: central's Service in the release, as the chart names it for a release called `versola`; an edge
+    // outside the cluster uses the public name (https://central.<domain>) instead.
+    else if isKubernetes then "https://versola-central:8093"
+    else s"https://localhost:$centralMutualTlsPort"
+  val centralMutualTlsUrl = prompt(
+    s"  Central mutual-TLS URL, how edge reaches the edge surface [$centralMutualTlsUrlDefault]: ",
+    centralMutualTlsUrlDefault,
+    flag = "central-mutual-tls-url",
+  )
+  val centralMutualTlsBlock =
+    if isLocal then
+      s"""
+         |# #554: the listener the edge surface is served on, and nowhere else.
+         |mutual-tls {
+         |  certificate          = "${File(centralMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  private-key          = "${File(centralMutualTlsDir, "server.key").getAbsolutePath}"
+         |  trusted-certificates = "${File(centralMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |}
+         |""".stripMargin
+    else
+      s"""
+         |# #554: the listener the edge surface is served on (MPORT), and nowhere else. The files are put
+         |# there by whatever issues them: the `mtls-init` service in the compose bundle (step-ca), or
+         |# the chart's `pki` block (cert-manager). `trusted-certificates` must vouch for edge
+         |# certificates only -- see develop.md "Certificate storage and rotation".
+         |mutual-tls {
+         |  certificate          = "$centralMutualTlsCertificate"
+         |  private-key          = "$centralMutualTlsKey"
+         |  trusted-certificates = "$centralMutualTlsTrust"
+         |}
+         |""".stripMargin
+  val edgeCentralBlock =
+    val (certificate, key, pins) =
+      if isLocal then
+        (
+          File(centralMutualTlsDir, "edge-client.crt").getAbsolutePath,
+          File(centralMutualTlsDir, "edge-client.key").getAbsolutePath,
+          Seq(File(centralMutualTlsDir, "server.crt").getAbsolutePath),
+        )
+      else (edgeCentralCertificate, edgeCentralKey, edgeCentralPins)
+    s"""central {
+       |  url = "$centralMutualTlsUrl"
+       |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
+       |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
+       |  mutual-tls {
+       |    certificate          = "$certificate"
+       |    private-key          = "$key"
+       |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
+       |  }
+       |}""".stripMargin
 
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
@@ -1610,13 +1896,14 @@ def defaultServerMetadata(authUrl: String): String =
        |  user-agent-cookie-secret     = ${secretField(useOpenBao, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
        |  par-requests-secret          = ${secretField(useOpenBao, parRequestsSecret, "PAR_REQUESTS_SECRET")}
        |  dpop-nonces-secret           = ${secretField(useOpenBao, dpopNoncesSecret, "DPOP_NONCES_SECRET")}
+       |  antifraud-subject-secret     = ${secretField(useOpenBao, antifraudSubjectSecret, "ANTIFRAUD_SUBJECT_SECRET")}
        |}
        |
        |par {
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
        |}
-       |$authMutualTlsBlock
+       |$authMutualTlsBlock$authEstBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
@@ -1750,13 +2037,45 @@ def defaultServerMetadata(authUrl: String): String =
          |}
          |""".stripMargin
 
+  // vps: central signs edge identities (/edge/enroll, /edge/certificate/renew) with the edge
+  // intermediate, which its listener trusts, and not through step-ca's client intermediate. `mtls-init`
+  // puts the certificate and its key into the volume only central mounts (/app/ca).
+  // k8s: the chart's EDGE_CERT_ISSUER_NAME/_KIND/_GROUP (the `edge` cert-manager issuer, kept apart
+  // from the clients' one) name the issuer, and the block is written only where the name is given
+  // here; without it central falls back to the client issuer.
+  val edgeCertificateAuthorityBlock =
+    if isKubernetes && sys.env.get("EDGE_CERT_ISSUER_NAME").exists(_.nonEmpty) then
+      """
+        |# Edge identities (`/edge/enroll`, `/edge/certificate/renew`) are issued by cert-manager with the
+        |# `edge` issuer; the edge renews them itself at a third of their life left.
+        |edge-certificates {
+        |  validity     = "30 days"
+        |  renew-before = "10 days"
+        |  cert-manager {
+        |    issuer-name  = ${EDGE_CERT_ISSUER_NAME}
+        |    issuer-kind  = ${?EDGE_CERT_ISSUER_KIND}
+        |    issuer-group = ${?EDGE_CERT_ISSUER_GROUP}
+        |  }
+        |}
+        |""".stripMargin
+    else if isVps then
+      """
+        |# The CA edge identities are signed with: the edge intermediate (develop.md, "Certificate
+        |# storage and rotation"). Clients' certificates stay with the client CA above.
+        |edge-certificate-authority {
+        |  certificate = "/app/ca/edge-ca.crt"
+        |  private-key = "/app/ca/edge-ca.key"
+        |}
+        |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"
@@ -1802,7 +2121,7 @@ def defaultServerMetadata(authUrl: String): String =
        |auth {
        |  url = "$authInternalUrl"
        |}
-       |$centralClientCertificateAuthorityBlock
+       |$centralClientCertificateAuthorityBlock$centralClientIdentityBlock$centralMutualTlsBlock
        |user-outbox {
        |  poll-interval = 1 second
        |  batch-size = 32
@@ -1837,6 +2156,12 @@ def defaultServerMetadata(authUrl: String): String =
        |# otel-exporter = "http://localhost:4317"
        |
        |id = "edge-default"
+       |
+       |# What this edge is to the installation (EdgeConfig.mode, #555): "first-party" -- the
+       |# operator's own edge, configuration synced from central, EdgeAssertion to auth, the
+       |# internal /service surface mounted -- or "partner" (#564, not available yet). Absent
+       |# means first-party.
+       |mode = "first-party"
        |
        |# Placeholdered together with EDGE_PRIVATE_KEY below, not left as a
        |# plain literal: edgeKey.kid is derived from *today's* date (see
@@ -1920,16 +2245,14 @@ def defaultServerMetadata(authUrl: String): String =
        |  nonce-ttl = "600 seconds"
        |}
        |
-       |central {
-       |  url = "$centralUrl"
-       |}
+       |$edgeCentralBlock
        |
        |versola-url = "$authUrl"
        |versola-internal-url = "$edgeInternalUrl"
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
-       |$edgeNativeBlock""".stripMargin
+       |$edgeNativeBlock$edgeMutualTlsBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────
   println("\nGenerating config files...")
@@ -1940,10 +2263,14 @@ def defaultServerMetadata(authUrl: String): String =
     // The CA and server certificate were generated with central-admin's certificate, above.
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
+    genCentralMutualTlsCertificate(centralMutualTlsDir, edgeId)
+    genEdgeMutualTlsCertificate(edgeMutualTlsDir)
     writeFile(
       authMutualTlsDir,
       authMutualTlsTrustedClients.getName,
-      Seq(File(authMutualTlsDir, "ca.crt"), File(edgeInternalTlsDir, "ca.crt"))
+      // The edge CA too: edge's identity (`central/dev/mtls/edge-client.*`) is presented to this listener for
+      // `/userinfo`, and `edge-trusted-certificates` only narrows which of the accepted certificates is an edge's.
+      Seq(File(authMutualTlsDir, "ca.crt"), File(edgeInternalTlsDir, "ca.crt"), File(centralMutualTlsDir, "ca.crt"))
         .map(file => scala.io.Source.fromFile(file).mkString.trim)
         .mkString("", "\n", "\n"),
     )
@@ -1959,6 +2286,12 @@ def defaultServerMetadata(authUrl: String): String =
          |  - auth/dev/mtls/{ca.*,server.*,client.*,trusted-clients.crt} (auth's own RFC 8705 §5 listener --
          |    no terminator to start, auth serves it itself on MPORT=$authMutualTlsPort;
          |    client.crt/client.key are the certificate e2e's MutualTlsListenerSpec presents)
+         |  - edge/dev/mtls/{ca.*,server.*} (edge's own listener for `/resources` with a caller's certificate,
+         |    served by edge on MPORT -- unset, 8083; callers are validated against auth/dev/mtls/ca.crt, so
+         |    e2e's EdgeResourcesMutualTlsSpec signs the callers' certificates with auth/dev/mtls/ca.*)
+         |  - central/dev/mtls/{ca.*,server.*,edge-client.*} (central's own listener for the edge surface,
+         |    #554 -- served by central itself on MPORT=$centralMutualTlsPort; edge-client.* is the certificate
+         |    edge presents there and e2e's EdgeSyncSurfaceSpec uses)
          |""".stripMargin,
     )
   else
@@ -2014,6 +2347,7 @@ def defaultServerMetadata(authUrl: String): String =
           "USER_AGENT_COOKIE_SECRET" -> userAgentCookieSecret,
           "PAR_REQUESTS_SECRET" -> parRequestsSecret,
           "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
+          "ANTIFRAUD_SUBJECT_SECRET" -> antifraudSubjectSecret,
           "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
           "CENTRAL_SECRET_KEY" -> centralSecretKey,
         ) ++ authExtras,

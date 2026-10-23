@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
+import { segmentedStyles } from '../styles/components';
 import type { ResolvedThemeTokens, ThemeBackground, ThemeMode, ThemeOverrides, ThemeShape, ThemeSurface } from '../types';
 
 const HEX = /^#?[0-9a-fA-F]{6}$/;
@@ -39,13 +40,18 @@ export interface OverridesChange {
 export class VersolaThemeTokenControls extends LitElement {
   /** What the tokens are without any override: the values shown as inherited. */
   @property({ attribute: false }) base?: ResolvedThemeTokens;
-  /** The base is a stylesheet, whose values are not known here (`base` is then not used). Nothing is shown as
+  /** The base is a theme that has only CSS, whose values are not known here (`base` is then not used). Nothing is shown as
    *  inherited, and every choice is written as an override even when it matches some preset: an override equal to
-   *  a value the stylesheet may not have would otherwise be dropped. */
-  @property({ type: Boolean }) stylesheet = false;
+   *  a value that CSS may not have would otherwise be dropped. */
+  @property({ type: Boolean }) cssOnly = false;
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
+  /** Each token is a row divided from the next by a line (the theme editor's Look card). */
+  @property({ type: Boolean, reflect: true }) ruled = false;
+  /** The scheme the preview next to the controls shows, which the background thumbnails are drawn in. Without one the
+   *  dark scheme is drawn unless the scheme is fixed to light. */
+  @property({ type: String }) scheme: 'light' | 'dark' | '' = '';
 
   @state() private brandText = '';
 
@@ -69,38 +75,39 @@ export class VersolaThemeTokenControls extends LitElement {
 
   static styles = [
     theme,
+    segmentedStyles,
     css`
       :host { display: block; }
-      .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .field-label { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 0.5rem; white-space: nowrap; }
+      .hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.5rem; }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--field); border: 1.5px solid var(--border-input); border-radius: var(--radius-md); font-size: var(--text-base); color: var(--text-primary); box-sizing: border-box; }
       .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
-      .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      :host([ruled]) .group + .group { margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-subtle); }
+      .group-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 var(--spacing-sm); }
+      .field-label { display: flex; align-items: center; gap: 0.375rem; }
+      .dot-overridden { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); }
       .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
-      .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
+      .reset { font: inherit; font-size: var(--text-sm); color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
-      .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
-      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-input); border-radius: var(--radius-md); cursor: pointer; }
-      .seg-btn:hover { color: var(--text-primary); }
-      .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+      .seg-control { gap: 0.375rem; }
 
       .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
       .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-default); cursor: pointer; padding: 0; }
       .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
+      .swatch:focus-visible, .bg-card:focus-visible, .reset:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
-      .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
+      .hex-row .bad { color: var(--danger-text); font-size: var(--text-sm); }
       /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
          repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
          --pg is the page colour, --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
-         The dark scheme is shown unless the scheme is fixed to light. */
+         They follow the scheme property (the preview's), else the dark scheme unless the scheme is fixed to light. */
       .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
       .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
       .bg-card:hover { border-color: var(--text-secondary); }
-      .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-      .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
+      .bg-card.sel { border-color: var(--text-primary); background: var(--surface-inset); }
+      .bg-card b { display: block; font-size: var(--text-sm); margin-top: 0.3125rem; }
       .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
       .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 9%, #f6f4ef); --lin: 34%; --hor: 36%; --glow-x: 30%; }
       .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
@@ -120,9 +127,9 @@ export class VersolaThemeTokenControls extends LitElement {
     return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
   }
 
-  /** The value each token shows; `undefined` for one a stylesheet sets and the operator has not overridden. */
+  /** The value each token shows; `undefined` for one the theme's CSS sets and the operator has not overridden. */
   private get resolved(): Partial<ResolvedThemeTokens> {
-    const base = this.stylesheet ? undefined : this.base;
+    const base = this.cssOnly ? undefined : this.base;
     return {
       brand: this.overrides.brand ?? base?.brand,
       shape: this.overrides.shape ?? base?.shape,
@@ -143,8 +150,8 @@ export class VersolaThemeTokenControls extends LitElement {
   private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
     const next = { ...this.overrides };
     // A value equal to the base's is not an override: the theme then follows the base when it changes. Not so over
-    // a stylesheet, whose own values are unknown: the choice is the only record of what the operator wants.
-    if (value === undefined || (!this.stylesheet && value === this.base?.[key])) delete next[key];
+    // a CSS-only theme, whose own values are unknown: the choice is the only record of what the operator wants.
+    if (value === undefined || (!this.cssOnly && value === this.base?.[key])) delete next[key];
     else next[key] = value;
     this.emit(next);
   }
@@ -154,26 +161,28 @@ export class VersolaThemeTokenControls extends LitElement {
     this.setOverride(key, undefined);
   }
 
-  private overriddenBadge(key: keyof ThemeOverrides, baseValue: string | undefined) {
-    if (this.overrides[key] === undefined) {
-      if (this.stylesheet) return html`<span class="note-inherited">Set by the stylesheet</span>`;
-      return this.inheritedNote ? html`<span class="note-inherited">${this.inheritedNote}</span>` : nothing;
-    }
+  /** A token's title row: its label, an accent dot once it is overridden (the base value in the row's title), and the
+   *  Reset; while it is not overridden, where it comes from. */
+  private groupTitle(key: keyof ThemeOverrides, label: string, baseValue: string | undefined) {
+    const own = this.overrides[key] !== undefined;
+    const note = this.cssOnly ? 'Set by the theme\'s CSS' : this.inheritedNote;
+    const title = own ? (this.cssOnly ? 'Overridden' : `Overridden · base: ${baseValue}`) : '';
     return html`
-      <span>
-        <span class="badge-overridden">${this.stylesheet ? 'Overridden' : `Overridden · base: ${baseValue}`}</span>
-        <button class="reset" aria-label=${`Reset ${key} to ${this.stylesheet ? 'the stylesheet' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>
-      </span>
-    `;
+      <div class="group-title" title=${title || nothing}>
+        <div class="field-label">${own ? html`<span class="dot-overridden" role="img" aria-label="Overridden"></span>` : nothing}${label}</div>
+        ${own
+          ? html`<button class="reset" aria-label=${`Reset ${key} to ${this.cssOnly ? 'the theme\'s CSS' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>`
+          : note ? html`<span class="note-inherited">${note}</span>` : nothing}
+      </div>`;
   }
 
   render() {
-    if (!this.base && !this.stylesheet) return nothing;
+    if (!this.base && !this.cssOnly) return nothing;
     const resolved = this.resolved;
     const base = this.base;
     return html`
       <div class="group">
-        <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base?.brand)}</div>
+        ${this.groupTitle('brand', 'Brand colour', base?.brand)}
         <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
         <div class="swatches" role="group" aria-label="Brand colour">
           ${SWATCHES.map(c => html`
@@ -197,7 +206,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Page background</div>${this.overriddenBadge('surface', base?.surface)}</div>
+        ${this.groupTitle('surface', 'Page background', base?.surface)}
         <div class="seg-control" role="group" aria-label="Page background">
           ${SURFACES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.surface === value ? 'seg-active' : ''}" aria-pressed=${resolved.surface === value ? 'true' : 'false'}
@@ -208,14 +217,14 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Background style</div>${this.overriddenBadge('background', base?.background)}</div>
+        ${this.groupTitle('background', 'Background style', base?.background)}
         <div class="hint">What is drawn over the page colour behind the card. Always a tint of the brand colour; text above the card stays readable.</div>
         <div class="bgs" role="group" aria-label="Background style">
           ${BACKGROUNDS.map(([value, label, description]) => html`
             <button class="bg-card ${resolved.background === value ? 'sel' : ''}" aria-pressed=${resolved.background === value ? 'true' : 'false'}
               title=${description} @click=${() => this.setOverride('background', value)}>
               <span class="bg-swatch" style=${`--b:${resolved.brand ?? '#155e75'}`} data-bg=${value} data-surface=${resolved.surface ?? 'bold'}
-                data-scheme=${resolved.mode === 'light' ? 'light' : 'dark'} aria-hidden="true"><i class="bg-sheet"></i></span>
+                data-scheme=${this.scheme || (resolved.mode === 'light' ? 'light' : 'dark')} aria-hidden="true"><i class="bg-sheet"></i></span>
               <b>${label}</b>
             </button>
           `)}
@@ -224,7 +233,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Shape</div>${this.overriddenBadge('shape', base?.shape)}</div>
+        ${this.groupTitle('shape', 'Shape', base?.shape)}
         <div class="seg-control" role="group" aria-label="Shape">
           ${SHAPES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.shape === value ? 'seg-active' : ''}" aria-pressed=${resolved.shape === value ? 'true' : 'false'}
@@ -234,7 +243,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Colour scheme</div>${this.overriddenBadge('mode', base?.mode)}</div>
+        ${this.groupTitle('mode', 'Colour scheme', base?.mode)}
         <div class="seg-control" role="group" aria-label="Colour scheme">
           ${MODES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.mode === value ? 'seg-active' : ''}" aria-pressed=${resolved.mode === value ? 'true' : 'false'}

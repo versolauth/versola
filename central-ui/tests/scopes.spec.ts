@@ -28,15 +28,17 @@ test('lists scopes with claims and languages, filters by chip and searches by ID
   const table = page.locator('versola-data-table');
   await expect(table.getByRole('columnheader')).toHaveText(['Scope', 'Claims', 'Languages', 'Actions']);
   const openid = table.getByRole('row').filter({ hasText: 'OpenID scope' });
-  await expect(openid.getByRole('cell').nth(1)).toHaveText('2');
-  await expect(openid.getByRole('cell').nth(2)).toHaveText('2 of 2');
+  // The claims and the languages are values, not counts.
+  await expect(openid.getByRole('cell').nth(1).locator('.chip')).toHaveText(['sub', 'email']);
+  await expect(openid.getByRole('cell').nth(2).locator('.chip')).toHaveText(['en', 'ru']);
+  await expect(table.getByRole('row').filter({ hasText: 'Offline access' }).getByRole('cell').nth(1)).toHaveText('None');
   await expect(table.getByRole('row').filter({ hasText: 'Profile data' })).toContainText('Missing: ru');
 
-  await page.getByRole('button', { name: /^No claims\s?1$/ }).click();
+  await page.getByRole('button', { name: 'No claims', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open scope/ })).toHaveText([/offline_access/]);
-  await page.getByRole('button', { name: /^Missing translations\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Missing translations', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open scope/ })).toHaveText([/profile/]);
-  await page.getByRole('button', { name: /^All\s?3$/ }).click();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
 
   await page.getByLabel('Search scopes').fill('Profile');
   await expect(table.getByRole('button', { name: /^Open scope/ })).toHaveCount(1);

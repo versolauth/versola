@@ -3,7 +3,18 @@ package versola.edge
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
 import versola.edge.model.*
-import versola.util.{Base64, ClientAssertion, JWT, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, RequestObject, Secret, TestCertificates}
+import versola.util.{
+  Base64,
+  ClientAssertion,
+  EdgeIdentityNames,
+  JWT,
+  PrivateClientCertificate,
+  PrivateJsonWebKey,
+  RedirectUri,
+  RequestObject,
+  Secret,
+  TestCertificates,
+}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -74,6 +85,23 @@ object SSOClientSpec extends ZIOSpecDefault:
     presented.update(certificate :: _)
       .as(ClientSSLCertConfig.FromClientCertFile("client.crt", "client.key"))
 
+  /** What this edge presents on its own behalf: nothing, for the specs of calls made as a client. */
+  private def held(material: Option[PrivateClientCertificate.Material]): EdgeIdentity =
+    new EdgeIdentity:
+      override def certificate = ZIO.succeed(material)
+
+  private val noIdentity = held(None)
+
+  /** The certificate central issued this edge: what auth takes as proof that an edge verified a token's holder. */
+  private val edgeCertificate = TestCertificates.generate(
+    subject = "CN=edge-1",
+    uris = List(EdgeIdentityNames.edgeUri("edge-1"), EdgeIdentityNames.groupUri("default")),
+  )
+
+  private val edgeMaterial = PrivateClientCertificate(edgeCertificate.bundle).material.toOption.get
+
+  private val edgeIdentity = held(Some(edgeMaterial))
+
   private def queryParam(url: URL, key: String): Option[Chunk[String]] =
     url.queryParams.map.get(key)
 
@@ -124,7 +152,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         _ <- sso.exchangeAuthorizationCode(
           Code("c-1"),
           CodeVerifier("v-1"),
@@ -166,7 +194,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           ).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         credential = ClientCredential.PrivateKeyJwt(signing)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
@@ -190,7 +218,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented))
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
         _ <- sso.exchangeAuthorizationCode(
           Code("c-1"),
           CodeVerifier("v-1"),
@@ -217,7 +245,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
         _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:tls","expires_in":60}""").status(Status.Created))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented))
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
         url <- sso.authorizeUri(
           basePreset,
           certificateClient.copy(requirePushedAuthorizationRequests = true),
@@ -244,7 +272,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       )
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, plaintext, certificateFiles)
+        sso = SSOClient.Impl(client, plaintext, certificateFiles, noIdentity)
         error <- sso.exchangeAuthorizationCode(
           Code("c-1"),
           CodeVerifier("v-1"),
@@ -278,7 +306,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           test("routes a certificate client's token, push and userinfo calls to the listener, everyone else's to the plain url") {
             for
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, viaListener, certificateFiles)
+              sso = SSOClient.Impl(client, viaListener, certificateFiles, noIdentity)
             yield assertTrue(
               sso.endpoint(mutualTls, "token") == listener / "token",
               sso.endpoint(mutualTls, "par") == listener / "par",
@@ -293,47 +321,128 @@ object SSOClientSpec extends ZIOSpecDefault:
               presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
               _ <- captureRequest(seen, Response.json(tokenJson))
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
+              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented), noIdentity)
               _ <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls)
               _ <- sso.exchangeRefreshToken(RefreshToken("r-1"), clientId, mutualTls)
               _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Certificate(clientId, mutualTls))
               certificates <- presented.get
             yield assertTrue(certificates.size == 3)
           },
-          test("a key-bound token's /userinfo presents the certificate too, on the listener's url") {
+          // The listener, not the plain url: auth reads the edge's certificate off the handshake, and a
+          // plaintext connection has none to read.
+          test("a key-bound or caller-certificate-bound token's /userinfo presents the edge's own certificate to the listener") {
             for
-              seen <- Ref.make(Option.empty[Request])
               presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
-              _ <- captureRequest(seen, Response.json("""{"sub":"user-1"}"""))
+              _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
-              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key(clientId, mutualTls))
+              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented), edgeIdentity)
+              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key)
+              _ <- sso.userInfo(AccessToken("at-3"), SSOClient.TokenBinding.CallerCertificate)
               certificates <- presented.get
-              request <- seen.get.someOrFail(new RuntimeException("no request captured"))
-            yield assertTrue(
-              certificates.size == 1,
-              request.rawHeader("Versola-Edge-Assertion").isEmpty,
-            )
+            yield assertTrue(certificates == List(edgeMaterial, edgeMaterial))
           },
-          test("refuses a key-bound token whose client has no certificate to present, instead of a Bearer downgrade") {
+          test("an unbound token's /userinfo presents no certificate and keeps to the plain url") {
             for
               presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+              _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
-              error <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key(clientId, secretClient.credential)).flip
+              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented), edgeIdentity)
+              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Unbound)
               certificates <- presented.get
-            yield assertTrue(
-              error == SSOClient.KeyBoundTokenNeedsCertificate(clientId),
-              certificates.isEmpty,
-            )
+            yield assertTrue(certificates.isEmpty)
+          },
+          test("refuses a key-bound token's /userinfo while this edge holds no certificate") {
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, viaListener, certificateFiles, noIdentity)
+              error <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key).flip
+            yield assertTrue(error.isInstanceOf[SSOClient.EdgeCertificateUnavailable])
           },
           test("refuses a listener with no pins instead of trusting whatever answers") {
             val unpinned = viaListener.copy(native = Some(native.copy(trustedCertificates = Set.empty)))
             for
               client <- ZIO.service[Client]
-              sso = SSOClient.Impl(client, unpinned, certificateFiles)
+              sso = SSOClient.Impl(client, unpinned, certificateFiles, noIdentity)
               error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls).flip
             yield assertTrue(error == SSOClient.CredentialNeedsTrustedServer(clientId, listener / "token"))
+          },
+        )
+      }*,
+    ),
+    // What `versola configure vps` writes: `versola-internal-url` is auth's public https name, which no terminator
+    // pins, and the native back channel points at auth's own mutual-TLS listener. A certificate client (central-admin)
+    // used to be sent to the public name and refused for want of pins, so the admin console could not sign in.
+    suite("with an https internal url")(
+      {
+        val publicName = URL.decode("https://id.example.com").toOption.get
+        val listener = URL.decode("https://127.0.0.1:8083").toOption.get
+        val native = EdgeConfig.Native(
+          authMutualTlsUrl = listener,
+          trustedCertificates = Set("listener.pem"),
+          blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+        )
+        val mutualTls = ClientCredential.MutualTls(certificateMaterial)
+
+        Chunk(
+          test("with no pins for it and the native back channel configured, a certificate client goes to the listener") {
+            val unpinned = config.copy(
+              versolaInternalUrl = Some(publicName),
+              versolaInternalTrustedCertificates = Set.empty,
+              native = Some(native),
+            )
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, unpinned, certificateFiles, noIdentity)
+            yield assertTrue(
+              sso.endpoint(mutualTls, "par") == listener / "par",
+              sso.endpoint(mutualTls, "token") == listener / "token",
+              sso.endpoint(secretClient.credential, "par") == publicName / "par",
+            )
+          },
+          test("a terminator the operator pinned is kept for a client's certificate, the native back channel notwithstanding") {
+            val terminated = config.copy(
+              versolaInternalUrl = Some(publicName),
+              versolaInternalTrustedCertificates = Set("terminator.pem"),
+              native = Some(native),
+            )
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, terminated, certificateFiles, noIdentity)
+            yield assertTrue(sso.endpoint(mutualTls, "par") == publicName / "par")
+          },
+          // The mistake the first attempt at this made, for the edge's own certificate: a pinned `https` internal
+          // url is a terminator for a client's certificate, and no listener at all for the edge's, which auth
+          // recognises only by the handshake of its own listener.
+          test("the edge's own certificate takes the listener even where a terminator is pinned") {
+            val terminated = config.copy(
+              versolaInternalUrl = Some(publicName),
+              versolaInternalTrustedCertificates = Set("terminator.pem"),
+              native = Some(native),
+            )
+            for
+              presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+              _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, terminated, recordingCertificateFiles(presented), edgeIdentity)
+              _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
+              certificates <- presented.get
+            yield assertTrue(certificates == List(edgeMaterial))
+          },
+          test("the edge's own certificate is refused, not sent to the internal url, when no native block names a listener") {
+            val noNative = config.copy(versolaInternalUrl = Some(publicName), native = None)
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, noNative, certificateFiles, edgeIdentity)
+              error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.CallerCertificate).flip
+            yield assertTrue(error.isInstanceOf[SSOClient.EdgeCertificateUnavailable])
+          },
+          test("with no pins and no native back channel the call is still refused, not made unauthenticated") {
+            val bare = config.copy(versolaInternalUrl = Some(publicName), versolaInternalTrustedCertificates = Set.empty, native = None)
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, bare, certificateFiles, noIdentity)
+              error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls).flip
+            yield assertTrue(error == SSOClient.CredentialNeedsTrustedServer(clientId, publicName / "token"))
           },
         )
       }*,
@@ -345,7 +454,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       val untrusted = config.copy(versolaInternalTrustedCertificates = Set.empty)
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, untrusted, certificateFiles)
+        sso = SSOClient.Impl(client, untrusted, certificateFiles, noIdentity)
         error <- sso.exchangeAuthorizationCode(
           Code("c-1"),
           CodeVerifier("v-1"),
@@ -363,7 +472,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       // registration that predates it.
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.authorizeUri(
           basePreset,
           certificateClient.copy(requireSignedRequestObject = true),
@@ -382,7 +491,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
         _ <- captureRequest(seen, Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented))
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
         _ <- sso.userInfo(
           AccessToken("at-1"),
           SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificateMaterial)),
@@ -392,8 +501,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       yield assertTrue(
         certificates.map(_.leaf.getSubjectX500Principal.getName) ==
           List(certificate.certificate.getSubjectX500Principal.getName),
-        // The assertion exempts a DPoP-bound token from a proof it cannot produce. This token
-        // is bound to something it can produce, so there is nothing to be exempted from.
+        // Proved by the handshake and nothing else: no header is sent beyond the token.
         request.rawHeader("Versola-Edge-Assertion").isEmpty,
       )
     },
@@ -405,7 +513,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       )
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, plaintext, certificateFiles)
+        sso = SSOClient.Impl(client, plaintext, certificateFiles, noIdentity)
         error <- sso.userInfo(
           AccessToken("at-1"),
           SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificateMaterial)),
@@ -419,7 +527,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       // bound to a certificate nothing here can present.
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.userInfo(
           AccessToken("at-1"),
           SSOClient.TokenBinding.Certificate(clientId, secretClient.credential),
@@ -432,7 +540,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("signs the request and sends it as the `request` parameter") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(
           basePreset,
           keyClient.copy(requireSignedRequestObject = true),
@@ -465,7 +573,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("leaves the request plain for a client that did not register the requirement") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(basePreset, keyClient, "challenge", state)
       yield assertTrue(
         queryParam(url, RequestObject.Parameter).isEmpty,
@@ -475,7 +583,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("fails naming the client when it requires signing but edge holds only a secret") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requireSignedRequestObject = true),
@@ -494,7 +602,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:abc","expires_in":60}""").status(Status.Created))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requirePushedAuthorizationRequests = true),
@@ -522,7 +630,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:def","expires_in":60}""").status(Status.Created))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(
           basePreset,
           keyClient.copy(requireSignedRequestObject = true, requirePushedAuthorizationRequests = true),
@@ -560,7 +668,7 @@ object SSOClientSpec extends ZIOSpecDefault:
             .status(Status.BadRequest),
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requirePushedAuthorizationRequests = true),
@@ -579,7 +687,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams replace a same-named key in customParameters") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         preset = basePreset.copy(customParameters = Map("prompt" -> List("none")))
         url <- sso.authorizeUri(preset, secretClient, "challenge", state, Map("prompt" -> "login"))
       yield assertTrue(
@@ -589,7 +697,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams replace ui_locales from preset.uiLocales") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         preset = basePreset.copy(uiLocales = Some(List("en", "fr")))
         url <- sso.authorizeUri(preset, secretClient, "challenge", state, Map("ui_locales" -> "de"))
       yield assertTrue(
@@ -599,7 +707,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams are added when not present in preset") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(basePreset, secretClient, "challenge", state, Map("acr_values" -> "mfa"))
       yield assertTrue(
         queryParam(url, "acr_values") == Some(Chunk("mfa")),
@@ -608,14 +716,14 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("omits scope when the preset does not specify one") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         url <- sso.authorizeUri(basePreset.copy(scope = Set.empty), secretClient, "challenge", state)
       yield assertTrue(queryParam(url, "scope").isEmpty)
     },
     test("empty overrideParams preserves customParameters and uiLocales") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         preset = basePreset.copy(
           uiLocales = Some(List("en")),
           customParameters = Map("prompt" -> List("none")),
@@ -653,7 +761,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         result <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential)
       yield assertTrue(
         result.accessToken == AccessToken("at-1"),
@@ -669,7 +777,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         _ <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         form <- request.body.asURLEncodedForm
@@ -691,7 +799,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Response.json("""{"error":"invalid_request","error_description":"code expired"}""").status(Status.BadRequest),
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential).flip
       yield assertTrue(
         error.getMessage.nn.contains("400"),
@@ -703,7 +811,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_client"}""").status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential).flip
       yield assertTrue(
         error.getMessage.nn.contains("invalid_client"),
@@ -717,7 +825,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         result <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
       yield assertTrue(result.accessToken == AccessToken("at-1"))
     },
@@ -726,7 +834,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         form <- request.body.asURLEncodedForm
@@ -739,7 +847,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_grant"}""").status(Status.BadRequest))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential).flip
       yield assertTrue(error == SSOClient.InvalidGrant)
     },
@@ -747,7 +855,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_client"}""").status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
+        sso = SSOClient.Impl(client, config, certificateFiles, noIdentity)
         error <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
@@ -756,13 +864,24 @@ object SSOClientSpec extends ZIOSpecDefault:
     },
   ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging
 
+  /** An edge with the native back channel, which is where its own certificate is presented. */
+  private val withListener = config.copy(
+    native = Some(
+      EdgeConfig.Native(
+        authMutualTlsUrl = URL.decode("https://auth.internal:8083").toOption.get,
+        trustedCertificates = Set("listener.pem"),
+        blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+      ),
+    ),
+  )
+
   private val userInfoSuite = suite("SSOClient.userInfo")(
     test("returns the claims object on success") {
       for
         _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        claims <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        claims <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
       yield assertTrue(claims.get("sub").flatMap(_.asString) == Some("user-1"))
     },
     test("sends the access token as a bearer credential") {
@@ -772,8 +891,8 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(
         request.url.path.toString.endsWith("userinfo"),
@@ -783,40 +902,67 @@ object SSOClientSpec extends ZIOSpecDefault:
         },
       )
     },
-    test("sends no edge assertion: auth no longer reads one") {
+    test("sends no assertion or other header besides the token, the edge's certificate being the whole of its identity") {
       for
         seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
-        )
+        _ <- captureRequest(seen, Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(request.rawHeader("Versola-Edge-Assertion").isEmpty)
+    },
+    test("refuses a plaintext listener for a token whose holder only this edge verified") {
+      val plaintext = withListener.copy(
+        native = withListener.native.map(_.copy(authMutualTlsUrl = URL.decode("http://auth.internal:8083").toOption.get)),
+      )
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, plaintext, certificateFiles, edgeIdentity)
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.CallerCertificate).flip
+      yield assertTrue(error.isInstanceOf[SSOClient.EdgeCertificateUnavailable])
+    },
+    test("refuses a listener with no pins rather than presenting the edge's certificate to whatever answers") {
+      val unpinned = withListener.copy(native = withListener.native.map(_.copy(trustedCertificates = Set.empty)))
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, unpinned, certificateFiles, edgeIdentity)
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
+      yield assertTrue(error.isInstanceOf[SSOClient.EdgeCertificateUnavailable])
+    },
+    // Unbound tokens are the common case and auth accepts this call over `Bearer` as it is.
+    test("presents no certificate for a token that is not bound") {
+      for
+        presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+        _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, withListener, recordingCertificateFiles(presented), edgeIdentity)
+        _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound)
+        certificates <- presented.get
+      yield assertTrue(certificates.isEmpty)
     },
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(error.isInstanceOf[RuntimeException])
     },
     test("maps 401 to UserInfoUnauthorized") {
       for
         _ <- respondWith(Response.status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(error == SSOClient.UserInfoUnauthorized)
     },
     test("fails for any other error status") {
       for
         _ <- respondWith(Response.status(Status.InternalServerError))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, certificateFiles)
-        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Unbound).flip
+        sso = SSOClient.Impl(client, withListener, certificateFiles, edgeIdentity)
+        error <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
         error.asInstanceOf[RuntimeException].getMessage.nn.contains("500"),

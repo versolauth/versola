@@ -35,14 +35,21 @@ subjects:
   - kind: ServiceAccount
     name: {{ $full }}-central
     namespace: {{ .Release.Namespace }}
-{{- $issuerRef := include "versola.pki.issuerRef" . }}
-{{- if not .Values.pki.issuerRef.name }}
-# The "Versola Client CA": a root cert-manager creates and keeps, then signs everything below
-# from. Skipped when `pki.issuerRef` names an issuer the operator already runs.
+{{- $roles := list "server" "edge" "client" }}
+{{- $bootstrapped := list }}
+{{- range $roles }}
+{{- if not (include "versola.pki.operatorRef" (dict "root" $ "role" .)) }}
+{{- $bootstrapped = append $bootstrapped . }}
+{{- end }}
+{{- end }}
+{{- if $bootstrapped }}
+# The CA hierarchy: a root cert-manager creates and keeps, and below it one intermediate CA per role
+# (server, edge, client), each a ClusterIssuer. A role the operator gave an issuer of its own
+# (`pki.issuerRef`, `pki.issuerRefs`) is skipped, and the root with it when none is left.
 #
 # Cluster-scoped on purpose: a ClusterIssuer's CA Secret lives in cert-manager's own namespace,
 # which is also trust-manager's trust namespace -- the only place it reads Secret sources from.
-# That is what lets `trustBundle` below include this CA with no copying.
+# That is what lets the bundles below include the intermediates with no copying.
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -56,14 +63,14 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ $full }}-client-ca
+  name: {{ $full }}-root-ca
   namespace: {{ .Values.pki.trustNamespace }}
   labels:
     {{- include "versola.labels" . | nindent 4 }}
 spec:
   isCA: true
   commonName: {{ .Values.pki.ca.commonName | quote }}
-  secretName: {{ $full }}-client-ca
+  secretName: {{ $full }}-root-ca
   duration: {{ .Values.pki.ca.duration }}
   renewBefore: {{ .Values.pki.ca.renewBefore }}
   privateKey:
@@ -77,12 +84,48 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: {{ $full }}-client-ca
+  name: {{ $full }}-root-ca
   labels:
     {{- include "versola.labels" . | nindent 4 }}
 spec:
   ca:
-    secretName: {{ $full }}-client-ca
+    secretName: {{ $full }}-root-ca
+{{- range $role := $bootstrapped }}
+# The {{ $role }} CA. The secret is named for the issuer, so an installation that had a single
+# `<release>-client-ca` keeps that name: the client CA keeps its key and subject, so the
+# certificates it signed before still chain to it.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $full }}-{{ $role }}-ca
+  namespace: {{ $.Values.pki.trustNamespace }}
+  labels:
+    {{- include "versola.labels" $ | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ index $.Values.pki.intermediates.commonNames $role | quote }}
+  secretName: {{ $full }}-{{ $role }}-ca
+  duration: {{ $.Values.pki.intermediates.duration }}
+  renewBefore: {{ $.Values.pki.intermediates.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ $full }}-root-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ $full }}-{{ $role }}-ca
+  labels:
+    {{- include "versola.labels" $ | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ $full }}-{{ $role }}-ca
+{{- end }}
 {{- end }}
 # (2) auth's mutual-TLS listener certificate. A leaf, because edge pins it
 # (EdgeConfig.refuseCertificateAuthority). PKCS#8 because Netty reads no other key form.
@@ -100,6 +143,9 @@ spec:
     - {{ $full }}-auth
     - {{ $full }}-auth.{{ .Release.Namespace }}.svc
     - {{ $full }}-auth.{{ .Release.Namespace }}.svc.cluster.local
+    {{- with .Values.exposure.mtls.auth.host }}
+    - {{ . | quote }}
+    {{- end }}
     {{- range .Values.pki.authServer.dnsNames }}
     - {{ . }}
     {{- end }}
@@ -112,7 +158,63 @@ spec:
     encoding: PKCS8
     rotationPolicy: Always
   issuerRef:
-    {{- $issuerRef | nindent 4 }}
+    {{- include "versola.pki.issuerRef" (dict "root" $ "role" "server") | nindent 4 }}
+# (4) central's mutual-TLS listener certificate (#554), a leaf like auth's because edge pins it, and
+# the certificate an edge presents there. The URI name is what central checks against the edge the
+# token names; its subject is for people reading it.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $full }}-central-mtls
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "central" "context" $) | nindent 4 }}
+spec:
+  secretName: {{ include "versola.pki.centralServerSecret" . }}
+  commonName: {{ $full }}-central
+  dnsNames:
+    - {{ $full }}-central
+    - {{ $full }}-central.{{ .Release.Namespace }}.svc
+    - {{ $full }}-central.{{ .Release.Namespace }}.svc.cluster.local
+    {{- with .Values.exposure.mtls.central.host }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- range .Values.pki.centralServer.dnsNames }}
+    - {{ . }}
+    {{- end }}
+  usages: [digital signature, key encipherment, server auth]
+  duration: {{ .Values.pki.centralServer.duration }}
+  renewBefore: {{ .Values.pki.centralServer.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.pki.centralServer.privateKey.algorithm }}
+    size: {{ .Values.pki.centralServer.privateKey.size }}
+    encoding: PKCS8
+    rotationPolicy: Always
+  issuerRef:
+    {{- include "versola.pki.issuerRef" (dict "root" $ "role" "server") | nindent 4 }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $full }}-edge-central-client
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "edge" "context" $) | nindent 4 }}
+spec:
+  secretName: {{ include "versola.pki.edgeCentralSecret" . }}
+  commonName: {{ .Values.pki.edgeCentral.edgeId | quote }}
+  uris:
+    - {{ printf "urn:versola:edge:%s" .Values.pki.edgeCentral.edgeId | quote }}
+    - {{ printf "urn:versola:edge-group:%s" .Values.pki.edgeCentral.edgeGroup | quote }}
+  usages: [digital signature, key encipherment, client auth]
+  duration: {{ .Values.pki.edgeCentral.duration }}
+  renewBefore: {{ .Values.pki.edgeCentral.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.pki.edgeCentral.privateKey.algorithm }}
+    size: {{ .Values.pki.edgeCentral.privateKey.size }}
+    encoding: PKCS8
+    rotationPolicy: Always
+  issuerRef:
+    {{- include "versola.pki.issuerRef" (dict "root" $ "role" "edge") | nindent 4 }}
 # (3) one certificate per edge-fronted client, for `pki.certSync` to carry into central.
 {{- range .Values.pki.clients }}
 ---
@@ -142,12 +244,24 @@ spec:
     encoding: PKCS8
     rotationPolicy: Always
   issuerRef:
-    {{- $issuerRef | nindent 4 }}
+    {{- include "versola.pki.issuerRef" (dict "root" $ "role" "client") | nindent 4 }}
 {{- end }}
 {{- if .Values.pki.trustBundle.enabled }}
-# (1) the CA bundle auth validates client certificates against: trust-manager unions `sources`
-# into one ConfigMap, so during a CA rotation the outgoing and incoming CA are both in it until
-# every client has been reissued. Needs trust-manager installed.
+{{- /* A role's anchor is its intermediate CA certificate -- never the root, which would admit every role. */}}
+{{- $edgeOwn := include "versola.pki.operatorRef" (dict "root" $ "role" "edge") }}
+{{- $clientOwn := include "versola.pki.operatorRef" (dict "root" $ "role" "client") }}
+{{- if and $edgeOwn (not .Values.pki.trustBundle.edgeSources) }}
+{{- fail "the edge role's issuer is the operator's (pki.issuerRef / pki.issuerRefs.edge), so pki.trustBundle.edgeSources must name the Secret(s) holding its CA (in trust-manager's trust namespace)" }}
+{{- end }}
+{{- if and $clientOwn (not .Values.pki.trustBundle.sources) }}
+{{- fail "the client role's issuer is the operator's (pki.issuerRef / pki.issuerRefs.client), so pki.trustBundle.sources must name the Secret(s) holding its CA (in trust-manager's trust namespace)" }}
+{{- end }}
+# (1) the CA bundles the listeners validate certificates against; trust-manager unions `sources`
+# into one ConfigMap each, so during a CA rotation the outgoing and incoming CA are both in it until
+# everything it signed has been reissued. Needs trust-manager installed.
+#   <release>-client-ca: auth's handshake -- client and edge intermediates;
+#   <release>-edge-ca:   the edge intermediate alone -- central's handshake, and what auth requires
+#                        a certificate to chain to before it may carry an edge's name.
 ---
 apiVersion: trust.cert-manager.io/v1alpha1
 kind: Bundle
@@ -155,16 +269,64 @@ metadata:
   name: {{ include "versola.pki.trustBundle" . }}
 spec:
   sources:
-    {{- if not .Values.pki.issuerRef.name }}
+    {{- if not $clientOwn }}
     - secret:
         name: {{ $full }}-client-ca
         key: tls.crt
     {{- end }}
-    {{- $extra := .Values.pki.trustBundle.sources }}
-    {{- if and .Values.pki.issuerRef.name (not $extra) }}
-    {{- fail "pki.issuerRef is set, so pki.trustBundle.sources must name the Secret(s) holding that issuer's CA (in trust-manager's trust namespace)" }}
+    {{- if not $edgeOwn }}
+    - secret:
+        name: {{ $full }}-edge-ca
+        key: tls.crt
     {{- end }}
-    {{- with $extra }}
+    {{- with .Values.pki.trustBundle.sources }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.pki.trustBundle.edgeSources }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  target:
+    configMap:
+      key: ca-bundle.crt
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: {{ include "versola.pki.edgeTrustBundle" . }}
+spec:
+  sources:
+    {{- if not $edgeOwn }}
+    - secret:
+        name: {{ $full }}-edge-ca
+        key: tls.crt
+    {{- end }}
+    {{- with .Values.pki.trustBundle.edgeSources }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  target:
+    configMap:
+      key: ca-bundle.crt
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+# The client CA alone (`<release>-client-only-ca`): what auth's EST `cacerts` hands out. The bundle above holds the edge CA
+# too, which a bank must not be told to trust.
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: {{ include "versola.pki.clientOnlyTrustBundle" . }}
+spec:
+  sources:
+    {{- if not $clientOwn }}
+    - secret:
+        name: {{ $full }}-client-ca
+        key: tls.crt
+    {{- end }}
+    {{- with .Values.pki.trustBundle.sources }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
   target:

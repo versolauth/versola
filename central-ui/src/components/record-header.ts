@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { chipStyles, iconButtonStyles } from '../styles/components';
+import { chipStyles, iconButtonStyles, tagStyles } from '../styles/components';
 import { copyToClipboard } from '../utils/helpers';
 import { statusIcon } from './status-icon';
 
@@ -22,11 +22,15 @@ export class VersolaRecordHeader extends LitElement {
   @property({ type: String }) recordId = '';
   /** What the ID is called in the copy button's name: `Copy client ID`. */
   @property({ type: String }) idLabel = 'ID';
+  /** The ID is the title (a record that has no other name): the meta row then carries only the
+   *  copy button, so the ID is not printed twice, and the title is set in mono. */
+  @property({ type: Boolean }) idAsTitle = false;
   @property({ attribute: false }) meta: unknown = null;
 
   static styles = [
     theme,
     chipStyles,
+    tagStyles,
     iconButtonStyles,
     css`
       :host {
@@ -64,6 +68,22 @@ export class VersolaRecordHeader extends LitElement {
         border-radius: var(--radius-sm);
       }
 
+      /* The page's one primary action, when the record is its own editor (a form, a theme). */
+      .view-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: var(--spacing-md);
+      }
+
+      .view-head {
+        min-width: 0;
+      }
+
+      .view-actions {
+        flex: none;
+      }
+
       .view-title {
         margin: 0 0 var(--spacing-sm);
         font-size: var(--text-4xl);
@@ -78,6 +98,12 @@ export class VersolaRecordHeader extends LitElement {
         flex-wrap: wrap;
         gap: var(--spacing-sm);
         align-items: center;
+      }
+
+      .view-title.mono {
+        font-family: var(--font-mono);
+        letter-spacing: -0.01em;
+        overflow-wrap: anywhere;
       }
 
       .record-id {
@@ -110,16 +136,19 @@ export class VersolaRecordHeader extends LitElement {
               : html`<span aria-current="page">${crumb.label}</span>`}
           `)}
         </nav>` : ''}
+      <div class="view-top">
       <div class="view-head">
-        <h1 class="view-title">${this.heading}</h1>
+        <h1 class="view-title ${this.idAsTitle ? 'mono' : ''}">${this.heading}</h1>
         <div class="view-meta">
           ${this.recordId ? html`
-            <span class="record-id">${this.recordId}</span>
+            ${this.idAsTitle ? '' : html`<span class="record-id">${this.recordId}</span>`}
             <button type="button" class="icon-button" aria-label=${`Copy ${this.idLabel}`} title=${`Copy ${this.idLabel}`}
               @click=${() => copyToClipboard(this.recordId)}>${statusIcon('copy', 'icon')}</button>
           ` : ''}
           ${this.meta}
         </div>
+      </div>
+      <div class="view-actions"><slot name="actions"></slot></div>
       </div>
     `;
   }

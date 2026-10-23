@@ -32,7 +32,34 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
     val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate)
     CertificateSubject.pem("CERTIFICATE REQUEST", builder.build(signer).getEncoded)
 
+  /** A request for `subject` carrying its names in one `extensionRequest` attribute and a different SAN in a
+    * second: parsers disagree on which is read, so what `matches` checks may not be what a CA signs. */
+  private def withTwoExtensionRequests(subject: CertificateSubject): String =
+    import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
+    import org.bouncycastle.asn1.x509.{Extension, ExtensionsGenerator, GeneralName, GeneralNames}
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+    val pair = generator.generateKeyPair()
+    val builder = org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder(subject.principal, pair.getPublic)
+    def attribute(names: List[GeneralName]) =
+      val extensions = ExtensionsGenerator()
+      extensions.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
+      extensions.generate()
+    builder.addAttribute(
+      PKCSObjectIdentifiers.pkcs_9_at_extensionRequest,
+      attribute(subject.dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++ subject.uris.map(GeneralName(GeneralName.uniformResourceIdentifier, _))),
+    )
+    builder.addAttribute(
+      PKCSObjectIdentifiers.pkcs_9_at_extensionRequest,
+      attribute(List(GeneralName(GeneralName.uniformResourceIdentifier, "urn:versola:edge:edge-1"))),
+    )
+    val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate)
+    CertificateSubject.pem("CERTIFICATE REQUEST", builder.build(signer).getEncoded)
+
   def spec = suite("CertificateSubject")(
+    test("a request with two extensionRequest attributes is refused, whichever one a parser reads") {
+      assertTrue(CertificateSubject.matches(withTwoExtensionRequests(subject), subject).isLeft)
+    },
     test("a request generated for a subject matches exactly it") {
       for generated <- CertificateSubject.generate(subject)
       yield assertTrue(CertificateSubject.matches(generated.csrPem, subject) == Right(()))
@@ -76,5 +103,66 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
     },
     test("the decoded common name has no escaping") {
       assertTrue(CertificateSubject.commonNameOf(X500Principal("""CN=app\,blue,O=Versola""")) == Some("app,blue"))
+    },
+    test("describes: a certificate says exactly the subject, not another, not with a name more") {
+      val own = TestCertificates.generate(
+        subject = "CN=mobile-app,OU=tenant-a,O=Versola",
+        dnsName = Some("mobile-app.clients.versola.test"),
+        uri = Some("spiffe://versola/clients/mobile-app"),
+      )
+      val other = TestCertificates.generate(
+        subject = "CN=other,OU=tenant-a,O=Versola",
+        dnsName = Some("mobile-app.clients.versola.test"),
+        uri = Some("spiffe://versola/clients/mobile-app"),
+      )
+      val moreNames = TestCertificates.generate(
+        subject = "CN=mobile-app,OU=tenant-a,O=Versola",
+        dnsName = Some("mobile-app.clients.versola.test"),
+        uris = List("spiffe://versola/clients/mobile-app", "urn:versola:edge:x"),
+      )
+      assertTrue(subject.describes(own.certificate), !subject.describes(other.certificate), !subject.describes(moreNames.certificate))
+    },
+    test("describes: a subject with no names tolerates the common name as the one DNS name, only when asked, and nothing more") {
+      val bare = CertificateSubject("CN=mobile-app,OU=tenant-a,O=Versola", "mobile-app", Nil, Nil, Nil, Nil)
+      val withCn = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("mobile-app"))
+      val withOther = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("evil.example"))
+      val withUri = TestCertificates.generate(subject = "CN=mobile-app,OU=tenant-a,O=Versola", dnsName = Some("mobile-app"), uri = Some("urn:versola:edge:x"))
+      assertTrue(
+        !bare.describes(withCn.certificate),
+        bare.describes(withCn.certificate, tolerateCommonNameDns = true),
+        !bare.describes(withOther.certificate, tolerateCommonNameDns = true),
+        !bare.describes(withUri.certificate, tolerateCommonNameDns = true),
+        !subject.describes(withCn.certificate, tolerateCommonNameDns = true),
+      )
+    },
+    test("requestedKey accepts EC P-256 and RSA 2048, and refuses a weaker RSA key and another curve") {
+      def csrFor(algorithm: String, init: java.security.KeyPairGenerator => Unit): String =
+        val generator = java.security.KeyPairGenerator.getInstance(algorithm)
+        init(generator)
+        val pair = generator.generateKeyPair()
+        val signature = if algorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA"
+        val builder = org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder(X500Principal("CN=x"), pair.getPublic)
+        CertificateSubject.pem(
+          "CERTIFICATE REQUEST",
+          builder.build(org.bouncycastle.operator.jcajce.JcaContentSignerBuilder(signature).build(pair.getPrivate)).getEncoded,
+        )
+      val p256 = csrFor("EC", _.initialize(java.security.spec.ECGenParameterSpec("secp256r1")))
+      val p384 = csrFor("EC", _.initialize(java.security.spec.ECGenParameterSpec("secp384r1")))
+      val rsa2048 = csrFor("RSA", _.initialize(2048))
+      val rsa1024 = csrFor("RSA", _.initialize(1024))
+      assertTrue(
+        CertificateSubject.requestedKey(p256).isRight,
+        CertificateSubject.requestedKey(rsa2048).isRight,
+        CertificateSubject.requestedKey(p384).isLeft,
+        CertificateSubject.requestedKey(rsa1024).isLeft,
+        CertificateSubject.requestedKey("garbage").isLeft,
+      )
+    },
+    test("sameKey compares the key, not its encoding or its object") {
+      val a = TestCertificates.generate(algorithm = "EC").certificate.getPublicKey
+      val b = TestCertificates.generate(algorithm = "EC").certificate.getPublicKey
+      val rsa = TestCertificates.generate(algorithm = "RSA").certificate.getPublicKey
+      val reparsed = java.security.KeyFactory.getInstance("EC").generatePublic(java.security.spec.X509EncodedKeySpec(a.getEncoded))
+      assertTrue(CertificateSubject.sameKey(a, reparsed), !CertificateSubject.sameKey(a, b), !CertificateSubject.sameKey(a, rsa))
     },
   )

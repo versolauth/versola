@@ -31,7 +31,7 @@ object LocalCaIssuer:
     * does not refuse a certificate as not yet valid. */
   private val ClockSkew = 5.minutes
 
-  def make(config: ClientCertificateAuthorityConfig): Task[ClientCertificateIssuer] =
+  def make(config: ClientCertificateAuthorityConfig, key: String = "client-certificate-authority"): Task[ClientCertificateIssuer] =
     for
       certificatePem <- ZIO.attemptBlocking(Files.readString(Path.of(config.certificate)))
       privateKeyPem <- ZIO.attemptBlocking(Files.readString(Path.of(config.privateKey)))
@@ -43,7 +43,7 @@ object LocalCaIssuer:
         privateKeyPem,
         config.validityDays.getOrElse(ClientCertificateAuthority.DefaultValidityDays),
         now,
-      )).mapError(reason => IllegalArgumentException(s"client-certificate-authority: $reason"))
+      )).mapError(reason => IllegalArgumentException(s"$key: $reason"))
       certificate <- ZIO.fromEither(ClientCertificateAuthority.readCertificate(certificatePem)).mapError(IllegalArgumentException(_))
       key <- ZIO.fromEither(ClientCertificateAuthority.readPrivateKey(privateKeyPem)).mapError(IllegalArgumentException(_))
     yield new ClientCertificateIssuer:

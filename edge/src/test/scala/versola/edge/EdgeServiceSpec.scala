@@ -285,6 +285,33 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         authorizeCalls.head._5 == Map.empty[String, String],
       )
     },
+    test("remembers the page a login returns to, and only a path of the preset's own origin") {
+      def run(returnTo: Option[String]) =
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.withClients(Fixtures.client)
+          _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
+            case 1 => ZIO.succeed(Fixtures.codeVerifierBytes)
+            case _ => ZIO.succeed(Fixtures.stateBytes)
+          _ <- env.loginRepository.create.succeedsWith(())
+          _ <- env.ssoClient.authorizeUri.succeedsWith(Fixtures.authorizeUrl)
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          _ <- env.buildService(client, security).authorize(Fixtures.presetId, Map.empty, returnTo)
+        yield env.loginRepository.create.calls.head._1.returnTo
+      for
+        path <- run(Some("/resources/auth/settings"))
+        otherOrigin <- run(Some("https://evil.example/x"))
+        protocolRelative <- run(Some("//evil.example/x"))
+        none <- run(None)
+      yield assertTrue(
+        path == Some("/resources/auth/settings"),
+        otherOrigin.isEmpty,
+        protocolRelative.isEmpty,
+        none.isEmpty,
+      )
+    },
     test("fails with PresetNotFound when preset is missing from cache") {
       val env = new Env
       for
@@ -369,6 +396,29 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             List("error" -> "access_denied", "error_description" -> "User cancelled"),
           ),
           env.loginRepository.deleteByState.calls == List(Fixtures.state),
+        )
+      },
+      test("returns an OAuth error to the page that asked for the login, on the preset's origin") {
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+            returnTo = Some("/resources/auth/settings"),
+          )))
+          _ <- env.loginRepository.deleteByState.succeedsWith(())
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          redirectUrl <- env.buildService(client, security).completeError(
+            Fixtures.state,
+            "unmet_authentication_requirements",
+            None,
+            None,
+          )
+        yield assertTrue(
+          redirectUrl.encode == "https://app.example/resources/auth/settings?error=unmet_authentication_requirements",
         )
       },
       test("completeError fails with AuthConversationNotFound when the login record is absent") {

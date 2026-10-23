@@ -336,7 +336,7 @@ export class VersolaAuthorizationDetailsList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredTypes}
         .rowKey=${(type: AuthorizationDetailType) => type.type}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(type: AuthorizationDetailType) => `Actions for ${type.type}`}
         @row-select=${(e: CustomEvent<{ row: AuthorizationDetailType }>) => this.openView(e.detail.row)}

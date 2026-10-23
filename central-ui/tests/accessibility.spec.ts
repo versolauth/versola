@@ -1,7 +1,10 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
+import { ftPath, ftState } from './forms-themes-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { ordersApi, shopState } from './resources-fixtures';
+import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, userScopes } from './users-fixtures';
 
 /**
  * Automated accessibility scan (axe-core) of the admin console's list screens, in both themes.
@@ -39,6 +42,125 @@ for (const scheme of schemes) {
       ).toEqual([]);
     });
   }
+}
+
+const userState = {
+  users: [dana, quiet],
+  clients: { 'tenant-alpha': userClients },
+  roles: { 'tenant-alpha': [shopManager, shopUser, shopSupport] },
+  scopes: { 'tenant-alpha': userScopes },
+};
+
+for (const theme of themes) {
+  test(`a user's record, its editors and its dialogs have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    const base = `/?view=users&tenant=tenant-alpha&id=${danaId}`;
+
+    await loadAdminApp(page, { path: base, state: userState });
+    await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
+    await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(4);
+    expect(await scan()).toEqual([]);
+
+    // The record with nothing to show: no devices, no offline access, no passkeys.
+    await page.goto(`/?view=users&tenant=tenant-alpha&id=${quiet.id}`);
+    await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('No passkeys registered.');
+    expect(await scan()).toEqual([]);
+
+    // A record that cannot load its user.
+    await page.goto(`/?view=users&tenant=tenant-alpha&id=00000000-0000-0000-0000-00000000dead`);
+    await expect(page.getByRole('heading', { name: 'User not found' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    for (const edit of ['identifiers', 'roles', 'claims']) {
+      await page.goto(`${base}&edit=${edit}`);
+      await expect(page.getByRole('heading', { level: 1, name: `Edit ${edit}` })).toBeVisible();
+      expect(await scan()).toEqual([]);
+    }
+
+    await page.goto(base);
+    await page.getByRole('button', { name: 'Reset password…' }).click();
+    await expect(page.getByRole('dialog', { name: 'Reset password' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: 'Delete user Dana Reyes' }).click();
+    await expect(page.getByRole('dialog')).toContainText('back-channel logout');
+    expect(await scan()).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test(`a user's search results and create form have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    await loadAdminApp(page, { path: '/?view=users&tenant=tenant-alpha', state: userState });
+    await page.getByRole('searchbox', { name: 'Search users' }).fill('dana');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByRole('row').filter({ hasText: 'Dana Reyes' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('button', { name: '+ Create User' }).click();
+    await expect(page.getByRole('heading', { name: 'Create New User' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test(`a resource's list, record, editors and dialogs have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    const base = '/?view=resources&tenant=tenant-alpha';
+
+    await loadAdminApp(page, { path: base, state: shopState });
+    await expect(page.getByRole('button', { name: 'Open resource orders-api' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&id=orders-api`);
+    await expect(page.getByRole('table', { name: 'Endpoints of orders-api' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    // The record with a one-time secret on it, and one with nothing to show.
+    await page.getByRole('button', { name: 'Activate new secret' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Activate', exact: true }).click();
+    await page.getByRole('region', { name: 'Secret' }).getByRole('button', { name: 'Rotate secret' }).click();
+    await expect(page.locator('.secret-value')).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.goto(`${base}&id=loyalty-api`);
+    await expect(page.getByRole('region', { name: 'Endpoints' })).toContainText('No endpoints yet.');
+    expect(await scan()).toEqual([]);
+
+    for (const edit of ['general', 'audience']) {
+      await page.goto(`${base}&id=orders-api&edit=${edit}`);
+      await expect(page.getByRole('heading', { level: 1, name: `Edit ${edit}` })).toBeVisible();
+      expect(await scan()).toEqual([]);
+    }
+
+    await page.goto(`${base}&id=orders-api&edit=endpoints`);
+    await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund(?= |$)/ }).click();
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByLabel('Relative path').fill('bad path');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    await expect(page.getByRole('alert').first()).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund(?= |$)/ }).click();
+    await page.getByRole('button', { name: 'Allow expression info' }).click();
+    await expect(page.getByRole('tooltip')).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&new=1`);
+    await expect(page.getByRole('heading', { level: 1, name: 'Create resource' })).toBeVisible();
+    await page.getByRole('button', { name: 'Create resource', exact: true }).click();
+    await expect(page.getByText('A resource ID is required.')).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto(`${base}&id=${ordersApi.resourceId}`);
+    await page.getByRole('button', { name: 'Delete resource orders-api' }).click();
+    await expect(page.getByRole('dialog')).toContainText('Delete resource orders-api?');
+    expect(await scan()).toEqual([]);
+  });
 }
 
 for (const theme of themes) {
@@ -125,36 +247,103 @@ const themePresets = [
 for (const theme of themes) {
   test(`the themes page and the theme editor have no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
-    await loadAdminApp(page, {
-      path: '/?view=themes&tenant=tenant-alpha',
-      state: {
-        themePresets,
-        themes: [
-          { id: 'default', css: '', tenantId: null },
-          { id: 'brand', css: '', tenantId: null, tokens: { base: 'studio', overrides: { brand: '#112233' } } },
-        ],
-        forms: [{ id: 'access-denied', version: 1, active: true, style: '', jsSource: null, jsCompiled: 'document.getElementById("versola-form-root").innerHTML = "<h1>Access denied</h1>";', localizations: { en: {} }, properties: [] }],
-        formPreviews: [{ formId: 'access-denied', scenarios: [{ id: 'access-denied', title: { en: 'Access denied' }, step: { type: 'access-denied' } }] }],
-        locales: [{ code: 'en', name: 'English', active: true, isDefault: true }],
-      },
-    });
+    await loadAdminApp(page, { path: ftPath('themes'), state: ftState() });
     const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
 
-    await expect(page.getByRole('button', { name: 'Edit theme brand', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open theme shop-brand', exact: true })).toBeVisible();
     await clean();
 
-    await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
-    await expect(page.getByText('1 override on Studio')).toBeVisible();
+    await page.getByRole('button', { name: 'Open theme shop-brand', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'shop-brand' })).toBeVisible();
+    await expect(page.locator('versola-preview-pane iframe')).toHaveCount(1);
     await clean();
 
-    // With a background chosen: the card that is pressed and the badge with its Reset.
-    await page.getByRole('group', { name: 'Background style' }).getByRole('button', { name: 'Horizon' }).click();
-    await expect(page.getByText('2 overrides on Studio')).toBeVisible();
+    // With a background chosen: the card that is pressed, the badge with its Reset and the unsaved bar.
+    await page.getByRole('group', { name: 'Background style' }).getByRole('button', { name: 'Flat' }).click();
+    await expect(page.locator('.bar-text')).toContainText('Unsaved');
     await clean();
 
+    // The danger card, disabled with its reason.
+    await expect(page.getByRole('button', { name: 'Delete theme shop-brand' })).toBeDisabled();
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    // A theme stored with CSS only: the same editor, on the Versola base, with the Custom CSS card open.
+    await page.getByRole('button', { name: 'Open theme georgia-2024', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Advanced', exact: true }).getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
+    await clean();
+    // Custom CSS added to a theme that had none: the collapsed card opens.
+    await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Themes' }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await page.getByRole('button', { name: 'Open theme shop-brand', exact: true }).click();
+    await page.getByRole('button', { name: 'Add custom CSS' }).click();
+    await expect(page.getByRole('textbox', { name: 'Custom CSS' })).toBeVisible();
+    await clean();
+    // A token override row (colour picker and hex), then one with a length, then a refused value with its message.
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await expect(page.getByRole('combobox', { name: 'Token for row 1' })).toBeVisible();
+    await clean();
+    await page.getByRole('combobox', { name: 'Token for row 1' }).selectOption('--rs');
+    await clean();
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await page.getByRole('textbox', { name: '--page-light value' }).fill('url(x)');
+    await expect(page.getByRole('alert').filter({ hasText: 'Not allowed' })).toBeVisible();
+    await clean();
+    // A pair token: a light and a dark colour, each with a picker and a hex, and the "Same for both" toggle; then a shadow and a weight.
+    await page.getByRole('combobox', { name: 'Token for row 2' }).selectOption('--btn');
+    await expect(page.getByRole('textbox', { name: '--btn light value' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '--btn dark value' })).toBeVisible();
+    await clean();
+    await page.getByRole('checkbox', { name: '--btn: same for both schemes' }).check();
+    await clean();
+    await page.getByRole('button', { name: 'Add token' }).click();
+    await page.getByRole('combobox', { name: 'Token for row 3' }).selectOption('--shadow');
+    await page.getByRole('textbox', { name: '--shadow value' }).fill('0 0');
+    await expect(page.getByRole('alert').filter({ hasText: 'shadow layer' })).toBeVisible();
+    await clean();
+    await page.getByRole('combobox', { name: 'Token for row 3' }).selectOption('--heading-weight');
+    await clean();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: 'Discard' }).click();
+
+    await page.getByRole('button', { name: '+ Create theme' }).click();
+    await clean();
+  });
+
+  test(`the forms page and the form editor, tab by tab, have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: ftPath('forms'), state: ftState() });
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await expect(page.getByRole('button', { name: 'Open form credential', exact: true })).toBeVisible();
+    await clean();
+    await page.getByRole('group', { name: 'Filter forms' }).getByRole('button', { name: 'Missing translations' }).click();
+    await clean();
+
+    await page.getByRole('button', { name: 'Open form credential', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'credential' })).toBeVisible();
+    await expect(page.locator('versola-preview-pane iframe')).toHaveCount(1);
+    await clean();
+
+    // The JSON editor with problems listed under it (a language lacking a key and a spelled-differently placeholder), and the preview in another language.
+    const editor = page.getByRole('textbox', { name: 'Form texts, JSON' });
+    const shown = JSON.parse(await editor.inputValue());
+    delete shown.ru.passkey_button;
+    shown.kk.title = 'Кіру, {name}';
+    await editor.fill(JSON.stringify(shown, null, 2));
+    await expect(page.getByRole('list', { name: 'Problems in the texts' }).getByRole('listitem')).toHaveCount(2);
+    await page.getByLabel('Language', { exact: true }).selectOption('ru');
+    await clean();
+
+    for (const name of ['Style', 'Script', 'Versions']) {
+      await page.getByRole('tab', { name }).click();
+      await clean();
+    }
+
+    await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Forms' }).click();
+    await page.getByRole('button', { name: 'Discard' }).click(); // the texts were edited above
+    await page.getByRole('button', { name: '+ Create form' }).click();
     await clean();
   });
 }
@@ -166,8 +355,8 @@ for (const theme of themes) {
  */
 const panelSections = [
   { view: 'scopes', path: '/?view=scopes&tenant=tenant-alpha', open: /^Open scope (.* )?openid$/, title: 'OpenID scope', edit: 'Edit claims', editor: 'Edit claims', create: '+ Create Scope', creator: 'Create scope' },
-  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha\.read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
-  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions (1)', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
+  { view: 'permissions', path: '/?view=permissions&tenant=tenant-alpha', open: /^Open permission (.* )?alpha:read$/, title: 'Read alpha resources', edit: 'Edit endpoints', editor: 'Edit endpoints', create: '+ Create Permission', creator: 'Create permission' },
+  { view: 'roles', path: '/?view=roles&tenant=tenant-alpha', open: /^Open role (.* )?alpha-admin$/, title: 'Alpha admin', edit: 'Edit permissions', editor: 'Edit permissions', create: '+ Create Role', creator: 'Create role' },
   { view: 'tenants', path: '/?view=tenants&tenant=tenant-alpha', open: /^Open tenant (.* )?tenant-bravo$/, title: 'Bravo Workspace', edit: 'Edit edge', editor: 'Edit edge', create: '+ Create Tenant', creator: 'Create tenant' },
   { view: 'edges', path: '/?view=edges', open: 'Open edge edge-alpha', title: 'edge-alpha', edit: 'Edit dpop nonce', editor: 'Edit DPoP nonce', create: '+ Create Edge', creator: 'Register edge' },
 ] as const;

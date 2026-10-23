@@ -25,6 +25,24 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** How central issues the certificates of edges (`POST /edge/enroll`, `/edge/certificate/renew`), when that is not
+      * the CA that issues clients' certificates. Edge certificates are what central's mutual-TLS listener and auth
+      * trust for edges, clients' what auth trusts for clients, so the two are signed by different CAs. Same shape as
+      * [[clientCertificates]]. */
+    edgeCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** The same, for a deployment where central holds the edge CA's own key (certificate and PKCS#8 key files), the
+      * way `client-certificate-authority` does for clients. Central is the one authority on which edges exist --
+      * registering one and enrolling it are both its admin API -- so the key gives it no power it lacks. */
+    edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
+    /** How long the certificate chain of an edge may run, and what happens at the end of it. */
+    edgeIdentity: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
+    /** How long the certificate chain of a client that gets its certificate through EST may run, and what happens at the
+      * end of it. */
+    clientIdentity: CentralConfig.ClientIdentityConfig = CentralConfig.ClientIdentityConfig(),
+    /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
+      * central has no such listener and no edge can sync from it -- there is deliberately no
+      * fallback to the main listener, which is the admin console's and auth's. */
+    mutualTls: Option[CentralConfig.MutualTlsConfig] = None,
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
@@ -32,11 +50,65 @@ case class CentralConfig(
   def certificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
     clientCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
+  /** `edge-certificates` only where it names a CA, for the reason given on [[certificateBackends]]. */
+  def edgeCertificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
+    edgeCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
+
 object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")
   val defaultTenantId: TenantId = TenantId("default")
 
   case class AuthConfig(url: URL)
+
+  /** Central terminates mutual TLS itself for the edge surface, which is reachable from outside
+    * the cluster: the handshake demands a client certificate that chains to
+    * [[trustedCertificates]], and `authorizeEdge` then requires it to be the one registered for
+    * the edge the token names (`PUT /configuration/edges/certificate`).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8 -- the only form the TLS stack
+    *   here reads back.
+    * @param trustedCertificates PEM path to the anchors an edge's certificate is validated
+    *   against. Required, with no default: left unset, Netty falls back to the JDK's trust store
+    *   and every publicly-trusted CA would vouch for edges.
+    */
+  case class MutualTlsConfig(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+  )
+
+  /** An edge whose certificate central issues renews it by itself, over the mutual-TLS listener, for as long as it is
+    * registered. That is a chain, and it begins at the edge's enrollment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. On (the default), central extends the chain itself and says so in its log: an
+    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing the edges of **partner**
+    *   groups at `maxAge` until an operator extends the edge (the operator's own edges are always extended) (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
+    *   edge to be re-approved on a schedule. The edge is told the date long before, and so is the console.
+    */
+  case class EdgeIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = true,
+  )
+
+  /** A client whose certificate is obtained through EST (`estEnrollment`) renews it by itself, with the certificate it
+    * has, for as long as it is registered. That is a chain, and it begins at the client's enrolment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. Off (the default), central stops renewing the client's certificate at `maxAge`
+    *   until an operator extends it (`POST /configuration/clients/est/extend`) or enrols it again with a new token: every
+    *   client is re-approved on a schedule, which is what a partner relationship asks for. On, central extends the chain
+    *   itself and the client never stops for want of anyone approving it. The client is told the date in every answer, and
+    *   so is the console.
+    * @param renewWindow the part of a certificate's life, at its end, in which it may be renewed: a third by default, so
+    *   that a certificate is not renewed in its first days. A renewal outside it is refused (`403`).
+    */
+  case class ClientIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = false,
+      renewWindow: Double = 1.0 / 3,
+  )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge
     *                    presents an issued certificate to trusts: auth's

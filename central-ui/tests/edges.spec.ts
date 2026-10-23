@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { findRequest, loadAdminApp, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
 
@@ -28,11 +29,11 @@ test('lists edges with their tenants, key state and DPoP nonce, filters and sear
   await expect(bravo).toContainText('Key rotation');
   await expect(bravo).toContainText('Not required');
 
-  await page.getByRole('button', { name: /^Key rotation\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Key rotation', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
-  await page.getByRole('button', { name: /^No tenants\s?1$/ }).click();
+  await page.getByRole('button', { name: 'No tenants', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
-  await page.getByRole('button', { name: /^All\s?2$/ }).click();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
   await page.getByLabel('Search edges').fill('alpha');
   await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveCount(1);
 });
@@ -191,4 +192,116 @@ test('asks before the panel closes on a private key that is shown only once', as
   await page.keyboard.press('Escape');
   await confirm.getByRole('button', { name: 'Leave' }).click();
   await expect(panel(page, 'edge-new')).toHaveCount(0);
+});
+
+test.describe('overload protection', () => {
+  const policy = { inbound: { mode: 'enforce', maxInFlight: 512, adaptive: { maxLimit: 1536 } }, outbound: { mode: 'shadow' } };
+  const editPath = '/?view=edges&id=edge-alpha&edit=overload';
+  const alpha = { ...alphaEdge, overloadPolicy: policy };
+
+  test('the edge panel says what is set here and what comes from the deployment', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, overloadPolicy: policy }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await expect(card).toContainText('Deployment default');
+    await expect(card).toContainText('Nothing: every value comes from the deployment');
+    await expect(card.getByRole('button', { name: 'Reset to deployment defaults' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Overload protection' });
+    await expect(custom).toContainText('Enforce (set here)');
+    await expect(custom).toContainText('Shadow (set here)');
+    await expect(custom).toContainText('maxInFlight 512');
+  });
+
+  test('every field names what an empty value means', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await expect(dialog.getByText('HTTP_ADMISSION_MAX_IN_FLIGHT if the edge sets it, otherwise 256')).toBeVisible();
+    await expect(dialog.getByText('HTTP_CLIENT_GUARD_REQUEST_TIMEOUT if the edge sets it, otherwise 10000')).toBeVisible();
+    await expect(dialog.getByLabel('Highest limit')).toHaveAttribute('placeholder', '1024');
+    await expect(dialog.getByLabel('Tolerance')).toBeHidden();
+    await dialog.getByText('Advanced').click();
+    await expect(dialog.getByLabel('Tolerance')).toBeVisible();
+  });
+
+  test('saves only the fields that were set', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByRole('group', { name: 'Mode' }).first().getByRole('button', { name: 'Enforce' }).click();
+    await dialog.getByLabel('Highest limit').fill('1536');
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+
+    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/overload');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({ inbound: { mode: 'enforce', adaptive: { maxLimit: 1536 } } });
+    await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByLabel('Starting limit').fill('0');
+    await expect(dialog.getByText('inbound.maxInFlight must be between 1 and 100000')).toBeVisible();
+    await expect(dialog.getByLabel('Starting limit')).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByLabel('Start share').fill('0.9');
+    await dialog.getByLabel('Continuation share').fill('0.5');
+    await expect(dialog.getByText(/inbound.startShare must not exceed inbound.continuationShare/)).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+    await expect(dialog.getByLabel('Starting limit')).toBeFocused();
+    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+
+    await dialog.getByLabel('Starting limit').fill('8');
+    await expect(dialog.getByText('The limit starts at 16, the lowest limit, not at 8.')).toBeVisible();
+  });
+
+  test('shows what central refuses and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], overloadRejection: 'inbound.adaptive.maxLimit must be between 1 and 100000' } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'must be between 1 and 100000' })).toBeVisible();
+    await expect(dialog.getByLabel('Starting limit')).toHaveValue('512');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], overloadDelayMs: 600 } });
+    const dialog = panel(page, 'Edit overload protection');
+    const save = dialog.getByRole('button', { name: 'Save overload protection' });
+    await save.dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByLabel('Starting limit')).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
+    expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toHaveLength(1);
+  });
+
+  test('Reset to deployment defaults sends {} after a confirmation', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await card.getByRole('button', { name: 'Reset to deployment defaults' }).click();
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/overload')).body).toEqual({});
+    await expect(card).toContainText('Nothing: every value comes from the deployment');
+    await expect(panel(page, 'edge-alpha').getByText('returned to the deployment defaults')).toBeVisible();
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit overload protection');
+      await dialog.getByLabel('Starting limit').fill('0');
+      await dialog.getByText('Advanced').click();
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await expect(card).toContainText('Enforce (set here)');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
 });

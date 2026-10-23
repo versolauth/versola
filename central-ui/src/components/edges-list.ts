@@ -2,14 +2,19 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
-import type { Edge, Tenant } from '../types';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
+import type { Edge, OverloadPolicy, Tenant } from '../types';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeDpopNonce, setEdgeOverloadPolicy } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateEdgeId } from '../utils/validators';
+import {
+  draftFromPolicy, emptyDraft, isEmptyPolicy, modeLabel, policyFromDraft, setSummary, validateDraft, type OverloadDraft,
+} from '../utils/overload-policy';
+import type { VersolaOverloadPolicyEditor } from './overload-policy-editor';
 import { statusIcon } from './status-icon';
+import { valueChips } from './value-chips';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
 import './danger-card';
@@ -18,6 +23,7 @@ import './empty-state';
 import './error-card';
 import './filter-bar';
 import './loading-cards';
+import './overload-policy-editor';
 import './record-card';
 import './record-header';
 import './side-panel';
@@ -48,10 +54,14 @@ export class VersolaEdgesList extends LitElement {
   @state() private isWorking = false;
   @state() private draftId = '';
   @state() private draftDpop = true;
+  @state() private draftOverload: OverloadDraft = emptyDraft();
+  /** What the last save or reset said, shown on that edge's panel until it is left. */
+  @state() private overloadNotice: { edgeId: string; text: string } | null = null;
   @state() private formError = '';
   @state() private isSaving = false;
   @state() private submitted = false;
   @query('versola-data-table') private table?: VersolaDataTable<Edge>;
+  @query('versola-overload-policy-editor') private overloadEditor?: VersolaOverloadPolicyEditor;
   private draftKey = '';
 
   static styles = [
@@ -203,6 +213,10 @@ export class VersolaEdgesList extends LitElement {
         outline-offset: 2px;
       }
 
+      .footer-reset {
+        margin-right: auto;
+      }
+
       .explain {
         display: grid;
         gap: 0.5rem;
@@ -246,6 +260,7 @@ export class VersolaEdgesList extends LitElement {
         this.draftKey = draftKey;
         if (mode !== 'view') this.resetDraft();
       }
+      if (changed.has('route') && this.overloadNotice && this.route.id !== this.overloadNotice.edgeId) this.overloadNotice = null;
       // The key is for the edge it was issued to; leaving that edge's panel is the one chance gone.
       const previous = changed.get('route') as RecordRoute | undefined;
       if (this.generatedKey && previous?.id === this.generatedKey.edgeId && this.route.id !== this.generatedKey.edgeId) this.dismissKey();
@@ -275,7 +290,12 @@ export class VersolaEdgesList extends LitElement {
   }
 
   private get editorMode(): 'view' | 'edit' | 'create' {
-    return this.route.create ? 'create' : this.route.edit === 'dpop' && this.openEdge ? 'edit' : 'view';
+    return this.route.create ? 'create' : this.editTarget ? 'edit' : 'view';
+  }
+
+  /** Which group of the open edge is being edited, if any. */
+  private get editTarget(): 'dpop' | 'overload' | null {
+    return this.openEdge && (this.route.edit === 'dpop' || this.route.edit === 'overload') ? this.route.edit : null;
   }
 
   /** The private key is shown once: leaving its edge asks first. */
@@ -302,14 +322,15 @@ export class VersolaEdgesList extends LitElement {
     if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
   }
 
-  private openEditor() {
-    dispatchRecordRoute(this, { edit: 'dpop', create: false });
+  private openEditor(target: 'dpop' | 'overload' = 'dpop') {
+    dispatchRecordRoute(this, { edit: target, create: false });
   }
 
   private draftBaseline = '';
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftId, this.draftDpop]);
+    // The overload draft is compared by what it would send, so `0.50` for `0.5` is not a change.
+    return JSON.stringify([this.draftId, this.draftDpop, policyFromDraft(this.draftOverload)]);
   }
 
   /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
@@ -327,6 +348,7 @@ export class VersolaEdgesList extends LitElement {
   private resetDraft() {
     this.draftId = '';
     this.draftDpop = this.openEdge?.requireDpopNonce ?? true;
+    this.draftOverload = draftFromPolicy(this.openEdge?.overloadPolicy);
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
@@ -359,6 +381,17 @@ export class VersolaEdgesList extends LitElement {
         this.generatedKey = { edgeId: id, keyId: key.keyId, privateKey: key.privateKey, action: 'created' };
         this.copyFeedback = '';
         dispatchRecordRoute(this, { id, edit: null, create: false });
+      } else if (this.editTarget === 'overload') {
+        const edge = this.openEdge!;
+        if (Object.keys(validateDraft(this.draftOverload)).length > 0) {
+          this.isSaving = false;
+          this.overloadEditor?.focusFirstError();
+          return;
+        }
+        const policy = policyFromDraft(this.draftOverload);
+        await setEdgeOverloadPolicy(edge.id, policy);
+        this.applyOverloadPolicy(edge.id, policy);
+        dispatchRecordRoute(this, { edit: null, create: false });
       } else {
         const edge = this.openEdge!;
         await setEdgeDpopNonce(edge.id, this.draftDpop);
@@ -367,6 +400,50 @@ export class VersolaEdgesList extends LitElement {
       }
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save edge';
+    } finally {
+      this.isSaving = false;
+    }
+  }
+
+  private applyOverloadPolicy(edgeId: string, policy: OverloadPolicy) {
+    const empty = isEmptyPolicy(policy);
+    this.edges = this.edges.map(candidate => {
+      if (candidate.id !== edgeId) return candidate;
+      const { overloadPolicy: _previous, ...rest } = candidate;
+      return empty ? rest : { ...rest, overloadPolicy: policy };
+    });
+    this.overloadNotice = {
+      edgeId,
+      text: empty
+        ? 'Overload protection returned to the deployment defaults. The edge applies it on its next configuration sync.'
+        : 'Overload protection saved. The edge applies it on its next configuration sync.',
+    };
+  }
+
+  /** Removes the policy: the edge goes back to the values of its own deployment. */
+  private async handleResetOverload(edge: Edge) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Reset to deployment defaults',
+      messagePrefix: 'Remove the overload policy of edge ',
+      messageSubject: edge.id,
+      messageSuffix: '? Every field goes back to what the edge starts with: its HTTP_ADMISSION_* and HTTP_CLIENT_GUARD_* environment values, otherwise the built-in defaults.',
+      confirmLabel: 'Reset',
+    });
+    if (!confirmed) return;
+    if (this.isSaving) return;
+    this.isSaving = true;
+    this.formError = '';
+    this.errorMessage = '';
+    try {
+      await setEdgeOverloadPolicy(edge.id, {});
+      this.applyOverloadPolicy(edge.id, {});
+      this.draftOverload = emptyDraft();
+      this.draftBaseline = this.draftSnapshot;
+      if (this.editTarget === 'overload') dispatchRecordRoute(this, { edit: null, create: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reset overload protection';
+      if (this.editTarget === 'overload') this.formError = message;
+      else this.errorMessage = message;
     } finally {
       this.isSaving = false;
     }
@@ -465,10 +542,6 @@ export class VersolaEdgesList extends LitElement {
     return this.edges.filter(edge => this.matchesFilter(edge) && (!query || edge.id.toLowerCase().includes(query)));
   }
 
-  private count(filter: EdgeFilter): number {
-    return this.edges.filter(edge => this.matchesFilter(edge, filter)).length;
-  }
-
   private keyChip(edge: Edge) {
     return edge.hasOldKey
       ? html`<span class="chip warn">Key rotation</span>`
@@ -486,7 +559,7 @@ export class VersolaEdgesList extends LitElement {
         <input class="search-input" type="search" aria-label="Search edges" placeholder="Search edges by ID"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter edges"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as EdgeFilter}></versola-filter-bar>
       </div>
@@ -500,10 +573,7 @@ export class VersolaEdgesList extends LitElement {
           <span class="row-title">${edge.id}</span>
         </button>` },
       ...(this.tenants.length ? [{ id: 'tenants', label: 'Tenants', cell: (edge: Edge) => {
-        const linked = this.linkedTenants(edge);
-        return linked.length
-          ? html`<div class="chips"><span>${linked.length}</span>${linked.slice(0, 3).map(tenant => html`<span class="chip">${tenant.id}</span>`)}${linked.length > 3 ? html`<span class="muted">+${linked.length - 3}</span>` : ''}</div>`
-          : html`<span class="muted">0</span>`;
+        return valueChips(this.linkedTenants(edge).map(tenant => tenant.id), { empty: 'None' });
       } }] : []),
       { id: 'key', label: 'Key', cell: edge => html`<div class="chips">${this.keyChip(edge)}</div>` },
       { id: 'dpop', label: 'DPoP nonce', class: 'muted', cell: edge => edge.requireDpopNonce ? 'Required' : 'Not required' },
@@ -518,7 +588,7 @@ export class VersolaEdgesList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredEdges}
         .rowKey=${(edge: Edge) => edge.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(edge: Edge) => `Actions for ${edge.id}`}
         @row-select=${(e: CustomEvent<{ row: Edge }>) => this.openView(e.detail.row)}
@@ -547,6 +617,16 @@ export class VersolaEdgesList extends LitElement {
       <versola-record-card heading="DPoP nonce" subheading="RFC 9449 section 9 on the calls this edge proxies." ?editable=${this.canManage} .body=${html`
         ${this.row('Proxied calls', edge.requireDpopNonce ? 'Required on every proxied call' : 'Not required')}
       `} @edit=${() => this.openEditor()}></versola-record-card>
+
+      <versola-record-card heading="Overload protection" subheading="What this edge does when it is asked for more than it can do. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
+        ${this.row('Inbound', modeLabel(edge.overloadPolicy?.inbound?.mode))}
+        ${this.row('Outbound', modeLabel(edge.overloadPolicy?.outbound?.mode))}
+        ${this.row('Set here', valueChips(setSummary(edge.overloadPolicy), { empty: 'Nothing: every value comes from the deployment' }))}
+        ${this.canManage && !isEmptyPolicy(edge.overloadPolicy) ? html`
+          <versola-record-row .value=${html`<div class="key-actions">
+            <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isSaving} @click=${() => this.handleResetOverload(edge)}>Reset to deployment defaults</button>
+          </div>`}></versola-record-row>` : ''}
+      `} @edit=${() => this.openEditor('overload')}></versola-record-card>
 
       <versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
         ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
@@ -582,6 +662,12 @@ export class VersolaEdgesList extends LitElement {
               <button type="button" class="btn btn-secondary btn-sm" @click=${this.dismissKey}>I've saved it</button>
               ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
             </div>
+          </div>
+        </div>` : ''}
+      ${this.overloadNotice?.edgeId === edge.id ? html`
+        <div class="banner ok" role="status">
+          <div class="banner-text">
+            <div class="banner-title">${statusIcon('check')}${this.overloadNotice.text}</div>
           </div>
         </div>` : ''}
       ${edge.hasOldKey ? html`
@@ -634,6 +720,9 @@ export class VersolaEdgesList extends LitElement {
                 : html`<div class="hint" id="edge-id-hint">Registered as <span class="mono">edge-${this.draftId.trim() || '…'}</span>. Lowercase letters, digits and dashes.</div>`}
             </div>
           </div>
+        ` : this.editTarget === 'overload' ? html`
+          <versola-overload-policy-editor .draft=${this.draftOverload} ?disabled=${this.isSaving}
+            @draft-change=${(e: CustomEvent<{ draft: OverloadDraft }>) => this.draftOverload = e.detail.draft}></versola-overload-policy-editor>
         ` : html`
           <div class="editor-box">
             <h3>DPoP nonce</h3>
@@ -657,10 +746,11 @@ export class VersolaEdgesList extends LitElement {
   private renderPanel(edge: Edge | null) {
     const mode = this.editorMode;
     if (mode === 'view' && !edge) return '';
-    const heading = mode === 'create' ? 'Register edge' : mode === 'edit' ? 'Edit DPoP nonce' : edge!.id;
-    const submitLabel = mode === 'create' ? 'Register edge' : 'Save DPoP nonce';
+    const overload = this.editTarget === 'overload';
+    const heading = mode === 'create' ? 'Register edge' : mode === 'edit' ? (overload ? 'Edit overload protection' : 'Edit DPoP nonce') : edge!.id;
+    const submitLabel = mode === 'create' ? 'Register edge' : overload ? 'Save overload protection' : 'Save DPoP nonce';
     return html`
-      <versola-side-panel kind="Edge" .heading=${heading} .recordId=${edge?.id ?? ''} idLabel="edge ID" .mode=${mode}
+      <versola-side-panel kind="Edge" .heading=${heading} .recordId=${edge?.id ?? ''} idLabel="edge ID" .mode=${mode} ?wide=${overload}
         .parentLabel=${edge?.id ?? ''} .subtitle=${mode === 'create' ? 'The ID is fixed once registered.' : ''}
         .meta=${edge && mode === 'view' ? this.renderMeta(edge) : null}
         @close=${() => mode === 'view' ? this.closePanel() : this.cancelEditor()}
@@ -671,6 +761,7 @@ export class VersolaEdgesList extends LitElement {
         </div>
         ${mode !== 'view' ? html`
           <div slot="footer">
+            ${overload && edge ? html`<button type="button" class="btn btn-secondary footer-reset" ?disabled=${this.isSaving || isEmptyPolicy(edge.overloadPolicy)} @click=${() => this.handleResetOverload(edge)}>Reset to deployment defaults</button>` : ''}
             <button type="button" class="btn btn-secondary" @click=${() => this.cancelEditor()} ?disabled=${this.isSaving}>Cancel</button>
             <button type="submit" form="edge-editor" class="btn btn-primary" ?disabled=${this.isSaving}>${this.isSaving ? 'Saving…' : submitLabel}</button>
           </div>` : ''}

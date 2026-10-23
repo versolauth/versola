@@ -1,23 +1,20 @@
 package versola.central.configuration.resources
 
-import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{
   CreateResourceRequest,
   CreateResourceResponse,
   GetAllResourcesResponse,
   GetResourcesRegistryResponse,
-  GetResourcesSyncResponse,
   ResourceEndpointResponse,
-  ResourceEndpointSyncResponse,
   ResourceRegistryEntry,
   ResourceResponse,
-  ResourceSyncResponse,
   RotateResourceSecretResponse,
   UpdateResourceRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Controller, Unauthorized}
+import versola.util.http.Controller
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -33,7 +30,6 @@ object ResourceController extends Controller:
     rotateSecretEndpoint,
     deletePreviousSecretEndpoint,
     deleteResourceRoute,
-    syncResourcesEndpoint,
     resourcesRegistryEndpoint,
   )
 
@@ -107,28 +103,13 @@ object ResourceController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
-  val syncResourcesEndpoint =
-    Method.GET / "configuration" / "resources" / "sync" -> handler { (request: Request) =>
-      for
-        service <- ZIO.service[ResourceService]
-        edgeId <- authorizeInternal(request)
-        resources <- service.getResourcesForSync(edgeId)
-        encryptedResources <- ZIO.foreach(resources)(toResourceSyncResponse(_, edgeId))
-        response = GetResourcesSyncResponse(encryptedResources)
-      yield Response.json(response.toJson)
-    }
-
-  private def transportEncryption(edgeId: Option[EdgeId])(secret: Secret) =
+  /** Under the shared transport secret: only auth reads the registry. An edge is served its
+    * resources, encrypted to its own key, by `EdgeSyncController` (#554). */
+  private def transportEncryption(secret: Secret) =
     for
       centralConfig <- ZIO.service[CentralConfig]
       securityService <- ZIO.service[SecurityService]
-      edgeService <- ZIO.service[EdgeService]
-      encrypted <- edgeId match
-        case Some(id) =>
-          edgeService.find(id).someOrFail(Unauthorized).flatMap: edge =>
-            securityService.encryptRsa(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
-        case None =>
-          securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
+      encrypted <- securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
     yield encrypted
 
   /** Hard-coded resourceId of the resource that proxies the account page back to auth. */
@@ -150,8 +131,8 @@ object ResourceController extends Controller:
         // Both halves of a rotation go to auth, which accepts either: edge stays on the
         // previous secret until it is removed, and the two refresh their caches at their
         // own pace (see GetResourcesRegistryResponse.authResourcePreviousSecret).
-        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption(None))
-        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption(None))
+        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption)
+        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption)
         response = GetResourcesRegistryResponse(entries, authResourceSecret, authResourcePreviousSecret)
       yield Response.json(response.toJson)
     }
@@ -186,31 +167,3 @@ object ResourceController extends Controller:
       audience = record.audience,
       internal = record.isInternal,
     )
-
-  private def toResourceSyncResponse(
-      record: ResourceRecord,
-      edgeId: Option[EdgeId],
-  ) =
-    // Keep Edge on the old secret until the previous secret is explicitly removed.
-    val effectiveSecret = record.previousSecret.orElse(record.secret)
-    ZIO.foreach(effectiveSecret)(transportEncryption(edgeId)).map { encryptedSecret =>
-      ResourceSyncResponse(
-        resourceId = record.resourceId,
-        tenantId = record.tenantId,
-        resource = record.resource,
-        endpoints = record.endpoints.map { endpoint =>
-          ResourceEndpointSyncResponse(
-            id = endpoint.id,
-            method = endpoint.method,
-            path = endpoint.path,
-            fetchUserInfo = endpoint.fetchUserInfo,
-            allow = endpoint.allowExpression,
-            inject = endpoint.inject,
-            stepUpCondition = endpoint.stepUpCondition,
-            stepUpAcr = endpoint.stepUpAcr,
-            maxAge = endpoint.maxAge,
-          )
-        },
-        secret = encryptedSecret,
-      )
-    }

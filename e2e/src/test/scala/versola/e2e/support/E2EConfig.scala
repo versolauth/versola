@@ -51,6 +51,17 @@ final case class E2EConfig(
     authEnvConf: String,
     edgeLauncher: String,
     edgeEnvConf: String,
+    /** Central's own mutual-TLS listener (`MPORT`), the only place the edge surface (under `/edge`) is served
+      * (#554), and central's own leaf, which is what a client pins it by. Defaults match
+      * `scripts/gen-env.scala`'s `local` target (`central/dev/mtls`). */
+    centralMutualTlsUrl: String = "https://localhost:9011",
+    centralMutualTlsServerCertificate: String = "../central/dev/mtls/server.crt",
+    /** Edge's own mutual-TLS listener (`MPORT`, default 8083), which serves `/resources` to callers whose
+      * token is bound to their own certificate, and the CA that signed its certificate -- what a caller
+      * authenticates the listener by. Defaults match `scripts/gen-env.scala`'s `local` target
+      * (`edge/dev/mtls`). */
+    edgeMutualTlsUrl: String = "https://localhost:8083",
+    edgeMutualTlsTrustedCertificates: String = "../edge/dev/mtls/ca.crt",
 )
 
 object E2EConfig:
@@ -94,6 +105,10 @@ object E2EConfig:
       authEnvConf <- env("AUTH_ENV_CONF", "../auth/dev/env.conf")
       edgeLauncher <- env("EDGE_LAUNCHER", "../edge/implementations/postgres/target/universal/stage/bin/edge-postgres-impl")
       edgeEnvConf <- env("EDGE_ENV_CONF", "../edge/dev/env.conf")
+      centralMutualTlsUrl <- env("CENTRAL_MTLS_URL", "https://localhost:9011")
+      centralMutualTlsServerCertificate <- env("CENTRAL_MTLS_SERVER_CERT", "../central/dev/mtls/server.crt")
+      edgeMutualTlsUrl <- env("EDGE_MTLS_URL", "https://localhost:8083")
+      edgeMutualTlsTrustedCertificates <- env("EDGE_MTLS_CA", "../edge/dev/mtls/ca.crt")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -120,6 +135,10 @@ object E2EConfig:
       authEnvConf,
       edgeLauncher,
       edgeEnvConf,
+      centralMutualTlsUrl,
+      centralMutualTlsServerCertificate,
+      edgeMutualTlsUrl,
+      edgeMutualTlsTrustedCertificates,
     )
 
   private def env(name: String, default: String): Task[String] =

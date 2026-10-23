@@ -12,3 +12,6 @@ object Acr:
 
   /** Satisfied by a passkey factor. */
   val PasskeyLevel = "passkey-level"
+
+  /** Defined by the server itself, not in the vocabulary: the strongest factor the user has. */
+  val Sensitive = "sensitive"

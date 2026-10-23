@@ -80,7 +80,7 @@ conf_placeholders() {
   # secret: the chart sets it from its own issuer (see gen-env.scala's clientCertificatesBlock),
   # so it is neither generated nor in the shared Secret.
   { grep -v '^[[:space:]]*#' "$1" | grep -o '\${[A-Z][A-Z0-9_]*}' || true; } | tr -d '${}' | sort -u \
-    | { grep -vx 'CLIENT_CERT_ISSUER_NAME' || true; }
+    | { grep -vxe 'CLIENT_CERT_ISSUER_NAME' -e 'EDGE_CERT_ISSUER_NAME' || true; }
 }
 
 # Prints the difference of two sorted key lists as `<what>: <keys>`; fails when there is one.

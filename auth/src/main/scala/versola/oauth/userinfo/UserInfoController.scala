@@ -4,11 +4,12 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithSecret, ScopeToken}
-import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
+import versola.oauth.mtls.EdgeCertificateTrust
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, Dpop, JWT}
@@ -20,6 +21,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.util.Date
 import scala.jdk.CollectionConverters.*
 
@@ -35,7 +37,7 @@ import scala.jdk.CollectionConverters.*
  * Response: JSON object with user claims
  */
 object UserInfoController extends Controller:
-  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService &
+  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeCertificateTrust &
     OAuthConfigurationService &
     ClientAuthentication
 
@@ -76,8 +78,14 @@ object UserInfoController extends Controller:
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setUserId(userId.toString)
 
-        _ <- checkDpop(request, tokenString, token, scheme, config)
-        _ <- checkCertificateBinding(request, token)
+        trustedEdge <- trustedEdgeOf(request, token.clientId)
+        _ <- trustedEdge match
+          // Edge already verified the holder at its own boundary (see `trustedEdgeOf`): the
+          // two checks below are the holder's to pass, and this call is not the holder's.
+          case Some(edgeId) =>
+            Observability.setRouteLabel("trusted_edge", edgeId) *> refuseBoundToBoth(token)
+          case None =>
+            checkDpop(request, tokenString, token, scheme, config) *> checkCertificateBinding(request, token)
 
         _ <- ZIO.fail(UserInfoError.InsufficientScope)
           .unless(token.scope.contains(ScopeToken.OpenId))
@@ -193,11 +201,42 @@ object UserInfoController extends Controller:
           (token.stringValue, AuthScheme.Dpop)
     .orElseFail(UserInfoError.Unauthorized)
 
+  /** The edge this call comes from, when it comes from one auth trusts for this token.
+    *
+    * Only the certificate of the TLS session of auth's own mutual-TLS listener counts -- never one
+    * a proxy forwarded in a header, which is an assertion by whatever spoke HTTP to this process --
+    * and only when it names an edge central still knows, signed by the issuer configured for edges
+    * (`EdgeCertificateTrust`), **and** that edge is assigned to the tenant of the token's client: a
+    * genuine edge may not vouch for another tenant's tokens. Anything else is not an edge for this
+    * call, and the request is judged as it always was, as a client's.
+    */
+  private def trustedEdgeOf(
+      request: Request,
+      clientId: ClientId,
+  ): ZIO[EdgeCertificateTrust & OAuthConfigurationService, Nothing, Option[String]] =
+    request.remoteCertificate match
+      case Some(certificate: X509Certificate) =>
+        ZIO.serviceWithZIO[EdgeCertificateTrust](_.edgeOf(certificate)).flatMap:
+          case None => ZIO.none
+          case Some(edge) =>
+            ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
+              .map(_.filter(client => edge.tenantIds.contains(client.tenantId)).map(_ => edge.id))
+      case _ => ZIO.none
+
+  /** A token bound to both a key and a certificate is the one an edge cannot vouch for: the key is
+    * only half of what the client proved at issuance, and the certificate half is not something
+    * an edge's own certificate answers (the same refusal `EdgeService` gives, #452). */
+  private def refuseBoundToBoth(token: AccessTokenPayload): IO[UserInfoError, Unit] =
+    ZIO.fail(UserInfoError.InvalidToken).when(
+      token.confirmation.exists(confirmation => confirmation.jkt.isDefined && confirmation.x5tS256.isDefined),
+    ).unit
+
   /** RFC 9449 §7.1: decides what the presented token and scheme oblige the caller to prove.
     *
     * The `cnf.jkt` claim, not the scheme, is what makes a proof mandatory. A caller choosing
-    * `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to refuse, so that
-    * refusal stands unless an edge signs for it. Mirrors `EdgeService.checkDpop`.
+    * `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to refuse. Mirrors
+    * `EdgeService.checkDpop`; an edge that has run these checks itself is answered before this
+    * is reached (`trustedEdgeOf`).
     */
   private def checkDpop(
       request: Request,
@@ -205,19 +244,13 @@ object UserInfoController extends Controller:
       token: AccessTokenPayload,
       scheme: AuthScheme,
       config: CoreConfig,
-  ): ZIO[DpopService & ClientAuthentication & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
+  ): ZIO[DpopService & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
     (token.confirmation.flatMap(_.jkt), scheme) match
       case (Some(jkt), AuthScheme.Dpop) =>
         verifyDpopProof(request, tokenString, jkt, token.clientId, config)
 
-      // The one refusal an edge can answer: it has already run these same checks at its own
-      // boundary, where the client's proof is addressed, and cannot forward or re-mint that
-      // proof for this call (the device holds the key). What stands in for it is who is asking
-      // -- see [[relayedByEdge]]. A caller that is not that fails exactly as before.
       case (Some(_), AuthScheme.Bearer) =>
-        relayedByEdge(request, token.clientId).flatMap: relayed =>
-          if relayed then Observability.setRouteLabel("dpop_relayed", "edge_mtls")
-          else ZIO.fail(downgradeRefused)
+        ZIO.fail(UserInfoError.InvalidDpopProof("bound token presented with the Bearer scheme"))
 
       // A proof signed with some key says nothing about a token that was never bound to one:
       // anyone holding the token could have produced it. Treated as invalid rather than
@@ -227,47 +260,6 @@ object UserInfoController extends Controller:
 
       case (None, AuthScheme.Bearer) =>
         ZIO.unit
-
-  /** The refusal RFC 9449 §7.2 requires of a bound token presented without a proof. */
-  private val downgradeRefused = UserInfoError.InvalidDpopProof("bound token presented with the Bearer scheme")
-
-  /** Whether this request comes from the edge fronting the token's client, which verified the
-    * client's proof itself (RFC 9449 §7) before asking here on the client's behalf.
-    *
-    * All of these have to hold, and the answer is `false`, never an error, when any does not:
-    *  - the client is an edge-fronted native app ([[OAuthClientRecord.isEdgeFrontedNative]]):
-    *    its certificate is edge's, held by no installation, and central refuses to register it
-    *    without DPoP-bound tokens and pushed requests;
-    *  - the request carries a certificate, read the way every other endpoint reads one: off the
-    *    TLS handshake of auth's own mutual-TLS listener, or, behind the tenant's terminator, from
-    *    the header it sets (`certificateForClient` puts the handshake first and never consults the
-    *    header on a request that has one);
-    *  - that certificate is the one the client registered, checked the way `/token` checks it.
-    *
-    * The proof is not skipped for anyone else: a stolen token presented without the key still
-    * fails here, because its holder has no edge certificate to present.
-    */
-  private def relayedByEdge(
-      request: Request,
-      clientId: ClientId,
-  ): ZIO[ClientAuthentication & OAuthConfigurationService, Throwable, Boolean] =
-    ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId)).flatMap:
-      case Some(client) if client.isEdgeFrontedNative =>
-        ZIO.serviceWithZIO[ClientAuthentication](_.certificateForClient(request, clientId))
-          // A header that cannot be read is a refusal, not a server error: the call is
-          // answered as the downgrade it would otherwise be.
-          .orElseSucceed(None)
-          .flatMap:
-            case None =>
-              ZIO.succeed(false)
-            case certificate =>
-              ZIO.serviceWithZIO[ClientAuthentication](
-                _.authenticate(ClientIdWithSecret(clientId, None), certificate, AuthenticatedEndpoint.UserInfo),
-              ).as(true).catchAll:
-                case error: Throwable => ZIO.fail(error)
-                case _ => ZIO.succeed(false)
-      case _ =>
-        ZIO.succeed(false)
 
   /** RFC 9449 §8: whether a nonce is compulsory here is the tenant setting of the client the
     * presented token was issued to -- the same answer the token endpoint gives that client, since

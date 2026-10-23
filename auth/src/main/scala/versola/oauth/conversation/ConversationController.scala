@@ -7,7 +7,7 @@ import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
-import versola.util.{CoreConfig, Email, FormDecoder, Phone}
+import versola.util.{ClientIp, CoreConfig, Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -29,6 +29,7 @@ object ConversationController extends Controller:
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
+    submitPasskeyUnavailableRoute,
     submitSetPasswordRoute,
     submitConsentRoute,
     submitConsentDenyRoute,
@@ -121,6 +122,9 @@ object ConversationController extends Controller:
   val submitPasskeySkipRoute =
     submit[PasskeySkipSubmission](Method.POST / "challenge" / "passkey" / "skip")
 
+  val submitPasskeyUnavailableRoute =
+    submit[PasskeyUnavailableSubmission](Method.POST / "challenge" / "passkey" / "unavailable")
+
   val submitSetPasswordRoute =
     submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
 
@@ -140,7 +144,7 @@ object ConversationController extends Controller:
         cookie <- extractCookie(request)
         _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
-        ip = extractIp(request, ipHeader)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         body <- request.formAs[Body]
@@ -234,13 +238,6 @@ object ConversationController extends Controller:
       )
     yield response
 
-  /** Extracts the client IP from the header configured in submission limits. Returns None when no
-    * header is configured, causing IP-based throttling to be skipped entirely. For multi-value
-    * headers such as X-Forwarded-For only the first (leftmost) value is used.
-    */
-  private def extractIp(request: Request, ipHeader: String): Option[String] =
-    request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
-
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for
       phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
@@ -290,6 +287,9 @@ object ConversationController extends Controller:
 
   given FormDecoder[PasskeySkipSubmission] = (form: Form) =>
     FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeySkipSubmission(_))
+
+  given FormDecoder[PasskeyUnavailableSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeyUnavailableSubmission(_))
 
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
     for

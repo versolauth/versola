@@ -1,4 +1,5 @@
 import { clientKindOf, type ClientKind } from './client-presets';
+import type { ThemeVariableCatalog } from './theme-variables';
 import type {
   AuthFlow,
   AuthMethod,
@@ -6,11 +7,14 @@ import type {
   AuthorizationPreset,
   BackendProperty,
   Edge,
+  OverloadPolicy,
   Locale,
   FormPreview,
   FormRecord,
   OtpTemplateRecord,
+  ChallengeSettingsChanges,
   ChallengeSettingsRecord,
+  ClientEstState,
   ClientTemplate,
   JwksKeySummary,
   MutualTlsAuth,
@@ -74,14 +78,14 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
 };
-type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
-type ResourceEndpointWriteDto = {
+export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
+export type ResourceEndpointWriteDto = {
   id?: string | number;
   method: string;
   path: string;
@@ -105,7 +109,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -156,6 +160,7 @@ type ClientsResponse = {
     template?: ClientTemplate | null;
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
+    est?: ClientEstState | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -772,6 +777,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
+        est: client.est ?? null,
         tenantId,
       };
     }),
@@ -911,23 +917,33 @@ export async function deletePreviousResourceSecret(resourceId: string): Promise<
   resourcesStore.clear();
 }
 
+/**
+ * One PUT for any group of a resource: the URI, the audience (sent as a patch against what the
+ * caller last saw) and the endpoints. Endpoints are a patch too: `deleteEndpoints` leaves the
+ * server's set, `createEndpoints` are added, and one whose id already exists overwrites it, so an
+ * edited endpoint is sent only in `createEndpoints` and keeps its id (and the permissions linked
+ * to it). A group the caller does not touch is left out and is not changed.
+ */
 export async function updateResource(
   resourceId: string,
-  existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
-  resource: string,
-  existingAudience: string[],
-  audience: string[],
-  endpoints?: SaveResourceEndpointPayload[],
+  patch: {
+    resource?: string;
+    audience?: { existing: string[]; next: string[] };
+    deleteEndpoints?: ResourceEndpointId[];
+    createEndpoints?: SaveResourceEndpointPayload[];
+  },
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
-  const createEndpoints = (endpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
-  const nextEndpointIds = new Set(createEndpoints.map(endpoint => endpoint.id));
-  const deleteEndpoints = existingEndpoints
-    .map(endpoint => endpoint.id)
-    .filter(endpointId => !nextEndpointIds.has(endpointId));
+  const createEndpoints = (patch.createEndpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, audience: patchSet(existingAudience, audience), deleteEndpoints, createEndpoints },
+    body: {
+      resourceId,
+      ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
+      audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      deleteEndpoints: patch.deleteEndpoints ?? [],
+      createEndpoints,
+    },
   });
 
   resourcesStore.clear();
@@ -1369,6 +1385,7 @@ export async function fetchEdges(): Promise<Edge[]> {
     // An edge central has not answered for is read as requiring one, which is what every
     // edge did before the setting existed.
     requireDpopNonce: edge.requireDpopNonce ?? true,
+    ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
   })));
 }
 
@@ -1377,6 +1394,15 @@ export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean
     method: 'PUT',
     query: { edgeId },
     body: { requireDpopNonce },
+  });
+}
+
+/** Replaces the edge's overload policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
+export async function setEdgeOverloadPolicy(edgeId: string, policy: OverloadPolicy): Promise<void> {
+  await requestVoid('/configuration/edges/overload', {
+    method: 'PUT',
+    query: { edgeId },
+    body: policy,
   });
 }
 
@@ -1490,8 +1516,18 @@ export async function fetchThemePresets(): Promise<ThemePreset[]> {
   return response.presets;
 }
 
+// The tokens a theme may set one by one: groups, kinds, descriptions and defaults, defined in central. An older central
+// that has no such endpoint answers 404; the editor then has no tokens to offer and says so.
+export async function fetchThemeVariables(): Promise<ThemeVariableCatalog> {
+  try {
+    return await request<ThemeVariableCatalog>('/configuration/themes/variables');
+  } catch {
+    return { groups: [], variables: [] };
+  }
+}
+
 // The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
-// exactly what users get, because nobody but central builds it. `tokens` null is a stylesheet theme (its CSS alone is
+// exactly what users get, because nobody but central builds it. `tokens` null is a theme stored with CSS only (its CSS alone is
 // the stylesheet); `overrides` are a client's own, laid over the theme as auth does, so the answer is that client's
 // effective stylesheet. Empty overrides are not sent.
 export async function renderTheme(
@@ -1588,9 +1624,9 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-/** Replaces the tenant's whole record: central has no patch for it, so a group editor sends the
- * other groups' current values back unchanged. Optional members go as explicit nulls, which
- * central reads as "clear", never as "keep". */
+/** Creates the tenant's settings, or replaces the whole record: only the first save of a tenant that has none goes
+ * through here, because a PATCH needs a record to merge into. Optional members go as explicit nulls, which central
+ * reads as "clear", never as "keep". */
 export async function upsertChallengeSettings(settings: ChallengeSettingsRecord): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1618,6 +1654,16 @@ export async function upsertChallengeSettings(settings: ChallengeSettingsRecord)
       logoLight: settings.logoLight ?? null,
       logoDark: settings.logoDark ?? null,
     },
+  });
+}
+
+/** Merge patch (RFC 7396) of the members named in `changes`: the ones left out keep what is stored, so saving one group
+ * cannot overwrite a change another admin made to a different one. `null` clears an optional member; the body carries
+ * no other nulls. 404 when the tenant has no settings yet: create them with `upsertChallengeSettings`. */
+export async function patchChallengeSettings(tenantId: string, changes: ChallengeSettingsChanges): Promise<void> {
+  await requestVoid('/configuration/challenges/challenge-settings', {
+    method: 'PATCH',
+    body: { tenantId, ...changes },
   });
 }
 

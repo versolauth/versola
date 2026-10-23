@@ -118,7 +118,9 @@ object ReloadingCache:
     * With `fromSnapshot`, a first load that still fails after its retries is answered from the
     * [[ConfigSnapshot]] the source's requests go through, and the source is tried again in the
     * background until it answers. `config_snapshot_age_seconds` is the age of what is served,
-    * zero once the source has answered. Only a source that cannot be reached or answers 5xx is
+    * zero once the source has answered. The age is zeroed *before* the live value is published,
+    * and the age reporter has stopped by then, so whoever sees the live value never reads a stale
+    * age next to it. Only a source that cannot be reached or answers 5xx is
     * stood in for (see [[snapshotCovers]]): one that answers and rejects the request -- a wrong
     * URL, a wrong sync key -- is a configuration error that the snapshot would only hide, so it
     * fails the load as before. Without a snapshot the failure stands as before; a snapshot that
@@ -157,8 +159,9 @@ object ReloadingCache:
           val reportAge = Clock.instant
             .flatMap(now => snapshotAge.set(java.time.Duration.between(savedAt, now).toMillis / 1000.0))
             .repeat(Schedule.spaced(SnapshotAgeReportInterval)) *> ZIO.never
-          source.getAll.retry(SnapshotRetry).flatMap(ref.set).race(reportAge) *>
-            snapshotAge.set(0) *>
+          // The race ends, and with it the age reporting, before anything is published; only then
+          // is the age zeroed and the value set, in that order (see `make`).
+          source.getAll.retry(SnapshotRetry).race(reportAge).flatMap(data => snapshotAge.set(0) *> ref.set(data)) *>
             ZIO.logInfo(s"Cache ${Tag[A].tag} is loaded from its source again, no longer from the configuration snapshot")
       _ <- (untilLive *> ZIO.sleep(interval) *> refresh.repeat(Schedule.spaced(interval))).forkScoped
     yield ref

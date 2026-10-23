@@ -213,8 +213,8 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
           .label("a revoked refresh token is dead")
     },
     // The call edge makes for `fetchUserInfo` carries the device's key-bound token and no proof
-    // (the key is the device's). Auth honours it because the handshake presents edge's
-    // certificate for this native client -- nothing is signed or sent besides.
+    // (the key is the device's). Auth honours it because the handshake presents edge's own
+    // certificate, which names an edge auth trusts -- nothing is signed or sent besides.
     test("an endpoint that needs userinfo is served for a device-bound token") {
       for
         edgeApi <- edge

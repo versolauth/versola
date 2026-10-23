@@ -33,7 +33,10 @@ Files next to this one:
 5. **Same words everywhere.** A setting looks the same where it is chosen (wizard), where it is
    read (record card) and where it is changed (group editor).
 6. **Quiet by default.** Neutral surfaces, colour only for the accent, states and danger. Hover
-   changes a border or a text colour, not the layout.
+   changes a border or a text colour, not the layout. No meaningless counters: a number that names
+   nothing (`3 permissions`, `(2 selected)`, `GROUP · 4`) gives way to the values themselves (up to
+   two chips and `+N`); meta chips in a panel header carry status only (`Inactive`, `Missing: ru`).
+   Filter pills carry no counts either (`All`, `Active`).
 7. **Accessible by construction.** Text 4.5:1, controls and focus 3:1, targets 24px, visible focus,
    native elements, labels on everything, motion off under `prefers-reduced-motion`.
 
@@ -135,7 +138,7 @@ Motion: `index.html` and `theme.ts` both carry a `prefers-reduced-motion: reduce
 zeroes every animation and transition (the one in `theme.ts` is needed because a document rule
 does not reach into a shadow root).
 
-Deliberate literals, the only ones in `src/`: the theme-preset sketches in `theme-edit.ts` and
+Deliberate literals, the only ones in `src/`: the theme sketches in `theme-thumb.ts` and the swatches in
 `theme-token-controls.ts` draw the *login forms'* page colours (`#fffdf9` sheet, `#1c1b19` ink,
 the `color-mix` brand tints) so a preset looks the same whatever the console theme is; the brand
 swatches in `theme-token-controls.ts` are the preset colours themselves. Nothing else.
@@ -216,10 +219,18 @@ Edit, the read-only reverse references (Requested by, Granted by, Linked tenants
 reasons, the danger card last. Edit turns the same panel into the group editor (breadcrumb
 `Record › Edit <group>`, modal with a backdrop, footer Cancel / `Save <group>`); the page's one
 primary action opens it in create mode (`Create <entity>`), which lands on the new row selected.
+While an editor is open the list passes no `selectedKey`: the row behind the backdrop is not drawn
+selected (a second active element); the selection returns when the editor closes.
 Escape and Close return focus to the row (`versola-data-table.focusRow`). The URL carries the
 state so a reload restores it: `?view=scopes&id=profile`, `&edit=claims`, `&new=1`; `Open page`
 adds `&layout=page` and renders the same groups under a `versola-record-header` for sharing and
 docs. Reference: `scopes-list.ts`; the pattern's mockups are the approved UX proposal.
+An editor with many fields still opens in the panel, `wide`: Edges' *Overload protection* (`edges-list.ts`,
+`overload-policy-editor.ts`, rules and messages in `utils/overload-policy.ts`) is a patch over the
+deployment, so every field is optional, empty means "inherit", and the built-in default and its
+environment variable are written under the field; rare fields sit under a native `<details>` "Advanced";
+a mode is a segmented control (`segmentedStyles`) with one line on the chosen value; the footer's
+`Reset to deployment defaults` (left) sends `{}` after a confirmation.
 
 **Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
 kind chip, status chips, created) → a status banner when the page can say something about the
@@ -228,6 +239,69 @@ with its own Edit that opens only that group as a page with Cancel and `Save <gr
 fixed at creation sit in a card with the `Fixed` lock, each row with its reason (`By type`) →
 `versola-danger-card` last, named for what it deletes. Reference: `clients-list.ts`
 (`renderClientView`).
+
+**Search-first record (Users).** There is no list-all endpoint, so the list is a search (field select
+with auto-detect, input, `Search`; an empty state before the first search) and the record page loads
+its user by ID, so `?view=users&id=<id>` opens from a reload and `&edit=identifiers|roles|claims` opens a
+group editor. The record carries the record-view groups plus two live parts that load and fail on
+their own (a part's error is inline with Retry, never a page error): *Signed-in devices*, one row per user
+agent as auth stores it (user agent → at most one SSO session → the clients entered during it; the
+device line says when the session expires, the idle timeout when there is one, and until when the device
+is remembered; a signed-out device stays listed by its user agent's name until it is forgotten, with
+**Forget device** beside it, and a refresh token whose session no device names shows as an unnamed
+signed-out device), and *Apps with access*, one row per
+refresh token. All nested device tables share one column grid so dates line up down the page. The
+wording is fixed: **Sign out** for sessions, **Forget device** for a remembered user agent, **Revoke** for offline access (the refresh token, shown as an
+`Offline access` chip followed by an `Apps with access` text link to the Apps card), never "long-lived" or "invalidate". No counters
+anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
+Reference: `users-list.ts`, `user-record.ts`.
+
+**Record with a nested table and a master/detail editor (Resources).** A large entity whose main
+content is a list of its own (a resource's endpoints) keeps the record-view rules and adds two things.
+The list is a table *inside* a record card (`versola-resource-endpoints-table`), whose columns answer the
+questions an operator asks without opening an editor (which request, who may call it, what step-up, what
+is added to the forwarded request); below 720px of room each row is a card and each cell names its
+column. The card's one button is `Edit endpoints`, which opens `&edit=endpoints`: the list on the left
+(method, path, `new` / `edited` markers, which rules each row carries) and the selected row's panels on the
+right (Request, Who may call, Step-up, Inject), a bar at the bottom that names what is not saved yet
+(`Not saved yet: GET /x (new), POST /y (edited)`) and Cancel / `Save endpoints`. Edits only change drafts;
+Save sends the removed IDs and the new and edited rows in one request, an edited row under its own ID.
+Removing a row that something refers to says what loses it. Small groups (General, Audience) sit side by
+side; the secret and Fixed cards pair the same way; the page has no primary action; the ID is the title in
+mono (`idAsTitle` on the record header) and a banner carries the secret that create and rotate return,
+once, asking before the operator leaves without saving it. Create is a single form (the endpoints are added
+on the record, where the permissions that guard them are visible). Reference: `resources-list.ts`,
+`resource-record.ts`, `resource-endpoints-editor.ts`.
+
+**Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
+record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
+editor, with a live preview pinned beside it (`versola-preview-pane`: 500px at 1440, 340px at 1024, 560px
+for a theme's login form, a collapsible band above the controls below 900px; the previewed page is scaled to
+the room it has). Nothing is saved until the one primary action: a **form**'s is `Save as new version` in the
+header (saving stores a version without activating it; `Set active` on any stored version lives under the
+Versions tab, with a "stored but not active" warning and no delete, because the API has none); a **theme**'s is
+`Save theme` in a bar that sticks to the bottom of the page with Cancel and names what is not saved yet
+(`Unsaved: brand colour, shape`), Delete is the last card, disabled with the clients that block it. Leaving
+with edits asks (`confirmDiscardDraft`). Forms: tabs `Texts` (ONE JSON editor for all languages, `{ "en": { "<key>": "..." }, "ru": { ... } }`, the shape of
+`forms/<name>/<name>.i18n.json`: a compact read-only summary above it names the languages present and the keys each
+lacks with `+N`; problems are listed under it in an `aria-live` region and the typed text is kept; a Language
+switch in the preview toolbar picks the language the preview shows), `Style`, `Script`,
+`Properties` (custom forms only: a built-in form's states come from central) and `Versions`; the tab is
+`?edit=<tab>`. Themes: Base theme (a wrapping row of pills, each with its brand colour as a dot, the selected one filled, and a
+one-line hint of what it sets: no thumbnails, the preview shows the result; a built-in theme is never "dark" or "light", the
+Colour scheme control and the preview's Light/Dark are the only place the scheme shows), Look (each overridden token with
+an `Overridden` badge and Reset, `Clear overrides`) and an Advanced card after Look: Token overrides (rows of one token each; the
+token list, its nine groups, kinds, descriptions and defaults come from central, `GET /configuration/themes/variables`,
+and the select is grouped by them with the description and default under it; a colour that is a pair has Light and Dark
+inputs and a "Same for both" toggle, a length is a number in px, a shadow, weight or font is text; every kind is validated
+by `src/utils/theme-variables.ts`) and Custom CSS (the last resort: collapsed behind "Add custom CSS" while empty, open when
+the theme has CSS; a `versola-code-editor` (css), the hint that most things are tokens above and that its rules win, with
+contrast and small screens the author's, and the variables a rule may target; the preview includes both, the unsaved bar
+names "token overrides" and "custom CSS"). A theme stored with CSS and no values opens in the same editor on the
+Versola base with the CSS card open; the list shows it as "Versola + custom CSS". "Used by" is computed in
+the console from the tenant's clients (central has no usage endpoint). Lists are tables with a kind filter and
+no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
+`forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.
 
 **Wizard (create).** Stepped, with a step list on top, each step a stack of bordered panels
 (title, one-line subtitle, body), a rule the type sets shown as a locked row (lock icon, text,
@@ -239,7 +313,9 @@ the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline er
 field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
 with Cancel and the one primary submit. No second Close at the top.
 
-**Settings pages** (System settings, Security, Keys & metadata). Read-only cards in the
+**Settings pages** (System settings, Security, Keys & metadata). Security's section rail uses the
+sidebar's item treatment: `--sidebar-hover-bg` on hover, `--accent-subtle` / `--accent-text` with a 3px
+`--accent` bar for the section in view. Read-only cards in the
 record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
 inputs, never two primary buttons in one region.
 
@@ -248,16 +324,24 @@ inputs, never two primary buttons in one region.
 | Component | Element | Use it for | Not for |
 |---|---|---|---|
 | `content-header` | `<content-header title description>` + `slot="actions"` | Every list and settings page: title, one-line description, the one primary action | Record pages (use the record header) |
-| Record header | `<versola-record-header .crumbs .heading .recordId idLabel .meta>` | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips | Pages with no ID |
-| Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
+| Record header | `<versola-record-header .crumbs .heading .recordId idLabel ?idAsTitle .meta>` + `slot="actions"` (the page's primary action, when the record is its own editor) | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips; `idAsTitle` for a record named by its ID (the title is mono and the ID is not printed twice) | Pages with no ID |
+| Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .editLabel .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
 | Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
 | Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
 | Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
 | Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel ?selectable .selectedKey @row-select>` + `focusRow(key)` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`). `selectable` makes a click anywhere on a row (outside its menu) fire `row-select`; `selectedKey` draws that row selected (`aria-current`, accent fill, 3px bar); `focusRow` is where a closing panel returns focus | Editing in place; nested detail |
-| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; the host shows the count in its title (`Permissions (3 selected)`) | A single choice (use a `select`) |
+| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; no counts in the group headers or the host's title | A single choice (use a `select`) |
 | Endpoint picker | `<versola-endpoint-picker .resources .value @change>` | A permission's endpoints (D8): add a resource, then its endpoints one by one, each a row with method badge, path and Remove; endpoint ids no resource carries any more are listed as detached | Anything that is not resource → endpoint |
-| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value and a `N languages` chip, or a `Missing: ru` warning chip; `languagesCell` is the list's `3 of 3` | Editing (use `versola-localized-text-editor`) |
-| Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters with counts above a table, as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
+| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value, plus a `Missing: ru` warning chip when an active locale has none (a count of languages says nothing); `languagesCell` is the list's Languages column, the language codes as chips or the Missing chip | Editing (use `versola-localized-text-editor`) |
+| Typeahead select | `<versola-typeahead-select label placeholder emptyText .options .value @change>` | A filter with too many values for a row of pills (Permissions › Resource): the ARIA 1.2 combobox with list autocomplete (`role=combobox` field, `role=listbox` of the matches). Opens on focus, click or the down arrow; typing filters; arrows move, Home/End jump, Enter picks, the first Escape closes the list (the side panel does not close), Tab leaves; a clear button while a value is chosen. The screen keeps the `All` / `Unlinked` pills next to it | Fewer than about six values (use the filter bar) |
+| Value chips | `valueChips(values, { max, empty, mono, extra })` from `value-chips.ts` | A list column that holds values (Roles › Permissions, Scopes › Claims, Permissions › Endpoints and Resources): up to two chips (`.chip.value`, mono for IDs and paths, cut with an ellipsis) and `+N` (`.chip.more`) whose `title` names the rest. A count alone never stands for values | A single value (print it) |
+| Client picker | `<versola-client-picker label heading .clients .value @change>` | Choosing clients (D7: a resource's audience): a filter field from four clients, one bordered group headed by `heading` with `Select all` / `Clear all`, a checkbox per client with its name; ids the tenant no longer has stay listed so they can be unticked | One client (use a `select`) |
+| Endpoints table | `<versola-resource-endpoints-table .endpoints .permissionsByEndpoint .resourceId>` | The endpoints of a resource inside its record card, read-only: method badge and path (breaking after `/`), `userinfo` tag, permissions joined by `or` and the `allow` rule, step-up (ACR, condition, `at most 5m` with the seconds in its title), the injections | Editing (the endpoints editor) |
+| Break text | `breakPath(path)`, `breakHost(host)`, `breakAfter(value, chars)` from `break-text.ts` | A path or a host in a place that may wrap: a `<wbr>` after each `/` or `.` is the only place it breaks, never inside a word | IDs (they do not break at all) |
+| Preview pane | `<versola-preview-pane heading .logicalWidth .logicalHeight ?busy ?stale>` + `slot="toolbar"`, an `<iframe>` in the default slot, `slot="note"` | The live preview of a record that is its own editor: sticky card, toolbar, the previewed page scaled to the room, a collapsible band below 900px, scrolls inside itself when taller than the window | A static picture |
+| Theme thumb | `themeThumb(tokens, { small })` from `theme-thumb.ts` | A sketch of what a theme gives a login page (page, sheet, brand): the themes list's `small` one | The console's own colours |
+| Segmented pills | `segmentedStyles`: `.ctrl-group`, `.ctrl-label`, `.seg-control`, `button.seg-btn[.seg-active]` | A choice of one (or several) among a few in a preview toolbar or a theme's controls; the active pill is ink-filled like the filter bar's | Filtering a table (the filter bar) |
+| Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters above a table (no counts), as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
 | Loading cards | `<versola-loading-cards .count>` | While a list loads, same height as the rows that will replace it | Buttons (disable them instead) |

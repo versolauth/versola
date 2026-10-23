@@ -37,12 +37,12 @@ test('lists keys with type, algorithm, usage and who uses them, and filters by u
   const es = table.getByRole('row').filter({ hasText: 'es256-a1' });
   await expect(es).toContainText('EC · P-256');
   await expect(es).toContainText('Can sign');
-  await expect(es).toContainText('2 tenants');
+  await expect(es.getByRole('cell').nth(4).locator('.chip.value')).toHaveText(['tenant-alpha', 'tenant-bravo']);
   await expect(table.getByRole('row').filter({ hasText: 'partner-rs256' })).toContainText('Verify only');
 
-  await page.getByRole('button', { name: /^Verify only\s?1$/ }).click();
+  await page.getByRole('button', { name: 'Verify only', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open key/ })).toHaveText([/partner-rs256/]);
-  await page.getByRole('button', { name: /^Can sign\s?2$/ }).click();
+  await page.getByRole('button', { name: 'Can sign', exact: true }).click();
   await expect(table.getByRole('button', { name: /^Open key/ })).toHaveCount(2);
 });
 

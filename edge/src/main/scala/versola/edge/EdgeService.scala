@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.dpop.DpopVerifier
-import versola.edge.login.{LoginRecord, LoginRepository}
+import versola.edge.login.{LoginRecord, LoginRepository, ReturnTo}
 import versola.edge.model.{
   AccessToken,
   AccessTokenClaims,
@@ -41,15 +41,19 @@ import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, d
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.time.Instant
 import javax.crypto.AEADBadTagException
 import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.{MapHasAsJava, SeqHasAsJava}
 
 trait EdgeService:
+  /** The URL to send the browser to for a login with `presetId`. `returnTo`, a path of the preset's origin, is
+    * where it goes afterwards instead of the preset's own post-login page; anything else is ignored. */
   def authorize(
       presetId: PresetId,
       overrideParams: Map[String, String] = Map.empty,
+      returnTo: Option[String] = None,
   ): IO[Throwable | PresetNotFound, URL]
 
   def complete(
@@ -105,9 +109,12 @@ object EdgeService:
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
+      returnTo: Option[String] = None,
       cookieDomain: Option[String],
       cookiePath: Option[String],
-  )
+  ):
+    /** Where the browser goes: the page that asked for the login when there is one, else the preset's. */
+    def redirectUrl: URL = ReturnTo.onto(postLoginRedirectUri.toUrl, returnTo)
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
@@ -231,10 +238,16 @@ object EdgeService:
     override def authorize(
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
+        returnTo: Option[String] = None,
     ): IO[Throwable | PresetNotFound, URL] =
-      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl(_, overrideParams))
+      clientService.findPreset(presetId).someOrFail(PresetNotFound())
+        .flatMap(prepareAuthorizeUrl(_, overrideParams, returnTo.flatMap(ReturnTo.parse)))
 
-    private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
+    private def prepareAuthorizeUrl(
+        preset: AuthorizationPreset,
+        overrideParams: Map[String, String],
+        returnTo: Option[String],
+    ): zio.Task[URL] =
       for
         // The client, not just the preset: what the authorization request may look like is
         // the client's registration (RFC 9101 §10.5, RFC 9126 §6.2), and the credential that
@@ -254,6 +267,7 @@ object EdgeService:
             codeVerifier = codeVerifier,
             presetId = preset.id,
             state = state,
+            returnTo = returnTo,
           ),
           ttl = loginTtl,
         )
@@ -284,6 +298,7 @@ object EdgeService:
         accessToken = tokens.accessToken,
         cookieTtl = cookieTtl,
         postLoginRedirectUri = preset.postLoginRedirectUri,
+        returnTo = record.returnTo,
         cookieDomain = preset.cookieDomain,
         cookiePath = preset.cookiePath,
       )
@@ -298,7 +313,7 @@ object EdgeService:
         record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
         preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
         _ <- loginRepository.deleteByState(state)
-      yield preset.postLoginRedirectUri.toUrl.addQueryParams(
+      yield ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
         List("error" -> error) ++
           errorDescription.map("error_description" -> _) ++
           errorUri.map("error_uri" -> _),
@@ -380,16 +395,18 @@ object EdgeService:
               .addHeader(Header.Location(uri))
               .addCookie(clear),
           )
-        case Outcome.InsufficientAuthentication(acr, maxAge) =>
+        case Outcome.InsufficientAuthentication(acr, maxAge, loginUri) =>
           val params = List(
             Some("""error="insufficient_user_authentication""""),
             acr.map(v => s"""acr_values="$v""""),
             maxAge.map(v => s"""max_age="$v""""),
           ).flatten.mkString(", ")
-          ZIO.succeed(
-            Response.status(Status.Unauthorized)
-              .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params")),
-          )
+          val challenge = Response.status(Status.Unauthorized)
+            .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params"))
+          // A browser holding the session cookie cannot read the challenge and build the login URL the
+          // way an API client does: it is handed the URL that asks for what is missing, so the page
+          // only has to go there.
+          ZIO.succeed(loginUri.fold(challenge)(uri => challenge.addHeader(Header.Location(uri))))
         case Outcome.InvalidDpopProof =>
           ZIO.succeed(
             Response.status(Status.Unauthorized)
@@ -560,7 +577,7 @@ object EdgeService:
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
         _ <- checkRevoked(typedClaims)
-        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
+        binding <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -570,7 +587,7 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims)
+        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {
@@ -582,7 +599,7 @@ object EdgeService:
             case _ => ZIO.unit
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now, celContext)
+        _ <- checkStepUp(endpoint, typedClaims, now, celContext, authSource)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
         // `collect` inside the scope: the response this returns is handed straight back to
         // edge's own server, which streams it to the caller long after the upstream scope has
@@ -594,7 +611,7 @@ object EdgeService:
           else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
           else ProxyMetrics.AuthCall.None
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
-        response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
+        response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
@@ -654,18 +671,27 @@ object EdgeService:
       * parsing on this side -- #320), so it cannot tell a holder of a leaked bound token from
       * the client the token was bound to, and §3 is explicit that a bound token must not be
       * honoured for anyone else.
+      *
+      * The one place edge can see a caller's certificate is the handshake of its own mutual-TLS
+      * listener (`EdgeMutualTls`): a `Bearer` token arriving there is judged against the
+      * certificate presented, and honoured when that is the one it names. Every other
+      * presentation is judged as above, whichever port it came in on.
       */
     private def checkTokenBinding(
         request: Request,
         accessToken: AccessToken,
         claims: AccessTokenClaims,
         authSource: AuthSource,
-    ): IO[Outcome, Unit] =
+    ): IO[Outcome, BindingCheck] =
       val presentation = authSource match
         case AuthSource.Cookie(_) => Presentation.Cookie
-        case AuthSource.Header(AuthScheme.Bearer) => Presentation.Bearer
+        case AuthSource.Header(AuthScheme.Bearer) =>
+          request.remoteCertificate match
+            case Some(certificate: X509Certificate) => Presentation.BearerOverMutualTls(TokenBinding.thumbprint(certificate))
+            case _ => Presentation.Bearer
         case AuthSource.Header(AuthScheme.Dpop) => Presentation.Dpop
-      TokenBinding.check(claims.confirmation, presentation) match
+      val check = TokenBinding.check(claims.confirmation, presentation)
+      (check match
         case BindingCheck.CertificateOutsideSession =>
           Observability.setError("certificate_bound_token_outside_session") *>
             ZIO.fail(Outcome.Unauthorized)
@@ -705,26 +731,28 @@ object EdgeService:
         case BindingCheck.UnboundDpop =>
           Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
 
-        case BindingCheck.Accept => ZIO.unit
+        case BindingCheck.Accept | BindingCheck.AcceptCallerCertificate => ZIO.unit
+      ).as(check)
 
     /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
-      * here, so the call has to carry whatever that binding names -- and both are carried by
-      * the handshake: the certificate this edge holds for the client, which auth reads as the
-      * proof for a certificate-bound token and as the edge that checked the proof for a
-      * key-bound one. The client is looked up for either, as its certificate is part of the
-      * registration central syncs, not of the token.
+      * here, so the call has to say what edge already established -- and says it by the
+      * handshake, not by a header: a token bound to the certificate of one of this edge's own
+      * sessions is presented over that client's certificate (looked up, as it is part of the
+      * registration central syncs, not of the token), and one whose holder this edge verified at
+      * its boundary -- a key proof, or the certificate of its mutual-TLS listener -- over this
+      * edge's own certificate, which auth accepts only from an edge it trusts.
       */
     private def fetchUserInfo(
         accessToken: AccessToken,
         claims: AccessTokenClaims,
+        check: BindingCheck,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         binding <-
           (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
-            case (Some(_), _) =>
-              clientService.findClient(claims.clientId)
-                .someOrFail(ClientNotFound(claims.clientId))
-                .map(client => SSOClient.TokenBinding.Key(client.id, client.credential))
+            case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
+            case (None, Some(_)) if check == BindingCheck.AcceptCallerCertificate =>
+              ZIO.succeed(SSOClient.TokenBinding.CallerCertificate)
             case (None, Some(_)) =>
               clientService.findClient(claims.clientId)
                 .someOrFail(ClientNotFound(claims.clientId))
@@ -796,6 +824,7 @@ object EdgeService:
         claims: AccessTokenClaims,
         now: Instant,
         celContext: Map[String, AnyRef],
+        authSource: AuthSource,
     ): IO[Outcome, Unit] =
       def unsatisfied(required: String): Option[String] =
         val requiredSet = required.split(' ').toSet.filter(_.nonEmpty)
@@ -823,11 +852,24 @@ object EdgeService:
         requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
         acrFailed = requiredAcr.flatMap(unsatisfied)
 
+        maxAgeRequired = Option.when(maxAgeFailed)(endpoint.maxAge).flatten
         _ <- (Observability.setError("step_up_required") *> ZIO.fail(Outcome.InsufficientAuthentication(
           acr = acrFailed,
-          maxAge = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
+          maxAge = maxAgeRequired,
+          loginUri = authSource match
+            case AuthSource.Cookie(presetId) => Some(stepUpLoginUri(presetId, requiredAcr, maxAgeRequired))
+            case AuthSource.Header(_) => None,
         ))).when(acrFailed.isDefined || maxAgeFailed)
       yield ()
+
+    /** The edge login of the preset the caller's session came from, asking for what the endpoint requires: its
+      * `acr_values` whenever the endpoint asks for one, and the `max_age` when the sign-in is too old. The class
+      * is asked for again even when only the age failed: a sign-in that is not asked for it yields a token
+      * without it, and the very next call would be refused for that. Both go on to `/authorize` through `/login`. */
+    private def stepUpLoginUri(presetId: PresetId, acr: Option[String], maxAge: Option[Int]): URL =
+      val login = URL(Path.root / "login" / presetId)
+      val withAcr = acr.fold(login)(login.addQueryParam("acr_values", _))
+      maxAge.fold(withAcr)(age => withAcr.addQueryParam("max_age", age.toString))
 
     private def checkRules(
         claims: Json.Obj,
@@ -1265,7 +1307,7 @@ object EdgeService:
 
     /** The token is valid but its authentication does not meet what this endpoint
       * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
-    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])
+    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int], loginUri: Option[URL])
 
     /** RFC 9449 §7.1: the token is sender-constrained and the accompanying proof of that
       * key was absent, malformed, bound elsewhere, or already used. */

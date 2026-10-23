@@ -144,6 +144,11 @@ object ObservabilitySpec extends ZIOSpecDefault:
           Method.GET / "error" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
           },
+          Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None))(
+              _.copy(decision = "Block", score = 12, rules = List("deny_list"), outcome = Some("blocked")),
+            ).as(Response.text("ok"))
+          },
           Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setRouteLabel("grant_type", "client_credentials").as(Response.text("ok"))
           },
@@ -191,6 +196,19 @@ object ObservabilitySpec extends ZIOSpecDefault:
         ),
       ),
     )
+
+  private val okTags = Set(
+    MetricLabel("method", "GET"),
+    MetricLabel("route", "/ok"),
+    MetricLabel("status", "200"),
+    MetricLabel("status_class", "2xx"),
+  )
+
+  /** Runs `zio` with `settings` as the access log, restoring what was there. */
+  private def withAccessLog[R, E, A](settings: AccessLogSettings)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.acquireReleaseWith(ZIO.succeed(Observability.accessLog.getAndSet(settings)))(before =>
+      ZIO.succeed(Observability.accessLog.set(before)),
+    )(_ => zio)
 
   private def counterCount(tags: Set[MetricLabel]): UIO[Double] =
     Metric.counter("http_server_requests_total").tagged(tags).value.map(_.count)
@@ -300,6 +318,22 @@ object ObservabilitySpec extends ZIOSpecDefault:
           "receive-http" -> Some("auth-1"),
           "receive-http" -> None,
         ),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("renders the antifraud check on the receive-http line, under the antifraud key") {
+      val format = List(label("message", quoted(line)), logAnnotation(Observability.antifraud)).reduce(_ |-| _)
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        _ <- client.batched(Request.get(URL.empty / "antifraud"))
+        logs <- ZTestLogger.logOutput
+        rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+          .orElseFail(new RuntimeException("Missing receive-http log"))
+        rendered = rawLog.call(format.toJsonLogger)
+      yield assertTrue(
+        rendered.contains("\"antifraud\":{\"action\":\"otp_request\",\"decision\":\"Block\",\"score\":12,\"rules\":[\"deny_list\"]"),
+        rendered.contains("\"outcome\":\"blocked\""),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     // Closes the ErrorDetails.description default-None gap (line 530): every other error test
@@ -561,14 +595,135 @@ object ObservabilitySpec extends ZIOSpecDefault:
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     ),
+    suite("access log")(
+      test("sampled mode drops a fast successful request but still counts it") {
+        for
+          before <- counterCount(okTags)
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 60000, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+          after <- counterCount(okTags)
+        yield assertTrue(!logs.exists(_.message() == "receive-http"), after == before + 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("sampled mode always keeps a 4xx response and an unhandled error") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 60000, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "error"))
+              _ <- client.batched(Request.get(URL.empty / "boom"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.filter(_.message() == "receive-http").map(_.logLevel) == Chunk(LogLevel.Info, LogLevel.Error))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("sampled mode always keeps a slow successful request") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 0, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.count(_.message() == "receive-http") == 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("off mode logs a failure and nothing else (nothing is slow here)") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+              _ <- client.batched(Request.get(URL.empty / "error"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.count(_.message() == "receive-http") == 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a request that is not logged does not contribute its auth context to a later request") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "auth"))
+              _ <- client.batched(Request.get(URL.empty / "error"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+          rendered <- ZIO.foreach(logs.filter(_.message() == "receive-http"))(l =>
+            ZIO.fromEither(l.call(authLogFormat.toJsonLogger).fromJson[AuthLoggedEntry]).mapError(new RuntimeException(_)))
+        yield assertTrue(rendered.flatMap(_.auth.flatMap(_.id)).isEmpty)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a successful send-http line is not built or written when DEBUG is off") {
+        for
+          _ <- ZIO.succeed(Observability.logsDebug = false)
+          _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok"))).ensuring(ZIO.succeed(Observability.logsDebug = true))
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(!logs.exists(_.message() == "send-http"))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a successful send-http call to an external peer is INFO even when DEBUG is hidden and the access log is off") {
+        for
+          levels <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 0.0)):
+            for
+              _ <- ZIO.succeed(Observability.logsDebug = false)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+              rawClient <- ZIO.service[Client]
+              tracing <- ZIO.service[Tracing]
+              client = rawClient @@ Observability.clientMiddleware(tracing)
+              _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+              logs <- ZTestLogger.logOutput
+            yield logs.filter(_.message() == "send-http").map(_.logLevel)
+        yield assertTrue(levels == Chunk(LogLevel.Info))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a peer listed as internal is DEBUG") {
+        for
+          _ <- ZIO.succeed(Observability.internalPeers.set(Set("unknown")))
+          _ <- ZIO.succeed(Observability.logsDebug = false)
+          _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- client.batched(Request.get(URL.empty / "ok"))
+            .ensuring(ZIO.succeed { Observability.logsDebug = true; Observability.internalPeers.set(Set.empty) })
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(!logs.exists(_.message() == "send-http"))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a slow successful send-http call is logged at INFO") {
+        for
+          entry <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 0, 0.0)):
+            for
+              _ <- ZIO.succeed(Observability.logsDebug = false)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+              rawClient <- ZIO.service[Client]
+              tracing <- ZIO.service[Tracing]
+              client = rawClient @@ Observability.clientMiddleware(tracing)
+              _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+              logs <- ZTestLogger.logOutput
+            yield logs.filter(_.message() == "send-http").map(_.logLevel)
+        yield assertTrue(entry == Chunk(LogLevel.Info))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    ),
     suite("client middleware")(
-      test("logs INFO for successful requests") {
+      test("logs a successful request at DEBUG") {
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          response <- client.batched(Request.get(URL.empty / "ok"))
+          response <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok")))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
           rawLog <- ZIO.fromOption(sendLogs.headOption).orElseFail(new RuntimeException("Missing send-http log"))
@@ -577,7 +732,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
         yield assertTrue(
           response.status == Status.Ok,
           sendLogs.length == 1,
-          entry.level == "INFO",
+          entry.level == "DEBUG",
           entry.message == "send-http",
           entry.http.response.code == 200,
         )
@@ -1029,4 +1184,4 @@ object ObservabilitySpec extends ZIOSpecDefault:
         )
       }.provide(ZTestLogger.default) @@ TestAspect.silentLogging,
     ),
-  )
+  ) @@ TestAspect.sequential @@ TestAspect.before(ZIO.succeed(Observability.logsDebug = true))

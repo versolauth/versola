@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.antifraud.{AntifraudEvents, AntifraudOutcome, Decision, DecisionAction}
 import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
@@ -133,6 +134,12 @@ trait ConversationService:
       settings: PasskeySettings,
   ): Task[String]
 
+  /** Positions the conversation on a passkey-only credential step: the user is already identified and
+    * the ACR being pursued needs a passkey, so nothing else is offered. A user with no passkey the
+    * client's flow can use cannot be given the step and is denied.
+    */
+  def promptPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+
   /** Verify the authenticator's assertion response.
     * On success: updates the conversation with the resolved user and advances to enrollment-offer or finish.
     * On failure: clears the passkeyRequest and re-renders the Credential step.
@@ -199,7 +206,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -221,8 +228,22 @@ object ConversationService:
       secureRandom: SecureRandom,
       userService: UserService,
       consentService: ConsentService,
+      antifraudEvents: AntifraudEvents,
   ) extends ConversationService:
     export conversationRepository.find
+
+    private def otpRequested(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+        decision: Option[Decision] = None,
+    ): UIO[Unit] =
+      antifraudEvents.otpRequested(authId, conversation.clientId, conversation.userAgent, credential, outcome, decision.filter(_ != Decision.allow))
+
+    private def otpChecked(authId: AuthId, conversation: ConversationRecord, outcome: AntifraudOutcome): UIO[Unit] =
+      ZIO.foreachDiscard(conversation.credential): credential =>
+        antifraudEvents.otpChecked(authId, conversation.clientId, conversation.userAgent, credential, outcome)
 
     override def accessDenied(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversationRepository.overwrite(authId, conversation.copy(step = ConversationStep.AccessDenied))
@@ -256,6 +277,99 @@ object ConversationService:
         case LimitStatus.RateLimited(retryAfter) => renderStep(authId, conversation, step(Some(retryAfter)))
         case LimitStatus.Allowed => renderStep(authId, conversation, step(None))
 
+    /** A real send is timed, and a fake one waits as long as a real one recently took, so that the answer to a
+      * request does not tell which of the two it was. */
+    private def sendTimed(
+        step: ConversationStep.Otp,
+        credential: Either[Email, Phone],
+        authId: AuthId,
+        conversation: ConversationRecord,
+    ): Task[Unit] =
+      if step.isFake then
+        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales) *>
+          antifraudEvents.fakeSendDelay.flatMap(ZIO.sleep(_))
+      else
+        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales).timed.flatMap: (took, _) =>
+          antifraudEvents.sendTook(took)
+
+    private def sentOutcome(step: ConversationStep.Otp, decision: Decision): AntifraudOutcome =
+      if !step.isFake then AntifraudOutcome.sent
+      else if decision.action == DecisionAction.Fake then AntifraudOutcome.faked
+      else AntifraudOutcome.suppressed
+
+    private def sendInitialOtp(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        factorIndex: Int,
+        decision: Decision,
+    ): Task[ConversationResult.Render] =
+      for
+        _ <- antifraudEvents.hold(decision)
+        effectiveUserId = conversation.userId
+        _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
+        otp <- otpService.prepareOtp(
+          previous = None,
+          userId = effectiveUserId,
+          clientId = conversation.clientId,
+          isRegistering = conversation.isRegistering,
+          forceFake = decision.action == DecisionAction.Fake,
+        )
+        // Asked for every phone number, a code that stands in for an unknown user included, and answered the same:
+        // were a closed range to refuse only the numbers that get a real code, the refusal would tell which
+        // numbers are users. Only a real code is charged, so trying numbers cannot close a range.
+        charged = credential.isRight && otp.real.isDefined
+        chargedAt <- Clock.instant
+        // From the charge to the send nothing may leave the count standing for a code that did not go out: an
+        // error, a lost write and an interruption all give it back, which is why the stretch is entered
+        // uninterruptibly and the return is the exit of what follows.
+        result2 <- ZIO.uninterruptibleMask: restore =>
+          for
+            allowed <- credential match
+              case Right(phone) => antifraudEvents.allowSms(conversation.clientId, phone, chargedAt, charge = otp.real.isDefined)
+              case Left(_) => ZIO.succeed(true)
+            sentOut <- Ref.make(false)
+            giveBack = ZIO.foreachDiscard(credential.toOption.filter(_ => charged))(phone =>
+              antifraudEvents.releaseSms(conversation.clientId, phone, chargedAt),
+            )
+            rendered <-
+              if !allowed then
+                otpRequested(authId, conversation, credential, AntifraudOutcome.throttled, Some(decision)) *> accessDenied(authId, conversation)
+              else
+                restore:
+                  for
+                    now <- Clock.instant
+                    sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
+                    updatedConversation = conversation.copy(
+                      userId = effectiveUserId,
+                      // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
+                      credential = Some(credential),
+                      step = sentStep,
+                      userEmail = conversation.userEmail,
+                      userPhone = conversation.userPhone,
+                      userLogin = conversation.userLogin,
+                      userClaims = conversation.userClaims,
+                    )
+                    written <- conversationRepository.overwrite(authId, updatedConversation)
+                    sentResult <- if written then
+                      // The flag goes up in the same uninterruptible step in which the send is known to have
+                      // succeeded, so an interruption cannot fall between the two and give back a code that went.
+                      ZIO.uninterruptibleMask(sending =>
+                        sending(sendTimed(sentStep, credential, authId, conversation)) <* sentOut.set(true),
+                      )
+                        .tapBoth(
+                          _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error, Some(decision)),
+                          _ =>
+                            otpRequested(authId, conversation, credential, sentOutcome(sentStep, decision), Some(decision)),
+                        )
+                        .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
+                    else
+                      Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                  yield sentResult
+                .onExit(_ => ZIO.unlessZIO(sentOut.get)(giveBack))
+          yield rendered
+      yield result2
+
     override def prepareInitialOtp(
         authId: AuthId,
         conversation: ConversationRecord,
@@ -286,36 +400,13 @@ object ConversationService:
           case denied => ZIO.succeed(denied)
         result <- requestStatus match
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
-            accessDenied(authId, conversation)
+            otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *>
+              accessDenied(authId, conversation)
           case LimitStatus.Allowed =>
-            for
-              effectiveUserId = conversation.userId
-              _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
-              otp <- otpService.prepareOtp(
-                previous = None,
-                userId = effectiveUserId,
-                clientId = conversation.clientId,
-                isRegistering = conversation.isRegistering,
-              )
-              now <- Clock.instant
-              sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
-              updatedConversation = conversation.copy(
-                userId = effectiveUserId,
-                // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
-                credential = Some(credential),
-                step = sentStep,
-                userEmail = conversation.userEmail,
-                userPhone = conversation.userPhone,
-                userLogin = conversation.userLogin,
-                userClaims = conversation.userClaims,
-              )
-              written <- conversationRepository.overwrite(authId, updatedConversation)
-              result2 <- if written then
-                otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
-                  .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
-              else
-                Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
-            yield result2
+            antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential).flatMap: decision =>
+              if decision.action == DecisionAction.Block then
+                otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
+              else sendInitialOtp(authId, conversation, credential, factorIndex, decision)
       yield result
 
     override def prepareInitialPassword(
@@ -371,18 +462,21 @@ object ConversationService:
       val subject = conversation.credential.map(_.merge).getOrElse("")
       submissionLimiter.isBanned(conversation.clientId, subject, ChallengeType.OtpSubmit).flatMap:
         case LimitStatus.Banned =>
-          accessDenied(authId, conversation)
+          otpChecked(authId, conversation, AntifraudOutcome.locked) *>
+            accessDenied(authId, conversation)
         case LimitStatus.RateLimited(retryAfter) =>
-          renderStep(authId, conversation, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
+          otpChecked(authId, conversation, AntifraudOutcome.locked) *>
+            renderStep(authId, conversation, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
         case LimitStatus.Allowed =>
           otpService.checkOtp(otp, submittedCode).flatMap:
             case SubmitOtpResult.Failure =>
-              recordLimitAndRender(authId, conversation, subject, ChallengeType.OtpSubmit): retryAfter =>
-                otp.copy(
-                  timesSubmitted = otp.timesSubmitted + 1,
-                  rateLimitExceeded = retryAfter.isDefined,
-                  lockedSeconds = retryAfter.fold(0)(_.toInt),
-                )
+              otpChecked(authId, conversation, if otp.isFake then AntifraudOutcome.fake_verify else AntifraudOutcome.wrong_code) *>
+                recordLimitAndRender(authId, conversation, subject, ChallengeType.OtpSubmit): retryAfter =>
+                  otp.copy(
+                    timesSubmitted = otp.timesSubmitted + 1,
+                    rateLimitExceeded = retryAfter.isDefined,
+                    lockedSeconds = retryAfter.fold(0)(_.toInt),
+                  )
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
@@ -398,8 +492,12 @@ object ConversationService:
                     userClaims = fresh.flatten.orElse(conversation.userClaims),
                   )
                   written <- conversationRepository.overwrite(authId, updated)
+                  // Recorded once the step is stored: a retry after a lost write race submits the same code
+                  // again, and a second `verified` for one conversation would count a conversion twice.
                   result <-
-                    if written then ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                    if written then
+                      otpChecked(authId, conversation, AntifraudOutcome.verified)
+                        .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
                     else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
                 yield result
 
@@ -625,6 +723,17 @@ object ConversationService:
         case Some(userId) =>
           issueCode(authId, conversation, userId)
 
+    /** Whether the factors the conversation passed cover its target ACR; a conversation with no target
+      * has nothing to cover. */
+    private def acrCovered(
+        conversation: ConversationRecord,
+        vocabulary: Map[Acr, NonEmptyList[PassedAuthFactor]],
+    ): Boolean =
+      conversation.targetAcr.forall: _ =>
+        conversation.requiredFactors(vocabulary).exists(_.forall(required =>
+          conversation.amr.keySet.exists(_.satisfies(required, conversation.authFlow.equivalents)),
+        ))
+
     /** Renders the Consent step when a grant is still needed, otherwise records the reused grant
       * on the conversation and completes it.
       */
@@ -671,6 +780,17 @@ object ConversationService:
                   issueCode(authId, conversation.copy(grantedScope = Some(grantedScope)), userId)
 
     private def issueCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        userId: UserId,
+    ): Task[ConversationResult.Render] =
+      configService.getAcrVocabulary(conversation.clientId).flatMap: vocabulary =>
+        if acrCovered(conversation, vocabulary) then issueCodeUnchecked(authId, conversation, userId)
+        // The ACR this conversation pursued is not backed by the factors it passed, so it must not be
+        // claimed in the tokens.
+        else Observability.setError("acr_unsatisfied") *> accessDenied(authId, conversation)
+
+    private def issueCodeUnchecked(
         authId: AuthId,
         conversation: ConversationRecord,
         userId: UserId,
@@ -782,7 +902,13 @@ object ConversationService:
         step: ConversationStep.Credential,
         settings: PasskeySettings,
     ): Task[String] =
-      webAuthnService.startAssertion(settings).foldZIO(
+      val ceremony = (step.passkeyOnly, conversation.userId) match
+        case (true, Some(userId)) => webAuthnService.startUserAssertion(settings, userId)
+        // A passkey-only step without a user cannot be told apart from a discoverable assertion
+        // that would accept anyone, so it never starts one.
+        case (true, None) => ZIO.fail(WebAuthnError.CeremonyFailed("passkey-only step without a user"))
+        case (false, _) => webAuthnService.startAssertion(settings)
+      ceremony.foldZIO(
         ZIO.fail(_),
         ceremony =>
           val updatedStep = step.copy(
@@ -792,6 +918,33 @@ object ConversationService:
           conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
             .as(ceremony.publicKeyOptions),
       )
+
+    /** A failed assertion offers another try on the ordinary credential card; a passkey-only step has nothing
+      * else to offer and would only start the same prompt again, so it denies. */
+    private def passkeyAssertionFailed(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        cred: ConversationStep.Credential,
+    ): Task[ConversationResult.Render] =
+      if cred.passkeyOnly then accessDenied(authId, conversation)
+      else renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+
+    override def promptPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      conversation.userId match
+        case Some(_) if conversation.authFlow.passkey.isDefined =>
+          renderStep(
+            authId,
+            conversation,
+            ConversationStep.Credential(
+              primaryCredentials = conversation.authFlow.primary.credentials,
+              inlinePassword = false,
+              passkey = true,
+              passkeyOnly = true,
+            ),
+          )
+        case _ =>
+          Observability.setError("illegal_state", Some("passkey step without a user or a passkey flow")) *>
+            accessDenied(authId, conversation)
 
     override def finishPasskeyAssertion(
         authId: AuthId,
@@ -824,14 +977,14 @@ object ConversationService:
                   // clear the stale request; if there is no IP we just re-render without recording.
                   val malformedSubjects = ipSubjectOpt.toList
                   if malformedSubjects.isEmpty then
-                    renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                    passkeyAssertionFailed(authId, conversation, cred)
                   else
                     submissionLimiter.statusForSubjects(conversation.clientId, malformedSubjects, ChallengeType.PasskeyAssertion).flatMap:
                       case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
                         accessDenied(authId, conversation)
                       case LimitStatus.Allowed =>
                         recordIp *>
-                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                          passkeyAssertionFailed(authId, conversation, cred)
                 case Some(credSubject) =>
                   val banSubjects = ipSubjectOpt.toList :+ credSubject
                   submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
@@ -848,7 +1001,7 @@ object ConversationService:
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
                               (recordIp.zipPar(submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
-                                renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                                passkeyAssertionFailed(authId, conversation, cred)
                             },
                             outcome =>
                               Observability.setUserId(outcome.userId.toString) *>
@@ -905,9 +1058,17 @@ object ConversationService:
               passkeyRepository.listByUser(userId).flatMap: existing =>
                 if existing.nonEmpty then finish(authId, conversation)
                 else
-                  val displayName: String =
-                    conversation.user.map(_.passkeyDisplayName).getOrElse(userId.toString)
-                  webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
+                  // What the person signed in with names the account in their authenticator: the phone number if
+                  // they entered one, the email if they entered that, the login for a login and password. The user id
+                  // is never shown; with nothing else to go on the service's own name is.
+                  val accountName: String =
+                    conversation.credential.map(_.fold(email => email: String, phone => phone: String))
+                      .orElse(conversation.userLogin.map(login => login: String))
+                      .orElse(conversation.user.flatMap(_.passkeyAccountName))
+                      .getOrElse(settings.rpName)
+                  // The secondary label: the user's own name when they have one, else the same as the account.
+                  val displayName: String = conversation.user.flatMap(_.nameClaim).getOrElse(accountName)
+                  webAuthnService.startRegistration(settings, userId, accountName, displayName).foldZIO(
                     _ => finish(authId, conversation),
                     ceremony =>
                       val enrollStep = ConversationStep.PasskeyEnroll(

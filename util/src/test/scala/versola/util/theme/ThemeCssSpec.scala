@@ -222,11 +222,38 @@ object ThemeCssSpec extends ZIOSpecDefault:
     ),
     suite("compose")(
       test("puts the default first, then the tokens, then the theme's own CSS") {
-        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), "CUSTOM")
+        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, VariableValue], "CUSTOM")
         assertTrue(css.indexOf("DEFAULT") < css.indexOf("--brand"), css.indexOf("--brand") < css.indexOf("CUSTOM"))
       },
+      test("a custom rule for a variable the tokens set comes after the generated one, so it wins the cascade") {
+        val tokens = resolved("#155e75")
+        val css = ThemeCss.compose(ThemeCss.baseStylesheet, tokens, Map.empty[String, VariableValue], ":root { --brand: #ff0000; --rs: 8px; }")
+        val generated = ThemeCss.generate(tokens)
+        val custom = css.indexOf(":root { --brand: #ff0000;")
+        assertTrue(
+          css.startsWith(ThemeCss.baseStylesheet),
+          css.indexOf(generated) >= ThemeCss.baseStylesheet.length,
+          css.indexOf(generated) + generated.length <= custom,
+          css.endsWith(":root { --brand: #ff0000; --rs: 8px; }"),
+        )
+      },
+      test("the cascade is the default, the five values, the token overrides, then the custom CSS") {
+        val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), Map("--rs" -> VariableValue.Single("8px")), "CUSTOM")
+        val values = css.indexOf("--brand:#155e75")
+        val overrides = css.indexOf("--rs:8px;")
+        assertTrue(
+          css.indexOf("DEFAULT") < values,
+          values < overrides,
+          overrides < css.indexOf("CUSTOM"),
+          // the generated block sets --rs too, and the override is the later declaration
+          css.indexOf("--rs:24px;") < overrides,
+        )
+      },
+      test("writes no block when no token is overridden") {
+        assertTrue(ThemeCss.compose("D", resolved("#155e75"), Map.empty[String, VariableValue], "").indexOf("token overrides") == -1)
+      },
       test("leaves out an empty custom CSS") {
-        assertTrue(!ThemeCss.compose("DEFAULT", resolved("#155e75"), "").endsWith("\n"))
+        assertTrue(!ThemeCss.compose("DEFAULT", resolved("#155e75"), Map.empty[String, VariableValue], "").endsWith("\n"))
       },
     ),
     suite("ThemePresets")(
@@ -237,33 +264,65 @@ object ThemeCssSpec extends ZIOSpecDefault:
           ThemePresets.all.forall(p => p.title.contains("en") && p.title.contains("ru")),
         )
       },
+      test("pins each built-in theme to the website's list, and none of them fixes a colour scheme") {
+        // versolauth/versola-website src/lib/theme-presets.ts is a port of this list: a change here is a change there.
+        val expected = Vector(
+          ("versola", "#155e75", Shape.soft, Surface.bold, Background.glow),
+          ("studio", "#ff6b4a", Shape.round, Surface.bold, Background.glow),
+          ("fintech", "#5b5bd6", Shape.soft, Surface.neutral, Background.linear),
+          ("wellness", "#0e9f8e", Shape.round, Surface.soft, Background.horizon),
+          ("editorial", "#14130f", Shape.sharp, Surface.neutral, Background.flat),
+          ("sunny", "#f5c518", Shape.soft, Surface.bold, Background.glow),
+          ("berry", "#b4348a", Shape.round, Surface.bold, Background.glow),
+        )
+        assertTrue(
+          ThemePresets.all.size == 7,
+          ThemePresets.all.map(p => (p.id, p.tokens.brand.value, p.tokens.shape, p.tokens.surface, p.tokens.background)) == expected,
+          ThemePresets.all.forall(_.tokens.mode == Mode.auto),
+        )
+      },
       test("the default preset is what common.css already looks like") {
         val css = ThemeCss.generate(ThemePresets.all.head.tokens)
         assertTrue(css.contains("--brand:#155e75;"), css.contains("--rf:14px;--rb:14px;--rs:24px;"), !css.contains("--page-"))
       },
       test("resolves a base with its overrides laid over it") {
         val tokens = ThemeTokens(
-          "studio",
-          Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, mode = Some(Mode.dark), shape = None, surface = None, background = None)),
+          base = "studio",
+          overrides = Some(ThemeOverrides(
+            brand = BrandColor.parse("#112233").toOption,
+            mode = Some(Mode.dark),
+            shape = None,
+            surface = None,
+            background = None,
+          )),
+          variables = None,
         )
         assertTrue(
           ThemePresets.resolve(tokens) == Right(ResolvedTokens(colour("#112233"), Shape.round, Surface.bold, Mode.dark, Background.glow)),
-          ThemePresets.resolve(ThemeTokens("studio", overrides = None)).map(_.brand) == Right(colour("#ff6b4a")),
+          ThemePresets.resolve(ThemeTokens(base = "studio", overrides = None, variables = None)).map(_.brand) == Right(colour("#ff6b4a")),
         )
       },
       test("refuses a base that is not built in, without echoing it") {
-        val hostile = ThemePresets.resolve(ThemeTokens("<script>alert(1)</script>", overrides = None))
-        assertTrue(ThemePresets.resolve(ThemeTokens("nope", overrides = None)).isLeft, hostile.isLeft, hostile.left.exists(!_.contains("script")))
+        val hostile = ThemePresets.resolve(ThemeTokens(base = "<script>alert(1)</script>", overrides = None, variables = None))
+        assertTrue(
+          ThemePresets.resolve(ThemeTokens(base = "nope", overrides = None, variables = None)).isLeft,
+          hostile.isLeft,
+          hostile.left.exists(!_.contains("script")),
+        )
       },
     ),
     suite("JSON")(
       test("tokens round-trip, with absent overrides left out") {
         val tokens =
-          ThemeTokens("fintech", Some(ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None)))
+          ThemeTokens(
+            base = "fintech",
+            overrides = Some(ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None)),
+            variables = None,
+          )
         assertTrue(tokens.toJson == """{"base":"fintech","overrides":{"shape":"sharp"}}""", tokens.toJson.fromJson[ThemeTokens] == Right(tokens))
       },
       test("a theme saved without overrides reads back with none") {
-        assertTrue("""{"base":"studio"}""".fromJson[ThemeTokens] == Right(ThemeTokens("studio", overrides = None)))
+        assertTrue("""{"base":"studio"}""".fromJson[ThemeTokens] == Right(ThemeTokens(base = "studio", overrides = None, variables = None)))
       },
       test("refuses an unknown shape, surface or mode") {
         assertTrue(

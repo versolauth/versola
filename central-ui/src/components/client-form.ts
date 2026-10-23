@@ -49,6 +49,7 @@ import {
   describeJwks,
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
+import { estStateSummary } from '../utils/est-state';
 import './theme-token-controls';
 import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
@@ -3567,8 +3568,10 @@ export class VersolaClientForm extends LitElement {
         return this.clientType === 'native'
           ? 'tls_client_auth · certificate enrolled by edge'
           : 'tls_client_auth · certificate issued by central for edge';
-      case 'mtls':
-        return `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+      case 'mtls': {
+        const summary = `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+        return this.client?.est ? `${summary} · ${estStateSummary(this.client.est)}` : summary;
+      }
       case 'mtls-self-signed':
         return 'self_signed_tls_client_auth · matched against the registered key set';
       case 'private-key-jwt':
@@ -4822,22 +4825,22 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
-  /** The tokens of the theme the client uses, which its own overrides are laid over. A stylesheet theme has no
-   *  tokens to read: the block then shows nothing as inherited and writes every choice as an override. */
-  private get themeBase(): { tokens?: ResolvedThemeTokens; stylesheet: boolean } | null {
+  /** The tokens of the theme the client uses, which its own overrides are laid over. A theme stored with CSS and no
+   *  tokens has none to read: the block then shows nothing as inherited and writes every choice as an override. */
+  private get themeBase(): { tokens?: ResolvedThemeTokens; cssOnly: boolean } | null {
     const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
     const preset = (id: string) => this.availableThemePresets.find(p => p.id === id)?.tokens;
     const own = record?.tokens ? preset(record.tokens.base) : undefined;
     if (record?.tokens && own) {
-      return { tokens: { ...own, ...definedOverrides(record.tokens.overrides) }, stylesheet: false };
+      return { tokens: { ...own, ...definedOverrides(record.tokens.overrides) }, cssOnly: false };
     }
-    // A stylesheet's values are not known, so none are claimed; a theme not found yet falls back to the default preset.
-    if (record && !record.tokens) return { stylesheet: true };
+    // The values of a CSS-only theme are not known, so none are claimed; a theme not found yet falls back to the default preset.
+    if (record && !record.tokens) return { cssOnly: true };
     const fallback = preset('versola');
-    return fallback ? { tokens: fallback, stylesheet: false } : null;
+    return fallback ? { tokens: fallback, cssOnly: false } : null;
   }
 
-  /** What central is asked to render for the preview: the theme the client uses (a stylesheet theme has no tokens), and a
+  /** What central is asked to render for the preview: the theme the client uses (a theme stored with CSS only has no tokens), and a
    *  built-in default look while the theme is not found yet. */
   private get previewTheme(): { tokens: ThemeTokens | null; css: string } {
     const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
@@ -4850,6 +4853,9 @@ export class VersolaClientForm extends LitElement {
     const mode = overrides.mode ?? base.tokens?.mode;
     return mode === 'light' || mode === 'dark' ? mode : null;
   }
+
+  /** The scheme the appearance preview shows, which the background thumbnails are drawn in. */
+  @state() private previewScheme: 'light' | 'dark' | '' = '';
 
   /** The brand colour field of the appearance block holds text that is not a #rrggbb colour. */
   @state() private themeBrandInvalid = false;
@@ -4880,15 +4886,16 @@ export class VersolaClientForm extends LitElement {
           ${count === 0
             ? 'This app uses the theme as it is.'
             : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
-          ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and its own values are not shown.' : ''}
+          ${base.cssOnly ? ' The theme is only custom CSS: what is set here is applied on top of it, and its own values are not shown.' : ''}
         </div>
         <versola-client-consent-preview
           .form=${this.consentPreviewForm} .scenario=${this.consentPreviewScenario}
           .tokens=${this.previewTheme.tokens} .themeCss=${this.previewTheme.css} .overrides=${overrides}
           .fixedMode=${this.previewFixedMode(base, overrides)}
+          @scheme-change=${(e: CustomEvent<'light' | 'dark'>) => { this.previewScheme = e.detail; }}
           .clientName=${this.formData.clientName ?? {}} .logoUri=${this.formData.logoUri ?? ''} .locales=${this.locales}></versola-client-consent-preview>
         <versola-theme-token-controls inheritedNote="From the theme"
-          .base=${base.tokens} ?stylesheet=${base.stylesheet} .overrides=${overrides}
+          .base=${base.tokens} ?cssOnly=${base.cssOnly} .scheme=${this.previewScheme} .overrides=${overrides}
           @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
       </section>
     `;

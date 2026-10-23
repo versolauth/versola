@@ -52,6 +52,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       resources: Stub[ResourceService],
       permissions: Stub[PermissionService],
       dpopPolicy: Stub[DpopPolicyService],
+      overloadPolicy: Stub[OverloadPolicyService],
   ):
     def refreshCalls: List[Int] =
       List(
@@ -59,6 +60,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         resources.refreshNow.calls.length,
         permissions.refreshNow.calls.length,
         dpopPolicy.refreshNow.calls.length,
+        overloadPolicy.refreshNow.calls.length,
       )
 
   private def run(
@@ -74,6 +76,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         stub[ResourceService],
         stub[PermissionService],
         stub[DpopPolicyService],
+        stub[OverloadPolicyService],
       )
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
@@ -83,6 +86,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[ResourceService](services.resources) ++
               ZEnvironment[PermissionService](services.permissions) ++
               ZEnvironment[DpopPolicyService](services.dpopPolicy) ++
+              ZEnvironment[OverloadPolicyService](services.overloadPolicy) ++
               ZEnvironment[EdgeConfig](config) ++
               ZEnvironment[EnvName](env) ++
               tracing,
@@ -97,7 +101,8 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     services.clients.refreshNow.succeedsWith(()) *>
       services.resources.refreshNow.succeedsWith(()) *>
       services.permissions.refreshNow.succeedsWith(()) *>
-      services.dpopPolicy.refreshNow.succeedsWith(())
+      services.dpopPolicy.refreshNow.succeedsWith(()) *>
+      services.overloadPolicy.refreshNow.succeedsWith(())
 
   private def syncRequest(auth: Option[Header.Authorization]): Request =
     val base = Request.post(URL.empty / "service" / "configuration" / "sync", Body.empty)
@@ -110,7 +115,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       test("refreshes every configuration cache and returns 200 OK when the internal secret matches") {
         for
           (response, services) <- run(syncRequest(Some(validAuth)), setup = refreshesSucceed)
-        yield assertTrue(response.status == Status.Ok, services.refreshCalls == List(1, 1, 1, 1))
+        yield assertTrue(response.status == Status.Ok, services.refreshCalls == List(1, 1, 1, 1, 1))
       },
       test("fails the request when one cache cannot be refreshed, rather than reporting a partial sync") {
         for
@@ -120,32 +125,33 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
               services.clients.refreshNow.succeedsWith(()) *>
                 services.resources.refreshNow.failsWith(RuntimeException("central unreachable")) *>
                 services.permissions.refreshNow.succeedsWith(()) *>
-                services.dpopPolicy.refreshNow.succeedsWith(()),
+                services.dpopPolicy.refreshNow.succeedsWith(()) *>
+                services.overloadPolicy.refreshNow.succeedsWith(()),
           )
         yield assertTrue(response.status == Status.InternalServerError)
       },
       test("rejects a request with no Authorization header") {
         for
           (response, services) <- run(syncRequest(None))
-        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
       test("rejects a request with the wrong username") {
         val wrongAuth = Header.Authorization.Basic("central", Base64Url.encode(internalSecret))
         for
           (response, services) <- run(syncRequest(Some(wrongAuth)))
-        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
       test("rejects a request whose secret does not match") {
         val wrongAuth = Header.Authorization.Basic("edge", Base64Url.encode(Secret(Array.fill(32)(9.toByte))))
         for
           (response, services) <- run(syncRequest(Some(wrongAuth)))
-        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
       test("rejects a request whose secret is not valid base64url") {
         val malformedAuth = Header.Authorization.Basic("edge", "not-valid-base64!!!")
         for
           (response, services) <- run(syncRequest(Some(malformedAuth)))
-        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
       test("rejects every request when the config has no internal secret configured") {
         for
@@ -153,12 +159,12 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
             syncRequest(Some(validAuth)),
             config = edgeConfig(secret = None),
           )
-        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.Unauthorized, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
       test("returns 404 Not Found in prod, without even checking auth") {
         for
           (response, services) <- run(syncRequest(None), env = EnvName.Prod)
-        yield assertTrue(response.status == Status.NotFound, services.refreshCalls == List(0, 0, 0, 0))
+        yield assertTrue(response.status == Status.NotFound, services.refreshCalls == List(0, 0, 0, 0, 0))
       },
     ),
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

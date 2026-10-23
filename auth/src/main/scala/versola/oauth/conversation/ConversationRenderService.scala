@@ -13,7 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets}
+import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets, VariableValue}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
@@ -105,6 +105,8 @@ object ConversationRenderService:
         phoneRegions: Option[List[PhoneRegion]],
         passwordRegex: Option[String],
         registration: Boolean,
+        /** Only a passkey of the identified user is asked for; the form starts it by itself. */
+        passkeyOnly: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -178,6 +180,8 @@ object ConversationRenderService:
     case class AccountSettings(
         sessions: List[AccountSession],
         passkeys: List[AccountPasskey],
+        hasPassword: Boolean,
+        passwordRegex: String,
     ) extends StepView
 
     @jsonHint("access-denied")
@@ -650,13 +654,13 @@ object ConversationRenderService:
 
     // A theme is a whole stylesheet, except one built from tokens: that is the base stylesheet (a resource of util, not the
     // stored default theme, which is itself a token theme), what its
-    // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
+    // tokens set, the variables it sets one by one, then its own CSS. A base this service does not know (a newer central) gives the default look
     // rather than a broken page (plus the theme's own CSS).
     //
     // A client may carry overrides of its own (a partner app with its brand colour): they are one more rule after all
-    // of the above, so they win over the theme. A stylesheet theme has no tokens to read the base from, so the default
-    // preset stands in for it, and the overrides apply on top of the stylesheet; a stylesheet written against the legacy
-    // names (--accent, --bg) that sets them to literals is not moved by --brand, as it would not be by any token.
+    // of the above, so they win over the theme. A theme stored with CSS only has no tokens to read the base from, so the
+    // default preset stands in for it, and the overrides apply on top of its CSS; CSS that sets its own variables to
+    // literals is not moved by --brand, as it would not be by any token.
     private def themeCss(themeId: String, overrides: Option[ThemeOverrides] = None): UIO[String] =
       themeBase(themeId).map: (css, resolved) =>
         val partial = (overrides.filterNot(_.isEmpty), resolved) match
@@ -670,7 +674,9 @@ object ConversationRenderService:
         case Some(theme) if theme.tokens.isDefined =>
           defaultCss.map: default =>
             theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
-              case Some(resolved) => (ThemeCss.compose(default, resolved, theme.css), Some(resolved))
+              case Some(resolved) =>
+                val variables = theme.tokens.flatMap(_.variables).getOrElse(Map.empty[String, VariableValue])
+                (ThemeCss.compose(default, resolved, variables, theme.css), Some(resolved))
               case None => (Seq(default, theme.css).filter(_.nonEmpty).mkString("\n"), versola)
         case Some(theme) if theme.css.nonEmpty => ZIO.succeed((theme.css, versola))
         case _ => defaultCss.map((_, versola))
@@ -711,10 +717,10 @@ object ConversationRenderService:
         responseMode: ResponseMode,
     ): Task[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
           for
             phoneRegions <-
-              if primaryCredentials.contains(PrimaryCredential.phone) then
+              if primaryCredentials.contains(PrimaryCredential.phone) && !passkeyOnly then
                 configuration.getPhoneRegions(clientId).map(Some(_))
               else
                 ZIO.none
@@ -728,6 +734,7 @@ object ConversationRenderService:
             phoneRegions,
             passwordRegex,
             registration,
+            passkeyOnly,
           )
 
         case _: ConversationStep.Password =>

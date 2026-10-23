@@ -10,6 +10,7 @@ import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../ut
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateScopeId } from '../utils/validators';
 import { languagesCell, languagesChip, localizedValue, missingLocales } from './localized-value';
+import { valueChips } from './value-chips';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
 import './content-header';
@@ -272,7 +273,7 @@ export class VersolaScopesList extends LitElement {
   private get draftIdError(): string {
     const id = this.draftId.trim();
     if (!id) return this.submitted ? 'A scope ID is required.' : '';
-    if (!validateScopeId(id)) return 'Lowercase letters, digits and underscores, starting with a letter.';
+    if (!validateScopeId(id)) return 'Lowercase letters, digits and underscores, starting with a letter. No dots or colons.';
     if (this.scopes.some(scope => scope.id === id)) return 'A scope with this ID already exists.';
     return '';
   }
@@ -379,10 +380,6 @@ export class VersolaScopesList extends LitElement {
       && (!query || scope.id.toLowerCase().includes(query) || getLocalizedDescription(scope.description).toLowerCase().includes(query)));
   }
 
-  private count(filter: ScopeFilter): number {
-    return this.scopes.filter(scope => this.matchesFilter(scope, filter)).length;
-  }
-
   private renderToolbar() {
     const options: Array<{ id: ScopeFilter; label: string }> = [
       { id: 'all', label: 'All' },
@@ -395,7 +392,7 @@ export class VersolaScopesList extends LitElement {
         <input class="search-input" type="search" aria-label="Search scopes" placeholder="ID or description"
           .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} />
         <versola-filter-bar label="Filter scopes"
-          .options=${options.map(option => ({ ...option, count: this.count(option.id) }))}
+          .options=${options}
           .value=${this.filter}
           @change=${(e: CustomEvent<{ id: string }>) => this.filter = e.detail.id as ScopeFilter}></versola-filter-bar>
       </div>
@@ -409,9 +406,7 @@ export class VersolaScopesList extends LitElement {
           <span class="row-title">${getLocalizedDescription(scope.description) || scope.id}</span>
           <span class="row-id">${scope.id}</span>
         </button>` },
-      { id: 'claims', label: 'Claims', cell: scope => scope.claims.length
-        ? html`<span title=${scope.claims.map(claim => claim.id).join(', ')}>${scope.claims.length}</span>`
-        : html`<span class="muted">0</span>` },
+      { id: 'claims', label: 'Claims', cell: scope => valueChips(scope.claims.map(claim => claim.id), { empty: 'None' }) },
       ...(this.locales.length ? [{ id: 'languages', label: 'Languages', cell: (scope: OAuthScope) => languagesCell(scope.description, this.locales) }] : []),
     ];
     const menuItems = (scope: OAuthScope): RowMenuItem[] => [
@@ -424,7 +419,7 @@ export class VersolaScopesList extends LitElement {
         .columns=${columns}
         .rows=${this.filteredScopes}
         .rowKey=${(scope: OAuthScope) => scope.id}
-        .selectedKey=${this.route.id}
+        .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
         .menuLabel=${(scope: OAuthScope) => `Actions for ${scope.id}`}
         @row-select=${(e: CustomEvent<{ row: OAuthScope }>) => this.openView(e.detail.row)}
@@ -486,10 +481,7 @@ export class VersolaScopesList extends LitElement {
   }
 
   private renderMeta(scope: OAuthScope) {
-    return html`
-      <span class="chip">${scope.claims.length} ${scope.claims.length === 1 ? 'claim' : 'claims'}</span>
-      ${languagesChip(scope.description, this.locales)}
-    `;
+    return languagesChip(scope.description, this.locales);
   }
 
   private renderRecordPage(scope: OAuthScope) {
@@ -570,7 +562,7 @@ export class VersolaScopesList extends LitElement {
                 aria-invalid=${idError ? 'true' : nothing} aria-describedby="scope-id-hint" placeholder="e.g. profile"
                 @input=${(e: Event) => this.draftId = (e.target as HTMLInputElement).value} />
               ${idError ? html`<div class="error-message" id="scope-id-hint" role="alert">${idError}</div>`
-                : html`<div class="hint" id="scope-id-hint">Lowercase letters, digits and underscores, starting with a letter.</div>`}
+                : html`<div class="hint" id="scope-id-hint">Lowercase letters, digits and underscores, starting with a letter. No dots or colons.</div>`}
             </div>
             ${this.renderDescriptionField('Description')}
           </div>

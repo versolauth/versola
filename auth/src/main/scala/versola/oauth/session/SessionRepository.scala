@@ -3,6 +3,7 @@ package versola.oauth.session
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.RefreshToken
 import versola.oauth.session.model.{
+  EndedSession,
   PriorSession,
   PublicSessionId,
   RefreshAlreadyExchanged,
@@ -11,6 +12,7 @@ import versola.oauth.session.model.{
   RevokedFamily,
   SessionId,
   SessionRecord,
+  StoredSession,
 }
 import versola.user.model.UserId
 import versola.util.MAC
@@ -42,9 +44,15 @@ trait SessionRepository:
    *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
   def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit]
 
+  /** The user's live sessions, newest first, each with its idle expiry. */
   def findByUserId(
       userId: UserId,
-  ): Task[List[SessionRecord]]
+  ): Task[List[StoredSession]]
+
+  /** The user's sessions that are no longer live but not yet swept (see [[EndedSession]]). */
+  def findEndedByUserId(
+      userId: UserId,
+  ): Task[List[EndedSession]]
 
   /** Every currently-live refresh token issued to a user, for admin-panel display. Looked up
     * directly by `user_id` rather than through the user's sessions: a refresh token's expiry

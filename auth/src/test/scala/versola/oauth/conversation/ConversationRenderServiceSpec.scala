@@ -64,7 +64,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId), tokens = None)
   // The default theme is an ordinary token theme; the foundation stylesheet comes from ThemeCss.baseStylesheet, not from it.
-  private val defaultTheme = ThemeRecord("default", "", None, Some(ThemeTokens("versola", overrides = None)))
+  private val defaultTheme = ThemeRecord("default", "", None, Some(ThemeTokens(base = "versola", overrides = None, variables = None)))
   private val base = ThemeCss.baseStylesheet
 
   private val locales = Locales(default = "en", locales = Vector(LocaleRecord("en", "English")))
@@ -183,7 +183,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
   private val ownOverrides =
     ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold), shape = None, mode = None, background = None)
   private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
-  private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech", overrides = None)))
+  private val fintechTheme = theme.copy(css = ".custom { top: 0; }", tokens = Some(ThemeTokens(base = "fintech", overrides = None, variables = None)))
 
   // The same rule on each caller of the theme: the client the page is for, when it is known, brings its overrides;
   // when it is not (removed since, or never named) the page is the theme's own and nothing fails.
@@ -205,7 +205,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       "renderAccount",
       "auth-settings",
       (service, id) =>
-        service.renderAccount(id.getOrElse(clientId), StepView.AccountSettings(Nil, Nil), None),
+        service.renderAccount(
+          id.getOrElse(clientId),
+          StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+          None,
+        ),
     ),
     (
       "renderLogoutConfirm",
@@ -530,14 +534,14 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       ),
       suite("a theme built from tokens")(
         test("is the base stylesheet, then what its tokens set, then its own CSS") {
-          val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio", overrides = None)))
+          val tokenTheme = theme.copy(css = ".custom { top: 0; }", tokens = Some(ThemeTokens(base = "studio", overrides = None, variables = None)))
           rendered(tokenTheme).map: body =>
             assertTrue(
               body.contains(base),
               body.contains("--brand:#ff6b4a;"),
-              body.contains(".extra { top: 0; }"),
+              body.contains(".custom { top: 0; }"),
               body.indexOf(base) < body.indexOf("--brand:#ff6b4a;"),
-              body.indexOf("--brand:#ff6b4a;") < body.indexOf(".extra { top: 0; }"),
+              body.indexOf("--brand:#ff6b4a;") < body.indexOf(".custom { top: 0; }"),
               !body.contains(".body { color: red; }"),
             )
         },
@@ -545,8 +549,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           val tokenTheme = theme.copy(
             css = "",
             tokens = Some(ThemeTokens(
-              "fintech",
-              Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)),
+              base = "fintech",
+              overrides = Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)),
+              variables = None,
             )),
           )
           rendered(tokenTheme).map(body => assertTrue(body.contains("--brand:#5b5bd6;"), body.contains("color-scheme:dark;")))
@@ -554,22 +559,28 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         test("applies its overrides over the base") {
           val tokens =
             ThemeTokens(
-              "studio",
-              Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)),
+              base = "studio",
+              overrides =
+                Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)),
+              variables = None,
             )
           rendered(theme.copy(css = "", tokens = Some(tokens))).map: body =>
             assertTrue(body.contains("--brand:#112233;"), !body.contains("--brand:#ff6b4a;"))
         },
         test("falls back to the base stylesheet when its base is not one this service knows") {
-          rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future", overrides = None)))).map: body =>
+          rendered(theme.copy(css = "", tokens = Some(ThemeTokens(base = "from-the-future", overrides = None, variables = None)))).map: body =>
             assertTrue(body.contains(base), !body.contains("--brand:#112233;"))
         },
         test("keeps its own CSS on the base stylesheet when its base is not one this service knows") {
-          rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future", overrides = None)))).map: body =>
-            assertTrue(body.contains(base), body.contains(".extra { top: 0; }"), !body.contains("--brand:#112233;"))
+          rendered(theme.copy(
+            css = ".custom { top: 0; }",
+            tokens = Some(ThemeTokens(base = "from-the-future", overrides = None, variables = None)),
+          )).map: body =>
+            assertTrue(body.contains(base), body.contains(".custom { top: 0; }"), !body.contains("--brand:#112233;"))
         },
         test("has its own CSS escaped like any other, so it cannot end the style element") {
-          val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio", overrides = None)))
+          val tokenTheme =
+            theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens(base = "studio", overrides = None, variables = None)))
           rendered(tokenTheme).map: body =>
             assertTrue(styleBlocksAreBalanced(body), body.contains("\\3c /style>"))
         },
@@ -580,20 +591,20 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             assertTrue(
               body.contains("--brand:#5b5bd6;"),
               body.contains("--brand:#112233;"),
-              body.indexOf(".extra { top: 0; }") < body.indexOf("--brand:#112233;"),
+              body.indexOf(".custom { top: 0; }") < body.indexOf("--brand:#112233;"),
               body.indexOf("--brand:#5b5bd6;") < body.indexOf("--brand:#112233;"),
               // bold is written out, to undo the neutral page of the theme under it
               body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 9%"),
             )
         },
-        test("go after the CSS of a stylesheet theme") {
+        test("go after the CSS of a theme with CSS only") {
           rendered(theme, withOverrides).map: body =>
             assertTrue(
               body.contains(".body { color: red; }"),
               body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
             )
         },
-        test("go on top of a stylesheet theme, with nothing else changed in it") {
+        test("go on top of a theme with CSS only, with nothing else changed in it") {
           for
             plain <- rendered(theme)
             over <- rendered(theme, withOverrides)
@@ -1109,6 +1120,26 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("\"error\":\"passkey_failed\""))
       },
+      test("renders a passkey-only Credential step without the fields it has no use for") {
+        val env = Env()
+        val step = ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true)
+        val record = conversationRecord.copy(step = step)
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+          regionLookups = env.configuration.getPhoneRegions.times
+        yield assertTrue(
+          body.contains("\"passkeyOnly\":true"),
+          body.contains("\"passkey\":true"),
+          !body.contains("phoneRegions"),
+          regionLookups == 0,
+        )
+      },
       test("fetches allowed phone prefixes and skips the password regex for a phone-only Credential step") {
         val env = Env()
         val step = ConversationStep.Credential(List(PrimaryCredential.phone), false, false)
@@ -1152,7 +1183,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(Nil, Nil),
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
             None,
           )
           body <- response.body.asString
@@ -1168,7 +1199,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
-          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          response <- env.service.renderAccount(
+            clientId,
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            None,
+          )
           body <- response.body.asString
         yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
@@ -1180,7 +1215,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
-          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          response <- env.service.renderAccount(
+            clientId,
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            None,
+          )
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
