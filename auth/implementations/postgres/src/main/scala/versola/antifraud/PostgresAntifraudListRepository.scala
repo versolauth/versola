@@ -116,9 +116,10 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
   override def purgeExpired(now: Instant, limit: Int): Task[Int] =
     xa.transactMeasured("purge-antifraud-list-entries"):
       val removed = sql"""
-        DELETE FROM af_list_entry WHERE id IN (
+        WITH due AS MATERIALIZED (
           SELECT id FROM af_list_entry WHERE expires_at <= $now ORDER BY expires_at LIMIT $limit FOR UPDATE SKIP LOCKED
-        ) RETURNING $EntryColumns
+        )
+        DELETE FROM af_list_entry e USING due WHERE e.id = due.id RETURNING $EntryReturning
       """.query[EntryRow].run()
       removed.foreach(row => audited(AntifraudListAction.expire, "system", now, row))
       if removed.nonEmpty then bumped()
@@ -127,9 +128,10 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
   override def pruneAudit(before: Instant, limit: Int): Task[Int] =
     xa.connectMeasured("prune-antifraud-list-audit"):
       sql"""
-        DELETE FROM af_list_audit WHERE id IN (
+        WITH due AS MATERIALIZED (
           SELECT id FROM af_list_audit WHERE at < $before ORDER BY at LIMIT $limit FOR UPDATE SKIP LOCKED
         )
+        DELETE FROM af_list_audit a USING due WHERE a.id = due.id
       """.update.run()
 
   // Two statements, not one with `$x IS NULL OR entry_id = $x`: a cached generic plan would have to serve both.
@@ -235,6 +237,10 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
 object PostgresAntifraudListRepository:
   val live: ZLayer[TransactorZIO, Nothing, AntifraudListRepository] =
     ZLayer.fromFunction(PostgresAntifraudListRepository(_))
+
+  private val EntryReturning = SqlLiteral(
+    "e.id, e.type, e.value_type, e.value, e.tenant_id, e.expires_at, e.reason, e.source, e.shadow, e.created_by, e.created_at, e.hit_count, e.last_hit_at",
+  )
 
   private val EntryColumns = SqlLiteral(
     "id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at, hit_count, last_hit_at",
