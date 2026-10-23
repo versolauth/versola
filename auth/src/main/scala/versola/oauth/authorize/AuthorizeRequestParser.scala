@@ -19,7 +19,7 @@ import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
+import versola.util.{Base64, ClientIp, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -156,7 +156,7 @@ object AuthorizeRequestParser:
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
         ipHeader <- oauthClientService.getIpHeader(clientId)
-        ip = request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
+        ip = ClientIp.fromRequest(request, ipHeader, config.trustedProxyHops)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         stateForErrors = params.get("state")
