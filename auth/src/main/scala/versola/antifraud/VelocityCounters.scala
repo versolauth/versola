@@ -69,6 +69,12 @@ final class VelocityCounters(settings: VelocityCounters.Settings, ipKey: String 
   private val untrackedCount = AtomicLong(0)
   private val evictedCount = AtomicLong(0)
 
+  // Not Thread.threadId (JDK 19 and later) nor getId (deprecated there): the identity hash is on every JDK, and any
+  // spread over the stripes will do.
+  private def stripeOfThread: Int =
+    val h = System.identityHashCode(Thread.currentThread())
+    (h ^ (h >>> 16)) & (stripes - 1)
+
   private def table(keyType: VelocityKey) = tables(keyType.ordinal)
 
   private def minuteOf(at: Instant): Long = Math.floorDiv(at.getEpochSecond, 60L)
@@ -83,7 +89,7 @@ final class VelocityCounters(settings: VelocityCounters.Settings, ipKey: String 
     val existing = map.get(k)
     val entry = if existing != null then existing else admit(keyType, map, k)
     if entry == null then untrackedCount.incrementAndGet()
-    else entry.add(minuteOf(at), 1, (Thread.currentThread().threadId() & (stripes - 1)).toInt)
+    else entry.add(minuteOf(at), 1, stripeOfThread)
 
   private def admit(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], key: String): Entry | Null =
     if map.size >= settings.maxKeys && !evictJunk(keyType, map) then null
