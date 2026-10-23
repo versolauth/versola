@@ -57,15 +57,18 @@ final class OtpFlows(
 
   /** Enters the code the number was sent. `None` when the code was not accepted. */
   def verify(sent: Requested.Sent, phone: String): IO[ProtocolError, Option[Granted]] =
+    codeFor(phone).flatMap(enter(sent, _))
+
+  /** Enters `code`, which need not be the right one. */
+  def enter(sent: Requested.Sent, code: String): IO[ProtocolError, Option[Granted]] =
     val conversation = sent.started.conversation
     val verification =
       for
-        code <- codeFor(phone)
         csrf <- required(sent.page.csrf, "/challenge/otp", "no csrf token on the code page")
         submitted <- timed("otp-verify", measureOtp)(auth.submitOtp(conversation = conversation, code = code, csrf = csrf))
         granted <- submitted match
           case SubmitOutcome.Redirected(location, _) =>
-            ZIO.succeed(param(location, "code").map(code => Granted(AuthCode(code), sent.started.codeVerifier)))
+            ZIO.succeed(param(location, "code").map(authCode => Granted(AuthCode(authCode), sent.started.codeVerifier)))
           case SubmitOutcome.Rendered(_) => ZIO.none
       yield granted
     verification.tapBoth(

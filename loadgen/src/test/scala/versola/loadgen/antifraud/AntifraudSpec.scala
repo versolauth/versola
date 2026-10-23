@@ -34,6 +34,8 @@ object AntifraudSpec extends ZIOSpecDefault:
       waited = 0,
       latencies = calls.map((call, p99) => call -> quantiles(p99)).toMap,
       otp = OtpOutcomes(requested = 0, sent = 0, refused = 0, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+      legitInRange = None,
+      legitElsewhere = None,
       failures = Map.empty,
       smsSent = 0,
       smsRanges = 0,
@@ -142,6 +144,49 @@ object AntifraudSpec extends ZIOSpecDefault:
         assertTrue(Comparison.compare(report = run, baseline = None, ceilingMs = 10.0, toleranceMs = 5.0).map(_.verdict) == List(Verdict.NoBaseline))
       },
     ),
+    suite("Checks")(
+      test("an attack that gets most of its codes sent fails, one that is stopped passes") {
+        val open = result("device-attack").copy(
+          otp = OtpOutcomes(requested = 100, sent = 100, refused = 0, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+          smsSent = 99L,
+        )
+        val stopped = result("prefix-attack").copy(
+          otp = OtpOutcomes(requested = 100, sent = 5, refused = 95, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+          smsSent = 5L,
+        )
+        val checks = Checks.of(
+          AntifraudReport(label = "on", startedAt = "t", scenarios = List(open, stopped)),
+          attackSmsCeiling = 0.1,
+          legitRefusalCeiling = 0.01,
+        )
+        assertTrue(checks.map(c => c.scenario -> c.verdict).toMap == Map("device-attack" -> Verdict.Fail, "prefix-attack" -> Verdict.Pass))
+      },
+      test("legitimate users refused in the attacked range fail the false-positive check, those elsewhere pass") {
+        val refused = OtpOutcomes(requested = 50, sent = 10, refused = 40, other = 0, verified = 8, rejected = 0, failed = 0, notEntered = 0)
+        val served = OtpOutcomes(requested = 450, sent = 450, refused = 0, other = 0, verified = 380, rejected = 0, failed = 0, notEntered = 0)
+        val mixed = result("mixed-attack").copy(legitInRange = Some(refused), legitElsewhere = Some(served))
+        val checks =
+          Checks.of(AntifraudReport(label = "on", startedAt = "t", scenarios = List(mixed)), attackSmsCeiling = 0.1, legitRefusalCeiling = 0.01)
+        assertTrue(
+          checks.find(_.name.contains("attacked range")).get.verdict == Verdict.Fail,
+          checks.find(_.name.contains("elsewhere")).get.verdict == Verdict.Pass,
+        )
+      },
+      test("a guess that is taken fails, none taken passes") {
+        val taken = result("verify-guessing").copy(otp =
+          OtpOutcomes(requested = 10, sent = 10, refused = 0, other = 0, verified = 1, rejected = 49, failed = 0, notEntered = 0),
+        )
+        val none = result("verify-guessing").copy(otp =
+          OtpOutcomes(requested = 10, sent = 10, refused = 0, other = 0, verified = 0, rejected = 50, failed = 0, notEntered = 0),
+        )
+        def verdict(r: ScenarioResult) = Checks.of(
+          AntifraudReport(label = "x", startedAt = "t", scenarios = List(r)),
+          attackSmsCeiling = 0.1,
+          legitRefusalCeiling = 0.01,
+        ).head.verdict
+        assertTrue(verdict(taken) == Verdict.Fail, verdict(none) == Verdict.Pass)
+      },
+    ),
     suite("Measurements")(
       test("quantiles are of the successful calls, and a failure is only counted") {
         val measurements = Measurements()
@@ -175,6 +220,12 @@ object AntifraudSpec extends ZIOSpecDefault:
             |prefix-attack { rate = 1.0, duration = 10s }
             |device-attack { rate = 1.0, duration = 10s }
             |token-control { sessions = 10, rate = 1.0, duration = 10s }
+            |mixed { normal-rate = 5.0, attack-rate = 5.0, duration = 10s, legit-in-range-share = 0.1 }
+            |mimicking { rate = 1.0, duration = 10s, verify-share = 0.3 }
+            |targeted { rate = 1.0, duration = 10s }
+            |guessing { rate = 1.0, duration = 10s, attempts = 5 }
+            |attack-sms-ceiling = 0.1
+            |legit-refusal-ceiling = 0.01
             |max-in-flight = 256
             |warmup-sessions = 1
             |queue-sample-every = 250ms
@@ -198,9 +249,9 @@ object AntifraudSpec extends ZIOSpecDefault:
             .fromHoconFile(file.toFile)
             .kebabCase
             .load(Config.Nested("antifraud", deriveConfig[AntifraudConfig]))
-        yield assertTrue(config.selected.size == 4, config.addedLatencyCeiling == 10.millis, config.tokenControl.sessions == 1000)
+        yield assertTrue(config.selected.size == 8, config.addedLatencyCeiling == 10.millis, config.tokenControl.sessions == 1000)
       },
-      test("an empty list of scenarios means all of them, the attacks last") {
+      test("an empty list of scenarios means all of them, the controls first") {
         val config = AntifraudConfig(
           label = "off",
           clientId = "c",
@@ -217,6 +268,12 @@ object AntifraudSpec extends ZIOSpecDefault:
           prefixAttack = AttackConfig(rate = 1.0, duration = 1.second),
           deviceAttack = AttackConfig(rate = 1.0, duration = 1.second),
           tokenControl = TokenControlConfig(sessions = 1, rate = 1.0, duration = 1.second),
+          mixed = MixedConfig(normalRate = 1.0, attackRate = 1.0, duration = 1.second, legitInRangeShare = 0.1),
+          mimicking = MimickingConfig(rate = 1.0, duration = 1.second, verifyShare = 0.3),
+          targeted = AttackConfig(rate = 1.0, duration = 1.second),
+          guessing = GuessingConfig(rate = 1.0, duration = 1.second, attempts = 5),
+          attackSmsCeiling = 0.1,
+          legitRefusalCeiling = 0.01,
           maxInFlight = 1,
           warmupSessions = 0,
           queueSampleEvery = 250.millis,
@@ -226,7 +283,7 @@ object AntifraudSpec extends ZIOSpecDefault:
         )
         assertTrue(
           config.selected == AntifraudScenario.values.toList,
-          config.selected.takeRight(2) == List(AntifraudScenario.PrefixAttack, AntifraudScenario.DeviceAttack),
+          config.selected.drop(2).head == AntifraudScenario.PrefixAttack,
         )
       },
     ),

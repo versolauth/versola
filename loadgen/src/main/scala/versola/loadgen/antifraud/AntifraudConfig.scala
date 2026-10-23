@@ -21,6 +21,10 @@ import zio.{Config, Duration}
   * @param maxInFlight      sessions started at once; an arrival past it waits, and the wait is counted
   * @param warmupSessions   unmeasured logins before the first scenario, so that it does not pay for the JIT and the pool
   * @param queueSampleEvery how often `antifraud_event_queue_size` is read while a scenario runs
+  * @param attackSmsCeiling the most of an attack's requested codes that may be sent (0.1: nine in ten must be stopped);
+  *                         an attack scenario above it fails the effectiveness check whatever the latency says
+  * @param legitRefusalCeiling the most of legitimate users' requests that may be refused (0.01); the check of the
+  *                         false positives, over `normal` and over the legitimate users of `mixed-attack`
   * @param controlTolerance added p99 on `/token` and refresh above which the control is reported as failed: the
   *                         measurement's noise floor, since the true figure is zero (nothing of antifraud is on that path)
   */
@@ -40,6 +44,12 @@ case class AntifraudConfig(
     prefixAttack: AttackConfig,
     deviceAttack: AttackConfig,
     tokenControl: TokenControlConfig,
+    mixed: MixedConfig,
+    mimicking: MimickingConfig,
+    targeted: AttackConfig,
+    guessing: GuessingConfig,
+    attackSmsCeiling: Double,
+    legitRefusalCeiling: Double,
     maxInFlight: Int,
     warmupSessions: Int,
     queueSampleEvery: Duration,
@@ -97,6 +107,20 @@ case class NormalTrafficConfig(
 /** `rate` codes requested per second for `duration`, none of them verified. */
 case class AttackConfig(rate: Double, duration: Duration)
 
+/** Legitimate sign-ins at `normalRate` while an attack on one range runs at `attackRate`, for `duration`;
+  * `legitInRangeShare` of the legitimate users dial a number inside the attacked range. What a closed range
+  * does to them is the cost of the budget.
+  */
+case class MixedConfig(normalRate: Double, attackRate: Double, duration: Duration, legitInRangeShare: Double)
+
+/** An attack on one range whose sender enters the code for `verifyShare` of the numbers, to keep the conversion
+  * of the range up.
+  */
+case class MimickingConfig(rate: Double, duration: Duration, verifyShare: Double)
+
+/** Codes requested for new numbers and then guessed at: `attempts` wrong codes for each. */
+case class GuessingConfig(rate: Double, duration: Duration, attempts: Int)
+
 /** The control: `sessions` logins made unmeasured, then `rate` refreshes per second for `duration` over them. */
 case class TokenControlConfig(sessions: Int, rate: Double, duration: Duration)
 
@@ -112,6 +136,18 @@ enum AntifraudScenario(val wire: String):
 
   /** One source cycling through many numbers, spread over all ranges, none verified. */
   case DeviceAttack extends AntifraudScenario("device-attack")
+
+  /** Legitimate sign-ins, some inside the range, while the range is attacked: the false positives. */
+  case MixedAttack extends AntifraudScenario("mixed-attack")
+
+  /** An attack on one range that enters the codes of a share of the numbers to keep the conversion up. */
+  case ConversionMimicking extends AntifraudScenario("conversion-mimicking")
+
+  /** Codes asked for again and again for one number: SMS bombing, a lockout of its owner. */
+  case TargetedPhone extends AntifraudScenario("targeted-phone")
+
+  /** Wrong codes entered for numbers a code was requested for. */
+  case VerifyGuessing extends AntifraudScenario("verify-guessing")
 
 object AntifraudScenario:
   def fromWire(value: String): Option[AntifraudScenario] = values.find(_.wire == value)

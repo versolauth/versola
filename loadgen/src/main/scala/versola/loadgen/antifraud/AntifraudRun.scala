@@ -61,17 +61,20 @@ object AntifraudRun:
         ceilingMs = settings.addedLatencyCeiling.toMillis.toDouble,
         toleranceMs = settings.controlTolerance.toMillis.toDouble,
       )
+      checks = Checks.of(report = report, attackSmsCeiling = settings.attackSmsCeiling, legitRefusalCeiling = settings.legitRefusalCeiling)
       text = ReportText.render(
         report = report,
         comparisons = comparisons,
+        checks = checks,
         ceilingMs = settings.addedLatencyCeiling.toMillis.toDouble,
         toleranceMs = settings.controlTolerance.toMillis.toDouble,
       )
       _ <- write(Path.of(settings.reportPath), report.toJsonPretty)
       _ <- write(Path.of(settings.reportPath.stripSuffix(".json") + ".md"), text)
       _ <- Console.printLine(text)
-      failed = comparisons.filter(_.verdict == Verdict.Fail)
-      _ <- ZIO.fail(AntifraudAcceptanceFailed(failed.map(c => s"${c.scenario}/${c.call}"))).when(failed.nonEmpty)
+      failed = comparisons.filter(_.verdict == Verdict.Fail).map(c => s"${c.scenario}/${c.call} added p99") ++
+        checks.filter(_.verdict == Verdict.Fail).map(c => s"${c.scenario}: ${c.name}")
+      _ <- ZIO.fail(AntifraudAcceptanceFailed(failed)).when(failed.nonEmpty)
     yield ()
 
   private def validate(settings: AntifraudConfig): IO[InvalidAntifraudConfig, Unit] =
@@ -82,6 +85,12 @@ object AntifraudRun:
       Option.when(settings.numbers.rangeLength <= settings.numbers.dialCode.count(_.isDigit) + settings.numbers.leads.map(_.length).max)(
         "numbers.range-length leaves no digits to tell ranges apart: it has to be longer than the country code and a lead",
       ),
+      Option.when(settings.attackSmsCeiling < 0.0 || settings.attackSmsCeiling > 1.0)("attack-sms-ceiling is not between 0 and 1"),
+      Option.when(settings.legitRefusalCeiling < 0.0 || settings.legitRefusalCeiling > 1.0)("legit-refusal-ceiling is not between 0 and 1"),
+      Option.when(
+        settings.mixed.legitInRangeShare < 0.0 || settings.mixed.legitInRangeShare > 1.0,
+      )("mixed.legit-in-range-share is not between 0 and 1"),
+      Option.when(settings.mimicking.verifyShare < 0.0 || settings.mimicking.verifyShare > 1.0)("mimicking.verify-share is not between 0 and 1"),
       Option.when(settings.maxInFlight <= 0)("max-in-flight must be positive"),
       Option.when(List(settings.normal.rate, settings.prefixAttack.rate, settings.deviceAttack.rate, settings.tokenControl.rate).exists(rate =>
         !(rate > 0.0),
