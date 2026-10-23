@@ -26,9 +26,28 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val answered = AuthClient.Forwarded(Status.Ok, Some(Header.ContentType(MediaType.application.json)), "[]")
 
-  /** What edge adds from the verified token. */
-  private def asAdmin(request: Request, subject: String, tenant: String): Request =
-    request.addHeader(AntifraudListController.SubjectHeader, subject).addHeader(AntifraudListController.TenantHeader, tenant)
+  /** What edge adds from the verified token: query parameters of a `GET`, body fields of anything else, replacing what the client sent. */
+  private def asAdmin(request: Request, subject: String, tenant: String): Task[Request] =
+    if request.method == Method.GET then
+      ZIO.succeed(
+        request.updateURL(
+          _.setQueryParams(
+            request.url.queryParams
+              .removeQueryParam(AntifraudListController.SubjectParam).removeQueryParam(AntifraudListController.TenantParam)
+              .addQueryParam(AntifraudListController.SubjectParam, subject).addQueryParam(AntifraudListController.TenantParam, tenant),
+          ),
+        ),
+      )
+    else
+      request.body.asString.map: raw =>
+        val fields = raw.fromJson[Json.Obj].toOption.fold(Chunk.empty[(String, Json)])(_.fields)
+        val kept = fields.filterNot((name, _) => name == AntifraudListController.SubjectParam || name == AntifraudListController.TenantParam)
+        val body =
+          Json.Obj(kept ++ Chunk(AntifraudListController.SubjectParam -> Json.Str(subject), AntifraudListController.TenantParam -> Json.Str(tenant)))
+        request.copy(body = Body.fromString(body.toJson))
+
+  private def runAs(request: Request, subject: String, tenant: String, auth: AuthClient, authorized: Boolean = true) =
+    asAdmin(request, subject, tenant).flatMap(run(_, auth, authorized))
 
   private def run(request: Request, auth: AuthClient, authorized: Boolean = true) =
     for
@@ -58,19 +77,23 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
             Request.get(base / "audit"),
             Request.post(base / "preview", Body.fromString("{}")),
           ),
-        )(r => run(asAdmin(r, "alice", "default"), auth, authorized = false).map(_.status))
+        )(r => runAs(r, "alice", "default", auth, authorized = false).map(_.status))
       yield assertTrue(statuses.forall(_ == Status.Unauthorized), auth.forwardAntifraudLists.calls.isEmpty)
     },
     test("a request that carries no admin identity is 403, whatever else it has") {
       val auth = stub[AuthClient]
       for
         none <- run(Request.get(base), auth)
-        onlySubject <- run(Request.get(base).addHeader(AntifraudListController.SubjectHeader, "alice"), auth)
-        onlyTenant <- run(Request.get(base).addHeader(AntifraudListController.TenantHeader, "default"), auth)
+        onlySubject <- run(Request.get(base.addQueryParam(AntifraudListController.SubjectParam, "alice")), auth)
+        onlyTenant <- run(Request.get(base.addQueryParam(AntifraudListController.TenantParam, "default")), auth)
+        bodyless <- run(Request.post(base, Body.fromString("""{"listType":"deny"}""")), auth)
+        deleteless <- run(Request.delete(base).withBody(Body.fromString("""{"id":"abc"}""")), auth)
       yield assertTrue(
         none.status == Status.Forbidden,
         onlySubject.status == Status.Forbidden,
         onlyTenant.status == Status.Forbidden,
+        bodyless.status == Status.Forbidden,
+        deleteless.status == Status.Forbidden,
         auth.forwardAntifraudLists.calls.isEmpty,
       )
     },
@@ -79,7 +102,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val entry = Json.Obj("listType" -> Json.Str("deny"), "valueType" -> Json.Str("ip"), "value" -> Json.Str("10.0.0.1"))
       for
         _ <- auth.forwardAntifraudLists.succeedsWith(AuthClient.Forwarded(Status.Created, None, "{}"))
-        response <- run(asAdmin(json(Request.post(base, Body.fromString(entry.toJson))), "alice", "default"), auth)
+        response <- runAs(json(Request.post(base, Body.fromString(entry.toJson))), "alice", "default", auth)
         (method, path, query, body) = auth.forwardAntifraudLists.calls.head
       yield assertTrue(
         response.status == Status.Created,
@@ -95,8 +118,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val forged = Json.Obj("entry" -> entry, "actor" -> Json.Obj("name" -> Json.Str("root")))
       for
         _ <- auth.forwardAntifraudLists.succeedsWith(answered)
-        _ <- run(asAdmin(json(Request.post(base, Body.fromString(forged.toJson))), "bob", "tenant-a"), auth)
-        _ <- run(asAdmin(Request.get(base.addQueryParams(QueryParams("actor" -> "root", "actorTenantId" -> "default"))), "bob", "tenant-a"), auth)
+        _ <- runAs(json(Request.post(base, Body.fromString(forged.toJson))), "bob", "tenant-a", auth)
+        _ <- runAs(Request.get(base.addQueryParams(QueryParams("actor" -> "root", "actorTenantId" -> "default"))), "bob", "tenant-a", auth)
         body = auth.forwardAntifraudLists.calls.head._4
         query = auth.forwardAntifraudLists.calls(1)._3
       yield assertTrue(
@@ -111,7 +134,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val url = base.addQueryParams(QueryParams("listType" -> "deny", "global" -> "true", "limit" -> "5", "x" -> "y"))
       for
         _ <- auth.forwardAntifraudLists.succeedsWith(answered)
-        response <- run(asAdmin(Request.get(url), "alice", "default"), auth)
+        response <- runAs(Request.get(url), "alice", "default", auth)
         body <- response.body.asString
         (method, _, query, _) = auth.forwardAntifraudLists.calls.head
       yield assertTrue(
@@ -130,12 +153,10 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val auth = stub[AuthClient]
       for
         _ <- auth.forwardAntifraudLists.succeedsWith(AuthClient.Forwarded(Status.NoContent, None, ""))
-        deleted <- run(asAdmin(Request.delete(base.addQueryParam("id", "abc")), "alice", "default"), auth)
-        _ <- run(
-          asAdmin(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> "abc", "limit" -> "3", "id" -> "no"))), "alice", "default"),
-          auth,
-        )
-        _ <- run(asAdmin(json(Request.post(base / "preview", Body.fromString("{}"))), "alice", "default"), auth)
+        deleted <- runAs(Request.delete(base).withBody(Body.fromString("""{"id":"abc"}""")), "alice", "default", auth)
+        _ <-
+          runAs(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> "abc", "limit" -> "3", "id" -> "no"))), "alice", "default", auth)
+        _ <- runAs(json(Request.post(base / "preview", Body.fromString("{}"))), "alice", "default", auth)
         calls = auth.forwardAntifraudLists.calls
       yield assertTrue(
         deleted.status == Status.NoContent,
@@ -152,12 +173,12 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Some(Header.ContentType(MediaType.text.plain)),
           "not an IP address",
         ))
-        bad <- run(asAdmin(Request.get(base), "alice", "default"), auth)
+        bad <- runAs(Request.get(base), "alice", "default", auth)
         badBody <- bad.body.asString
         _ <- auth.forwardAntifraudLists.succeedsWith(AuthClient.Forwarded(Status.Forbidden, None, "only an operator"))
-        forbidden <- run(asAdmin(Request.get(base), "alice", "default"), auth)
+        forbidden <- runAs(Request.get(base), "alice", "default", auth)
         _ <- auth.forwardAntifraudLists.succeedsWith(AuthClient.Forwarded(Status.NotFound, None, ""))
-        missing <- run(asAdmin(Request.delete(base.addQueryParam("id", "x")), "alice", "default"), auth)
+        missing <- runAs(Request.delete(base).withBody(Body.fromString("""{"id":"x"}""")), "alice", "default", auth)
       yield assertTrue(
         bad.status == Status.BadRequest,
         badBody == "not an IP address",
@@ -169,8 +190,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("a body that is not a JSON object is 400 and auth is not called") {
       val auth = stub[AuthClient]
       for
-        notJson <- run(asAdmin(Request.post(base, Body.fromString("{")), "alice", "default"), auth)
-        array <- run(asAdmin(Request.post(base, Body.fromString("[]")), "alice", "default"), auth)
+        notJson <- run(Request.post(base, Body.fromString("{")), auth)
+        array <- run(Request.post(base, Body.fromString("[]")), auth)
       yield assertTrue(notJson.status == Status.BadRequest, array.status == Status.BadRequest, auth.forwardAntifraudLists.calls.isEmpty)
     },
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

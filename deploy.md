@@ -517,11 +517,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   instance still picks them up within a minute). The endpoints are new central resource endpoints with two permissions,
   `antifraud:read` and `antifraud:manage`: every start registers them on the `central` resource and gives them to `oauth-admin`
   (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
-  else changes for a deployment that is upgraded. Edge tells central who the admin is (inject rules `X-Admin-Subject` and `X-Admin-Tenant`
-  from the verified token, overwriting what a client sent): an admin whose token is of the `default` tenant (the one that carries
+  else changes for a deployment that is upgraded. Edge tells central who the admin is (inject rules `adminSubject` and `adminTenant`,
+  query parameters of a `GET` and body fields of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`): an admin whose token is of the `default` tenant (the one that carries
   central's roles) is an **operator** and may change global entries, other tenants' entries, and read the audit; an admin of any other tenant
   (central grants these permissions in the default tenant only; this is how a tenant's own admin would be limited) is limited to that tenant's entries. A call to central with the resource secret but
-  no such headers is `403`, so the audit always names a person. A `phone_hash` entry is made from a phone number (`phone`); the
+  no such parameters is `403`, so the audit always names a person. A `phone_hash` entry is made from a phone number (`phone`); the
   number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones

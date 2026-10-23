@@ -26,14 +26,14 @@ final class CentralApi(
     /** Set for the calls made to central's mutual-TLS listener, where the edge surface is served:
       * what the connection presents, if anything. */
     edgeSurface: Option[Option[ClientSSLConfig]] = None,
-    /** Sent with every call: what edge adds from a verified token, which a test that calls central directly plays itself. */
-    extraHeaders: List[(String, String)] = Nil,
+    /** Who edge says the admin is (see `AntifraudListController`): sent as query parameters of a `GET` and as body fields of the rest. */
+    admin: Option[(String, String)] = None,
 ):
 
-  /** The same API as seen by an admin whom edge has identified (`X-Admin-Subject`, `X-Admin-Tenant`, see
-    * `AntifraudListController`); `tenant` is `default` for an operator. */
+  /** The same API as seen by an admin whom edge has identified (`adminSubject`, `adminTenant`, which edge adds from the verified
+    * token and which overwrite what a caller sent); `tenant` is `default` for an operator. */
   def asAdmin(subject: String, tenant: String): CentralApi =
-    CentralApi(client, config, credentials, bearer, edgeSurface, List("X-Admin-Subject" -> subject, "X-Admin-Tenant" -> tenant))
+    CentralApi(client, config, credentials, bearer, edgeSurface, Some(subject -> tenant))
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -109,6 +109,24 @@ final class CentralApi(
   def raw(method: Method, path: String, body: String, query: (String, String)*): Task[ApiResult] =
     send(method, path, query, Some(body))
 
+  /** What edge does to a `GET`: puts the caller in the query, replacing a parameter of the same name. */
+  private def callerQuery(method: Method, query: List[(String, String)]): List[(String, String)] =
+    admin.filter(_ => method == Method.GET).fold(query): (subject, tenant) =>
+      query.filterNot((name, _) => name == "adminSubject" || name == "adminTenant") ++
+        List("adminSubject" -> subject, "adminTenant" -> tenant)
+
+  /** What edge does to any other call that has a JSON object body: puts the caller in it. A call without a body gets one
+    * (`{}`) so that the caller can be put in it; real edge does not, which is why central refuses such a call. */
+  private def callerBody(method: Method, body: Option[String]): Option[String] =
+    admin.filter(_ => method != Method.GET).fold(body): (subject, tenant) =>
+      val fields = body.flatMap(_.fromJson[Json.Obj].toOption).fold(Chunk.empty[(String, Json)])(_.fields)
+      Some(
+        Json.Obj(
+          fields.filterNot((name, _) => name == "adminSubject" || name == "adminTenant") ++
+            Chunk("adminSubject" -> Json.Str(subject), "adminTenant" -> Json.Str(tenant)),
+        ).toJson,
+      )
+
   private def send(
       method: Method,
       path: String,
@@ -120,13 +138,12 @@ final class CentralApi(
       base <- ZIO.fromEither(URL.decode(s"$origin$path")).mapError(RuntimeException(_))
       request = Request(
         method = method,
-        url = base.addQueryParams(query.toList),
-        body = body.fold(Body.empty)(Body.fromString(_)),
+        url = base.addQueryParams(callerQuery(method, query.toList)),
+        body = callerBody(method, body).fold(Body.empty)(Body.fromString(_)),
       )
-      withType = body.fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
+      withType = callerBody(method, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
       withBasic = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
-      withBearer = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
-      authorized = extraHeaders.foldLeft(withBearer)((r, h) => r.addHeader(h._1, h._2))
+      authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))
       // Without a certificate the connection still has to trust central's own, or it would fail on that
       // instead of on the missing certificate this exists to show.

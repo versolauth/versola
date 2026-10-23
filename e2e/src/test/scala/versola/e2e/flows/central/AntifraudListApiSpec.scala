@@ -10,7 +10,7 @@ import zio.test.*
   * the rules of who may change what.
   *
   * Central is called directly, so these specs play the part of edge and send the identity it would add from the
-  * verified token (`asAdmin`); the injection itself is covered by the unit specs of `BootstrapService`. What is proven
+  * verified token (`asAdmin`: query parameters of a `GET`, body fields of the rest); the injection itself is covered by the unit specs of `BootstrapService`. What is proven
   * here is the round trip through central, auth and Postgres: the status codes, the audit, the tenant limits. What an
   * entry does to a sign-in is not: the lists are off by default (`antifraud.lists.enabled`).
   */
@@ -42,7 +42,9 @@ object AntifraudListApiSpec extends CentralApiSpec:
       created <- central.asAdmin("e2e-operator", operator).post(lists, body)
       json <- created.obj
       result <- use(json).ensuring(
-        ZIO.foreachDiscard(json.str("id"))(id => central.asAdmin("e2e-operator", operator).delete(lists, "id" -> id).ignore),
+        ZIO.foreachDiscard(json.str("id"))(id =>
+          central.asAdmin("e2e-operator", operator).deleteWithBody(lists, Json.Obj("id" -> Json.Str(id))).ignore,
+        ),
       )
     yield result
 
@@ -66,8 +68,8 @@ object AntifraudListApiSpec extends CentralApiSpec:
         listedValues <- listed.objects.map(_.flatMap(_.str("value")).toSet)
         audited <- operator_.get(s"$lists/audit", "entryId" -> id)
         auditRecords <- audited.objects
-        removed <- operator_.delete(lists, "id" -> id)
-        again <- operator_.delete(lists, "id" -> id)
+        removed <- operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id)))
+        again <- operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id)))
         afterRemoval <- operator_.get(s"$lists/audit", "entryId" -> id).flatMap(_.objects)
       yield assertTrue(
         created.status == Status.Created,
@@ -100,9 +102,9 @@ object AntifraudListApiSpec extends CentralApiSpec:
           admin.get(lists, "limit" -> "500").flatMap(_.objects).map(_.flatMap(_.str("value")).toSet)
         }
         globalEntry <- withEntry(central, entry("device_id", global)) { g =>
-          admin.delete(lists, "id" -> g.str("id").getOrElse("")).map(_.status)
+          admin.deleteWithBody(lists, Json.Obj("id" -> Json.Str(g.str("id").getOrElse("")))).map(_.status)
         }
-        removed <- admin.delete(lists, "id" -> mineId)
+        removed <- admin.deleteWithBody(lists, Json.Obj("id" -> Json.Str(mineId)))
       yield assertTrue(
         created.status == Status.Created,
         globalDenied.status == Status.Forbidden,
@@ -126,7 +128,7 @@ object AntifraudListApiSpec extends CentralApiSpec:
         notAnObject <- operator_.raw(Method.POST, lists, "[]")
         unknownType <- operator_.post(lists, entry("nope", "x"))
         badPage <- operator_.get(lists, "limit" -> "0")
-        badId <- operator_.delete(lists, "id" -> "nope")
+        badId <- operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str("nope")))
       yield assertTrue(
         badIp.status == Status.BadRequest,
         allowNetwork.status == Status.BadRequest,
@@ -147,7 +149,7 @@ object AntifraudListApiSpec extends CentralApiSpec:
         firstJson <- first.obj
         second <- operator_.post(lists, body)
         secondJson <- second.obj
-        _ <- ZIO.foreachDiscard(firstJson.str("id"))(id => operator_.delete(lists, "id" -> id))
+        _ <- ZIO.foreachDiscard(firstJson.str("id"))(id => operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id))))
         wrongKind <- operator_.post(lists, Json.Obj("listType" -> Json.Str("deny"), "valueType" -> Json.Str("device_id"), "phone" -> Json.Str(phone)))
       yield assertTrue(
         first.status == Status.Created,

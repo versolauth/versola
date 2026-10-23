@@ -2438,9 +2438,6 @@ paths:
 
   # ─────────────────────────────── Antifraud lists ───────────────────────────────
   /antifraud/lists:
-    parameters:
-      - $ref: '#/components/parameters/AdminSubjectHeader'
-      - $ref: '#/components/parameters/AdminTenantHeader'
     get:
       tags: [Antifraud lists]
       summary: List entries
@@ -2470,6 +2467,8 @@ paths:
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
+        - $ref: '#/components/parameters/AdminSubjectQuery'
+        - $ref: '#/components/parameters/AdminTenantQuery'
       responses:
         '200':
           description: The entries.
@@ -2483,7 +2482,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/NoAdminIdentity'
+          description: The request names no admin (`adminSubject` and `adminTenant`, which edge sets from the verified token).
     post:
       tags: [Antifraud lists]
       summary: Add an entry
@@ -2519,16 +2518,23 @@ paths:
       tags: [Antifraud lists]
       summary: Remove an entry
       operationId: deleteAntifraudListEntry
-      parameters:
-        - name: id
-          in: query
-          required: true
-          schema: { type: string, format: uuid }
+      description: The entry is named in the body, where edge adds the caller of a request that is not a `GET`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                adminSubject: { $ref: '#/components/schemas/AdminSubject' }
+                adminTenant: { $ref: '#/components/schemas/AdminTenant' }
+              required: [id, adminSubject, adminTenant]
       responses:
         '204':
           description: Removed and recorded in the audit.
         '400':
-          description: "`id` is missing or not a UUID."
+          description: "`id` is missing from the body or not a UUID."
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2537,9 +2543,6 @@ paths:
           description: There is no such entry.
 
   /antifraud/lists/preview:
-    parameters:
-      - $ref: '#/components/parameters/AdminSubjectHeader'
-      - $ref: '#/components/parameters/AdminTenantHeader'
     post:
       tags: [Antifraud lists]
       summary: Preview what an entry would match
@@ -2573,9 +2576,6 @@ paths:
           description: No admin identity, or the admin may not add that entry.
 
   /antifraud/lists/audit:
-    parameters:
-      - $ref: '#/components/parameters/AdminSubjectHeader'
-      - $ref: '#/components/parameters/AdminTenantHeader'
     get:
       tags: [Antifraud lists]
       summary: Changes of the lists
@@ -2589,6 +2589,8 @@ paths:
           in: query
           description: 1 to 500. Defaults to 100.
           schema: { type: integer, minimum: 1, maximum: 500 }
+        - $ref: '#/components/parameters/AdminSubjectQuery'
+        - $ref: '#/components/parameters/AdminTenantQuery'
       responses:
         '200':
           description: The records.
@@ -2671,26 +2673,26 @@ components:
   responses:
     Unauthorized:
       description: The credentials are missing, malformed or not accepted.
-    NoAdminIdentity:
-      description: The request names no admin (`X-Admin-Subject` and `X-Admin-Tenant`, which edge sets from the verified token).
 
   parameters:
-    AdminSubjectHeader:
-      name: X-Admin-Subject
-      in: header
+    AdminSubjectQuery:
+      name: adminSubject
+      in: query
       required: true
       description: |
         The admin's subject, set by edge from the verified access token (the antifraud endpoints are registered with an
         inject rule that overwrites what the caller sent). It names the actor in the audit. A request without it is `403`.
-      schema: { type: string }
-    AdminTenantHeader:
-      name: X-Admin-Tenant
-      in: header
+        Requests that are not a `GET` carry it as the body field of the same name.
+      schema: { $ref: '#/components/schemas/AdminSubject' }
+    AdminTenantQuery:
+      name: adminTenant
+      in: query
       required: true
       description: |
         The tenant of the admin's token, set by edge. `default`, the tenant that carries central's own roles, makes the
         admin an operator (global entries, other tenants' entries, the audit); any other tenant limits them to its own entries.
-      schema: { type: string }
+        Requests that are not a `GET` carry it as the body field of the same name.
+      schema: { $ref: '#/components/schemas/AdminTenant' }
     TenantIdQuery:
       name: tenantId
       in: query
@@ -6275,6 +6277,12 @@ components:
           type: string
           description: The base64url-encoded PKCS#8 private key. Returned only once.
       required: [keyId, privateKey]
+    AdminSubject:
+      type: string
+      description: Set by edge from the verified token; see the `adminSubject` query parameter.
+    AdminTenant:
+      type: string
+      description: Set by edge from the verified token; see the `adminTenant` query parameter.
     AntifraudListType:
       type: string
       enum: [deny, allow, watch, fake]
@@ -6313,7 +6321,9 @@ components:
         shadow:
           type: boolean
           description: Matched and counted, enforces nothing (the fired rule is `shadow_list:<value type>`). Defaults to `false`.
-      required: [listType, valueType]
+        adminSubject: { $ref: '#/components/schemas/AdminSubject' }
+        adminTenant: { $ref: '#/components/schemas/AdminTenant' }
+      required: [listType, valueType, adminSubject, adminTenant]
     AntifraudListEntry:
       type: object
       properties:

@@ -990,13 +990,15 @@ object BootstrapService:
   )
 
   /** What central's antifraud endpoints are told of the admin, from the token edge has verified (not from the caller:
-    * edge overwrites a header of the same name). Central cannot tell who an admin is otherwise, and the lists' audit
-    * and who may change a global entry depend on it (`AntifraudListController`). */
-  private[versola] def centralInjects(path: String): Vector[InjectRule] =
+    * edge overwrites a parameter or field of the same name). Central cannot tell who an admin is otherwise, and the lists'
+    * audit and who may change a global entry depend on it (`AntifraudListController`). As for the account endpoints
+    * ([[accountCallerInjects]]): query parameters for a `GET`, body fields for the rest. */
+  private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
     if path.startsWith("/antifraud/") then
+      val target = if method == "GET" then InjectTarget.query else InjectTarget.body
       Vector(
-        InjectRule(InjectTarget.header, "X-Admin-Subject", "token.sub"),
-        InjectRule(InjectTarget.header, "X-Admin-Tenant", "token.tenant_id"),
+        InjectRule(target, "adminSubject", "token.sub"),
+        InjectRule(target, "adminTenant", "token.tenant_id"),
       )
     else Vector.empty
 
@@ -1602,7 +1604,7 @@ object BootstrapService:
             method = method,
             fetchUserInfo = false,
             allowExpression = None,
-            inject = centralInjects(path),
+            inject = centralInjects(method, path),
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
