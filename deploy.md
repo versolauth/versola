@@ -254,9 +254,15 @@ nothing.
    → *Publish*.
 2. **Wait for the images:** `docker-tools`, `docker-auth`, `docker-central`, `docker-edge` green.
 3. **Check the release does not *edit* an applied migration** — only adding is safe. On a clone with
-   both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations'` must show only `A`
-   lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). An edited migration fails
-   Flyway's checksum validation and leaves only [recreating that schema](#recreating-the-database).
+   both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` must show only `A`
+   lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). Keep the trailing `/*`:
+   migrations live deeper (for example `auth/implementations/postgres/migrations/V0015__….sql`), and
+   without it the pathspec matches nothing, so the command prints nothing, which looks like "all
+   safe". An edited migration fails Flyway's checksum validation and leaves only
+   [recreating that schema](#recreating-the-database).
+   `A` only means nothing was edited, not that the new migrations are compatible with the previous
+   version, which keeps serving while they run (a dropped or renamed column breaks it). Read what was
+   added: `git diff <old>..<new> -- '*/postgres/migrations/*'`.
 4. **On the host**, update the CLI and take a dump right before `migrate` (the cluster has its own
    backups, but this one matches the schema you are about to change; migrations cannot be rolled
    back, the dump is the rollback):
