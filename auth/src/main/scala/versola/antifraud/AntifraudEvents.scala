@@ -86,6 +86,7 @@ object AntifraudEvents:
     * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
     * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
+    * @param velocity       the velocity counters and the limits of their rules, off by default (see [[VelocityCounters]])
     */
   case class Settings(
       queueCapacity: Int = 20000,
@@ -99,6 +100,7 @@ object AntifraudEvents:
       statsLookback: Duration = 2.minutes,
       statsRetention: Duration = 30.days,
       statsPrefixLength: Int = 4,
+      velocity: VelocityCounters.Settings = VelocityCounters.Settings(),
   )
 
   object Settings:
@@ -460,6 +462,28 @@ object AntifraudMetrics:
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 
   val rollupFailed: UIO[Unit] = rollupFailedTotal.increment
+
+  private val velocityFlushedTotal = Metric.counter("antifraud_velocity_flushed_total")
+  private val velocityFailedTotal = Metric.counter("antifraud_velocity_failed_total")
+  private val velocityUntrackedTotal = Metric.counter("antifraud_velocity_untracked_total")
+  private val velocityKeysGauge = Metric.gauge("antifraud_velocity_keys")
+
+  /** Buckets this instance wrote to the database. */
+  def velocityFlushed(count: Int): UIO[Unit] = velocityFlushedTotal.incrementBy(count.toLong)
+
+  /** `what` is `flush`, `load` or `prune`: a closed set, since it is a label. A failure leaves the counts per instance. */
+  def velocityFailed(what: String): UIO[Unit] = velocityFailedTotal.tagged(Set(MetricLabel("what", what))).increment
+
+  /** Requests of keys that were not counted because the table of keys was full of keys seen more than once
+    * (`velocity.max-keys`): more than 0 is itself a sign of an attack, or of a table too small. */
+  def velocityUntracked(count: Long): UIO[Unit] = velocityUntrackedTotal.incrementBy(count)
+
+  private val velocityEvictedTotal = Metric.counter("antifraud_velocity_evicted_total")
+
+  /** Keys that made room for a new one in a full table, having been seen once. A steady stream is a flood of keys. */
+  def velocityEvicted(count: Long): UIO[Unit] = velocityEvictedTotal.incrementBy(count)
+
+  def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
 
