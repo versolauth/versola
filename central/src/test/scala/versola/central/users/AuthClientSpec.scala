@@ -6,6 +6,7 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
+import versola.util.{PageLimit, PageOffset}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -305,12 +306,12 @@ object AuthClientSpec extends ZIOSpecDefault:
             valueType = None,
             tenantId = Some(tenantId),
             global = None,
-            limit = Some(5),
+            limit = Some(PageLimit(5)),
             offset = None,
           ),
           actor,
         )
-        _ <- client.antifraudListAudit(None, Some(3), AntifraudListActor("root", None))
+        _ <- client.antifraudListAudit(None, Some(PageLimit(3)), AntifraudListActor("root", None))
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudListEntry(UUID.fromString("00000000-0000-0000-0000-0000000000e1"), actor)
         _ <- TestClient.addRoutes(

@@ -1,19 +1,12 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
+import versola.util.JsonStringSchema
 import zio.json.JsonCodec
 import zio.schema.Schema
 
 import java.time.Instant
 import java.util.UUID
-import scala.util.Try
-
-/** A name from a closed set as a request parameter (`queryZIO`): an unknown one is a bad request, not a server error. */
-private def enumSchema[A](name: String, parse: String => A): Schema[A] =
-  Schema.primitive[String].transformOrFail(
-    value => Try(parse(value)).toEither.left.map(_ => s"$name is not one of the known values"),
-    value => Right(value.toString),
-  )
 
 /** What a list entry makes the rules do. See [[AntifraudLists]] for how they combine. */
 enum AntifraudListType derives JsonCodec:
@@ -30,7 +23,7 @@ enum AntifraudListType derives JsonCodec:
   case fake
 
 object AntifraudListType:
-  given Schema[AntifraudListType] = enumSchema("listType", valueOf)
+  given Schema[AntifraudListType] = JsonStringSchema.of
 
 /** What the `value` of an entry is compared with. */
 enum AntifraudValueType derives JsonCodec:
@@ -60,7 +53,7 @@ enum AntifraudValueType derives JsonCodec:
   case email_domain
 
 object AntifraudValueType:
-  given Schema[AntifraudValueType] = enumSchema("valueType", valueOf)
+  given Schema[AntifraudValueType] = JsonStringSchema.of
 
 /** A row of `af_list_entry`.
   *

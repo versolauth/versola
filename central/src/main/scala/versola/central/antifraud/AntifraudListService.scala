@@ -2,6 +2,7 @@ package versola.central.antifraud
 
 import versola.central.CentralConfig
 import versola.central.users.AuthClient
+import versola.util.PageLimit
 import zio.{IO, ZIO, ZLayer}
 
 import java.util.UUID
@@ -21,7 +22,7 @@ trait AntifraudListService:
 
   def delete(id: UUID, caller: AdminCaller): IO[AntifraudListError | Throwable, Unit]
 
-  def audit(entryId: Option[UUID], limit: Option[Int], caller: AdminCaller): IO[AntifraudListError | Throwable, AuditResponse]
+  def audit(entryId: Option[UUID], limit: Option[PageLimit], caller: AdminCaller): IO[AntifraudListError | Throwable, AuditResponse]
 
 object AntifraudListService:
   val live: ZLayer[AuthClient, Nothing, AntifraudListService] =
@@ -40,7 +41,7 @@ object AntifraudListService:
     override def delete(id: UUID, caller: AdminCaller): IO[AntifraudListError | Throwable, Unit] =
       actorOf(caller).flatMap(authClient.deleteAntifraudListEntry(id, _))
 
-    override def audit(entryId: Option[UUID], limit: Option[Int], caller: AdminCaller): IO[AntifraudListError | Throwable, AuditResponse] =
+    override def audit(entryId: Option[UUID], limit: Option[PageLimit], caller: AdminCaller): IO[AntifraudListError | Throwable, AuditResponse] =
       actorOf(caller).flatMap(authClient.antifraudListAudit(entryId, limit, _)).map(AuditResponse(_))
 
     private def actorOf(caller: AdminCaller): IO[AntifraudListError, AntifraudListActor] =

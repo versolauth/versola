@@ -3,7 +3,7 @@ package versola.antifraud
 import versola.oauth.client.model.TenantId
 import versola.user.authorizeInternal
 import versola.util.http.{BadRequest, Controller, Observability}
-import versola.util.{CoreConfig, Phone}
+import versola.util.{CoreConfig, PageLimit, PageOffset, Phone}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
@@ -17,8 +17,6 @@ import java.util.UUID
   */
 object AntifraudListController extends Controller:
   type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents
-
-  private val DefaultLimit = 100
 
   def routes: Routes[Env, Throwable] = Routes(createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint)
 
@@ -55,8 +53,8 @@ object AntifraudListController extends Controller:
         valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
         tenant <- request.queryZIO[Option[TenantId]]("tenantId")
         global <- request.queryZIO[Option[Boolean]]("global")
-        limit <- request.queryZIO[Option[Int]]("limit")
-        offset <- request.queryZIO[Option[Int]]("offset")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
+        offset <- request.queryZIO[Option[PageOffset]]("offset")
         lists <- ZIO.service[AntifraudLists]
         filter = AntifraudListFilter(
           listType = listType,
@@ -65,7 +63,9 @@ object AntifraudListController extends Controller:
         )
         response <- guarded(
           ZIO.fail(InvalidListEntry("tenantId and global exclude each other")).when(global.contains(true) && tenant.isDefined) *>
-            lists.list(filter, actor, limit.getOrElse(DefaultLimit), offset.getOrElse(0)).map(entries => Response.json(entries.toJson)),
+            lists.list(filter, actor, limit.getOrElse(PageLimit.Default), offset.getOrElse(PageOffset.First)).map(entries =>
+              Response.json(entries.toJson),
+            ),
         )
       yield response
     }
@@ -91,9 +91,9 @@ object AntifraudListController extends Controller:
         _ <- authorizeInternal(request)
         actor <- actorOf(request)
         entryId <- request.queryZIO[Option[UUID]]("entryId")
-        limit <- request.queryZIO[Option[Int]]("limit")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
         lists <- ZIO.service[AntifraudLists]
-        response <- guarded(lists.audit(entryId, actor, limit.getOrElse(DefaultLimit)).map(records => Response.json(records.toJson)))
+        response <- guarded(lists.audit(entryId, actor, limit.getOrElse(PageLimit.Default)).map(records => Response.json(records.toJson)))
       yield response
     }
 

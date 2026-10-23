@@ -6,6 +6,7 @@ import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
+import versola.util.{PageLimit, PageOffset}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -209,8 +210,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           valueType = Some(AntifraudValueType.prefix),
           tenantId = Some(tenant),
           global = Some(false),
-          limit = Some(10),
-          offset = Some(20),
+          limit = Some(PageLimit(10)),
+          offset = Some(PageOffset(20)),
         ),
         caller == operator,
       )
@@ -224,6 +225,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         badType <- get("listType" -> "nope")
         badLimit <- get("limit" -> "many")
         badTenant <- get("tenantId" -> "Not A Tenant")
+        zero <- get("limit" -> "0")
+        huge <- get("limit" -> "501")
+        negative <- get("offset" -> "-1")
       yield assertTrue(
         none.status == Status.Ok,
         service.list.calls.head._1 == ListEntriesQuery(
@@ -237,6 +241,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         badType.status == Status.BadRequest,
         badLimit.status == Status.BadRequest,
         badTenant.status == Status.BadRequest,
+        List(zero, huge, negative).forall(_.status == Status.BadRequest),
         service.list.calls.size == 1,
       )
     },
@@ -280,7 +285,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[AuditResponse] == Right(AuditResponse(List(record))),
-        service.audit.calls.head == (Some(entryId), Some(5), operator),
+        service.audit.calls.head == (Some(entryId), Some(PageLimit(5)), operator),
         forbidden.status == Status.Forbidden,
         badId.status == Status.BadRequest,
       )

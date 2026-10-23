@@ -5,7 +5,7 @@ import versola.central.antifraud.*
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, Patch, Phone}
+import versola.util.{Email, PageLimit, Patch, Phone}
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
@@ -99,7 +99,7 @@ trait AuthClient:
 
   def antifraudListAudit(
       entryId: Option[UUID],
-      limit: Option[Int],
+      limit: Option[PageLimit],
       actor: AntifraudListActor,
   ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
 
@@ -421,7 +421,7 @@ object AuthClient:
 
     override def antifraudListAudit(
         entryId: Option[UUID],
-        limit: Option[Int],
+        limit: Option[PageLimit],
         actor: AntifraudListActor,
     ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
       val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten

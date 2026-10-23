@@ -4,6 +4,7 @@ import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.{BadRequest, Controller, Forbidden, Observability}
+import versola.util.{PageLimit, PageOffset}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -53,8 +54,8 @@ object AntifraudListController extends Controller:
         valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
         tenantId <- request.queryZIO[Option[TenantId]]("tenantId")
         global <- request.queryZIO[Option[Boolean]]("global")
-        limit <- request.queryZIO[Option[Int]]("limit")
-        offset <- request.queryZIO[Option[Int]]("offset")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
+        offset <- request.queryZIO[Option[PageOffset]]("offset")
         caller <- callerOf(request)
         query = ListEntriesQuery(listType = listType, valueType = valueType, tenantId = tenantId, global = global, limit = limit, offset = offset)
         response <- guarded(service.list(query, caller).map(entries => Response.json(entries.toJson)))
@@ -78,7 +79,7 @@ object AntifraudListController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudListService]
         entryId <- request.queryZIO[Option[UUID]]("entryId")
-        limit <- request.queryZIO[Option[Int]]("limit")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
         caller <- callerOf(request)
         response <- guarded(service.audit(entryId, limit, caller).map(records => Response.json(records.toJson)))
       yield response

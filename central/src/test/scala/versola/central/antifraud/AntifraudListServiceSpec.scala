@@ -3,6 +3,7 @@ package versola.central.antifraud
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.AuthClient
+import versola.util.{PageLimit, PageOffset}
 import zio.*
 import zio.test.*
 
@@ -69,14 +70,14 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.preview(newEntry, tenantAdmin)
         listed <- service.list(noQuery, tenantAdmin)
         _ <- service.delete(entryId, tenantAdmin)
-        _ <- service.audit(Some(entryId), Some(3), tenantAdmin)
+        _ <- service.audit(Some(entryId), Some(PageLimit(3)), tenantAdmin)
       yield assertTrue(
         listed == ListEntriesResponse(List(stored)),
         auth.createAntifraudListEntry.calls.map(_._2) == List(actor),
         auth.previewAntifraudListEntry.calls.map(_._2) == List(actor),
         auth.listAntifraudListEntries.calls == List((noQuery, actor)),
         auth.deleteAntifraudListEntry.calls == List((entryId, actor)),
-        auth.antifraudListAudit.calls == List((Some(entryId), Some(3), actor)),
+        auth.antifraudListAudit.calls == List((Some(entryId), Some(PageLimit(3)), actor)),
       )
     },
     test("a request that names no admin, or half of one, is refused before auth is asked") {

@@ -1,32 +1,26 @@
 package versola.central.antifraud
 
 import versola.central.configuration.tenants.TenantId
+import versola.util.{JsonStringSchema, PageLimit, PageOffset}
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
 import java.time.Instant
 import java.util.UUID
-import scala.util.Try
-
-private def enumSchema[A](name: String, parse: String => A): Schema[A] =
-  Schema.primitive[String].transformOrFail(
-    value => Try(parse(value)).toEither.left.map(_ => s"$name is not one of the known values"),
-    value => Right(value.toString),
-  )
 
 /** What an entry makes the rules do; see auth's `AntifraudLists`. */
 enum AntifraudListType derives JsonCodec:
   case deny, allow, watch, fake
 
 object AntifraudListType:
-  given Schema[AntifraudListType] = enumSchema("listType", valueOf)
+  given Schema[AntifraudListType] = JsonStringSchema.of
 
 /** What the `value` of an entry is compared with. */
 enum AntifraudValueType derives JsonCodec:
   case phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain
 
 object AntifraudValueType:
-  given Schema[AntifraudValueType] = enumSchema("valueType", valueOf)
+  given Schema[AntifraudValueType] = JsonStringSchema.of
 
 enum AntifraudListAction derives JsonCodec:
   case create, delete, expire
@@ -93,8 +87,8 @@ case class ListEntriesQuery(
     valueType: Option[AntifraudValueType],
     tenantId: Option[TenantId],
     global: Option[Boolean],
-    limit: Option[Int],
-    offset: Option[Int],
+    limit: Option[PageLimit],
+    offset: Option[PageOffset],
 )
 
 case class ListEntryResponse(
