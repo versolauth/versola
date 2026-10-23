@@ -471,11 +471,17 @@ object AntifraudMetrics:
   /** Buckets this instance wrote to the database. */
   def velocityFlushed(count: Int): UIO[Unit] = velocityFlushedTotal.incrementBy(count.toLong)
 
-  /** `what` is `flush` or `load`: a closed set, since it is a label. A failure leaves the counts per instance. */
+  /** `what` is `flush`, `load` or `prune`: a closed set, since it is a label. A failure leaves the counts per instance. */
   def velocityFailed(what: String): UIO[Unit] = velocityFailedTotal.tagged(Set(MetricLabel("what", what))).increment
 
-  /** Requests of keys that were not counted because the table of keys was full (`velocity.max-keys`). */
+  /** Requests of keys that were not counted because the table of keys was full of keys seen more than once
+    * (`velocity.max-keys`): more than 0 is itself a sign of an attack, or of a table too small. */
   def velocityUntracked(count: Long): UIO[Unit] = velocityUntrackedTotal.incrementBy(count)
+
+  private val velocityEvictedTotal = Metric.counter("antifraud_velocity_evicted_total")
+
+  /** Keys that made room for a new one in a full table, having been seen once. A steady stream is a flood of keys. */
+  def velocityEvicted(count: Long): UIO[Unit] = velocityEvictedTotal.incrementBy(count)
 
   def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 

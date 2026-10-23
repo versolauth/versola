@@ -1,7 +1,8 @@
 package versola.antifraud
 
+import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, TenantId}
-import versola.util.UnitSpecBase
+import versola.util.{SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.test.*
 
@@ -23,13 +24,15 @@ object VelocityCountersSpec extends UnitSpecBase:
     override def save(instance: UUID, buckets: List[VelocityBucket]): Task[Unit] =
       check *> rows.update(_ ++ buckets.map(b => (instance, b.keyType, b.key, b.minute) -> b.count))
 
-    override def loadOthers(instance: UUID, fromMinute: Long, limit: Int): Task[List[VelocityBucket]] =
+    override def loadOthers(instance: UUID, fromMinute: Long, since: Instant, maxKeys: Int): Task[List[SharedBucket]] =
       check *> rows.get.map: all =>
-        all.toList
-          .filter((k, _) => k._1 != instance && k._4 >= fromMinute)
-          .groupMapReduce((k, _) => (k._2, k._3, k._4))((_, count) => count)(_ + _)
-          .toList.map((k, count) => VelocityBucket(k._1, k._2, k._3, count))
-          .sortBy(-_.count).take(limit)
+        val others = all.toList.filter((k, _) => k._1 != instance && k._4 >= fromMinute)
+        val hot = others.groupMapReduce((k, _) => (k._2, k._3))((_, count) => count)(_ + _).toList.sortBy(-_._2).take(maxKeys).map(_._1).toSet
+        others.filter((k, _) => hot((k._2, k._3))).map((k, count) =>
+          SharedBucket(instance = k._1, bucket = VelocityBucket(keyType = k._2, key = k._3, minute = k._4, count = count)),
+        )
+
+    def all: UIO[Map[(UUID, VelocityKey, String, Long), Int]] = rows.get
 
     override def prune(minute: Long): Task[Unit] = check *> rows.update(_.filter((k, _) => k._4 >= minute))
 
@@ -40,7 +43,13 @@ object VelocityCountersSpec extends UnitSpecBase:
     yield (InMemoryRepository(rows, failing), failing)
 
   private def instance(repo: VelocityRepository, settings: VelocityCounters.Settings): ZIO[Scope, Nothing, VelocityCounters] =
-    VelocityCounters.live.build.map(_.get).provideSome[Scope](ZLayer.succeed(repo), ZLayer.succeed(settings))
+    VelocityCounters.live.build.map(_.get).provideSome[Scope](
+      ZLayer.succeed(repo),
+      ZLayer.succeed(settings),
+      ZLayer.succeed(TestEnvConfig.coreConfig),
+      SecureRandom.live,
+      SecureRandom.live >>> SecurityService.live,
+    )
 
   /** Lets the flush and load fibers of the instances run a round. */
   private def rounds(n: Int): UIO[Unit] =
@@ -117,16 +126,33 @@ object VelocityCountersSpec extends UnitSpecBase:
       counters.evict(t0.plusSeconds(25 * 3600))
       assertTrue(counters.size == 1, counters.count(ip, "recent", OneDay, t0.plusSeconds(25 * 3600)) == 1)
     },
-    test("fails open for a new key once max-keys are tracked, per kind, and counts it") {
+    test("a full table makes room for a new key by dropping the oldest key seen once, and keeps the established ones") {
+      val counters = VelocityCounters(on.copy(maxKeys = 3))
+      counters.record(ip, "hot", t0)
+      counters.record(ip, "hot", t0)
+      (1 to 1000).foreach(i => counters.record(ip, s"junk$i", t0))
+      assertTrue(
+        counters.size == 3,
+        counters.count(ip, "hot", OneDay, t0) == 2,
+        // The newest of the junk is there, the oldest is gone.
+        counters.count(ip, "junk1000", OneDay, t0) == 1,
+        counters.count(ip, "junk1", OneDay, t0) == 0,
+        counters.evicted == 998,
+        counters.untracked == 0,
+      )
+    },
+    test("fails open for a new key, and counts it, only when every key held has been seen again; per kind") {
       val counters = VelocityCounters(on.copy(maxKeys = 2))
-      List("a", "b", "c", "d").foreach(counters.record(ip, _, t0))
+      List("a", "b").foreach(k => (1 to 2).foreach(_ => counters.record(ip, k, t0)))
+      counters.record(ip, "c", t0)
       counters.record(ip, "a", t0)
       counters.record(phone, "x", t0)
       assertTrue(
         counters.size == 3,
-        counters.count(ip, "a", OneDay, t0) == 2,
+        counters.count(ip, "a", OneDay, t0) == 3,
         counters.count(ip, "c", OneDay, t0) == 0,
-        counters.untracked == 2,
+        counters.untracked == 1,
+        counters.evicted == 0,
         counters.count(phone, "x", OneDay, t0) == 1,
       )
     },
@@ -150,6 +176,19 @@ object VelocityCountersSpec extends UnitSpecBase:
         none.isEmpty,
         second.map(_._1.count) == List(1),
         again.map(_._1.count) == List(1),
+      )
+    },
+    test("drains the busiest keys first and never more rows than the limit, and the rest follows") {
+      val counters = VelocityCounters(on.copy(shareFrom = 1))
+      (1 to 50).foreach(i => counters.record(prefix, s"junk$i", t0))
+      (1 to 30).foreach(_ => counters.record(asn, "64500", t0))
+      (1 to 5).foreach(_ => counters.record(phone, "h", t0))
+      val first = counters.drain(t0, 3)
+      val second = counters.drain(t0, 100)
+      assertTrue(
+        first.map(_._1.key).take(2) == List("64500", "h"),
+        first.size == 3,
+        second.size == 50 - 1,
       )
     },
     test("shares a key only from shareFrom requests, and no more than the limit at a time") {
@@ -192,6 +231,58 @@ object VelocityCountersSpec extends UnitSpecBase:
         _ <- rounds(6)
         up = b.count(ip, "x", TenMinutes, t0)
       yield assertTrue(down == (1, 0), up == 1)
+    },
+    test("an address is counted as its network under a keyed hash: spellings and a /64 are one key, and no address is stored") {
+      val settings = on.copy(shareFrom = 1, thresholds = VelocityRules.Thresholds(ip = VelocityRules.Limit(perDay = 1000)))
+      def ctx(ip: String) = AntifraudContext(
+        tenantId = None,
+        clientId = ClientId("c"),
+        action = AntifraudAction.otp_request,
+        subjectHash = None,
+        destPrefix = None,
+        deviceId = None,
+        ip = Some(ip),
+        asn = None,
+        userAgent = None,
+        ja4 = None,
+        signals = Map.empty,
+      )
+      for
+        (repo, _) <- repository
+        _ <- TestClock.setTime(t0)
+        a <- instance(repo, settings)
+        _ <- a.record(ctx("2001:db8:0:1::1"))
+        _ <- a.record(ctx("2001:0db8:0000:0001:ffff:ffff:ffff:ffff"))
+        _ <- a.record(ctx("203.0.113.9"))
+        _ <- a.record(ctx("::ffff:203.0.113.9"))
+        _ <- a.record(ctx("not an address, www.example.com"))
+        v6 <- a.snapshot(ctx("2001:db8:0:1::5"))
+        v4 <- a.snapshot(ctx("203.0.113.9"))
+        other <- a.snapshot(ctx("2001:db8:0:2::1"))
+        _ <- rounds(2)
+        stored <- repo.all
+      yield assertTrue(
+        v6.signals("velocity.ip.24h") == "3",
+        v4.signals("velocity.ip.24h") == "3",
+        other.signals("velocity.ip.24h") == "1",
+        a.size == 2,
+        stored.keys.map(_._3).forall(key => !key.contains("203") && !key.contains("2001") && !key.contains(":")),
+        stored.size == 2,
+      )
+    },
+    test("a load reads only what changed, and a rewritten minute replaces the old one") {
+      val settings = on.copy(shareFrom = 1)
+      for
+        (repo, _) <- repository
+        _ <- TestClock.setTime(t0)
+        a <- instance(repo, settings)
+        b <- instance(repo, settings)
+        _ <- ZIO.succeed((1 to 2).foreach(_ => a.record(phone, "p", t0)))
+        _ <- rounds(4)
+        first = b.count(phone, "p", TenMinutes, t0)
+        _ <- ZIO.succeed((1 to 3).foreach(_ => a.record(phone, "p", t0)))
+        _ <- rounds(6)
+      yield assertTrue(first == 2, b.count(phone, "p", TenMinutes, t0) == 5)
     },
     test("while off nothing is counted or started") {
       val counters = VelocityCounters.off
