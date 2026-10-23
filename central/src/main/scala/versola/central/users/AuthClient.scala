@@ -1,6 +1,7 @@
 package versola.central.users
 
 import versola.central.CentralConfig
+import versola.central.antifraud.*
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
@@ -9,7 +10,7 @@ import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, 
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
+import zio.{IO, Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -86,22 +87,27 @@ trait AuthClient:
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
 
-  /** Calls auth's antifraud lists API (`/antifraud/lists` and below) and returns its answer as it is: auth validates
-    * the entry and decides what the actor may do, so a 400, 403 or 404 is the answer to pass on, not a failure of
-    * the call. Any other failure is one. */
-  def forwardAntifraudLists(
-      method: Method,
-      path: List[String],
-      query: QueryParams,
-      body: Option[Json],
-  ): Task[AuthClient.Forwarded]
+  /** The antifraud lists live in auth, which validates the entries and decides what the actor may do: its refusals are
+    * [[AntifraudListError]]s, not failures of the call. */
+  def createAntifraudListEntry(entry: NewListEntry, actor: AntifraudListActor): IO[AntifraudListError | Throwable, ListEntryResponse]
+
+  def previewAntifraudListEntry(entry: NewListEntry, actor: AntifraudListActor): IO[AntifraudListError | Throwable, PreviewResponse]
+
+  def listAntifraudListEntries(query: ListEntriesQuery, actor: AntifraudListActor): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
+
+  def deleteAntifraudListEntry(id: UUID, actor: AntifraudListActor): IO[AntifraudListError | Throwable, Unit]
+
+  def antifraudListAudit(
+      entryId: Option[UUID],
+      limit: Option[Int],
+      actor: AntifraudListActor,
+  ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
 
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
 
-  /** What auth answered a forwarded call. */
-  case class Forwarded(status: Status, contentType: Option[Header.ContentType], body: String)
+  private case class AntifraudListPayload(entry: NewListEntry, actor: AntifraudListActor) derives JsonCodec
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
@@ -217,6 +223,7 @@ object AuthClient:
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
+    private val antifraudListsUrl: URL = config.auth.url / "antifraud" / "lists"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
 
     override def upsertUser(
@@ -385,19 +392,62 @@ object AuthClient:
         ),
       )
 
-    override def forwardAntifraudLists(
-        method: Method,
-        path: List[String],
-        query: QueryParams,
-        body: Option[Json],
-    ): Task[Forwarded] =
-      val url = path.foldLeft(config.auth.url / "antifraud" / "lists")(_ / _).setQueryParams(query)
-      execute(Request(method = method, url = url, body = body.fold(Body.empty)(json => Body.fromString(json.toJson)))): response =>
-        if response.status.isSuccess || passedOn.contains(response.status) then
-          response.body.asString.map(Forwarded(response.status, response.header(Header.ContentType), _))
-        else failResponse(response)
+    override def createAntifraudListEntry(entry: NewListEntry, actor: AntifraudListActor): IO[AntifraudListError | Throwable, ListEntryResponse] =
+      antifraud[ListEntryResponse](
+        Request(method = Method.POST, url = antifraudListsUrl, body = Body.from(AntifraudListPayload(entry, actor))),
+      )
 
-    private val passedOn = Set[Status](Status.BadRequest, Status.Forbidden, Status.NotFound)
+    override def previewAntifraudListEntry(entry: NewListEntry, actor: AntifraudListActor): IO[AntifraudListError | Throwable, PreviewResponse] =
+      antifraud[PreviewResponse](
+        Request(method = Method.POST, url = antifraudListsUrl / "preview", body = Body.from(AntifraudListPayload(entry, actor))),
+      )
+
+    override def listAntifraudListEntries(
+        query: ListEntriesQuery,
+        actor: AntifraudListActor,
+    ): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
+      val params = List(
+        query.listType.map("listType" -> _.toString),
+        query.valueType.map("valueType" -> _.toString),
+        query.tenantId.map("tenantId" -> _.toString),
+        query.global.map("global" -> _.toString),
+        query.limit.map("limit" -> _.toString),
+        query.offset.map("offset" -> _.toString),
+      ).flatten
+      antifraud[List[ListEntryResponse]](Request.get(withActor(antifraudListsUrl, params, actor)))
+
+    override def deleteAntifraudListEntry(id: UUID, actor: AntifraudListActor): IO[AntifraudListError | Throwable, Unit] =
+      antifraudUnit(Request(method = Method.DELETE, url = withActor(antifraudListsUrl, List("id" -> id.toString), actor), body = Body.empty))
+
+    override def antifraudListAudit(
+        entryId: Option[UUID],
+        limit: Option[Int],
+        actor: AntifraudListActor,
+    ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
+      val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
+      antifraud[List[AuditRecordResponse]](Request.get(withActor(antifraudListsUrl / "audit", params, actor)))
+
+    private def withActor(url: URL, params: List[(String, String)], actor: AntifraudListActor): URL =
+      url.addQueryParams(params ++ List("actor" -> actor.name) ++ actor.tenantId.map("actorTenantId" -> _.toString))
+
+    private def antifraud[A: JsonDecoder](request: Request): IO[AntifraudListError | Throwable, A] =
+      antifraudAnswer(request): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[A]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    private def antifraudUnit(request: Request): IO[AntifraudListError | Throwable, Unit] =
+      antifraudAnswer(request)(_ => ZIO.unit)
+
+    /** Auth's 400, 403 and 404 are its answers to an entry or an actor it will not take, not failures of the call. */
+    private def antifraudAnswer[A](request: Request)(success: Response => Task[A]): IO[AntifraudListError | Throwable, A] =
+      execute(request): response =>
+        response.status match
+          case status if status.isSuccess => success(response).map(Right(_))
+          case Status.BadRequest => response.body.asString.map(message => Left(AntifraudListError.Invalid(message)))
+          case Status.Forbidden => response.body.asString.map(message => Left(AntifraudListError.Forbidden(message)))
+          case Status.NotFound => ZIO.succeed(Left(AntifraudListError.NotFound))
+          case _ => failResponse(response)
+      .flatMap(ZIO.fromEither(_))
 
     override def deleteUser(userId: UserId): Task[Unit] =
       send(

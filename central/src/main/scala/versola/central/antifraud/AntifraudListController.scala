@@ -1,37 +1,26 @@
 package versola.central.antifraud
 
-import versola.central.CentralConfig
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.central.users.AuthClient
+import versola.central.configuration.tenants.TenantId
 import versola.util.http.{BadRequest, Controller, Forbidden, Observability}
 import zio.*
-import zio.http.{Method, QueryParams, Request, Response, Routes, handler}
-import zio.json.DecoderOps
-import zio.json.ast.Json
+import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.json.EncoderOps
 
-/** The admin API of the antifraud lists (block, allow, watch and fake lists, see auth's `AntifraudLists`). The lists
-  * are stored and enforced by auth; this is the console's door to them, as `UserController` is to the users: it names
-  * the caller and passes the request on to auth, which validates it and applies the rules of who may change what.
+import java.util.UUID
+
+/** The admin API of the antifraud lists (see [[AntifraudListService]]).
   *
   * ==Who is the caller==
-  * Central's admin API knows its caller only as the edge, so the edge is told (inject rules of these endpoints, see
-  * `BootstrapService`) to send who the admin is, from the token it has verified: `adminSubject` and `adminTenant`. An admin of the tenant that carries central's own roles ([[CentralConfig.defaultTenantId]]) is an
-  * operator: they may change global entries and other tenants', and read the audit. An admin of any other tenant (one
-  * that was given these permissions in their tenant) is limited to that tenant's entries. A request that carries no
-  * identity is refused: the fields are trusted because the edge overwrites them, never because a client sent them.
+  * Central's admin API knows its caller only as the edge, so the endpoints are registered with inject rules (see
+  * `BootstrapService.centralInjects`) that make edge say who the admin is, from the token it has verified: `adminSubject`
+  * and `adminTenant`, as query parameters of a `GET` and body fields of any other call, as for the account endpoints.
+  * Edge overwrites a parameter or field of the same name that a client sent; that is the only reason they are trusted.
+  * A request without them is refused.
   */
 object AntifraudListController extends Controller:
-  type Env = Tracing & ResourceService & AuthClient
-
-  /** Where edge puts the caller (inject rules of the endpoints, see `BootstrapService.centralInjects`): query parameters of a
-    * `GET`, body fields of anything else, as for the account endpoints. Edge overwrites a field or parameter of the same name
-    * a client sent. */
-  val SubjectParam = "adminSubject"
-  val TenantParam = "adminTenant"
-
-  private val ListQuery = Set("listType", "valueType", "tenantId", "global", "limit", "offset")
-  private val AuditQuery = Set("entryId", "limit")
+  type Env = Tracing & ResourceService & AntifraudListService
 
   def routes: Routes[Env, Throwable] = Routes(createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint)
 
@@ -39,85 +28,74 @@ object AntifraudListController extends Controller:
     Method.POST / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
-        (actor, entry) <- callerAndBody(request)
-        forwarded <- ZIO.serviceWithZIO[AuthClient](_.forwardAntifraudLists(Method.POST, Nil, QueryParams.empty, Some(withActor(entry, actor))))
-      yield respond(forwarded)
+        body <- request.bodyAs[NewListEntryRequest]
+        service <- ZIO.service[AntifraudListService]
+        response <- guarded(service.create(body.entry, body.caller).map(entry => Response.json(entry.toJson).status(Status.Created)))
+      yield response
     }
 
   val previewEndpoint =
     Method.POST / "antifraud" / "lists" / "preview" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
-        (actor, entry) <- callerAndBody(request)
-        forwarded <-
-          ZIO.serviceWithZIO[AuthClient](_.forwardAntifraudLists(Method.POST, List("preview"), QueryParams.empty, Some(withActor(entry, actor))))
-      yield respond(forwarded)
+        body <- request.bodyAs[NewListEntryRequest]
+        service <- ZIO.service[AntifraudListService]
+        response <- guarded(service.preview(body.entry, body.caller).map(preview => Response.json(preview.toJson)))
+      yield response
     }
 
   val listEndpoint =
     Method.GET / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
-        actor <- actorOf(request.url.queryParams.queryParam(SubjectParam), request.url.queryParams.queryParam(TenantParam))
-        forwarded <- ZIO.serviceWithZIO[AuthClient](_.forwardAntifraudLists(Method.GET, Nil, query(request, ListQuery, actor), None))
-      yield respond(forwarded)
+        service <- ZIO.service[AntifraudListService]
+        listType <- request.queryZIO[Option[AntifraudListType]]("listType")
+        valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
+        tenantId <- request.queryZIO[Option[TenantId]]("tenantId")
+        global <- request.queryZIO[Option[Boolean]]("global")
+        limit <- request.queryZIO[Option[Int]]("limit")
+        offset <- request.queryZIO[Option[Int]]("offset")
+        caller <- callerOf(request)
+        query = ListEntriesQuery(listType = listType, valueType = valueType, tenantId = tenantId, global = global, limit = limit, offset = offset)
+        response <- guarded(service.list(query, caller).map(entries => Response.json(entries.toJson)))
+      yield response
     }
 
-  /** The entry is named in the body (`id`), like the other calls that change something, because that is where edge puts
-    * the caller of a request that is not a `GET`. */
+  /** The entry is named in the body, where edge puts the caller of a request that is not a `GET`. */
   val deleteEndpoint =
     Method.DELETE / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
-        (actor, body) <- callerAndBody(request)
-        id <- ZIO.fromOption(body.get("id").flatMap(_.asString)).orElseFail(BadRequest("id is required"))
-        forwarded <- ZIO.serviceWithZIO[AuthClient](_.forwardAntifraudLists(Method.DELETE, Nil, asking(QueryParams("id" -> id), actor), None))
-      yield respond(forwarded)
+        body <- request.bodyAs[DeleteListEntryRequest]
+        service <- ZIO.service[AntifraudListService]
+        response <- guarded(service.delete(body.id, body.caller).as(Response.status(Status.NoContent)))
+      yield response
     }
 
   val auditEndpoint =
     Method.GET / "antifraud" / "lists" / "audit" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
-        actor <- actorOf(request.url.queryParams.queryParam(SubjectParam), request.url.queryParams.queryParam(TenantParam))
-        forwarded <- ZIO.serviceWithZIO[AuthClient](_.forwardAntifraudLists(Method.GET, List("audit"), query(request, AuditQuery, actor), None))
-      yield respond(forwarded)
+        service <- ZIO.service[AntifraudListService]
+        entryId <- request.queryZIO[Option[UUID]]("entryId")
+        limit <- request.queryZIO[Option[Int]]("limit")
+        caller <- callerOf(request)
+        response <- guarded(service.audit(entryId, limit, caller).map(records => Response.json(records.toJson)))
+      yield response
     }
 
-  /** The admin, and the tenant they are limited to; `None` for an operator. */
-  private case class Actor(name: String, tenantId: Option[String])
-
-  private def actorOf(subject: Option[String], tenant: Option[String]): IO[Forbidden.type, Actor] =
-    (subject.filter(_.nonEmpty), tenant.filter(_.nonEmpty)) match
-      case (Some(name), Some(tenant)) => ZIO.succeed(Actor(name, Option.unless(tenant == CentralConfig.defaultTenantId)(tenant)))
-      case _ => Observability.setError("admin_identity_missing") *> ZIO.fail(Forbidden)
-
-  /** Who is calling and the rest of the body: the caller's fields are taken out, so that what is forwarded is what the
-    * admin sent. A body without them is a request edge did not add them to. */
-  private def callerAndBody(request: Request): IO[BadRequest | Forbidden.type, (Actor, Json.Obj)] =
+  private def callerOf(request: Request): ZIO[Any, Throwable, AdminCaller] =
     for
-      body <- request.body.asString.orElseFail(BadRequest("the body could not be read"))
-      obj <- ZIO.fromEither(body.fromJson[Json.Obj]).orElseFail(BadRequest("the body is not a JSON object"))
-      actor <- actorOf(obj.get(SubjectParam).flatMap(_.asString), obj.get(TenantParam).flatMap(_.asString))
-    yield actor -> Json.Obj(obj.fields.filterNot((name, _) => name == SubjectParam || name == TenantParam))
+      subject <- request.queryZIO[Option[String]]("adminSubject")
+      tenant <- request.queryZIO[Option[TenantId]]("adminTenant")
+    yield AdminCaller(subject = subject, tenant = tenant)
 
-  private def withActor(entry: Json.Obj, actor: Actor): Json =
-    Json.Obj(
-      "entry" -> entry,
-      "actor" -> Json.Obj(
-        Chunk("name" -> Json.Str(actor.name)) ++ actor.tenantId.map(t => "tenantId" -> Json.Str(t)),
-      ),
-    )
-
-  /** The parameters the endpoint takes, and who is asking; anything else the caller sent is dropped. */
-  private def query(request: Request, names: Set[String], actor: Actor): QueryParams =
-    val taken = request.url.queryParams.map.filter((name, _) => names.contains(name))
-    asking(QueryParams(taken), actor)
-
-  private def asking(params: QueryParams, actor: Actor): QueryParams =
-    val asked = params.addQueryParam("actor", actor.name)
-    actor.tenantId.fold(asked)(asked.addQueryParam("actorTenantId", _))
-
-  private def respond(forwarded: AuthClient.Forwarded): Response =
-    val response = Response(status = forwarded.status, body = zio.http.Body.fromString(forwarded.body))
-    forwarded.contentType.fold(response)(response.addHeader(_))
+  /** What the service refused becomes the answer through the usual mechanism: a [[BadRequest]] or [[Forbidden]] that
+    * `Observability.handleErrors` turns into a 400 or 403, and the outcome in the request's error context. */
+  private def guarded(effect: IO[AntifraudListError | Throwable, Response]): Task[Response] =
+    effect.catchAll:
+      case AntifraudListError.Invalid(message) => Observability.setError("invalid_list_entry", Some(message)) *> ZIO.fail(BadRequest(message))
+      case AntifraudListError.Forbidden(message) => Observability.setError("list_forbidden", Some(message)) *> ZIO.fail(Forbidden)
+      case AntifraudListError.NoCaller => Observability.setError("admin_identity_missing") *> ZIO.fail(Forbidden)
+      case AntifraudListError.NotFound => Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
+      case error: Throwable => ZIO.fail(error)

@@ -65,12 +65,12 @@ object AntifraudListApiSpec extends CentralApiSpec:
         json <- created.obj
         id = json.str("id").getOrElse("")
         listed <- operator_.get(lists, "global" -> "true", "valueType" -> "device_id", "limit" -> "500")
-        listedValues <- listed.objects.map(_.flatMap(_.str("value")).toSet)
+        listedValues <- listed.items("entries").map(_.flatMap(_.str("value")).toSet)
         audited <- operator_.get(s"$lists/audit", "entryId" -> id)
-        auditRecords <- audited.objects
+        auditRecords <- audited.items("records")
         removed <- operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id)))
         again <- operator_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id)))
-        afterRemoval <- operator_.get(s"$lists/audit", "entryId" -> id).flatMap(_.objects)
+        afterRemoval <- operator_.get(s"$lists/audit", "entryId" -> id).flatMap(_.items("records"))
       yield assertTrue(
         created.status == Status.Created,
         json.str("createdBy").contains("e2e-operator"),
@@ -99,7 +99,7 @@ object AntifraudListApiSpec extends CentralApiSpec:
         previewDenied <- admin.post(s"$lists/preview", entry("device_id", global))
         previewOwn <- admin.post(s"$lists/preview", entry("device_id", mine, tenantId = Some(tenant)))
         other <- withEntry(central, entry("device_id", theirs, tenantId = Some("some-other-tenant"))) { _ =>
-          admin.get(lists, "limit" -> "500").flatMap(_.objects).map(_.flatMap(_.str("value")).toSet)
+          admin.get(lists, "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         }
         globalEntry <- withEntry(central, entry("device_id", global)) { g =>
           admin.deleteWithBody(lists, Json.Obj("id" -> Json.Str(g.str("id").getOrElse("")))).map(_.status)
@@ -166,7 +166,7 @@ object AntifraudListApiSpec extends CentralApiSpec:
         value <- device("preview")
         previewed <- operator_.post(s"$lists/preview", entry("device_id", value))
         counts <- previewed.obj
-        listed <- operator_.get(lists, "global" -> "true", "valueType" -> "device_id", "limit" -> "500").flatMap(_.objects)
+        listed <- operator_.get(lists, "global" -> "true", "valueType" -> "device_id", "limit" -> "500").flatMap(_.items("entries"))
       yield assertTrue(
         previewed.status == Status.Ok,
         counts.has("total"),

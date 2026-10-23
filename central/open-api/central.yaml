@@ -2474,9 +2474,7 @@ paths:
           description: The entries.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/AntifraudListEntry' }
+              schema: { $ref: '#/components/schemas/AntifraudListEntriesResponse' }
         '400':
           description: A parameter is not valid, or `tenantId` and `global` were both given.
         '401':
@@ -2596,9 +2594,7 @@ paths:
           description: The records.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/AntifraudListAudit' }
+              schema: { $ref: '#/components/schemas/AntifraudListAuditResponse' }
         '400':
           description: A parameter is not valid.
         '401':
@@ -6343,6 +6339,20 @@ components:
           description: Kept in memory by each instance and written every 30 seconds, so it lags.
         lastHitAt: { type: string, format: date-time }
       required: [id, listType, valueType, value, source, shadow, createdBy, createdAt, hitCount]
+    AntifraudListEntriesResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AntifraudListEntry' }
+      required: [entries]
+    AntifraudListAuditResponse:
+      type: object
+      properties:
+        records:
+          type: array
+          items: { $ref: '#/components/schemas/AntifraudListAudit' }
+      required: [records]
     AntifraudListAudit:
       type: object
       properties:

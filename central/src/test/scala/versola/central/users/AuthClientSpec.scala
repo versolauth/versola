@@ -1,5 +1,6 @@
 package versola.central.users
 
+import versola.central.antifraud.*
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
@@ -279,31 +280,81 @@ object AuthClientSpec extends ZIOSpecDefault:
 
   // ── Response decoding ───────────────────────────────────────────────────────
   private val decodingSuite = suite("response decoding")(
-    test("forwardAntifraudLists passes on auth's 400, 403 and 404 with their bodies, and the path, query and body it was given") {
-      def answer(status: Status) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("why").status(status))).toRoutes
+    test("the antifraud list calls send the entry, the actor and the parameters to auth's /antifraud/lists") {
+      val entry = NewListEntry(
+        listType = AntifraudListType.deny,
+        valueType = AntifraudValueType.phone_hash,
+        value = None,
+        phone = Some("+77011234567"),
+        tenantId = Some(tenantId),
+        expiresAt = None,
+        reason = None,
+        source = None,
+        shadow = None,
+      )
+      val actor = AntifraudListActor("alice", Some(tenantId))
       for
-        seen <- Ref.make(Option.empty[Request])
+        seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("[]"))).toRoutes,
+          Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("[]"))).toRoutes,
         )
         client <- ZIO.service[AuthClient]
-        ok <- client.forwardAntifraudLists(Method.POST, List("preview"), QueryParams("a" -> "b"), Some(Json.Obj("x" -> Json.Num(1))))
-        request <- seen.get.map(_.get)
-        sentBody <- request.body.asString
-        results <- ZIO.foreach(List(Status.BadRequest, Status.Forbidden, Status.NotFound)): status =>
-          TestClient.addRoutes(answer(status)) *>
-            client.forwardAntifraudLists(Method.GET, Nil, QueryParams.empty, None)
-        _ <- TestClient.addRoutes(answer(Status.InternalServerError))
-        broken <- client.forwardAntifraudLists(Method.GET, Nil, QueryParams.empty, None).either
+        _ <- client.listAntifraudListEntries(
+          ListEntriesQuery(
+            listType = Some(AntifraudListType.deny),
+            valueType = None,
+            tenantId = Some(tenantId),
+            global = None,
+            limit = Some(5),
+            offset = None,
+          ),
+          actor,
+        )
+        _ <- client.antifraudListAudit(None, Some(3), AntifraudListActor("root", None))
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
+        _ <- client.deleteAntifraudListEntry(UUID.fromString("00000000-0000-0000-0000-0000000000e1"), actor)
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r =>
+            seen.update(_ :+ r).as(Response.json("""{"matched":3,"total":10}""")),
+          ).toRoutes,
+        )
+        previewed <- client.previewAntifraudListEntry(entry, actor)
+        requests <- seen.get
+        sent <- requests.last.body.asString
       yield assertTrue(
-        ok.status == Status.Ok,
-        request.method == Method.POST,
-        request.url.path.segments == Chunk("antifraud", "lists", "preview"),
-        request.url.queryParams.queryParam("a").contains("b"),
-        sentBody == """{"x":1}""",
-        results.map(_.status) == List(Status.BadRequest, Status.Forbidden, Status.NotFound),
-        results.forall(_.body == "why"),
-        broken.isLeft,
+        previewed == PreviewResponse(matched = Some(3), total = 10),
+        requests(0).url.path.segments == Chunk("antifraud", "lists"),
+        requests(0).url.queryParams.queryParam("listType").contains("deny"),
+        requests(0).url.queryParams.queryParam("limit").contains("5"),
+        requests(0).url.queryParams.queryParam("actor").contains("alice"),
+        requests(0).url.queryParams.queryParam("actorTenantId").contains("t1"),
+        requests(1).url.path.segments == Chunk("antifraud", "lists", "audit"),
+        requests(1).url.queryParams.queryParam("actorTenantId").isEmpty,
+        requests(2).method == Method.DELETE,
+        requests(2).url.queryParams.queryParam("id").contains("00000000-0000-0000-0000-0000000000e1"),
+        requests(3).method == Method.POST && requests(3).url.path.segments == Chunk("antifraud", "lists", "preview"),
+        sent.fromJson[Json.Obj].toOption.flatMap(_.get("entry")).flatMap(_.asObject).flatMap(_.get("phone")).contains(Json.Str("+77011234567")),
+        sent.fromJson[Json.Obj].toOption.flatMap(_.get("actor")).flatMap(_.asObject).flatMap(_.get("name")).contains(Json.Str("alice")),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("auth's 400, 403 and 404 are typed errors for an antifraud call, and any other failure is a failure") {
+      val actor = AntifraudListActor("alice", None)
+      def answer(status: Status, body: String) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text(body).status(status))).toRoutes
+      for
+        client <- ZIO.service[AuthClient]
+        _ <- TestClient.addRoutes(answer(Status.BadRequest, "not an IP address"))
+        invalid <- client.listAntifraudListEntries(ListEntriesQuery(None, None, None, None, None, None), actor).either
+        _ <- TestClient.addRoutes(answer(Status.Forbidden, "only an operator"))
+        forbidden <- client.antifraudListAudit(None, None, actor).either
+        _ <- TestClient.addRoutes(answer(Status.NotFound, ""))
+        missing <- client.deleteAntifraudListEntry(UUID.randomUUID(), actor).either
+        _ <- TestClient.addRoutes(answer(Status.InternalServerError, "boom"))
+        broken <- client.deleteAntifraudListEntry(UUID.randomUUID(), actor).either
+      yield assertTrue(
+        invalid == Left(AntifraudListError.Invalid("not an IP address")),
+        forbidden == Left(AntifraudListError.Forbidden("only an operator")),
+        missing == Left(AntifraudListError.NotFound),
+        broken.left.exists(_.isInstanceOf[RuntimeException]),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("resetPassword returns None when server responds 204") {
