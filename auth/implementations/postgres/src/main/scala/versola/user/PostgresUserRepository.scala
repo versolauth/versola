@@ -121,6 +121,7 @@ class PostgresUserRepository(
       sql"delete from sso_sessions where user_id = $id".update.run()
       sql"delete from user_agents where user_id = $id".update.run()
       sql"delete from passkeys where user_id = $id".update.run()
+      sql"delete from passkey_enrollment where user_id = $id".update.run()
       sql"delete from user_passwords where user_id = $id".update.run()
       // user_roles and user_consents reference users and go with the row.
       sql"delete from users where id = $id".update.run()

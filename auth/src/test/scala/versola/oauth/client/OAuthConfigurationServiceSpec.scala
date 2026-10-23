@@ -95,6 +95,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     otpLength = 6,
     otpResendAfter = 60,
     passkeySettings = PasskeySettings("rp.example.com", "RP", List("https://rp.example.com"), "required"),
+    passkeyPolicy = None,
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = Some(3600),

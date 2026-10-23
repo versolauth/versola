@@ -745,6 +745,19 @@ test.describe('passkey-enroll', () => {
     expect(submitted[0].path).toBe('/challenge/passkey/skip');
     expect(submitted[0].fields.get('csrf')).toBe(CSRF);
   });
+
+  test('has no skip button when the server says the passkey is mandatory', async ({ page }) => {
+    const { t } = await renderForm(page, 'passkey-enroll', { step: { ...step, skippable: false } });
+
+    await expect(page.getByRole('button', { name: t.enroll_button })).toBeVisible();
+    await expect(page.getByRole('button', { name: t.skip_button })).toHaveCount(0);
+  });
+
+  test('keeps the skip button when the step comes from a server that does not send the flag', async ({ page }) => {
+    const { t } = await renderForm(page, 'passkey-enroll', { step });
+
+    await expect(page.getByRole('button', { name: t.skip_button })).toBeVisible();
+  });
 });
 
 test.describe('confirm-logout', () => {

@@ -27,7 +27,13 @@ import versola.oauth.authorize.{
   PushedAuthorizationService,
   RequestObjectService,
 }
-import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.passkey.{
+  PasskeyEnrollmentRepository,
+  PasskeyRepository,
+  PostgresPasskeyEnrollmentRepository,
+  PostgresPasskeyRepository,
+  WebAuthnService,
+}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient, ServiceController}
@@ -97,6 +103,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PasswordRepository &
       PasswordService &
       PasskeyRepository &
+      PasskeyEnrollmentRepository &
       WebAuthnService &
       SecureRandom &
       SecurityService &
@@ -230,6 +237,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresUserAgentRepository.live >++>
       PostgresPasswordRepository.live >++>
       PostgresPasskeyRepository.live >++>
+      PostgresPasskeyEnrollmentRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
       PostgresVelocityRepository.live >++>

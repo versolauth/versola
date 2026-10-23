@@ -5,7 +5,7 @@ import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
-import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
+import versola.oauth.challenge.passkey.{PasskeyEnrollmentRepository, PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
@@ -17,6 +17,9 @@ import versola.oauth.client.model.{
   OtpType,
   PassedAuthFactor,
   PassedFactorRecord,
+  PasskeyEnrollmentMode,
+  PasskeyOffer,
+  PasskeyPolicy,
   PasskeySettings,
   RegistrationFlow,
   ScopeToken,
@@ -160,6 +163,12 @@ trait ConversationService:
     */
   def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
+  /** Where every sign-in ends: the tenant's passkey policy decides whether the user is first offered a passkey
+    * ([[versola.oauth.client.model.PasskeyPolicy]]), and the conversation finishes otherwise. A tenant without a policy
+    * is left to the client's `passkeyEnroll` factor, so nothing is offered here for it.
+    */
+  def finishOrOfferPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+
   /** Finish a passkey enrollment ceremony. Returns `StepPassed` so the caller decides what
     * follows; a failed ceremony re-renders the enrollment step instead.
     */
@@ -206,7 +215,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -222,6 +231,7 @@ object ConversationService:
       submissionLimiter: SubmissionLimiter,
       webAuthnService: WebAuthnService,
       passkeyRepository: PasskeyRepository,
+      passkeyEnrollmentRepository: PasskeyEnrollmentRepository,
       configService: OAuthConfigurationService,
       acrResolutionService: AcrResolutionService,
       userAgentRepository: UserAgentRepository,
@@ -1044,6 +1054,26 @@ object ConversationService:
           // credential step, e.g. a stale form or a tampered request.
           Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
 
+    override def finishOrOfferPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      configService.getPasskeyPolicy(conversation.clientId).flatMap:
+        case Some(policy) if policy.mode != PasskeyEnrollmentMode.off => offerPasskeyEnroll(authId, conversation)
+        case _ => finish(authId, conversation)
+
+    /** What this user is offered now: under the tenant's policy, from what is on record for them; a tenant without one
+      * offers a skippable card, as the `passkeyEnroll` factor always did.
+      */
+    private def passkeyOffer(userId: UserId, policy: Option[PasskeyPolicy]): Task[PasskeyOffer] =
+      policy match
+        case None => ZIO.succeed(PasskeyOffer.Skippable)
+        case Some(policy) =>
+          for
+            now <- Clock.instant
+            state <- passkeyEnrollmentRepository.find(userId)
+            // The grace in days runs from the first offer, so the first offer is what gets recorded.
+            _ <- ZIO.when(state.isEmpty && policy.mode == PasskeyEnrollmentMode.requiredAfterGrace):
+              passkeyEnrollmentRepository.recordOffer(userId, now)
+          yield policy.offer(state, now)
+
     override def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
@@ -1058,25 +1088,34 @@ object ConversationService:
               passkeyRepository.listByUser(userId).flatMap: existing =>
                 if existing.nonEmpty then finish(authId, conversation)
                 else
-                  // What the person signed in with names the account in their authenticator: the phone number if
-                  // they entered one, the email if they entered that, the login for a login and password. The user id
-                  // is never shown; with nothing else to go on the service's own name is.
-                  val accountName: String =
-                    conversation.credential.map(_.fold(email => email: String, phone => phone: String))
-                      .orElse(conversation.userLogin.map(login => login: String))
-                      .orElse(conversation.user.flatMap(_.passkeyAccountName))
-                      .getOrElse(settings.rpName)
-                  // The secondary label: the user's own name when they have one, else the same as the account.
-                  val displayName: String = conversation.user.flatMap(_.nameClaim).getOrElse(accountName)
-                  webAuthnService.startRegistration(settings, userId, accountName, displayName).foldZIO(
-                    _ => finish(authId, conversation),
-                    ceremony =>
-                      val enrollStep = ConversationStep.PasskeyEnroll(
-                        request = ceremony.request,
-                        publicKeyOptions = ceremony.publicKeyOptions,
+                  configService.getPasskeyPolicy(conversation.clientId).flatMap(policy => passkeyOffer(userId, policy)).flatMap:
+                    case PasskeyOffer.None => finish(authId, conversation)
+                    case offer =>
+                      // What the person signed in with names the account in their authenticator: the phone number if
+                      // they entered one, the email if they entered that, the login for a login and password. The user id
+                      // is never shown; with nothing else to go on the service's own name is.
+                      val accountName: String =
+                        conversation.credential.map(_.fold(email => email: String, phone => phone: String))
+                          .orElse(conversation.userLogin.map(login => login: String))
+                          .orElse(conversation.user.flatMap(_.passkeyAccountName))
+                          .getOrElse(settings.rpName)
+                      // The secondary label: the user's own name when they have one, else the same as the account.
+                      val displayName: String = conversation.user.flatMap(_.nameClaim).getOrElse(accountName)
+                      webAuthnService.startRegistration(settings, userId, accountName, displayName).foldZIO(
+                        // A passkey the tenant requires cannot be skipped because the ceremony would not start: the
+                        // sign-in is refused (fail closed) rather than finished without one.
+                        _ =>
+                          if offer == PasskeyOffer.Mandatory then
+                            Observability.setError("passkey_enrollment_unavailable") *> accessDenied(authId, conversation)
+                          else finish(authId, conversation),
+                        ceremony =>
+                          val enrollStep = ConversationStep.PasskeyEnroll(
+                            request = ceremony.request,
+                            publicKeyOptions = ceremony.publicKeyOptions,
+                            skippable = offer == PasskeyOffer.Skippable,
+                          )
+                          renderStep(authId, conversation, enrollStep),
                       )
-                      renderStep(authId, conversation, enrollStep),
-                  )
 
     override def finishPasskeyEnroll(
         authId: AuthId,
@@ -1099,7 +1138,20 @@ object ConversationService:
           )
 
     override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult] =
-      ZIO.succeed(ConversationResult.StepPassed(conversation))
+      conversation.userId match
+        case None =>
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
+        case Some(userId) =>
+          configService.getPasskeyPolicy(conversation.clientId).flatMap: policy =>
+            // The card's own flag is not trusted: whether a skip is allowed is decided again from what is on record,
+            // so a request that skips a mandatory card gets the card back.
+            passkeyOffer(userId, policy).flatMap:
+              case PasskeyOffer.Mandatory =>
+                Observability.setError("passkey_required") *> offerPasskeyEnroll(authId, conversation)
+              case _ =>
+                ZIO.when(policy.exists(_.mode == PasskeyEnrollmentMode.requiredAfterGrace)):
+                  Clock.instant.flatMap(passkeyEnrollmentRepository.recordSkip(userId, _))
+                .as(ConversationResult.StepPassed(conversation))
 
     override def startRegistration(
         authId: AuthId,

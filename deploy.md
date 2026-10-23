@@ -460,6 +460,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is lost (users mid-login start over, unused codes are rejected and the client retries); sessions,
   tokens, consents and users are unaffected. Flipping a table's logging mode takes an
   `ACCESS EXCLUSIVE` lock and rewrites it: run such a migration at low traffic.
+- **Passkey policy (V1028 central, V0022 auth).** `challenge_settings.passkey_policy` is nullable with no backfill:
+  a tenant without one keeps the previous behaviour, where each client's `passkeyEnroll` factor decides. Setting
+  `required` or `required_after_grace` makes a sign-in without a passkey end on the enrolment card, and the sign-in is
+  refused when the card cannot be offered (passkey settings missing, ceremony fails), so check the tenant's passkey
+  settings first. `passkey_enrollment` (auth) holds one row per user of a `required_after_grace` tenant: first offer and
+  skips. Both migrations only add, so the previous release keeps serving during `versola migrate` and after a rollback;
+  an older `auth` ignores the policy and an older `central` sends none.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on

@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.passkey.{PasskeyEnrollmentRepository, PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
@@ -65,6 +65,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val submissionLimiter = stub[SubmissionLimiter]
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
+    val passkeyEnrollmentRepository = stub[PasskeyEnrollmentRepository]
     val configService = stub[OAuthConfigurationService]
     val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
@@ -86,6 +87,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       submissionLimiter,
       webAuthnService,
       passkeyRepository,
+      passkeyEnrollmentRepository,
       configService,
       acrResolver,
       userAgentRepository,

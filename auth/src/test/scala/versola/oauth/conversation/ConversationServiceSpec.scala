@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseMode, ResponseTypeEntry}
-import versola.oauth.challenge.passkey.PasskeyRepository
+import versola.oauth.challenge.passkey.{PasskeyEnrollmentRepository, PasskeyRepository}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.OAuthConfigurationService
@@ -103,6 +103,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val submissionLimiter = stub[SubmissionLimiter]
     val webAuthnService = stub[versola.oauth.challenge.passkey.WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
+    val passkeyEnrollmentRepository = stub[PasskeyEnrollmentRepository]
     val configService = stub[OAuthConfigurationService]
     val acrResolver = stub[AcrResolutionService]
     val userAgentRepository = stub[UserAgentRepository]
@@ -124,6 +125,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       submissionLimiter,
       webAuthnService,
       passkeyRepository,
+      passkeyEnrollmentRepository,
       configService,
       acrResolver,
       userAgentRepository,
@@ -236,6 +238,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.submissionLimiter),
             ZLayer.succeed(env.webAuthnService),
             ZLayer.succeed(env.passkeyRepository),
+            ZLayer.succeed(env.passkeyEnrollmentRepository),
             ZLayer.succeed(env.configService),
             ZLayer.succeed(env.acrResolver),
             ZLayer.succeed(env.userAgentRepository),
@@ -1044,11 +1047,12 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
           _ <- env.webAuthnService.startRegistration.succeedsWith(ceremony)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, record)
         yield result match
-          case ConversationResult.RenderStep(ConversationStep.PasskeyEnroll(req, opt, _)) =>
+          case ConversationResult.RenderStep(ConversationStep.PasskeyEnroll(req, opt, _, _)) =>
             assertTrue(req == "request") && assertTrue(opt == "options")
           case _ => assertTrue(false)
       },

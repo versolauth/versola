@@ -5,7 +5,7 @@ import { PageBrand, ClientBadge } from '../shared/brand';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
 
-type PasskeyEnrollStep = { type: 'passkey-enroll'; publicKeyOptions: string };
+type PasskeyEnrollStep = { type: 'passkey-enroll'; publicKeyOptions: string; skippable?: boolean };
 
 interface FormConfig extends BaseFormConfig {
   step: PasskeyEnrollStep;
@@ -93,9 +93,11 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
       <button type="button" class="btn btn-primary" disabled={busy()} onClick={handleEnroll}>
         {t().enroll_button}
       </button>
-      <button type="button" class="btn btn-secondary" disabled={busy()} onClick={handleSkip}>
-        {t().skip_button}
-      </button>
+      <Show when={step.skippable !== false}>
+        <button type="button" class="btn btn-secondary" disabled={busy()} onClick={handleSkip}>
+          {t().skip_button}
+        </button>
+      </Show>
     </div>
     </>
   );

@@ -2,7 +2,8 @@ package versola.central.configuration.challenges
 
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, jsonHint}
+import zio.schema.annotation.caseName
 import zio.schema.{Schema, derived}
 
 import java.net.{IDN, URI}
@@ -16,6 +17,50 @@ case class PasskeySettings(
     origins: List[String],
     userVerification: String,
 ) derives Schema, JsonCodec
+
+/** How firmly a tenant asks a signed-in user who has no passkey to enrol one. */
+enum PasskeyEnrollmentMode derives Schema, JsonCodec:
+  /** Never asked. */
+  @jsonHint("off") @caseName("off") case off
+
+  /** Asked after every sign-in; the user may always skip. */
+  @jsonHint("offered") @caseName("offered") case offered
+
+  /** Asked and skippable while the grace lasts; once it is used up, sign-in cannot finish without a passkey. */
+  @jsonHint("required_after_grace") @caseName("required_after_grace") case requiredAfterGrace
+
+  /** Sign-in cannot finish without a passkey. */
+  @jsonHint("required") @caseName("required") case required
+
+/** The tenant's passkey enrolment policy, see [[ChallengeSettingsRecord.passkeyPolicy]].
+  *
+  * @param graceSkips how many times a user may skip the offer under [[PasskeyEnrollmentMode.requiredAfterGrace]]
+  * @param graceDays how long after the first offer a user may keep skipping it under the same mode; the grace ends
+  *                  with whichever of the two runs out first
+  */
+case class PasskeyPolicy(
+    mode: PasskeyEnrollmentMode,
+    graceSkips: Option[Int],
+    graceDays: Option[Int],
+) derives Schema, JsonCodec
+
+object PasskeyPolicy:
+  val MaxGraceSkips = 100
+  val MaxGraceDays = 365
+
+  /** Why this policy cannot be stored, if it cannot. A grace is only meaningful for `required_after_grace`, and that
+    * mode without one would silently be `required`. */
+  def validate(policy: PasskeyPolicy): Option[String] =
+    val grace = policy.graceSkips.isDefined || policy.graceDays.isDefined
+    if policy.mode == PasskeyEnrollmentMode.requiredAfterGrace && !grace then
+      Some("passkeyPolicy required_after_grace needs graceSkips or graceDays")
+    else if policy.mode != PasskeyEnrollmentMode.requiredAfterGrace && grace then
+      Some("passkeyPolicy graceSkips and graceDays apply only to required_after_grace")
+    else if policy.graceSkips.exists(n => n < 1 || n > MaxGraceSkips) then
+      Some(s"passkeyPolicy graceSkips must be between 1 and $MaxGraceSkips")
+    else if policy.graceDays.exists(n => n < 1 || n > MaxGraceDays) then
+      Some(s"passkeyPolicy graceDays must be between 1 and $MaxGraceDays")
+    else None
 
 /** How the reverse proxy in front of this tenant delivers a client certificate it terminated
   * mTLS for. There is no standard header or encoding for this -- every proxy invents its own
@@ -162,6 +207,9 @@ case class ChallengeSettingsRecord(
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
+    /** Whether and how firmly a signed-in user without a passkey is asked to enrol one, see [[PasskeyPolicy]]. `None`
+      * leaves it to each client's `passkeyEnroll` factor, which is what every tenant did before the policy existed. */
+    passkeyPolicy: Option[PasskeyPolicy],
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,
     sessionIdleTtlSeconds: Option[Int],
@@ -242,6 +290,7 @@ object ChallengeSettingsRecord:
         (),
         s"clientAssertionMaxLifetimeSeconds must be between $MinClientAssertionMaxLifetimeSeconds and $MaxClientAssertionMaxLifetimeSeconds",
       )
+      _ <- record.passkeyPolicy.flatMap(PasskeyPolicy.validate).toLeft(())
       _ <- PhoneRegion.validate(record.phoneRegions).toLeft(())
       emailRegistration <- EmailRegistration.normalize(record.emailRegistration)
       _ <- Either.cond(record.defaultRoles.nonEmpty, (), "defaultRoles must name at least one role")

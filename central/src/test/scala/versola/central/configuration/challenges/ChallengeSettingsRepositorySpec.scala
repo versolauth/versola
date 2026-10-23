@@ -32,6 +32,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     otpLength = 6,
     otpResendAfter = 30,
     passkeySettings = passkeySettings,
+    passkeyPolicy = None,
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 3600,
     sessionIdleTtlSeconds = Some(1800),
@@ -58,6 +59,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     otpLength = None,
     otpResendAfter = None,
     passkeySettings = None,
+    passkeyPolicy = None,
     authConversationTtlSeconds = None,
     sessionTtlSeconds = None,
     sessionIdleTtlSeconds = None,
@@ -92,6 +94,25 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           found <- env.repository.findByTenant(tenantA)
           all <- env.repository.getAll
         yield assertTrue(found == Some(record), all == Vector(record))
+      },
+      test("upsert stores a passkey policy, and a patch changes and clears it") {
+        val policy = PasskeyPolicy(mode = PasskeyEnrollmentMode.requiredAfterGrace, graceSkips = Some(3), graceDays = None)
+        val record = settingsFor(tenantA).copy(passkeyPolicy = Some(policy))
+        for
+          _ <- env.repository.upsert(record)
+          stored <- env.repository.findByTenant(tenantA)
+          _ <- env.repository.patch(
+            tenantA,
+            noChange(tenantA).copy(passkeyPolicy = Some(Patch.Modified(policy.copy(graceSkips = None, graceDays = Some(7))))),
+          )
+          changed <- env.repository.findByTenant(tenantA)
+          _ <- env.repository.patch(tenantA, noChange(tenantA).copy(passkeyPolicy = Some(Patch.Deleted)))
+          cleared <- env.repository.findByTenant(tenantA)
+        yield assertTrue(
+          stored == Some(record),
+          changed.flatMap(_.passkeyPolicy).map(_.graceDays) == Some(Some(7)),
+          cleared.exists(_.passkeyPolicy.isEmpty),
+        )
       },
       test("upsert on an existing tenant replaces the settings") {
         val original = settingsFor(tenantA)
