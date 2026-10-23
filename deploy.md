@@ -541,8 +541,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
   once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
   context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
-  *Counting what is attacker-chosen.* Memory is bounded by `max-keys` times five kinds times at most 11.5 KB (a key seen
-  every minute of the day), usually a few dozen bytes per key. Addresses and numbers are chosen by the client, so a
+  *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
+  JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
+  minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
+  active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
+  stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
+  about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
+  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
   full table does not stop counting: a new key takes the place of the oldest key seen only once
   (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
   has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
@@ -570,10 +575,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   An IP address is stored as a keyed hash of its network (`/32` of an IPv4 address, `/64` of an IPv6 one; IPv4-mapped
   addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
   the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
-  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`
-  (`ipHeader`, `X-Real-IP` by default, first value of a list): it is the client's only when the proxy in front sets that
-  header itself and no client can choose its value. **A client-controlled leftmost `X-Forwarded-For` lets it rotate
-  its address or borrow another's**, so do not point `ipHeader` at a header the proxy appends to rather than overwrites.
+  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`, chosen by the
+  tenant's `ipHeader` and `trusted-proxy-hops` (see "Behind an existing web server", PR #813): it is the client's only
+  when the proxies in front set the header as described there and `trusted-proxy-hops` matches their number.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

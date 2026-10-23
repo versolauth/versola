@@ -46,8 +46,8 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   *     at one instance, plus up to `shareFrom - 1` requests per other instance of a key too quiet to be shared yet,
   *   - blind to others altogether while the database is down (it then degrades to a per-instance count, never to an
   *     error or a wait).
-  * Memory is bounded: at most `maxKeys` keys of each kind, each at most 1440 buckets of 8 bytes, grown as the key
-  * is used and freed when it has been idle for a day. Keys are attacker-chosen (addresses, numbers), so a full table
+  * Memory is bounded: at most `maxKeys` keys of each kind, each at most 1440 buckets of 8 bytes in each of its stripes,
+  * grown as the key is used and freed when it has been idle for a day. Keys are attacker-chosen (addresses, numbers), so a full table
   * does not switch the detection off: a new key takes the place of the oldest key that was seen once and never again
   * (junk, by the look of it), and only when there is none of those is the new key not counted, which fails open (its
   * count reads 0, its rule does not fire). Both are counted ([[evicted]], [[untracked]]).
