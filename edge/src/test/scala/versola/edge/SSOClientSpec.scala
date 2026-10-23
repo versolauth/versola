@@ -271,7 +271,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.status(Status.Unauthorized))).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), EdgeIdentity.Registered(config))
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
         _ <- sso.warmUp(certificateClient)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         body <- request.body.asString
@@ -292,7 +292,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), EdgeIdentity.Registered(config))
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
         _ <- sso.warmUp(secretClient)
         request <- seen.get
         certificates <- presented.get
@@ -306,7 +306,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes)
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, untrusted, certificateFiles, EdgeIdentity.Registered(untrusted))
+        sso = SSOClient.Impl(client, untrusted, certificateFiles, noIdentity)
         error <- sso.warmUp(certificateClient).flip
         request <- seen.get
       yield assertTrue(
@@ -322,7 +322,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes)
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, plaintext, certificateFiles, EdgeIdentity.Registered(plaintext))
+        sso = SSOClient.Impl(client, plaintext, certificateFiles, noIdentity)
         error <- sso.warmUp(certificateClient).flip
         request <- seen.get
       yield assertTrue(
