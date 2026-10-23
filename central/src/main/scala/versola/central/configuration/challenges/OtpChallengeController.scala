@@ -118,6 +118,7 @@ object OtpChallengeController extends Controller:
           otpLength = body.otpLength,
           otpResendAfter = body.otpResendAfter,
           passkeySettings = body.passkeySettings,
+          passkeyPolicy = body.passkeyPolicy.applyTo(existing.flatMap(_.passkeyPolicy)),
           authConversationTtlSeconds = body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
           sessionTtlSeconds = body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
           sessionIdleTtlSeconds = body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),

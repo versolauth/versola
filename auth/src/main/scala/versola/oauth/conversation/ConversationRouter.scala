@@ -349,7 +349,7 @@ object ConversationRouter:
             conversationService.accessDenied(authId, conversation)
 
         case None =>
-          conversationService.finish(authId, conversation)
+          conversationService.finishOrOfferPasskey(authId, conversation)
 
     /** Determine the next step after a factor step passes, or finish if no more factors.
       * The `conversation.amr` map already includes the factor that just passed.
@@ -405,7 +405,7 @@ object ConversationRouter:
             case true =>
               conversationService.preparePasswordStep(authId, conversation, conversation.authFlow.primary.factors.size)
             case false if conversation.needsPasswordChange => conversationService.offerSetPassword(authId, conversation)
-            case false => conversationService.finish(authId, conversation)
+            case false => conversationService.finishOrOfferPasskey(authId, conversation)
 
     /** Whether the ACR this conversation pursues needs a password that has not been passed yet, in a flow
       * that takes it on the credential card. No factor in `primary.factors` would ask for it again, and the

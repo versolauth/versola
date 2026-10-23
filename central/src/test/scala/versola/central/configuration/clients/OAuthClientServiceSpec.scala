@@ -347,6 +347,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     otpLength = 6,
     otpResendAfter = 60,
     passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
+    passkeyPolicy = None,
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = None,

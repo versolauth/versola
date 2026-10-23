@@ -25,6 +25,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         otpLength = 6,
         otpResendAfter = 30,
         passkeySettings = PasskeySettings("idp.example", "Versola", List("https://idp.example"), "preferred"),
+        passkeyPolicy = None,
         authConversationTtlSeconds = 600,
         sessionTtlSeconds = 3600,
         sessionIdleTtlSeconds = None,

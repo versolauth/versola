@@ -231,6 +231,17 @@ export interface PhoneRegion {
   registration: boolean;
 }
 
+/** How firmly a signed-in user without a passkey is asked to enrol one; see PasskeyPolicy in central.yaml. */
+export type PasskeyEnrollmentMode = 'off' | 'offered' | 'required_after_grace' | 'required';
+
+export interface PasskeyPolicy {
+  mode: PasskeyEnrollmentMode;
+  /** Only for `required_after_grace`: offers the user may skip. */
+  graceSkips: number | null;
+  /** Only for `required_after_grace`: days after the first offer the user may keep skipping. */
+  graceDays: number | null;
+}
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   /** The profile the tenant's clients are held to; fixed when the tenant is created. */
@@ -245,6 +256,8 @@ export interface ChallengeSettingsRecord {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettings | null;
+  /** Null: no tenant policy, each client's `passkeyEnroll` factor decides. */
+  passkeyPolicy?: PasskeyPolicy | null;
   authConversationTtlSeconds: number;
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;

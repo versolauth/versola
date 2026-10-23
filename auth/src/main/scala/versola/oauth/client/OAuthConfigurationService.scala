@@ -19,6 +19,7 @@ import versola.oauth.client.model.{
   OtpTemplateRecord,
   OtpType,
   PassedAuthFactor,
+  PasskeyPolicy,
   PasskeySettings,
   PasswordHistorySettings,
   PhoneRegion,
@@ -123,6 +124,10 @@ trait OAuthConfigurationService:
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
+
+  /** The tenant's passkey enrolment policy. `None` when it has not set one (each client's `passkeyEnroll` factor then
+    * decides), or when auth does not know the client or its tenant. */
+  def getPasskeyPolicy(id: ClientId): UIO[Option[PasskeyPolicy]]
 
   def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
@@ -575,6 +580,12 @@ object OAuthConfigurationService:
             _.find(_.tenantId == client.tenantId)
               .map(_.passkeySettings),
           )
+
+    override def getPasskeyPolicy(id: ClientId): UIO[Option[PasskeyPolicy]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          challengeSettingsCache.get.map(_.find(_.tenantId == client.tenantId).flatMap(_.passkeyPolicy))
 
     override def getPasswordHistorySettings: UIO[PasswordHistorySettings] =
       systemSettingsCache.get.map(s => PasswordHistorySettings(s.passwordHistorySize, s.passwordNumDifferent))

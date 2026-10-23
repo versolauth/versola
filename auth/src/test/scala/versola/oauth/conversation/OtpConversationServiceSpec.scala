@@ -4,7 +4,7 @@ import versola.antifraud.{AntifraudAction, AntifraudOutcome, RecordingAntifraudE
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.passkey.{PasskeyEnrollmentRepository, PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryCredential, ScopeToken}
@@ -66,6 +66,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val submissionLimiter = stub[SubmissionLimiter]
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
+    val passkeyEnrollmentRepository = stub[PasskeyEnrollmentRepository]
     val configService = stub[OAuthConfigurationService]
     val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
@@ -88,6 +89,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       submissionLimiter,
       webAuthnService,
       passkeyRepository,
+      passkeyEnrollmentRepository,
       configService,
       acrResolver,
       userAgentRepository,
@@ -234,7 +236,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           real._1 == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           fake._1 == real._1,
-          real._2, fake._2,
+          real._2,
+          fake._2,
           real._3 == List(AntifraudOutcome.throttled),
           fake._3 == real._3,
           real._4 == List(true),

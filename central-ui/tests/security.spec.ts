@@ -373,6 +373,24 @@ test('edits passkeys and requires a relying party and an origin', async ({ page 
   });
 });
 
+test('sets the passkey enrolment policy, with a grace only for required_after_grace', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=passkeys`, state: state() });
+
+  await page.getByLabel('Policy').selectOption('required_after_grace');
+  await page.getByLabel('Skips allowed').fill('');
+  await page.getByRole('button', { name: 'Save passkeys' }).click();
+  await expect(page.getByText('Set a number of skips, a number of days, or both.')).toBeVisible();
+  await page.getByLabel('Days allowed').fill('14');
+  await page.getByRole('button', { name: 'Save passkeys' }).click();
+  expect((await lastSaved(api.requests)).passkeyPolicy).toEqual({ mode: 'required_after_grace', graceSkips: null, graceDays: 14 });
+
+  await page.goto(`${base}&edit=passkeys`);
+  await page.getByLabel('Policy').selectOption('required');
+  await expect(page.getByLabel('Days allowed')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save passkeys' }).click();
+  expect((await lastSaved(api.requests)).passkeyPolicy).toEqual({ mode: 'required', graceSkips: null, graceDays: null });
+});
+
 test('another group cannot be saved while passkeys are not configured, and says so', async ({ page }) => {
   await loadAdminApp(page, {
     path: `${base}&edit=sessions`,
