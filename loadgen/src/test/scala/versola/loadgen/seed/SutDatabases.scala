@@ -4,6 +4,7 @@ import org.flywaydb.core.Flyway
 import versola.loadgen.config.SutDatabaseConfig
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
 import zio.*
+import zio.test.live
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
@@ -46,7 +47,9 @@ object SutDatabases:
   private def plaintext(secret: Config.Secret): String = String(secret.value.toArray)
 
   private def template: ZIO[Scope, Throwable, PostgresConfig] =
-    PostgresSpec.config.build.map(_.get[PostgresConfig])
+    // The test environment's System is empty, so read POSTGRES_HOST from the real one: without it this always
+    // went to localhost:5432 whatever the run was told.
+    live(PostgresSpec.config.build).map(_.get[PostgresConfig])
 
   /** Creates the database if absent and applies the given migrations directory to it. Idempotent
     * -- Flyway skips what it has already applied -- so several specs can share one prepared

@@ -508,6 +508,31 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
   optional `antifraud` block of `auth`'s config.
 
+- **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
+  recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
+  hash, a mail domain): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
+  outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
+  are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
+  turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
+  change made through another instance shows within that time, and a refresh that fails keeps the previous lists
+  (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
+  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
+  interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
+  an `allow` takes off. There is no HTTP endpoint for the lists yet: they are changed through the service API in
+  `auth` (central's endpoint is a follow-up), so for now by SQL, which skips the audit; put the change in `af_list_audit`
+  by hand or wait for the endpoint.
+  Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
+  entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
+  (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
+  `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
+  `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  `shadow_list:<type>` in the fired rules). Only an operator may change global entries. **`fake` is for confirmed fraud only:**
+  a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
+  I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
+  `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
+  request; if it fails it starts without them, logs it and retries every second. **Rotating
+  `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
+
 - **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
   minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
@@ -538,6 +563,57 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
+
+- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per phone (the keyed hash), network of the IP
+  address, device, ASN and range of numbers over the last minute, 10 minutes, hour and day, for the antifraud rules. They
+  count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
+  ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
+  by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
+  The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
+  `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
+  keys first), `max-load-keys` (20000 per query, the busiest first) and
+  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
+  device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
+  window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
+  decision. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
+  subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
+  once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
+  context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
+  *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
+  JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
+  minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
+  active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
+  stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
+  about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
+  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
+  full table does not stop counting: a new key takes the place of the oldest key seen only once
+  (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
+  has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
+  **Alert on `antifraud_velocity_untracked_total` increasing; any value above 0 is itself a sign of an attack or of a
+  `max-keys` too small for the traffic.**
+  *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
+  `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
+  day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
+  reads the whole day, in 24 queries of an hour each, starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
+  `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
+  instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
+  too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is
+  the current clock minute: a burst across a minute boundary is split, and up to about twice the limit can pass**. A
+  restart keeps the counts the instance had written (they are read back as the others'); what it had not written yet
+  is lost. A database that is down leaves per-instance counts and never slows a request: failures count in
+  `antifraud_velocity_failed_total{what="flush"|"load"|"prune"}` and are logged once per outage.
+  *The table.* `af_velocity` is `UNLOGGED` (rewritten every few seconds, worth a day at most): a crash of the database
+  empties it, and the counts are per instance until it fills again. It is not on a replica. One instance at a time
+  (an advisory lock) deletes the rows older than a day and an hour, every ten minutes, 10000 rows per statement with a
+  rest between. Every flush updates rows (a dead tuple each): the table is created with a fillfactor of 70 and is
+  vacuumed after 2% of it has died.
+  *Personal data.* The key of a phone number is the keyed hash of `af_event`, **not scoped to a tenant**: one number
+  is one key across tenants, so abuse of one tenant weighs on the next and a person's number is correlated across
+  tenants; that is a privacy decision of the operator's, and scoping it per tenant means keying the hash per tenant.
+  An IP address is stored as a keyed hash of its network (`/32` of an IPv4 address, `/64` of an IPv6 one; IPv4-mapped
+  addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
+  the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
+  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

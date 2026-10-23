@@ -86,6 +86,7 @@ object AntifraudEvents:
     * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
     * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
+    * @param velocity       the velocity counters and the limits of their rules, off by default (see [[VelocityCounters]])
     */
   case class Settings(
       queueCapacity: Int = 20000,
@@ -99,6 +100,7 @@ object AntifraudEvents:
       statsLookback: Duration = 2.minutes,
       statsRetention: Duration = 30.days,
       statsPrefixLength: Int = 4,
+      velocity: VelocityCounters.Settings = VelocityCounters.Settings(),
   )
 
   object Settings:
@@ -141,7 +143,7 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -150,6 +152,7 @@ object AntifraudEvents:
         repository <- ZIO.service[AntifraudEventRepository]
         settings <- ZIO.service[Settings]
         antifraud <- ZIO.service[Antifraud]
+        velocity <- ZIO.service[VelocityCounters]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
@@ -161,7 +164,7 @@ object AntifraudEvents:
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
         budget = SmsBudget(settings.smsBudget)
-        events = Impl(queue, settings.queueCapacity, budget, antifraud, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
+        events = Impl(queue, settings.queueCapacity, budget, antifraud, velocity, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
@@ -173,6 +176,7 @@ object AntifraudEvents:
       queueCapacity: Int,
       budget: SmsBudget,
       antifraud: Antifraud,
+      velocity: VelocityCounters,
       latency: SendLatency,
       settings: Settings,
       securityService: SecurityService,
@@ -209,21 +213,24 @@ object AntifraudEvents:
           client <- configService.find(clientId)
           hash <- subjectHash(credential)
           ip <- Observability.currentIp
-          decision <- antifraud.evaluate(
-            AntifraudContext(
-              tenantId = client.map(_.tenantId),
-              clientId = clientId,
-              action = AntifraudAction.otp_request,
-              subjectHash = Some(hash),
-              destPrefix = credential.toOption.map(destPrefix),
-              deviceId = None,
-              ip = ip,
-              asn = None,
-              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
-              ja4 = None,
-              signals = Map.empty,
-            ),
+          context = AntifraudContext(
+            tenantId = client.map(_.tenantId),
+            clientId = clientId,
+            action = AntifraudAction.otp_request,
+            subjectHash = Some(hash),
+            destPrefix = credential.toOption.map(destPrefix),
+            deviceId = None,
+            ip = ip,
+            asn = None,
+            userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+            ja4 = None,
+            signals = Map.empty,
           )
+          // Decided on the counts with this request in them, and counted only if it is let through: a request that is
+          // refused, or one aimed at somebody else's number, must not raise the count used against that number's owner.
+          counted <- velocity.snapshot(context)
+          decision <- antifraud.evaluate(counted)
+          _ <- ZIO.unless(decision.action == DecisionAction.Block)(velocity.record(context))
           _ <- AntifraudMetrics.decided(decision.action)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
@@ -460,6 +467,28 @@ object AntifraudMetrics:
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 
   val rollupFailed: UIO[Unit] = rollupFailedTotal.increment
+
+  private val velocityFlushedTotal = Metric.counter("antifraud_velocity_flushed_total")
+  private val velocityFailedTotal = Metric.counter("antifraud_velocity_failed_total")
+  private val velocityUntrackedTotal = Metric.counter("antifraud_velocity_untracked_total")
+  private val velocityKeysGauge = Metric.gauge("antifraud_velocity_keys")
+
+  /** Buckets this instance wrote to the database. */
+  def velocityFlushed(count: Int): UIO[Unit] = velocityFlushedTotal.incrementBy(count.toLong)
+
+  /** `what` is `flush`, `load` or `prune`: a closed set, since it is a label. A failure leaves the counts per instance. */
+  def velocityFailed(what: String): UIO[Unit] = velocityFailedTotal.tagged(Set(MetricLabel("what", what))).increment
+
+  /** Requests of keys that were not counted because the table of keys was full of keys seen more than once
+    * (`velocity.max-keys`): more than 0 is itself a sign of an attack, or of a table too small. */
+  def velocityUntracked(count: Long): UIO[Unit] = velocityUntrackedTotal.incrementBy(count)
+
+  private val velocityEvictedTotal = Metric.counter("antifraud_velocity_evicted_total")
+
+  /** Keys that made room for a new one in a full table, having been seen once. A steady stream is a flood of keys. */
+  def velocityEvicted(count: Long): UIO[Unit] = velocityEvictedTotal.incrementBy(count)
+
+  def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
 
