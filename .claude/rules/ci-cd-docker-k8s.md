@@ -8,14 +8,18 @@ paths: [".github/**", "docker/**", "k8s/**", "services.yml", "scripts/**", "migr
 
 - `.github/workflows/ci-cd.yml` on push and PR to `main`, on `release: published`, and on manual
   `workflow_dispatch` (requires a `test_tag`):
-  - `build`: compile, the measured-DB-access check, tests against Postgres (including a TLS
-    Postgres), coverage, dev config generation, forms build, staging, the migrate-tool dry run, e2e.
+  - `unit-tests`: compile, tests against Postgres (including a TLS Postgres) and PgBouncer, coverage,
+    loadgen/mockapi/tools tests. Runs beside `build`; skipped on releases.
+  - `build`: the measured-DB-access check, dev config generation, forms build, staging, the migrate-tool
+    dry run, e2e.
   - `docker-*`: build and push images. **Images are published only by a release** (or a manual
     `test_tag` run, which never pushes `:latest`); merging to `main` publishes nothing. Tags carry no
     `v` prefix.
   - `helm-*`: chart checks (images, secret vars, placement, ingress).
   - `central-ui`: type-check, Vitest and Playwright (incl. the axe accessibility scan) against
-    mocked API responses; runs beside `build`, no backend needed, skipped on releases.
+    mocked API responses; runs beside `build`, no backend needed, skipped on releases. Runs in the
+    pinned Playwright image (no `playwright install --with-deps`); a `@playwright/test` bump must
+    change the image tag and digest too, a step fails if they differ.
 - `.github/workflows/security.yml`: scanners (see `security.md`).
 - `.github/scripts/check-*.sh` are the CI checks as scripts. When you touch what one guards (secret
   schema, chart values, startup ordering, migrate dry run, key reuse), run that script locally or say
