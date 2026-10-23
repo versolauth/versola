@@ -83,6 +83,10 @@ sbt tools/test                   # scripts/gen-env.scala
 cd central-ui && npm run test:unit && npm run test:ui   # Vitest, Playwright
 ```
 
+**Antifraud load scenarios:** `loadgen` with `role = antifraud` drives the phone-OTP flow with and without antifraud against a local
+stack, counting the SMS sent and the latency antifraud adds; commands and profiles are in
+[`loadgen/antifraud/README.md`](loadgen/antifraud/README.md).
+
 **Postgres for `sbt test`:** `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and
 still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it
 generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on

@@ -557,6 +557,57 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
 
+- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per phone (the keyed hash), network of the IP
+  address, device, ASN and range of numbers over the last minute, 10 minutes, hour and day, for the antifraud rules. They
+  count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
+  ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
+  by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
+  The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
+  `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
+  keys first), `max-load-keys` (20000 per query, the busiest first) and
+  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
+  device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
+  window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
+  decision. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
+  subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
+  once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
+  context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
+  *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
+  JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
+  minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
+  active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
+  stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
+  about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
+  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
+  full table does not stop counting: a new key takes the place of the oldest key seen only once
+  (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
+  has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
+  **Alert on `antifraud_velocity_untracked_total` increasing; any value above 0 is itself a sign of an attack or of a
+  `max-keys` too small for the traffic.**
+  *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
+  `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
+  day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
+  reads the whole day, in 24 queries of an hour each, starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
+  `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
+  instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
+  too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is
+  the current clock minute: a burst across a minute boundary is split, and up to about twice the limit can pass**. A
+  restart keeps the counts the instance had written (they are read back as the others'); what it had not written yet
+  is lost. A database that is down leaves per-instance counts and never slows a request: failures count in
+  `antifraud_velocity_failed_total{what="flush"|"load"|"prune"}` and are logged once per outage.
+  *The table.* `af_velocity` is `UNLOGGED` (rewritten every few seconds, worth a day at most): a crash of the database
+  empties it, and the counts are per instance until it fills again. It is not on a replica. One instance at a time
+  (an advisory lock) deletes the rows older than a day and an hour, every ten minutes, 10000 rows per statement with a
+  rest between. Every flush updates rows (a dead tuple each): the table is created with a fillfactor of 70 and is
+  vacuumed after 2% of it has died.
+  *Personal data.* The key of a phone number is the keyed hash of `af_event`, **not scoped to a tenant**: one number
+  is one key across tenants, so abuse of one tenant weighs on the next and a person's number is correlated across
+  tenants; that is a privacy decision of the operator's, and scoping it per tenant means keying the hash per tenant.
+  An IP address is stored as a keyed hash of its network (`/32` of an IPv4 address, `/64` of an IPv6 one; IPv4-mapped
+  addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
+  the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
+  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

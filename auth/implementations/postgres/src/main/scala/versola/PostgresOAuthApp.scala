@@ -9,6 +9,9 @@ import versola.antifraud.{
   AntifraudLists,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
+  PostgresVelocityRepository,
+  VelocityCounters,
+  VelocityRepository,
 }
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
@@ -114,6 +117,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudEventRepository &
       AntifraudListRepository &
       AntifraudLists &
+      VelocityRepository &
+      VelocityCounters &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -227,6 +232,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
       PostgresAntifraudListRepository.live >++>
+      PostgresVelocityRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -324,6 +330,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         Antifraud.Impl(settings.decision, List(lists.ruleSet)): Antifraud,
       ) >++>
       AntifraudEvents.live >++>
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
+      VelocityCounters.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
