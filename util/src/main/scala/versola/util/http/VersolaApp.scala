@@ -499,6 +499,7 @@ object VersolaApp:
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),
               logAnnotation(Observability.error),
+              logAnnotation(Observability.antifraud),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )
