@@ -533,7 +533,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
   The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
   `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
-  keys first), `max-load-keys` (20000, the busiest first) and
+  keys first), `max-load-keys` (20000 per query, the busiest first) and
   `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
   device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
   window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
@@ -549,8 +549,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **Alert on `antifraud_velocity_untracked_total` increasing; any value above 0 is itself a sign of an attack or of a
   `max-keys` too small for the traffic.**
   *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
-  `flush-interval` and reads what the others changed every `load-interval` (the first load reads the day, later ones
-  only the changes), so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
+  `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
+  day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
+  reads the whole day, in 24 queries of an hour each, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
   `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
   instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
   too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is
@@ -560,7 +561,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud_velocity_failed_total{what="flush"|"load"|"prune"}` and are logged once per outage.
   *The table.* `af_velocity` is `UNLOGGED` (rewritten every few seconds, worth a day at most): a crash of the database
   empties it, and the counts are per instance until it fills again. It is not on a replica. One instance at a time
-  (an advisory lock) deletes the rows older than a day and an hour, every ten minutes.
+  (an advisory lock) deletes the rows older than a day and an hour, every ten minutes, 10000 rows per statement with a
+  rest between. Every flush updates rows (a dead tuple each): the table is created with a fillfactor of 70 and is
+  vacuumed after 2% of it has died.
   *Personal data.* The key of a phone number is the keyed hash of `af_event`, **not scoped to a tenant**: one number
   is one key across tenants, so abuse of one tenant weighs on the next and a person's number is correlated across
   tenants; that is a privacy decision of the operator's, and scoping it per tenant means keying the hash per tenant.

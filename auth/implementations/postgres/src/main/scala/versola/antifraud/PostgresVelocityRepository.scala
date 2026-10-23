@@ -2,14 +2,16 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZIO, ZLayer}
 
-import java.time.{Instant, ZoneOffset}
 import java.util.UUID
 
 class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, BasicCodecs:
+  import PgCodec.SeqCodec
   import PostgresVelocityRepository.*
+  import SqlArrayCodec.{IntSqlArrayCodec, LongSqlArrayCodec, StringSqlArrayCodec}
 
   private case class Row(keyType: String, key: String, minute: Long, instanceId: UUID, count: Int) derives DbCodec
 
@@ -17,28 +19,34 @@ class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, 
     if buckets.isEmpty then ZIO.unit
     else
       xa.transactMeasured("save-antifraud-velocity"):
-        batchUpdate(buckets): bucket =>
+        // One statement per chunk instead of a round trip per bucket. The rows of an instance are its own, so
+        // instances writing at once never touch the same row.
+        buckets.grouped(SaveChunk).foreach: chunk =>
+          val types = chunk.map(_.keyType.toString)
+          val keys = chunk.map(_.key)
+          val minutes = chunk.map(_.minute)
+          val counts = chunk.map(_.count)
           sql"""
-            INSERT INTO af_velocity (key_type, key, minute, instance_id, count, updated_at)
-            VALUES (${bucket.keyType.toString}, ${bucket.key}, ${bucket.minute}, $instance, ${bucket.count}, now())
-            ON CONFLICT (key_type, key, minute, instance_id) DO UPDATE SET count = EXCLUDED.count, updated_at = now()
-          """.update
+            INSERT INTO af_velocity (key_type, key, minute, instance_id, count)
+            SELECT t.key_type, t.key, t.minute, $instance, t.count
+            FROM unnest($types::text[], $keys::text[], $minutes::bigint[], $counts::int[]) AS t(key_type, key, minute, count)
+            ON CONFLICT (key_type, key, minute, instance_id) DO UPDATE SET count = EXCLUDED.count
+          """.update.run()
       .unit
 
-  override def loadOthers(instance: UUID, fromMinute: Long, since: Instant, maxKeys: Int): Task[List[SharedBucket]] =
-    val sinceAt = since.atOffset(ZoneOffset.UTC)
+  override def loadOthers(instance: UUID, fromMinute: Long, toMinute: Long, maxKeys: Int): Task[List[SharedBucket]] =
     xa.connectMeasured("load-antifraud-velocity"):
       // Keys are ranked first and their rows read after, so the limit cuts keys and never the minutes of a key.
       sql"""
-        WITH changed AS (
+        WITH ranged AS (
           SELECT key_type, key, minute, instance_id, count
           FROM af_velocity
-          WHERE minute >= $fromMinute AND updated_at >= $sinceAt AND instance_id <> $instance
+          WHERE minute >= $fromMinute AND minute < $toMinute AND instance_id <> $instance
         ), hot AS (
-          SELECT key_type, key FROM changed GROUP BY key_type, key ORDER BY SUM(count) DESC LIMIT $maxKeys
+          SELECT key_type, key FROM ranged GROUP BY key_type, key ORDER BY SUM(count) DESC LIMIT $maxKeys
         )
-        SELECT c.key_type, c.key, c.minute, c.instance_id, c.count
-        FROM changed c JOIN hot h ON h.key_type = c.key_type AND h.key = c.key
+        SELECT r.key_type, r.key, r.minute, r.instance_id, r.count
+        FROM ranged r JOIN hot h ON h.key_type = r.key_type AND h.key = r.key
       """.query[Row].run().toList
     .map(_.flatMap(row =>
       VelocityKey.values.find(_.toString == row.keyType).map(keyType =>
@@ -46,18 +54,22 @@ class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, 
       ),
     ))
 
-  override def prune(minute: Long): Task[Unit] =
+  override def prune(minute: Long, batch: Int): Task[Int] =
     xa.transactMeasured("prune-antifraud-velocity"):
       // One instance at a time; the others have nothing to do, the rows are going anyway.
       val locked = sql"SELECT pg_try_advisory_xact_lock($PruneLock)".query[Boolean].run().head
-      if locked then
-        sql"DELETE FROM af_velocity WHERE minute < $minute".update.run()
-        ()
-    .unit
+      if !locked then 0
+      else
+        sql"""
+          DELETE FROM af_velocity WHERE ctid IN (SELECT ctid FROM af_velocity WHERE minute < $minute LIMIT $batch)
+        """.update.run()
 
 object PostgresVelocityRepository:
   val live: ZLayer[TransactorZIO, Nothing, VelocityRepository] =
     ZLayer.fromFunction(PostgresVelocityRepository(_))
+
+  /** Rows per statement of a save. */
+  private val SaveChunk = 2000
 
   /** Next to the locks of `PostgresAntifraudEventRepository`. */
   private val PruneLock = 7430003L

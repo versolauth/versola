@@ -24,9 +24,9 @@ object VelocityCountersSpec extends UnitSpecBase:
     override def save(instance: UUID, buckets: List[VelocityBucket]): Task[Unit] =
       check *> rows.update(_ ++ buckets.map(b => (instance, b.keyType, b.key, b.minute) -> b.count))
 
-    override def loadOthers(instance: UUID, fromMinute: Long, since: Instant, maxKeys: Int): Task[List[SharedBucket]] =
+    override def loadOthers(instance: UUID, fromMinute: Long, toMinute: Long, maxKeys: Int): Task[List[SharedBucket]] =
       check *> rows.get.map: all =>
-        val others = all.toList.filter((k, _) => k._1 != instance && k._4 >= fromMinute)
+        val others = all.toList.filter((k, _) => k._1 != instance && k._4 >= fromMinute && k._4 < toMinute)
         val hot = others.groupMapReduce((k, _) => (k._2, k._3))((_, count) => count)(_ + _).toList.sortBy(-_._2).take(maxKeys).map(_._1).toSet
         others.filter((k, _) => hot((k._2, k._3))).map((k, count) =>
           SharedBucket(instance = k._1, bucket = VelocityBucket(keyType = k._2, key = k._3, minute = k._4, count = count)),
@@ -34,7 +34,10 @@ object VelocityCountersSpec extends UnitSpecBase:
 
     def all: UIO[Map[(UUID, VelocityKey, String, Long), Int]] = rows.get
 
-    override def prune(minute: Long): Task[Unit] = check *> rows.update(_.filter((k, _) => k._4 >= minute))
+    override def prune(minute: Long, batch: Int): Task[Int] =
+      check *> rows.modify: all =>
+        val gone = all.keys.filter(_._4 < minute).take(batch).toSet
+        (gone.size, all -- gone)
 
   private val repository: UIO[(InMemoryRepository, Ref[Boolean])] =
     for
@@ -215,6 +218,21 @@ object VelocityCountersSpec extends UnitSpecBase:
         _ <- rounds(6)
         after = (a.count(ip, "shared", TenMinutes, t0), b.count(ip, "shared", TenMinutes, t0))
       yield assertTrue(before == (7, 5), after == (12, 12))
+    },
+    test("minutes an instance wrote late, older than the recent ones, are found by the slices of the load") {
+      val settings = on.copy(shareFrom = 1)
+      for
+        (repo, _) <- repository
+        _ <- TestClock.setTime(t0)
+        a <- instance(repo, settings)
+        b <- instance(repo, settings)
+        _ <- rounds(1)
+        // Written after b's first load, for a minute five hours back, as an instance does when its database was down.
+        _ <- ZIO.succeed(a.record(ip, "late", t0.minusSeconds(5 * 3600)))
+        _ <- rounds(3)
+        soon = b.count(ip, "late", OneDay, t0)
+        _ <- rounds(40)
+      yield assertTrue(soon == 0, b.count(ip, "late", OneDay, t0) == 1)
     },
     test("a database that is down leaves the per-instance count, and what was not written is written later") {
       val settings = on.copy(shareFrom = 1)

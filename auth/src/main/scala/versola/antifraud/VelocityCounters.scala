@@ -430,6 +430,9 @@ object VelocityCounters:
           else ZIO.succeed(off)
       yield counters
 
+  /** Rows deleted per statement of the upkeep. */
+  private val PruneBatch = 10000
+
   private class Flusher(
       counters: VelocityCounters,
       repository: VelocityRepository,
@@ -464,37 +467,54 @@ object VelocityCounters:
           )
         .unit
 
-    // The first load reads the day; the next ones only what changed since the one before, less a margin for the
-    // clocks of the database and of this instance, and for a write that was still running. Rows are absolute, so
-    // reading one twice is harmless.
-    private val margin = settings.flushInterval + settings.loadInterval + 30.seconds
+    // A load reads a range of minutes, never the day in one query. The recent minutes (the only ones a flush on
+    // time can still change) are read every time, and one hour of the older ones with them, in turn, so that what a
+    // late flush wrote (a database that was down) is found within `Slices` loads. The first load goes through all
+    // the slices at once. Rows are absolute, so reading one twice is harmless.
+    // What can have changed since the previous load: a flush and a load interval, with room for the minute boundary.
+    private val RecentMinutes = math.max(3L, (settings.flushInterval + settings.loadInterval).toMinutes + 2)
+    private val SliceMinutes = 60L
+    private val Slices = 24
 
-    private def load(since: Ref[Instant]): UIO[Unit] =
+    private def loadRange(from: Long, to: Long): UIO[Boolean] =
+      repository.loadOthers(instance, from, to, settings.maxLoadKeys).foldCauseZIO(
+        cause => failed("load", cause).as(false),
+        buckets => ZIO.succeed(counters.loaded(buckets)).as(true),
+      )
+
+    private def load(slice: Ref[Int], first: Ref[Boolean]): UIO[Unit] =
       for
-        now <- Clock.instant
-        sinceThen <- since.get
-        from = Math.floorDiv(now.getEpochSecond, 60L) - VelocityWindow.OneDay.minutes + 1
-        _ <- repository.loadOthers(instance, from, sinceThen, settings.maxLoadKeys).foldCauseZIO(
-          cause => failed("load", cause),
-          buckets => ZIO.succeed(counters.loaded(buckets)) *> since.set(now.minusSeconds(margin.toSeconds)) *> report *> recovered,
-        )
+        now <- Clock.instant.map(at => Math.floorDiv(at.getEpochSecond, 60L))
+        dayStart = now - VelocityWindow.OneDay.minutes + 1
+        recentFrom = now - RecentMinutes
+        isFirst <- first.getAndSet(false)
+        n <- slice.getAndUpdate(i => (i + 1) % Slices)
+        older = (if isFirst then 0 until Slices else n to n).toList
+        recent <- loadRange(recentFrom, Long.MaxValue)
+        // Stops at the first failure: a database that is down is asked once per interval, not once per slice.
+        ok <- ZIO.foldLeft(older)(recent): (ok, i) =>
+          val to = recentFrom - SliceMinutes * i
+          if !ok || to <= dayStart then ZIO.succeed(ok) else loadRange(math.max(dayStart, to - SliceMinutes), to)
+        _ <- if ok then report *> recovered else ZIO.unit
       yield ()
 
-    // Rows older than the day are deleted here and not on every load; the repository lets one instance at a time do it.
+    // Rows older than the day are deleted here, every ten minutes, a batch at a time with a rest between, and only by
+    // the instance that gets the lock.
     private val upkeep: UIO[Unit] =
       Clock.instant.flatMap: now =>
-        ZIO.succeed(counters.evict(now)) *>
-          repository.prune(Math.floorDiv(now.getEpochSecond, 60L) - VelocityWindow.OneDay.minutes - 59).foldCauseZIO(
-            cause => failed("prune", cause),
-            _ => ZIO.unit,
-          )
+        val before = Math.floorDiv(now.getEpochSecond, 60L) - VelocityWindow.OneDay.minutes - 59
+        def batches(left: Int): Task[Unit] =
+          repository.prune(before, PruneBatch).flatMap: deleted =>
+            if deleted >= PruneBatch && left > 1 then ZIO.sleep(200.millis) *> batches(left - 1) else ZIO.unit
+        ZIO.succeed(counters.evict(now)) *> batches(100).foldCauseZIO(cause => failed("prune", cause), _ => ZIO.unit)
 
     val run: URIO[Scope, Unit] =
       for
-        since <- Ref.make(Instant.EPOCH)
         // Not `fork`: that would tie the fibers to the one that builds the layer, which ends once it is built.
         _ <- (ZIO.sleep(settings.flushInterval) *> flush).forever.forkScoped
-        _ <- (load(since) *> ZIO.sleep(settings.loadInterval)).forever.forkScoped
+        slice <- Ref.make(0)
+        first <- Ref.make(true)
+        _ <- (load(slice, first) *> ZIO.sleep(settings.loadInterval)).forever.forkScoped
         _ <- (ZIO.sleep(10.minutes) *> upkeep).forever.forkScoped
         // What is written last is written once more on the way out, so a deploy loses no more than the interval.
         _ <- ZIO.addFinalizer(flush.timeout(5.seconds).unit)
