@@ -2,12 +2,12 @@ package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{ClientId, PhoneRegion, ScopeToken}
 import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
-import versola.util.{CoreConfig, Email, FormDecoder, Phone}
+import versola.util.{ClientIp, CoreConfig, Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -29,6 +29,7 @@ object ConversationController extends Controller:
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
+    submitPasskeyUnavailableRoute,
     submitSetPasswordRoute,
     submitConsentRoute,
     submitConsentDenyRoute,
@@ -44,10 +45,20 @@ object ConversationController extends Controller:
           _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
           record <- router.getConversation(cookie.authId)
           response <- record match
-            case None => formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state, cookie.effectiveResponseMode)
+            case None =>
+              formService.renderExpired(
+                cookie.clientId,
+                cookie.redirectUri,
+                cookie.state,
+                cookie.effectiveResponseMode,
+                UiLocales.resolve(request),
+              )
             case Some(record) =>
               val ifNoneMatch = request.headers.get(Header.IfNoneMatch)
-              formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
+              formService.renderStep(
+                record.copy(uiLocales = UiLocales.resolve(request, hints = record.uiLocales.getOrElse(Nil))),
+                ifNoneMatch.map(_.renderedValue),
+              )
         yield response
       ).catchAll {
         case Error.ConversationExpired => expiredResponse(request)
@@ -111,6 +122,9 @@ object ConversationController extends Controller:
   val submitPasskeySkipRoute =
     submit[PasskeySkipSubmission](Method.POST / "challenge" / "passkey" / "skip")
 
+  val submitPasskeyUnavailableRoute =
+    submit[PasskeyUnavailableSubmission](Method.POST / "challenge" / "passkey" / "unavailable")
+
   val submitSetPasswordRoute =
     submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
 
@@ -130,7 +144,7 @@ object ConversationController extends Controller:
         cookie <- extractCookie(request)
         _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
-        ip = extractIp(request, ipHeader)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         body <- request.formAs[Body]
@@ -141,9 +155,9 @@ object ConversationController extends Controller:
           .unlessZIO(validate(cookie.clientId, body))
           .tapError(msg => ZIO.logWarning(s"Request validation failed: $msg"))
 
-        uiLocale <- request.queryZIO[Option[String]]("ui_locale")
+        uiLocale = UiLocales.submitted(request)
         (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
-        response <- conversationRenderService.renderSubmit(result, record)
+        response <- conversationRenderService.renderSubmit(result, record, uiLocale)
       yield response)
         .catchAll {
           case Error.ConversationExpired => expiredResponse(request)
@@ -159,8 +173,8 @@ object ConversationController extends Controller:
   private def validate(clientId: ClientId, submission: Submission): URIO[OAuthConfigurationService, Boolean] =
     submission match
       case submitted: PhoneSubmission =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.getAllowedPhonePrefixes(clientId))
-          .map(prefixes => prefixes.isEmpty || prefixes.exists(submitted.phone.startsWith))
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPhoneRegions(clientId))
+          .map(regions => PhoneRegion.allows(regions, submitted.phone))
 
       case submitted: PasswordSubmission =>
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
@@ -190,26 +204,39 @@ object ConversationController extends Controller:
           ZIO.fail(Error.BadRequest)
             .tapError(msg => ZIO.logWarning(s"Conversation cookie is missing"))
 
+  /** A submit that finds its conversation gone is sent on to `GET /challenge`, which renders the
+    * expired page, so that a reload of it keeps the language the user submitted in.
+    */
   private def expiredResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for
       formService <- ZIO.service[ConversationRenderService]
       cookie <- extractCookie(request)
-      response <- formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state, cookie.effectiveResponseMode)
+      submitted = UiLocales.submitted(request).filter(_ => request.method == Method.POST)
+      response <- submitted match
+        case Some(_) =>
+          ZIO.succeed(Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), submitted)))
+        case None =>
+          formService.renderExpired(
+            cookie.clientId,
+            cookie.redirectUri,
+            cookie.state,
+            cookie.effectiveResponseMode,
+            UiLocales.resolve(request),
+          )
     yield response
 
   private def serviceUnavailableResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for
       formService <- ZIO.service[ConversationRenderService]
       cookie <- extractCookie(request)
-      response <- formService.renderServiceUnavailable(cookie.clientId, cookie.redirectUri, cookie.state, cookie.effectiveResponseMode)
+      response <- formService.renderServiceUnavailable(
+        cookie.clientId,
+        cookie.redirectUri,
+        cookie.state,
+        cookie.effectiveResponseMode,
+        UiLocales.resolve(request),
+      )
     yield response
-
-  /** Extracts the client IP from the header configured in submission limits. Returns None when no
-    * header is configured, causing IP-based throttling to be skipped entirely. For multi-value
-    * headers such as X-Forwarded-For only the first (leftmost) value is used.
-    */
-  private def extractIp(request: Request, ipHeader: String): Option[String] =
-    request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for
@@ -260,6 +287,9 @@ object ConversationController extends Controller:
 
   given FormDecoder[PasskeySkipSubmission] = (form: Form) =>
     FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeySkipSubmission(_))
+
+  given FormDecoder[PasskeyUnavailableSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeyUnavailableSubmission(_))
 
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
     for

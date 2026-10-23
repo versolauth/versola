@@ -10,9 +10,9 @@ object Permission:
 
   inline def apply(string: String): Permission = string
 
-  private val validPattern = "^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$".r
+  private val validPattern = "^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)*$".r
   private val invalidMessage =
-    "Permission must be lowercase letters, numbers and underscores, with segments separated by '.' or ':', each starting with a letter"
+    "Permission must be lowercase letters, numbers, underscores and hyphens, with segments separated by ':', each starting with a letter"
 
   def from(string: String): Either[String, Permission] =
     if validPattern.matches(string) then Right(string) else Left(invalidMessage)

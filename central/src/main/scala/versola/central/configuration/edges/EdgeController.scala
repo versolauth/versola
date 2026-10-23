@@ -5,15 +5,17 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{Controller, Unauthorized}
-import zio.ZIO
+import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
+import zio.{Duration, ZIO}
+
+import java.time.Instant
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & ResourceService & CentralConfig & TenantRepository
+  type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & ResourceService & CentralConfig & TenantRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,
@@ -23,7 +25,11 @@ object EdgeController extends Controller:
     deleteEdgeEndpoint,
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
-    edgeDpopSyncEndpoint,
+    setEdgeOverloadEndpoint,
+    createEdgeGroupEndpoint,
+    getEdgeGroupsEndpoint,
+    createEnrollmentTokenEndpoint,
+    extendEdgeEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -32,12 +38,16 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
+        chainEnds <- ZIO.serviceWithZIO[EdgeIdentityService](_.chainEnds)
         response = GetAllEdgesResponse(
           edges = edges.map(edge =>
             EdgeResponse(
               id = edge.id,
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
+              overloadPolicy = edge.overloadPolicy,
+              groupId = edge.groupId,
+              identityChainEndsAt = chainEnds.get(edge.id),
             ),
           ).toList,
         )
@@ -50,10 +60,62 @@ object EdgeController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         body <- request.bodyAs[RegisterEdgeRequest]
-        keyPair <- service.registerEdge(body.id)
-        privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
-        response = ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded)
-      yield Response.json(response.toJson).status(Status.Created)
+        groupId = body.groupId.getOrElse(EdgeGroup.DefaultId)
+        group <- ZIO.serviceWithZIO[EdgeGroupService](_.find(groupId))
+        response <- group match
+          case None => ZIO.succeed(Response.text(s"edge group '$groupId' does not exist").status(Status.UnprocessableEntity))
+          case Some(_) =>
+            service.registerEdge(body.id, groupId).map: keyPair =>
+              val privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
+              Response.json(ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded).toJson).status(Status.Created)
+      yield response
+    }
+
+  /** Creates a group of edges. The kind is the operator's decision and is not changed afterwards; an existing id is
+    * answered `409` and left as it was. */
+  val createEdgeGroupEndpoint =
+    Method.POST / "configuration" / "edge-groups" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        body <- request.bodyAs[EdgeGroupRecord]
+        created <- ZIO.serviceWithZIO[EdgeGroupService](_.create(body))
+      yield if created then Response.json(body.toJson).status(Status.Created) else Response.status(Status.Conflict)
+    }
+
+  val getEdgeGroupsEndpoint =
+    Method.GET / "configuration" / "edge-groups" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        groups <- ZIO.serviceWithZIO[EdgeGroupService](_.getAll)
+      yield Response.json(GetEdgeGroupsResponse(groups).toJson)
+    }
+
+  /** Starts the certificate chain of the edge over, for an operator who turned `edge-identity.auto-extend` off: the edge's
+    * next renewals are not refused for age. A no-op in effect where central extends chains itself. */
+  val extendEdgeEndpoint =
+    Method.POST / "configuration" / "edges" / "extend" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.extend(edgeId)).as(Response.status(Status.NoContent))
+          .catchSome:
+            case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
+    }
+
+  /** A one-time token for the named edge to trade for its first certificate, shown once. */
+  val createEnrollmentTokenEndpoint =
+    Method.POST / "configuration" / "edges" / "enrollment-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        hours <- ZIO.succeed(request.url.queryParams.getAll("validityHours").headOption.flatMap(_.toLongOption))
+        validity = hours.fold(EdgeIdentityService.TokenValidity)(h => Duration.fromSeconds(h * 3600L))
+        response <- ZIO.serviceWithZIO[EdgeIdentityService](_.issueEnrollmentToken(edgeId, validity)).map: issued =>
+          Response.json(EnrollmentTokenResponse(token = issued.token, expiresAt = issued.expiresAt).toJson).status(Status.Created)
+        .catchSome:
+          case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
+      yield response
     }
 
   val rotateEdgeKeyEndpoint =
@@ -104,32 +166,36 @@ object EdgeController extends Controller:
       yield response
     }
 
-  /** What the named edge is to do about RFC 9449 §9 on the calls it proxies, for the edge
-    * itself -- the resource-server half of the same decision a tenant's `require_dpop_nonce`
-    * makes for `auth`'s endpoints.
-    *
-    * Restricted to edges, and an edge is served only its own row: an edge has no use for a
-    * peer's policy, and `authorizeInternal` has already proven which edge is asking by the key
-    * it signed the call with, so the id is not taken from the request.
+  /** Sets what the named edge does when asked for more than it can do (see [[OverloadPolicy]]); an empty policy returns it
+    * to its deployment's own values. Refused with `400` and the first thing wrong when the policy does not validate: the
+    * edge would not apply it either, and a console that reported success for it would leave an operator believing a limit
+    * was in force.
     */
-  val edgeDpopSyncEndpoint =
-    Method.GET / "configuration" / "edges" / "dpop" / "sync" -> handler { (request: Request) =>
+  val setEdgeOverloadEndpoint =
+    Method.PUT / "configuration" / "edges" / "overload" -> handler { (request: Request) =>
       for
-        callerEdgeId <- authorizeInternal(request)
-        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
-        edge <- service.find(edgeId).someOrFail(Unauthorized)
-        response = EdgeDpopSyncResponse(requireDpopNonce = edge.requireDpopNonce)
-      yield Response.json(response.toJson)
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        policy <- request.bodyAs[OverloadPolicy]
+        edge <- service.find(edgeId)
+        response <-
+          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.setOverloadPolicy(edgeId, policy).as(Response.status(Status.NoContent)).catchSome:
+              case InvalidOverloadPolicy(message) =>
+                ZIO.succeed(Response.json(OverloadPolicyError(message).toJson).status(Status.BadRequest))
+      yield response
     }
 
-  /** The registered signing keys of every edge, for auth to authenticate the edges that call
-    * it directly (see `versola.util.EdgeAssertion`). Public keys only -- the same JWKs
-    * `authorizeInternal` verifies an edge's own sync calls against.
+  /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
+    * certificate that names an edge (`urn:versola:edge:<id>`) belongs to one central still
+    * knows: the certificate's own validity cannot be shortened from here, so deleting an edge
+    * has to reach auth some other way (see `versola.oauth.mtls.EdgeCertificateTrust`). No
+    * keys: auth recognises an edge by its certificate, not by a key it holds.
     *
-    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has
-    * no use for its peers' keys, and handing them over would let a single compromised edge
-    * learn the identities it would have to forge.
+    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has no
+    * use for its peers' identities.
     */
   val edgesRegistryEndpoint =
     Method.GET / "configuration" / "edges" / "registry" -> handler { (request: Request) =>
@@ -143,11 +209,6 @@ object EdgeController extends Controller:
           edges = edges.map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
-              publicKey = edge.publicKey,
-              oldPublicKey = edge.oldPublicKey,
-              // What lets auth refuse an assertion from an edge that is real and correctly
-              // signed but not the one this token's tenant is behind -- see
-              // `versola.util.EdgeAssertion`.
               tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
             ),
           ).toList,
@@ -157,12 +218,27 @@ object EdgeController extends Controller:
 
 case class RegisterEdgeRequest(
     id: EdgeId,
+    /** The group the edge joins and never leaves; absent means `default`. */
+    groupId: Option[EdgeGroupId] = None,
+) derives Schema, JsonCodec
+
+case class GetEdgeGroupsResponse(
+    groups: Vector[EdgeGroupRecord],
+) derives Schema, JsonCodec
+
+case class EnrollmentTokenResponse(
+    token: String,
+    expiresAt: Instant,
 ) derives Schema, JsonCodec
 
 case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
+    overloadPolicy: Option[OverloadPolicy] = None,
+    groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
+    identityChainEndsAt: Option[Instant] = None,
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(
@@ -173,16 +249,20 @@ case class EdgeDpopSyncResponse(
     requireDpopNonce: Boolean,
 ) derives Schema, JsonCodec
 
+case class EdgeOverloadSyncResponse(
+    overloadPolicy: Option[OverloadPolicy],
+) derives Schema, JsonCodec
+
+case class OverloadPolicyError(
+    error: String,
+) derives Schema, JsonCodec
+
 case class GetAllEdgesResponse(
     edges: List[EdgeResponse],
 ) derives Schema, JsonCodec
 
-/** `oldPublicKey` is present only during a rotation window, and is sent so auth keeps
-  * accepting assertions an edge signed with the key it is rotating out. */
 case class EdgeRegistryEntry(
     id: EdgeId,
-    publicKey: Json.Obj,
-    oldPublicKey: Option[Json.Obj],
     tenantIds: List[TenantId],
 ) derives JsonCodec
 

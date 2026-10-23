@@ -1,6 +1,6 @@
 package versola.oauth.logout
 
-import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.conversation.{ConversationRenderService, UiLocales}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{SessionCookie, State}
 import versola.oauth.session.SessionService
@@ -39,8 +39,8 @@ object LogoutController extends Controller:
         postLogoutRedirectUri <- request.queryZIO[Option[URL]]("post_logout_redirect_uri")
         state <- request.queryZIO[Option[State]]("state")
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
-        uiLocales <- request.queryZIO[Option[String]]("ui_locales")
-          .map(_.map(_.split(' ').toList.filter(_.nonEmpty)))
+        requestedLocales <- request.queryZIO[Option[String]]("ui_locales")
+        uiLocales = UiLocales.resolve(request, hints = requestedLocales.fold(List.empty[String])(UiLocales.split))
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
         _ <- Observability.setRouteLabel(
@@ -63,21 +63,21 @@ object LogoutController extends Controller:
                 val redirect = postLogoutRedirectUri.map(_.encode)
                 setSessionAuth(info) *>
                   renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, uiLocales)
-              case None => Observability.setError("session_not_found") *> renderService.renderLogout(List.empty, None, state)
+              case None => Observability.setError("session_not_found") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
             }
           case (Some(rawId), Some(hintId)) =>
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) if info.record.publicId == hintId =>
-                setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService)
-              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state)
+                setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService, uiLocales)
+              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
             }
-          case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService)
-          case (None, None) => renderService.renderLogout(List.empty, None, state)
+          case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService, uiLocales)
+          case (None, None) => renderService.renderLogout(List.empty, None, state, uiLocales, None)
       yield response
     }
 
   // Submission of the confirmation page: the logout parameters travel in the form body, signed by
-  // the token minted on GET, so the query string is never consulted here. `id_token_hint` is still
+  // the token minted on GET, so the query string is not consulted here beyond the locale the form was submitted with. `id_token_hint` is still
   // accepted via the query string for RPs that POST their logout request directly.
   val postLogoutRoute: Route[Env, Throwable] =
     Method.POST / "logout" -> handler { (request: Request) =>
@@ -85,6 +85,7 @@ object LogoutController extends Controller:
         postLogoutRedirectUri <- request.queryZIO[Option[URL]]("post_logout_redirect_uri")
         state <- request.queryZIO[Option[State]]("state")
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
+        uiLocales = UiLocales.resolve(request)
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
         _ <- Observability.setRouteLabel(
@@ -110,9 +111,21 @@ object LogoutController extends Controller:
                   ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
                     case Some(info) =>
                       setSessionAuth(info) *>
-                        performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                        performLogout(
+                          Right(rawId),
+                          submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption),
+                          submission.state,
+                          renderService,
+                          uiLocales,
+                        )
                     case None =>
-                      performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                      performLogout(
+                        Right(rawId),
+                        submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption),
+                        submission.state,
+                        renderService,
+                        uiLocales,
+                      )
                   }
                 else
                   Observability.setError("csrf_mismatch").as(Response.forbidden),
@@ -120,11 +133,11 @@ object LogoutController extends Controller:
           case (Some(rawId), Some(hintId)) =>
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) if info.record.publicId == hintId =>
-                setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService)
-              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state)
+                setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService, uiLocales)
+              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
             }
-          case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService)
-          case (None, None) => renderService.renderLogout(List.empty, None, state)
+          case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService, uiLocales)
+          case (None, None) => renderService.renderLogout(List.empty, None, state, uiLocales, None)
       yield response
     }
 
@@ -137,10 +150,11 @@ object LogoutController extends Controller:
       redirect: Option[URL],
       state: Option[State],
       render: ConversationRenderService,
+      uiLocales: Option[List[String]],
   ): RIO[LogoutService, Response] =
     for
       result <- ZIO.serviceWithZIO[LogoutService](_.logout(identifier, redirect, state))
-      rendered <- render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state)
+      rendered <- render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state, uiLocales, result.clientId)
     yield rendered.addCookie(SessionCookie.expired)
 
   private def setSessionAuth(info: versola.oauth.session.model.SessionInfo): UIO[Unit] =

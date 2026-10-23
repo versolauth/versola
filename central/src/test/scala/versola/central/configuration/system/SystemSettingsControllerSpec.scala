@@ -25,7 +25,6 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     passwordRegex = "^(?=.*[A-Z]).{8,}$",
     passwordHistorySize = 10,
     passwordNumDifferent = 5,
-    identityProviderLogo = None,
   )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -112,25 +111,9 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(customSettings.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
+      setup = svc => svc.upsertSettings.succeedsWith(()),
       verify = (_, svc) =>
         ZIO.succeed(assertTrue(svc.upsertSettings.calls == List(customSettings))),
-    ),
-    controllerTestCase(
-      description = "PUT returns 400 for an invalid identity provider logo URL",
-      request = Request(
-        method = Method.PUT,
-        url = URL.empty / "configuration" / "system-settings",
-        body = Body.fromString(customSettings.copy(identityProviderLogo = Some("javascript:alert(1)")).toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.BadRequest,
-      setup = svc => svc.upsertSettings.succeedsWith(Left(SystemSettingsValidationError.InvalidIdentityProviderLogo)),
-      verify = (response, svc) =>
-        for message <- response.body.asString
-        yield assertTrue(
-          svc.upsertSettings.calls.length == 1,
-          message == "Identity provider logo must be an absolute HTTP(S) URL",
-        ),
     ),
     controllerTestCase(
       description = "PUT returns 401 without credentials",
@@ -141,7 +124,7 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json))
         .addHeader(Header.Authorization.Bearer("not-basic")),
       expectedStatus = Status.Unauthorized,
-      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
+      setup = svc => svc.upsertSettings.succeedsWith(()),
       verify = (_, svc) => ZIO.succeed(assertTrue(svc.upsertSettings.calls.isEmpty)),
     ),
     controllerTestCase(

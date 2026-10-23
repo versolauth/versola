@@ -5,6 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
+import versola.util.theme.{ThemePresets, ThemeVariables}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -14,6 +15,9 @@ object ThemeController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllThemesEndpoint,
+    getThemePresetsEndpoint,
+    getThemeVariablesEndpoint,
+    renderThemeEndpoint,
     syncThemesEndpoint,
     createThemeEndpoint,
     updateThemeEndpoint,
@@ -30,6 +34,33 @@ object ThemeController extends Controller:
       yield Response.json(GetAllThemesResponse(themes).toJson)
     }
 
+  /** The built-in themes a theme can be based on. */
+  val getThemePresetsEndpoint =
+    Method.GET / "configuration" / "themes" / "presets" -> handler { (request: Request) =>
+      for _ <- authorizeBasic(request)
+      yield Response.json(GetThemePresetsResponse(ThemePresets.all).toJson)
+    }
+
+  /** The tokens a theme may set one by one: the groups, and for each its kind, whether it takes a light and a dark value, a
+    * description in each language and its default. Fixed by the build, like the presets.
+    */
+  val getThemeVariablesEndpoint =
+    Method.GET / "configuration" / "themes" / "variables" -> handler { (request: Request) =>
+      for _ <- authorizeBasic(request)
+      yield Response.json(ThemeVariables.catalog.toJson)
+    }
+
+  /** The stylesheet of a theme built from the given tokens; nothing is stored. */
+  val renderThemeEndpoint =
+    Method.POST / "configuration" / "themes" / "css" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ThemeService]
+        body <- request.bodyAs[RenderThemeRequest]
+        rendered <- service.render(body)
+      yield Response.json(rendered.toJson)).catchSome(badRequest)
+    }
+
   val syncThemesEndpoint =
     Method.GET / "configuration" / "themes" / "sync" -> handler { (request: Request) =>
       for
@@ -41,22 +72,22 @@ object ThemeController extends Controller:
 
   val createThemeEndpoint =
     Method.POST / "configuration" / "themes" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.bodyAs[CreateThemeRequest]
-        _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId))
-      yield Response.status(Status.Created)
+        _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId, body.tokens))
+      yield Response.status(Status.Created)).catchSome(badRequest)
     }
 
   val updateThemeEndpoint =
     Method.PUT / "configuration" / "themes" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.bodyAs[UpdateThemeRequest]
-        _ <- service.updateTheme(ThemeRecord(body.id, body.css, None))
-      yield Response.status(Status.NoContent)
+        _ <- service.updateTheme(ThemeRecord(body.id, body.css, None, body.tokens))
+      yield Response.status(Status.NoContent)).catchSome(badRequest)
     }
 
   val deleteThemeEndpoint =
@@ -73,6 +104,11 @@ object ThemeController extends Controller:
               Response
                 .json("""{"message":"Theme is in use by one or more clients and cannot be deleted"}""")
                 .status(Status.Conflict)
-          case e: IllegalArgumentException =>
-            ZIO.succeed(Response.json(s"""{"message":"${e.getMessage}"}""").status(Status.BadRequest))
+          case e: IllegalArgumentException => badRequest(e)
     }
+
+  // What a refused theme answers: the reason, as a 400. The messages come from ThemeService and ThemePresets and are
+  // fixed sentences (the list of built-in themes at most): the request's own text, such as a base id, is never put into them.
+  private val badRequest: PartialFunction[Throwable, ZIO[Any, Nothing, Response]] =
+    case e: IllegalArgumentException =>
+      ZIO.succeed(Response.json(zio.json.ast.Json.Obj("message" -> zio.json.ast.Json.Str(e.getMessage)).toJson).status(Status.BadRequest))

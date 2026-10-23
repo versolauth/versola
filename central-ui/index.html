@@ -3,64 +3,221 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
   <title>Versola Central</title>
-  <link rel="icon" type="image/svg+xml" href="/logo-shield-light.svg">
+  <link rel="icon" type="image/svg+xml" href="/favicon-light.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     /*
-     * Theme color tokens, keyed by the same names components already consume
-     * (--bg-dark, --accent, etc.) so switching themes never touches any
-     * component file — only the values here change. Defined here rather than
-     * in a Lit `css` template because `:root` never matches inside a shadow
-     * root (see src/styles/theme.ts for the long version); custom properties
-     * do inherit through shadow boundaries, so every component's shadow root
-     * picks up whichever theme is current without redeclaring anything.
+     * Colour tokens of the admin console, one value per theme. This is the only
+     * place a colour is written down: components use the token names and never
+     * a literal (see central-ui/design-system/README.md for what each token is
+     * for, and design-system/contrast.mjs for the WCAG check that runs over
+     * these values). Defined here rather than in a Lit `css` template because
+     * `:root` never matches inside a shadow root (src/styles/theme.ts has the
+     * long version); custom properties inherit through shadow boundaries, so
+     * every component picks up whichever theme is current.
      *
-     * Light is the default console palette, reusing the marketing site's warm
-     * palette (versola-website: style.css) and Petrol Blue accent, so the
-     * console and the site read as one product. Dark is the original console
-     * palette, kept for anyone who picks it.
+     * The brand palette: the tokens of the `default` login theme
+     * (forms/common.css) and of the website (versola-website
+     * public/css/tokens.css), so the console, the login forms and the site
+     * read as one brand. Warm neutrals, the petrol brand colour (#155e75) as
+     * the accent, ink as the primary button. Dark is the forms' dark scheme:
+     * brand-tinted near-black, not an inverted light. Values that depart from
+     * the site (for contrast) are listed in design-system/README.md.
+     *
+     * `data-theme` is the resolved theme (light|dark); `data-theme-pref` is the
+     * stored choice (auto|light|dark). Both are set by the pre-paint script
+     * below and later by src/utils/theme.ts.
      */
     :root,
+    :root[data-theme='light'] {
+      color-scheme: light;
+
+      /* Surfaces. --sidebar-bg is the site's page tint (brand 9% over
+         #f6f4ef in oklab, the header behind versola.kz); --surface-inset and
+         --field are the forms' soft field fill. */
+      --bg-page: #faf9f7;
+      --surface: #ffffff;
+      --surface-inset: #f5f3ee;
+      --surface-raised: #ffffff;
+      --sidebar-bg: #e2e6e4;
+      --sidebar-hover-bg: #d6d9d6;
+      --code-bg: #f5f3ee;
+      --selection-bg: #cfe3ea;
+      --backdrop: rgba(28, 27, 25, 0.5);
+
+      /* Fields: the forms' filled field (--field / --field-hover in common.css). */
+      --field: #f5f3ee;
+      --field-hover: #edeae3;
+
+      /* Borders. --border-default is the site's --line; --border-input is
+         darker than the site's --line-strong (#cfc9bb, 1.6:1) because a field
+         boundary must reach 3:1 on --surface, --field and --sidebar-bg. */
+      --border-subtle: #ebe8e2;
+      --border-default: #e6e2d8;
+      --border-strong: #847e74;
+      --border-input: #857e72;
+
+      /* Text. --text-muted is a step darker than the forms' #6b6a66 so it
+         reads at 4.5:1 on the sidebar tint too. */
+      --text-primary: #1c1b19;
+      --text-secondary: #55534e;
+      --text-muted: #656460;
+
+      /* Accent: the brand colour, for links, IDs, the active nav item, focus. */
+      --accent: #155e75;
+      --accent-hover: #104c5f;
+      --on-accent: #ffffff;
+      --accent-subtle: #e1eef2;
+      --accent-text: #114d61;
+      --accent-border: #74b2c4;
+      --focus-ring: #155e75;
+
+      /* The primary button: ink, as on the site and in the login forms. */
+      --btn: #1c1b19;
+      --btn-hover: #000000;
+      --on-btn: #ffffff;
+
+      /* Semantic: X on a surface, X-subtle as a fill, X-text on X-subtle, X-border around X-subtle */
+      --success: #2a7a35;
+      --success-subtle: #e6f3e2;
+      --success-text: #1f5f26;
+      --success-border: #8ac48e;
+      --warning: #9a5200;
+      --warning-subtle: #fbf0dc;
+      --warning-text: #7a4100;
+      --warning-border: #dca452;
+      --danger: #c0341d;
+      --on-danger: #ffffff;
+      --danger-subtle: #fbeae6;
+      --danger-text: #9c2915;
+      --danger-border: #ec9a88;
+      --info: #155e75;
+      --info-subtle: #e1eef2;
+      --info-text: #114d61;
+      --info-border: #74b2c4;
+
+      /* Switch track/knob in the off position; on uses --accent / --on-accent. */
+      --toggle-track-off: #7c766b;
+      --toggle-knob-off: #ffffff;
+      /* The login forms' sheet in each scheme, behind a tenant logo preview: the same in both
+         console themes, because the preview shows the logo where it will be seen. */
+      --logo-swatch-light: #fffdf9;
+      --logo-swatch-dark: #1c1b19;
+
+      /* The <select> chevron, drawn in --text-secondary: an image cannot read a
+         var() inside its data URL, so the colour is repeated here per theme. */
+      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%2355534e' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
+
+      /* Elevation: --shadow-card is the site's layered card shadow,
+         --shadow-sheet the login sheet's (the side panel). */
+      --shadow-sm: 0 1px 2px rgba(28, 27, 25, 0.06);
+      --shadow-md: 0 4px 12px rgba(28, 27, 25, 0.10);
+      --shadow-lg: 0 12px 32px rgba(28, 27, 25, 0.16);
+      --shadow-card: 0 1px 1px rgba(16, 24, 40, 0.02), 0 4px 10px rgba(16, 24, 40, 0.04), 0 20px 48px rgba(16, 24, 40, 0.09);
+      --shadow-sheet: 0 30px 60px -24px rgba(0, 0, 0, 0.45);
+
+      /* Syntax-highlight tokens (GitHub Light-derived; comment and selector
+         darkened to pass 4.5:1 on --code-bg), consumed by
+         src/styles/code-highlight.ts and cel-highlight.ts. Highlighted code
+         needs genuinely different colours per theme, not a hue swap. */
+      --ch-comment: #57606a;
+      --ch-string: #0a3069;
+      --ch-number: #0550ae;
+      --ch-keyword: #cf222e;
+      --ch-tag: #116329;
+      --ch-attr-name: #0550ae;
+      --ch-entity: #953800;
+      --ch-selector: #6639ba;
+      --ch-function: #6639ba;
+      --ch-builtin: #953800;
+      --ch-constant: #0550ae;
+
+      --cel-keyword: #cf222e;
+      --cel-ctxvar: #6639ba;
+    }
+
     :root[data-theme='dark'] {
-      --bg-dark: #0d1117;
-      --bg-dark-card: #161b22;
-      --bg-light: #f6f8fa;
-      --bg-light-card: #ffffff;
-      --accent: #58a6ff;
-      --accent-gradient: linear-gradient(135deg, #58a6ff, #a371f7);
-      --text-primary: #e6edf3;
-      --text-secondary: #8b949e;
-      --border-dark: #30363d;
-      --border-light: #d0d7de;
+      color-scheme: dark;
 
-      --success: #3fb950;
-      --warning: #d29922;
-      --danger: #f85149;
-      --info: #58a6ff;
+      /* The forms' dark scheme (common.css): page = brand 10% on #060707,
+         sheet = brand 7% on #1f1f20, field = brand 9% on #2b2b2d, resolved
+         to hex. */
+      --bg-page: #080f11;
+      --surface: #1e2324;
+      --surface-inset: #292f31;
+      --surface-raised: #262c2e;
+      --sidebar-bg: #0c1416;
+      --sidebar-hover-bg: #1b2426;
+      --code-bg: #080f11;
+      --selection-bg: #2a4a54;
+      --backdrop: rgba(0, 0, 0, 0.6);
 
-      /* Tint used for accent-colored badges/hovers (rgba(var(--accent-tint), x)
-         throughout the component styles) — kept as a token so the light theme
-         can swap the base color without a repo-wide find/replace. */
-      --accent-tint: 88, 166, 255;
-      /* Tint for danger-colored badges/banners (rgba(var(--danger-tint), x)) —
-         same reasoning as --accent-tint. */
-      --danger-tint: 248, 81, 73;
-      /* Lighter/darker danger-red variants for text sitting directly on a
-         danger-tinted background (e.g. a "delete" secondary button) — the
-         base --danger red doesn't have enough contrast against its own tint
-         at these opacities. */
-      --danger-strong: #ffb4ad;
-      --danger-stronger: #ffd2cd;
+      --field: #292f31;
+      --field-hover: #30383b;
 
-      /* Syntax-highlight token colors (GitHub Dark-derived), consumed by
-         src/styles/code-highlight.ts and cel-highlight.ts. Kept as tokens for
-         the same reason as --accent-tint: highlighted code needs genuinely
-         different colors per theme for readability/contrast, not just a hue
-         swap, so the light values below are GitHub Light's palette rather
-         than a filter applied to these. */
+      /* --border-input: the forms' --line-strong (#55535a) is 2.1:1 on the
+         sheet; this one keeps 3:1 on --surface and --field. */
+      --border-subtle: #2b3133;
+      --border-default: #353d3f;
+      --border-strong: #7a8689;
+      --border-input: #7a8689;
+
+      --text-primary: #f3f2f0;
+      --text-secondary: #b4b6b8;
+      --text-muted: #a9a9b0;
+
+      /* The forms' dark focus colour: color-mix(in oklab, #155e75 50%, white). */
+      --accent: #8dacb8;
+      --accent-hover: #a3c1ca;
+      --on-accent: #0c1a1e;
+      --accent-subtle: #1f3a42;
+      --accent-text: #9fc6d2;
+      --accent-border: #3a5f69;
+      --focus-ring: #8dacb8;
+
+      /* The primary button inverts in dark, as the forms' does. */
+      --btn: #f3f2f0;
+      --btn-hover: #ffffff;
+      --on-btn: #1c1b19;
+
+      --success: #62c472;
+      --success-subtle: #1a3121;
+      --success-text: #8bd998;
+      --success-border: #336b3e;
+      --warning: #e0a63a;
+      --warning-subtle: #332b15;
+      --warning-text: #efc45f;
+      --warning-border: #7a5b1a;
+      --danger: #ff8a73;
+      --on-danger: #1c1b19;
+      --danger-subtle: #3c201c;
+      --danger-text: #ffab98;
+      --danger-border: #80362c;
+      --info: #8dacb8;
+      --info-subtle: #1f3a42;
+      --info-text: #9fc6d2;
+      --info-border: #3a5f69;
+
+      --toggle-track-off: #7a8689;
+      --toggle-knob-off: #f3f2f0;
+      /* The login forms' sheet in each scheme, behind a tenant logo preview: the same in both
+         console themes, because the preview shows the logo where it will be seen. */
+      --logo-swatch-light: #fffdf9;
+      --logo-swatch-dark: #1c1b19;
+
+      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%23b4b6b8' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
+
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+      --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+      --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.3), 0 20px 48px rgba(0, 0, 0, 0.45);
+      --shadow-sheet: 0 30px 60px -24px rgba(0, 0, 0, 0.8);
+
+      /* GitHub Dark-derived; checked against --code-bg by design-system/contrast.mjs. */
       --ch-comment: #8b949e;
       --ch-string: #a5d6ff;
       --ch-number: #f2cc60;
@@ -75,67 +232,29 @@
 
       --cel-keyword: #ff7b72;
       --cel-ctxvar: #d2a8ff;
-
-      /* Popover/tooltip surfaces (info cards). Kept as tokens because a
-         popover floats above a card and needs its own opaque background and
-         shadow rather than inheriting the card's. */
-      --surface-overlay: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-      --surface-overlay-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
-      /* Nested rows inside a popover (claim rows, endpoint groups). */
-      --surface-inset: rgba(255, 255, 255, 0.03);
-
-      /* Switch track/knob in the off position — the on position uses
-         --accent. Tokenized because both need to contrast against the
-         surface behind them, which inverts between themes. */
-      --toggle-track-off: rgba(255, 255, 255, 0.12);
-      --toggle-knob-off: rgba(255, 255, 255, 0.5);
     }
 
-    :root[data-theme='light'] {
-      --bg-dark: #faf9f7;
-      --bg-dark-card: #ffffff;
-      --bg-light: #f3f1ed;
-      --bg-light-card: #ffffff;
-      --accent: #155e75;
-      --accent-gradient: linear-gradient(135deg, #155e75, #0e4a5c);
-      --text-primary: #15171c;
-      --text-secondary: #6b7280;
-      --border-dark: rgba(21, 23, 28, 0.12);
-      --border-light: rgba(21, 23, 28, 0.08);
+    /* Theme-independent scales. Here rather than in src/styles/theme.ts for
+       the same reason as the colours: one copy, inherited into every shadow
+       root. The type scale stops at 12px: nothing in the console is smaller. */
+    :root {
+      --text-xs: 0.75rem;     /* 12px: chips, badges, table headers, hints */
+      --text-sm: 0.8125rem;   /* 13px: secondary text, filter bar, record subheading */
+      --text-base: 0.875rem;  /* 14px: body, inputs, buttons, nav items */
+      --text-md: 0.9375rem;   /* 15px: a row title */
+      --text-lg: 1rem;        /* 16px: a card heading */
+      --text-xl: 1.125rem;    /* 18px: an empty state heading */
+      --text-2xl: 1.25rem;    /* 20px: the card title, the brand */
+      --text-3xl: 1.5rem;     /* 24px: the page title below 720px */
+      --text-4xl: 2rem;       /* 32px: the page title */
 
-      --success: #15803d;
-      --warning: #b45309;
-      --danger: #dc2626;
-      --info: #155e75;
-
-      --accent-tint: 21, 94, 117;
-      --danger-tint: 220, 38, 38;
-      --danger-strong: #b91c1c;
-      --danger-stronger: #991b1b;
-
-      /* GitHub Light-derived syntax-highlight tokens — see the comment on the
-         dark theme's syntax-highlight tokens above. */
-      --ch-comment: #6e7781;
-      --ch-string: #0a3069;
-      --ch-number: #0550ae;
-      --ch-keyword: #cf222e;
-      --ch-tag: #116329;
-      --ch-attr-name: #0550ae;
-      --ch-entity: #953800;
-      --ch-selector: #8250df;
-      --ch-function: #8250df;
-      --ch-builtin: #953800;
-      --ch-constant: #0550ae;
-
-      --cel-keyword: #cf222e;
-      --cel-ctxvar: #8250df;
-
-      --surface-overlay: linear-gradient(180deg, #ffffff, #faf9f7);
-      --surface-overlay-shadow: 0 10px 24px rgba(21, 23, 28, 0.12);
-      --surface-inset: rgba(21, 23, 28, 0.035);
-
-      --toggle-track-off: rgba(21, 23, 28, 0.18);
-      --toggle-knob-off: #ffffff;
+      /* Layers, lowest first: a dropdown or tooltip over its page, the
+         drawer backdrop, the drawer, a modal dialog, a toast over everything. */
+      --z-dropdown: 20;
+      --z-backdrop: 150;
+      --z-drawer: 200;
+      --z-modal: 1000;
+      --z-toast: 1100;
     }
 
     html {
@@ -144,29 +263,51 @@
     body {
       margin: 0;
       padding: 0;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg-dark);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-page);
       color: var(--text-primary);
       -webkit-font-smoothing: antialiased;
     }
+    ::selection {
+      background: var(--selection-bg);
+    }
+    /* Motion off for the document; src/styles/theme.ts repeats this inside
+       every shadow root, where a document rule does not reach. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
   <script>
-    // Applied before first paint so a visitor who previously chose dark mode
-    // never sees a flash of the light default. Deliberately plain, inline JS
-    // (not a module import) — module scripts execute after the parser has
-    // already built the render tree for everything above them, which is too
-    // late to avoid the flash this exists to prevent. Keep the fallback here
-    // in sync with DEFAULT_THEME in src/utils/theme.ts.
+    // Applied before first paint so a visitor never sees a flash of the wrong
+    // theme. Deliberately plain, inline JS (not a module import) — module
+    // scripts execute after the parser has already built the render tree for
+    // everything above them, which is too late to avoid the flash this exists
+    // to prevent. The stored choice is auto|light|dark (auto follows the OS
+    // through prefers-color-scheme); keep the resolution here in sync with
+    // resolveTheme in src/utils/theme.ts.
     (function () {
+      var pref = 'auto';
       try {
         var stored = localStorage.getItem('versola-theme');
-        var theme = stored === 'dark' ? 'dark' : 'light';
-        document.documentElement.setAttribute('data-theme', theme);
-        var favicon = document.querySelector('link[rel="icon"]');
-        if (favicon && theme === 'dark') favicon.setAttribute('href', 'logo-shield.svg');
+        if (stored === 'light' || stored === 'dark' || stored === 'auto') pref = stored;
       } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'light');
+        // localStorage can throw (private browsing); auto is the answer then.
       }
+      var dark = pref === 'dark';
+      if (pref === 'auto') {
+        try { dark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { dark = false; }
+      }
+      var theme = dark ? 'dark' : 'light';
+      var root = document.documentElement;
+      root.setAttribute('data-theme', theme);
+      root.setAttribute('data-theme-pref', pref);
+      var favicon = document.querySelector('link[rel="icon"]');
+      if (favicon && theme === 'dark') favicon.setAttribute('href', 'favicon-dark.svg');
     })();
   </script>
 </head>
@@ -175,4 +316,3 @@
   <script type="module" src="/src/index.ts"></script>
 </body>
 </html>
-

@@ -40,7 +40,20 @@ trait AuthClient:
 
   def getUserSessions(id: UserId): Task[List[AuthClient.SessionDto]]
 
+  /** Every remembered user agent of the user with its live session, if any. */
+  def getUserDevices(id: UserId): Task[List[AuthClient.DeviceDto]]
+
+  /** Forgets a user agent with its session and their refresh tokens. `false` when auth does not
+    * know it as this user's. */
+  def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean]
+
   def invalidateSession(userId: UserId): Task[Unit]
+
+  /** Ends one session of the user. `false` when auth does not know it as this user's. */
+  def endSession(userId: UserId, sessionId: String): Task[Boolean]
+
+  /** Revokes the offline access `clientId` holds for the user: its live refresh tokens. */
+  def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
 
   /** Every currently-live refresh token issued to the user. Not derivable from
     * [[getUserSessions]]: a refresh token's expiry is fixed at issuance and independent of a
@@ -115,7 +128,29 @@ object AuthClient:
       browser: Option[String],
       version: Option[String],
       createdAt: String,
+      expiresAt: Instant,
+      idleExpiresAt: Option[Instant],
+      userAgent: Option[UserAgentDto],
   ) derives JsonCodec
+
+  case class UserAgentDto(
+      id: String,
+      userAgent: Option[String],
+      platform: Option[String],
+      os: Option[String],
+      browser: Option[String],
+      version: Option[String],
+      createdAt: Instant,
+      expiresAt: Instant,
+  ) derives JsonCodec
+
+  case class DeviceDto(
+      userAgent: Option[UserAgentDto],
+      session: Option[SessionDto],
+      endedSessionIds: List[String],
+  ) derives JsonCodec
+
+  case class DeviceListResponse(devices: List[DeviceDto]) derives JsonCodec
 
   case class SessionListResponse(sessions: List[SessionDto]) derives JsonCodec
 
@@ -163,13 +198,13 @@ object AuthClient:
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
+    private val userAgentsUrl: URL = usersUrl / "user-agents"
     private val refreshTokensUrl: URL = usersUrl / "refresh-tokens"
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
-    private val serviceUsersUrl: URL = config.auth.url / "service" / "users"
 
     override def upsertUser(
         id: UserId,
@@ -224,11 +259,51 @@ object AuthClient:
         Request.get(sessionsUrl.addQueryParam("id", id.toString)),
       ).map(_.sessions)
 
+    override def getUserDevices(id: UserId): Task[List[DeviceDto]] =
+      sendReceive[DeviceListResponse](
+        Request.get(userAgentsUrl.addQueryParam("id", id.toString)),
+      ).map(_.devices)
+
+    override def forgetUserAgent(userId: UserId, userAgentId: String): Task[Boolean] =
+      execute(
+        Request(
+          method = Method.DELETE,
+          url = userAgentsUrl.addQueryParam("userId", userId.toString).addQueryParam("userAgentId", userAgentId),
+          body = Body.empty,
+        ),
+      ): response =>
+        response.status match
+          case Status.NotFound => ZIO.succeed(false)
+          case status if status.isSuccess => ZIO.succeed(true)
+          case _ => failResponse(response)
+
     override def invalidateSession(userId: UserId): Task[Unit] =
       send(
         Request(
           method = Method.DELETE,
           url = sessionsUrl.addQueryParam("userId", userId.toString),
+          body = Body.empty,
+        ),
+      )
+
+    override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
+      execute(
+        Request(
+          method = Method.DELETE,
+          url = sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId),
+          body = Body.empty,
+        ),
+      ): response =>
+        response.status match
+          case Status.NotFound => ZIO.succeed(false)
+          case status if status.isSuccess => ZIO.succeed(true)
+          case _ => failResponse(response)
+
+    override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
+      send(
+        Request(
+          method = Method.DELETE,
+          url = refreshTokensUrl.addQueryParam("userId", userId.toString).addQueryParam("clientId", clientId),
           body = Body.empty,
         ),
       )
@@ -301,7 +376,7 @@ object AuthClient:
       send(
         Request(
           method = Method.DELETE,
-          url = serviceUsersUrl.addQueryParam("id", userId.toString),
+          url = usersUrl.addQueryParam("id", userId.toString),
         ),
       )
 

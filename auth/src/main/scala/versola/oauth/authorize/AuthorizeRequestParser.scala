@@ -1,7 +1,17 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
-import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken, SecurityProfile}
+import versola.oauth.client.model.{
+  Acr,
+  AuthorizationDetail,
+  ClientId,
+  OAuthClientRecord,
+  PhoneRegion,
+  PrimaryCredential,
+  ResourceUri,
+  ScopeToken,
+  SecurityProfile,
+}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
@@ -9,7 +19,7 @@ import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
+import versola.util.{Base64, ClientIp, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -146,7 +156,7 @@ object AuthorizeRequestParser:
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
         ipHeader <- oauthClientService.getIpHeader(clientId)
-        ip = request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
+        ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         stateForErrors = params.get("state")
@@ -173,8 +183,20 @@ object AuthorizeRequestParser:
           .flatMap:
             case "code" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code))
+            // FAPI 2.0 §5.3.1.2: only the authorization code flow, which keeps the ID token
+            // (and any code with it) out of the front channel. The check is on the tenant's
+            // profile, not a per-client flag, because no `fapi2` client may opt out of it.
             case "code id_token" =>
-              ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
+              oauthClientService.getSecurityProfile(clientId).flatMap: profile =>
+                if profile == SecurityProfile.fapi2 then
+                  ZIO.fail(Error.UnsupportedResponseType(
+                    clientId,
+                    redirectUri,
+                    stateForErrors,
+                    "code id_token",
+                    responseMode = responseModeForErrors,
+                  ))
+                else ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
             case other =>
               ZIO.fail(Error.UnsupportedResponseType(clientId, redirectUri, stateForErrors, other, responseMode = responseModeForErrors))
 
@@ -425,14 +447,14 @@ object AuthorizeRequestParser:
           )
 
     /** OIDC Core §3.1.2.1: `acr_values` is a *voluntary* request -- the server tries to satisfy it
-      * and reports what was achieved in the `acr` claim. A value the tenant's vocabulary does not
-      * define can never be satisfied, so it is dropped; when none is left the request carries no
+      * and reports what was achieved in the `acr` claim. A value neither the tenant's vocabulary nor
+      * the server itself ([[AcrResolutionService.builtIn]]) defines can never be satisfied, so it is dropped; when none is left the request carries no
       * acr requirement at all. Values the tenant does define are kept as before, and one that
       * cannot be met for this user is still refused downstream (a step-up has to be able to fail).
       */
     private def voluntaryAcrValues(clientId: ClientId, requested: NonEmptyList[Acr]): UIO[Option[NonEmptyList[Acr]]] =
       oauthClientService.getAcrVocabulary(clientId).map: vocabulary =>
-        NonEmptyList.fromIterableOption(requested.toList.filter(vocabulary.contains))
+        NonEmptyList.fromIterableOption(requested.toList.filter(acr => vocabulary.contains(acr) || AcrResolutionService.isBuiltIn(acr)))
 
     /** OIDC Core §3.1.2.1: `login_hint` is a hint, which the server may act on or not. One that
       * names no identifier this client's flow accepts -- or is not one at all -- is therefore
@@ -445,9 +467,9 @@ object AuthorizeRequestParser:
       if value.startsWith("+") && value.drop(1).forall(_.isDigit) then
         if !accepts(PrimaryCredential.phone) then ZIO.none
         else
-          oauthClientService.getAllowedPhonePrefixes(client.id).map: prefixes =>
+          oauthClientService.getPhoneRegions(client.id).map: regions =>
             Phone.parse(value).toOption
-              .filter(phone => prefixes.isEmpty || prefixes.exists(phone.startsWith))
+              .filter(phone => PhoneRegion.allows(regions, phone))
               .map(Right(_))
       else
         ZIO.succeed(Option.when(accepts(PrimaryCredential.email))(Email.from(value)).flatMap(_.toOption).map(Left(_)))

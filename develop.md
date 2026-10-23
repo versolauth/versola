@@ -1,4 +1,117 @@
-## Environment Config Generation
+# Development
+
+How to run, test and build Versola locally. For production see [`deploy.md`](deploy.md); for
+Kubernetes see [`k8s/README.md`](k8s/README.md).
+
+1. [Running from source](#running-from-source)
+2. [Testing and formatting](#testing-and-formatting)
+3. [Environment config generation](#environment-config-generation) — `scripts/gen-env.scala`
+4. [Docker images](#docker-images)
+5. [Services, ports and certificates](#services-ports-and-certificates) — probes, native apps, mTLS
+6. [Secrets (OpenBao)](#secrets-openbao)
+7. [CI/CD pipeline](#cicd-pipeline)
+
+---
+
+## Running from source
+
+Requires a JDK, [sbt](https://www.scala-sbt.org/), Docker,
+[scala-cli](https://scala-cli.virtuslab.org/install), nginx, Node.js/npm and an OpenSSL 3 `openssl`
+on `PATH` (macOS's LibreSSL lacks `-copy_extensions`; e.g. `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`).
+
+1. **Generate the dev config.** Answer `local` at the Name prompt
+   ([details](#environment-config-generation)); it writes `auth/dev/env.conf`, `central/dev/env.conf`,
+   `edge/dev/env.conf`, and the certificates under `edge/dev/internal-tls/` and `auth/dev/mtls/`:
+   ```bash
+   scala-cli run scripts/gen-env.scala
+   ```
+2. **Start Postgres** (and optionally Jaeger):
+   ```bash
+   docker-compose -f services.yml up -d postgres
+   docker-compose -f services.yml up -d jaeger
+   ```
+3. **Build the login forms** that `central`, `auth` and `util` need (generated, gitignored):
+   ```bash
+   cd central-ui
+   npm install
+   npm run build:forms   # forms -> central/src/main/resources/forms, common.css -> util/src/main/resources/versola/forms
+   npm run dev           # optional: the admin dashboard on port 3000
+   ```
+4. **Start the services**, each in its own terminal. They need `RUN_MIGRATIONS=true` against a fresh
+   Postgres: without it a service only *validates* its schema on startup (deliberate for real
+   deployments, see [`RUN_MIGRATIONS`](deploy.md#run_migrations)) and fails at once.
+   ```bash
+   PORT=9001 DPORT=9002 MPORT=9011 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
+   PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
+   nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"      # TLS terminator in front of auth; start it before edge
+   PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
+   ```
+   `MPORT` does anything only when the service's `env.conf` has a `mutual-tls` block (the `local`
+   target writes one for auth and one for central). Central's is required: it is the only listener
+   the edge surface is served on, and edge, which syncs from it, refuses to start without
+   `central.mutual-tls`.
+5. **Log in** at <http://localhost:9005/login/central-admin> with `admin` / `Admin1234!`, OTP `123456`.
+
+**Why the nginx terminator is not optional.** `central-admin` is registered as `tls_client_auth` by
+edge (#353: the `default` tenant is on the FAPI 2.0 security profile, which admits no `client_secret`
+client). Its certificate, `edge/dev/internal-tls/central-admin.{crt,key}`, is signed by the
+terminator's CA and carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`. Edge reaches
+auth through the terminator (`versola-internal-url`) because an RFC 8705 client certificate is
+presented in a TLS handshake and auth reads one only from a header; the terminator forwards it in
+`ssl-client-cert`. Without it every edge → auth call is refused, and edge cannot push
+`central-admin`'s request to `/par`.
+
+The other targets differ. `docker-local` and `vps` need neither the terminator nor a certificate in
+the config: central issues `central-admin`'s certificate itself through step-ca and renews it, and edge
+presents it to auth's own mutual-TLS listener (`native` in `edge.conf`); the proxy in front of auth
+clears `ssl-client-cert`, so a certificate cannot be asserted from outside. Redeploying over a
+deployment from before this keeps `central-admin` on its `client_secret` and central then refuses to
+boot ("A client's authentication method is fixed when it is created"): delete the `central-admin`
+client or start from empty volumes. The interactive and k8s targets get no `central-admin-mtls`, so
+`central-admin` stays on its `client_secret` there and central logs that it is outside the tenant's profile.
+
+---
+
+## Testing and formatting
+
+```bash
+sbt compile                      # all services
+sbt Test/compile                 # also compiles e2e
+sbt test                         # unit tests; needs Postgres and the built forms, see below
+sbt e2e/test                     # end-to-end; needs the services staged as in CI's "Stage services for e2e tests" step
+sbt tools/test                   # scripts/gen-env.scala
+cd central-ui && npm run test:unit && npm run test:ui   # Vitest, Playwright
+```
+
+**Antifraud load scenarios:** `loadgen` with `role = antifraud` drives the phone-OTP flow with and without antifraud against a local
+stack, counting the SMS sent and the latency antifraud adds; commands and profiles are in
+[`loadgen/antifraud/README.md`](loadgen/antifraud/README.md).
+
+**Postgres for `sbt test`:** `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and
+still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it
+generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on
+Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another
+stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with
+`POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec
+connects and which CA it trusts.
+
+### Formatting
+
+Scala code is formatted with scalafmt per `.scalafmt.conf` (CLI: `scalafmt`; it reads the pinned version
+from the config). Before a push run `scalafmt --mode diff --diff-branch origin/main` and commit the
+result; `scalafmt --test` checks without writing.
+
+The project-wide reformat commit is listed in `.git-blame-ignore-revs`, so it does not hide the real
+author of each line in `git blame`. GitHub honours that file on its own; for local `git blame` (and IDE
+annotate) run once per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+---
+
+## Environment config generation
 
 The `scripts/gen-env.scala` script generates HOCON config files for all three services
 (`auth`, `central`, `edge`) with freshly generated RSA-2048 key pairs and random secrets.
@@ -39,7 +152,7 @@ The script first asks for the environment **Name** (default `local`):
     `versolaUrl` when it's absent, so configs generated before this field existed
     keep working. Getting this backwards doesn't fail loudly; it 404s or
     connection-refuses partway through a login that otherwise looks like it's
-    working — confirmed by hand while testing `versola bootstrap local`.
+    working.
 - **`vps`** — also runs non-interactively, for a real server deployed with
   `versola bootstrap vps` / `versola configure vps` (see [`deploy.md`](deploy.md)).
   auth/central/edge run with `network_mode: host` there, and Postgres is a native
@@ -55,77 +168,14 @@ The script first asks for the environment **Name** (default `local`):
   Postgres is a throwaway container this same run also creates, while vps's Postgres
   role lives on a server this script doesn't control — the password generated here
   becomes the real one only on the first `configure` against an empty OpenBao, and
-  `versola-cli` then prints the SQL to give the role that password (deploy.md, 3.3).
+  `versola-cli` then prints the SQL to give the role that password (deploy.md, "Database, role and schemas").
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).
 
-## Local Development
+---
 
-1. Compilation - `compile`
-2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, start postgres - `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with `POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec connects and which CA it trusts.
-4. ```bash
-    cd central-ui
-    npm install
-    npm run build:forms   # compile auth forms into central/src/main/resources/forms
-    npm run dev           # run admin dashboard on port 3000
-    ```
-5. Start server locally
-    - `docker-compose -f services.yml up -d postgres` - Database
-    - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - Each service below needs `RUN_MIGRATIONS=true` against a fresh Postgres --
-      without it, a service only *validates* its schema on startup rather than
-      applying migrations to it (deliberate for real deployments, see
-      [deploy.md's `RUN_MIGRATIONS`](deploy.md#run_migrations)), which fails immediately with no schema yet.
-    - `PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
-    - `PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
-      (`MPORT` only does anything when `auth/dev/env.conf` carries a `mutual-tls` block -- see below)
-    - `nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"` - the TLS terminator in
-      front of auth. Edge reaches auth through it (`versola-internal-url`), because
-      an RFC 8705 client certificate is presented in a handshake and auth reads one
-      only from a header. Start it before edge; without it every edge -> auth call
-      is refused a connection.
-    - `PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
-    - `central-admin` is registered as `tls_client_auth` by edge (#353: the `default` tenant is on
-      the FAPI 2.0 security profile, which admits no `client_secret` client). Its certificate
-      is `edge/dev/internal-tls/central-admin.{crt,key}`, signed by the terminator's CA and
-      carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`; edge presents it to
-      the nginx terminator above, which forwards it to auth in `ssl-client-cert`. So the
-      terminator is not optional for the console login: without it edge cannot push
-      `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
-      `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
-      `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
-      docker-local and vps need neither the terminator nor a certificate in the config: their
-      `central-admin-mtls` names only the header, and central issues `central-admin`'s
-      certificate itself through step-ca (the one it issues edge-fronted clients' from) and
-      renews it. Edge presents it to auth's own mutual-TLS listener (`native` in `edge.conf`).
-      The proxy in front of auth clears `ssl-client-cert`, so a certificate cannot be asserted
-      from outside. Redeploying over a deployment from before this keeps `central-admin` on its
-      `client_secret`, and central then refuses to boot ("A client's authentication method is
-      fixed when it is created"): delete the `central-admin` client, or start from empty
-      volumes. The interactive and k8s targets still get no `central-admin-mtls`, so central
-      keeps `central-admin` on its `client_secret` there and logs that it is outside the
-      tenant's profile.
-    - go to http://localhost:9005/login/central-admin
-    - enter admin/Admin1234!
-    - enter otp code 123456
-
-### Formatting
-
-Scala code is formatted with scalafmt per `.scalafmt.conf` (CLI: `scalafmt`; it reads the pinned version from the config).
-Before a push run `scalafmt --mode diff --diff-branch origin/main` and commit the result; `scalafmt --test` checks without writing.
-
-The project-wide reformat commit is listed in `.git-blame-ignore-revs`, so it does not hide the real author of each line in `git blame`.
-GitHub honours that file on its own; for local `git blame` (and IDE annotate) run once per clone:
-
-```bash
-git config blame.ignoreRevsFile .git-blame-ignore-revs
-```
-
-## Docker
-
-### Build Locally
+## Docker images
 
 The runtime images no longer bundle sbt -- `docker build` copies an already
 built application from `<module>/target/universal/stage` (same as CI, see
@@ -153,9 +203,7 @@ sbt "edge-postgres-impl/stage"
 docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
 
-(`central` additionally expects `central-ui`'s forms already built into
-`central/src/main/resources` -- see the `npm run build:forms` step above --
-before staging, same as CI's `build` job.)
+(`central` additionally expects the forms already built (`npm run build:forms`, see [Running from source](#running-from-source)) before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:
 ```bash
@@ -168,357 +216,11 @@ docker run -p 8080:8080 -p 8081:8081 \
 (The Dockerfiles `EXPOSE 8080 9345`, but the diagnostics server listens on
 `DPORT`, 8081 by default — publish that one.)
 
-## Secrets (OpenBao)
+---
 
-`docker-local` and `vps` never write a secret's real value into
-auth.conf/central.conf/edge.conf — every secret field (JWT signing key,
-session/cookie secrets, Postgres password, admin bootstrap password, etc.) is a
-`${VAR}` HOCON placeholder instead (see gen-env.scala's `secretField`/
-`secretKeyField` for why it's a required, not optional, substitution).
-`versola-cli` resolves each one against an [OpenBao](https://openbao.org/)
-server before starting anything: an existing value there wins over the freshly
-generated candidate, so the same secrets survive every reconfigure; a missing one
-is generated and stored (except those the schema marks `generate-on-first-install-only`,
-which on an upgrade stop the run — see "Secret schema" and "How the CLI applies the schema"). The result goes into `<service>.secrets.env` next to
-the configs, which Compose passes to the containers — the services themselves
-never talk to OpenBao. See `versola-cli`'s `internal/openbao` and
-`internal/deploy/secrets.go`.
+## Services, ports and certificates
 
-Secrets live at `secret/versola/<target>/{auth,central,edge}` (KV v2), where
-`<target>` is `local` or `vps` — versola-cli's target names, not `docker-local`.
-
-The private key of the `utils` client (`loadgen provision`'s `provision.provisioner-private-key`)
-is the one value stored apart from those three paths, at `secret/versola/<target>/utils`, because
-nothing under a service's path may be a key central must not hold. A stored key wins over the one
-gen-env generates each run, and central's public half is taken from it, so the pair survives every
-reconfigure. `configure` leaves the resolved key in the bundle directory as `utils.private-key.jwk`
-(mode 0600).
-
-### Secret schema
-
-`scripts/gen-env.scala` declares every secret in one list, `SecretSchema.specs`, and writes it next to
-the configs as `secrets.schema.json` (one per target; no values, so it needs no special permissions).
-Each entry says what the secret is called (`name`), which services receive it (`services`; a value
-shared by several is listed once, and the same name in several entries is separate values — k8s has
-a `POSTGRES_PASSWORD` entry per service, so a consumer keys a secret by `(name, service)`, never by
-name alone; `utils` is the holder of the `utils` client's private key, stored
-under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`). A type is a promise about
-every value the store may hold, not about the one gen-env generates, so it is made only where the
-services enforce it: `base64url` is URL-safe base64 of exactly `size` bytes, as the `Secret.Bytes16`
-and `Bytes32` config decoders require (gen-env writes it without padding, the services also accept
-`=` padding — validate the decoded length, not the characters); `rsa-private-key` is PKCS#8 in
-standard base64 of any modulus size; `opaque` has no shape and no size — for values an operator
-can set (a prompt, a `--*-password` flag, an imported existing password: `POSTGRES_PASSWORD`,
-`ADMIN_BOOTSTRAP_PASSWORD`) and for values the services decode as a plain `Secret` of any length
-(`ACCOUNT_RESOURCE_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_INTERNAL_SECRET`). An entry may also
-belong to a `group` (secrets that only work as a set, e.g. a signing key and the public JWKS that
-carries it; one `onMissing` for all members: take all of them or none), and says what to do when it
-is missing from the store (`onMissing`): `generate`; `generate-on-first-install-only`, for a value
-something already depends on, so that missing it on an upgrade is an error — either something
-outside the store holds it (`POSTGRES_PASSWORD`, which Postgres has its own copy of; the `utils`
-key pair, whose private half loadgen and versola-cli hold), or it protects stored data:
-`PASSWORDS_SECRET` (the key of every password hash), `REFRESH_TOKENS_SECRET` (the MAC of every stored
-refresh token), `CLIENT_SECRETS_SECRET` (the AES key of client secrets and signing keys in central),
-`CENTRAL_RESOURCE_SECRET` (central keeps its copy from the first boot), `EDGE_TOKEN_ENC_KEY` (it
-encrypts the refresh tokens in edge's session table) and the JWT and edge key pairs; or `external`,
-supplied by the operator. The `file` field names where a value is written when it isn't in a
-`*.generated-secrets.env`. `versola-cli` uses the schema to find the secrets a new version needs
-that the store doesn't have yet. On vps `POSTGRES_PASSWORD` is one value for all three services;
-the users and URLs are separate flags and are not checked.
-
-The schema has a revision of its own, `SecretSchema.Revision` (`"revision"` at the top of
-`secrets.schema.json`; not `schemaVersion`, which is the version of the file's *format*), and every
-entry says in which revision it appeared (`since`; everything the schema started with is 1). It is
-how `versola-cli` tells, on an upgrade, a secret that is new in this version (generate it) from one
-that was lost from the store (for `generate-on-first-install-only`, stop). A reader treats a file
-with no `revision`/`since` as revision 1 / since 1. **When you add a secret to the schema, raise
-`Revision` by one and give the new secret `since = Revision`.** If you forget (for a
-`generate-on-first-install-only` secret), the new secret looks like one that always existed, so an
-upgrade refuses to continue on it as "lost": a safe failure, never a silently regenerated value, but
-it fails every upgrade until it is fixed. The revision is one number per file, shared by all targets,
-and the consumer has to record the revision it last applied; removing or renaming a secret is not
-expressed by `since`. Members of a group
-share one `since`; `sbt tools/test` checks that every `since` is within `1..Revision`.
-
-Adding a secret takes four edits that must agree: a `SecretSpec` in `SecretSchema.specs`, a
-`secretField`/`secretKeyField` placeholder in the service's config, an entry in that service's
-`writeGeneratedSecrets` list, and, for k8s, `versola.requiredSecretVars` in
-`k8s/versola/templates/_helpers.tpl` (and the `Revision` bump above). gen-env stops when the keys it writes differ from the schema;
-`sbt tools/test` covers the schema itself and `.github/scripts/check-secret-schema.sh` runs the
-generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
-
-### How the CLI applies the schema
-
-Before writing anything, `configure` (so also `bootstrap`, and `rollout` for the version it moves to)
-builds a plan from three facts: the schema, what OpenBao holds, and the schema `revision` this machine
-last deployed (recorded in `~/.versola/active/state.json`). A problem in the plan stops the run with
-nothing written. A stored value always wins; the plan only decides what to do about a missing one. A
-`generate` secret is generated whenever it is missing and an `external` one is reported missing; only
-`generate-on-first-install-only` secrets depend on the state:
-
-- **first install** (no record here, OpenBao empty): everything is generated.
-- **upgrade** (record here, OpenBao not empty): a missing secret is generated only if it is new, i.e.
-  its `since` is above the recorded revision; otherwise it is "lost" and the run stops — a fresh value
-  would make stored data unreadable.
-- **alarm** (record here, OpenBao empty) and **unknown** (no record here, OpenBao not empty): a missing
-  one stops the run. `unknown` is also what a reinstall sees when OpenBao's volume outlived `uninstall`.
-- **installing** (an earlier first install here did not finish): continues it; a half-written key
-  group is generated again as a whole.
-- **local**: throwaway, anything missing is generated.
-
-A secret listed for several services is one value: stored copies that differ stop the run, a copy
-missing where others are stored is filled from them. A group is taken whole or not at all; a group
-stored only in part stops the run, unless it was left half-written by an unfinished first install or
-is new since the deployed revision (then it is generated again whole). The `utils` key pair is outside
-the plan (it has its own path and flow, see above).
-
-`versola secrets plan <target> <version>` prints the plan without applying it (read-only, non-zero exit
-on problems, `--json` for scripts, never a value). **Run it before upgrading a production
-deployment.** Escape hatches, on `configure`, `bootstrap` and `rollout`: `--generate-missing NAME,...`
-(also on `secrets plan`, to preview it)
-(the named secrets may be generated although the plan would stop; a key group only if every member is
-named) and `--allow-legacy-secrets` (a release without `secrets.schema.json` is settled by the old
-rule — anything missing is generated — which is unsafe once OpenBao holds secrets).
-
-Versola's secret values are never printed by the CLI, only names and decisions. Two things are, by
-design: OpenBao's own AppRole `role-id`/`secret-id`, on every `configure` and on every `rollout` /
-`rollout --abort` step that prepares a version (not with `--setup-openbao`), and, on the first vps
-`configure` against a new OpenBao, the Postgres role's password in the `CREATE ROLE`/`ALTER ROLE`
-statements. For k8s a way to print values may be added behind an explicit flag; it is not implemented.
-
-The state file is in layout 4 since versola-cli 0.2.10 (2 added the revision, 3 the Postgres host and
-what a rolling upgrade records, 4 `--postgres-db`/`--postgres-ca`). An older CLI can't read it and
-stops with a "newer schema" error — copy `state.json` before the first run of a newer CLI if you may go
-back. Details and examples: `versola-cli`'s README, "Secrets".
-
-Not covered yet: the record and the "installing" mark live per machine (a second machine running
-`configure` for the same OpenBao sees `unknown`); a soft-deleted KV v2 secret counts as missing; after
-an interrupted first install followed by `uninstall` on vps, half-written key groups stop `configure`
-and OpenBao has to be cleaned by hand (`uninstall` leaves its volume, `versola-openbao-file-vps`).
-
-### Setup is automatic
-
-`versola configure <target> <version>` (and `bootstrap`) starts the
-`versola-openbao-<target>` container and, on its first run, **provisions it
-itself** for both targets: init with a single unseal key, unseal, enable KV v2
-and AppRole, write a policy limited to `secret/data/versola/<target>/*`, create
-the `versola-<target>` role and store its credentials. Files it keeps in
-`~/.versola/openbao/`:
-
-- `<target>.json` — the AppRole `role-id`/`secret-id` it reads and writes
-  secrets with (also printed on every `configure`);
-- `<target>-admin.json` — the root token and unseal key. OpenBao comes back
-  **sealed** after every container restart (no auto-unseal); `configure`
-  unseals it with this key, and recreates the container if it was stopped or
-  its `openbao.hcl` was removed with an old bundle. **Keep a copy of both
-  values somewhere safe** — neither is recoverable if lost. On `vps`, if saving
-  this file fails right after init, `configure` stops rather than printing a
-  root token into a server terminal; the instance is then unusable and its
-  volume has to be recreated.
-
-The container and its data volume (`versola-openbao-file-<target>`) are named
-per target, so a machine that has run both can't mix them up. Both targets bind
-OpenBao to port 8200, so only one of them can run at a time on one machine —
-`configure` says so if the other one is still up.
-
-### Doing it by hand: `--setup-openbao`
-
-For teams that want to run OpenBao themselves, `configure vps`/`bootstrap vps`
-accept `--setup-openbao`: the CLI then never calls OpenBao's admin API and
-expects AppRole credentials stored with `versola secrets login vps` beforehand.
-Unsealing after a restart is then also yours to do.
-
-TLS is disabled (see `openbao.hcl.template`), but `bao`'s own default is
-https — every command below needs `BAO_ADDR` set explicitly, or it fails with
-"server gave HTTP response to HTTPS client". `<address>` is `127.0.0.1:8200`
-on `vps`.
-
-```bash
-# 1. Initialize (first time only). Save BOTH the unseal key and the root token.
-docker exec -it -e BAO_ADDR=http://<address> versola-openbao-vps \
-  bao operator init -key-shares=1 -key-threshold=1
-
-# 2. Unseal -- again after every container start/recreation.
-docker exec -it -e BAO_ADDR=http://<address> versola-openbao-vps \
-  bao operator unseal <unseal key>
-
-# 3-4. KV v2 and AppRole (need the root token).
-docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao secrets enable -path=secret kv-v2
-docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao auth enable approle
-```
-
-5. A policy scoped to this target's own secrets only:
-
-   ```bash
-   docker exec -i -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-     bao policy write versola-vps - <<'EOF'
-   path "secret/data/versola/vps/*" {
-     capabilities = ["create", "read", "update"]
-   }
-   EOF
-   ```
-
-   On Windows PowerShell, write it to a local file first with `-Encoding ascii`
-   (the default `utf8` adds a BOM that breaks OpenBao's HCL parser with "illegal
-   char" at 1:1), `docker cp` it in and `bao policy write versola-vps <path>`.
-
-```bash
-# 6. An AppRole role bound to that policy (long-lived credential for an unattended tool).
-docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao write auth/approle/role/versola-vps \
-    token_policies="versola-vps" token_ttl=1h token_max_ttl=4h \
-    secret_id_ttl=0 token_num_uses=0
-
-# 7. The credentials versola-cli needs.
-docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao read auth/approle/role/versola-vps/role-id
-docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao write -f auth/approle/role/versola-vps/secret-id
-```
-
-Then store them on the machine that runs `versola configure` (the server
-itself, for `vps`). `<secret-id>` is a separate masked prompt, not an argument,
-so it never lands in shell history or `ps`:
-
-```bash
-versola secrets login vps http://<address> <role-id>
-```
-
-### Changing a stored secret
-
-`bao kv patch` merges into a path; `bao kv put` **replaces the whole path**
-and would wipe every other key there. Then run `versola configure <target>
-<version>` again with the same flags as the deployment (for `vps`, see
-[`deploy.md`](deploy.md#4-deploying-a-new-version)) and `versola up`, so the
-new value reaches the services:
-
-```bash
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao kv patch -mount=secret versola/vps/<service> KEY='<value>'
-```
-
-`POSTGRES_PASSWORD` is shared by all three services (one password) and
-must be identical under `auth`, `central` and `edge`; `configure` refuses to
-continue if the stored values disagree, and gen-env stops on vps when the three
-`--*-postgres-password` flags are given different values (k8s is the target with a
-password per service).
-
-### Onboarding a deployment that already has secrets of its own
-
-A fresh install needs none of this. It matters only when moving a deployment
-that already runs with its own keys (from before OpenBao) under `versola-cli`:
-several values gen-env.scala would generate fresh already have real, in-use
-counterparts that a fresh one won't match, and each mismatch fails differently:
-
-- **`POSTGRES_PASSWORD`** — the existing Postgres role's real password
-  (wrong → connection refused at startup).
-- **`JWT_PRIVATE_KEY`** — central is the source of truth for signing keys
-  (`JwksRepository`; auth only caches a synced copy). Central's bootstrap
-  seeding adds a key by `kid` rather than replacing, so a fresh one ends up
-  *alongside* the real one, publishing a key nobody holds, and auth matches
-  its configured private key to a JWKS entry by RSA modulus (the entry needs a
-  usable `alg`). Seed the real key so only one `kid` is in play.
-- **`CLIENT_SECRETS_SECRET`** — existing OAuth client secrets in central are
-  encrypted with it; a fresh one can't decrypt them.
-- **`PASSWORDS_SECRET`** — the key every stored password hash was computed with
-  (`PasswordService`); a fresh one fails every existing user's login.
-- **`REFRESH_TOKENS_SECRET`** — the MAC key of every stored refresh token; a
-  fresh one turns each of them, including on-device `offline_access` tokens,
-  into `invalid_grant`.
-- **`EDGE_TOKEN_ENC_KEY`** — the AES key of the refresh tokens in edge's session
-  table (exactly 32 bytes, base64url); with a fresh one every existing session
-  fails to decrypt in `refreshSession`, a server error rather than a re-login.
-- **`CENTRAL_RESOURCE_SECRET`** — central keeps its copy from the first boot
-  (create-only, AES-encrypted); cert-sync and operator tools present the store's
-  value, so a fresh one is a 401 for them. Edge gets the secret by sync. A rotation
-  through the admin API changes central's copy, not the store's.
-- **`EDGE_PRIVATE_KEY` / `EDGE_KEY_ID` / `EDGE_PUBLIC_JWK` / `JWKS_JSON`** —
-  central already trusts the real edge's public key (its `kid` must equal
-  `EDGE_KEY_ID`, and central needs it to be an RSA key); a fresh edge key pair
-  makes every edge→central sync call 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}`
-  holding the public key of `JWT_PRIVATE_KEY` (same RSA modulus) with an `alg`.
-- **`UTILITY_CLIENT_PUBLIC_JWK` / `UTILS_PRIVATE_KEY_JWK`** (the schema's name; OpenBao keeps the
-  private key as `UTILITY_CLIENT_PRIVATE_JWK`) — central re-applies the
-  utility client's public key on every boot, so a fresh pair silently replaces the
-  key loadgen and versola-cli authenticate with. Reuse the existing pair: in step 2 the
-  public half goes into central's path and the private half (an EC P-256 private JWK,
-  single-line JSON) into its own path, `versola/vps/utils`, field
-  `UTILITY_CLIENT_PRIVATE_JWK` (`kv patch` below). The next `configure` takes the stored
-  private key over the one gen-env generates, writes it into the bundle as
-  `utils.private-key.jwk`, and warns if central's public half doesn't match it.
-  k8s/README.md covers a client that was seeded with a `client_secret`.
-
-Existing values in OpenBao always win, but with automatic setup OpenBao only
-exists once `configure` has run — and that same first run already stores
-generated values. So the order is:
-
-1. Run `versola configure vps …` once. It provisions OpenBao and stores
-   generated values. It also prints a `CREATE ROLE`/`ALTER ROLE` for a new
-   Postgres password — **don't run it**: the existing role keeps its real
-   password, which goes into OpenBao in the next step. Don't run `migrate`/`up`
-   yet.
-2. Overwrite the generated values with the real ones (`kv patch`, root token
-   from `~/.versola/openbao/vps-admin.json`):
-```bash
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao kv patch -mount=secret versola/vps/auth \
-    POSTGRES_PASSWORD='<real password>' JWT_PRIVATE_KEY='<real private key, base64>' \
-    CLIENT_SECRETS_SECRET='<real value>' PASSWORDS_SECRET='<real value>' \
-    REFRESH_TOKENS_SECRET='<real value>'
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao kv patch -mount=secret versola/vps/central \
-    POSTGRES_PASSWORD='<real password>' CLIENT_SECRETS_SECRET='<real value>' \
-    EDGE_PUBLIC_JWK='<real public JWK, single-line JSON>' JWKS_JSON='{"keys":[<real auth public JWK>]}' \
-    CENTRAL_RESOURCE_SECRET='<real value>' \
-    UTILITY_CLIENT_PUBLIC_JWK='<public half of the existing utils key, single-line JSON>'
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao kv patch -mount=secret versola/vps/edge \
-    POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>' \
-    EDGE_TOKEN_ENC_KEY='<real 32-byte base64url value>'
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
-  bao kv patch -mount=secret versola/vps/utils \
-    UTILITY_CLIENT_PRIVATE_JWK='<existing private JWK, single-line JSON>'
-```
-
-3. Run the same `versola configure vps …` again — it now resolves the real
-   values into the bundle (the plan is an `upgrade`: stored values are kept) — then
-   `versola migrate` and `versola up`.
-
-With `--setup-openbao` instead, nothing is stored before you do it: provision
-OpenBao by hand, write the real values with `bao kv put` (a path's very first
-write — `kv patch` fails on a path that doesn't exist yet), then `configure`. That first
-`configure` finds secrets but no record on this machine — the plan's `unknown` state: what you
-stored is kept, plain `generate` secrets are created, and it stops naming any first-install-only
-secret you did not store (store it, or name it in `--generate-missing` if a fresh value is fine).
-`ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list:
-nothing outside gen-env.scala owns that value, so the generated one is correct.
-
-If containers named `versola-auth`/`versola-central`/`versola-edge` are already
-running under a different Compose project, the first `configure`/`up` fails
-with a container-name conflict (the vps compose file is always project
-`versola-vps`). Stop and remove those containers by name first — nothing
-stateful lives in them (Postgres is native, OpenBao's volume is external).
-
-## CI/CD Pipeline
-
-`.github/workflows/ci-cd.yml`:
-
-1. **On every push and PR to `main`** — builds and tests (`build` job).
-2. **On a published release** — builds and pushes the images to
-   `ghcr.io/versolauth/`, tagged with the release tag verbatim (no `v`):
-   `versola-auth`, `versola-central`, `versola-edge`, and `versola-tools`, which
-   also carries this release's admin console (`central-ui` is built in the
-   `docker-tools` job) and every service's migrations.
-3. **Manually (`workflow_dispatch`)** with a `test_tag` input — the same image
-   builds, published under that tag, for trying a build on a server without
-   cutting a release. The tag can't be `latest` or an existing git tag.
-
-Nothing here deploys: production is updated with `versola-cli` from the server
-itself — see [`deploy.md`](deploy.md#4-deploying-a-new-version).
-
-## HTTP Server
+### HTTP Server
 
 Metrics, liveness, and readiness probes are served on the diagnostics port (`DPORT`, default 8081):
 - `GET /metrics`
@@ -527,7 +229,9 @@ Metrics, liveness, and readiness probes are served on the diagnostics port (`DPO
 
 The application API is served on the main port (`PORT`, default 8080). Services may expose a
 separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
-Auth alone may also expose a third surface on `MPORT` (default 8083): RFC 8705 §5's mutual-TLS
+Auth and central may also expose a third surface on `MPORT` (default 8083); `MBIND_HOST` sets where it
+binds, `BIND_HOST` unless set, since it is the one listener a deployment may need to reach from outside
+the host or cluster. Central's is the edge surface, described under "The edge surface" below. Auth's is RFC 8705 §5's mutual-TLS
 listener, terminating TLS itself and demanding a client certificate on the handshake, rather
 than reading one from a header a proxy forwarded. It is served only when `auth/dev/env.conf`
 carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
@@ -537,6 +241,21 @@ see `MutualTlsListenerSpec`. The `docker-local`/`vps`/`k8s` configs do carry the
 issue the certificate it names -- see [Certificate storage and rotation](#certificate-storage-and-rotation-440).
 
 The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
+
+### Client certificates through EST (RFC 7030)
+
+The `local` target also writes `est { enabled = true, ca-certificates = ... }` (the CA central issues from) into `auth/dev/env.conf`
+and a `client-identity { max-age = "20 seconds", renew-window = 1.0 }` into `central/dev/env.conf`: a client registered with `estEnrollment` enrols at `/.well-known/est/simpleenroll` on auth and renews at
+`/.well-known/est/simplereenroll` on `MPORT`, and the short chain is what lets `EstEnrollmentSpec` watch it end and be extended.
+Central issues from the CA of `client-certificate-authority` (the one `auth/dev/mtls/trusted-clients.crt` trusts). The e2e spec drives
+`openssl` as the client; see [`deploy.md`](deploy.md#client-certificates-through-est-rfc-7030) for the deployment side.
+
+`scripts/est-smoke.sh` is a runbook for a running stand (not run by CI): it creates a test client, enrols with openssl, calls
+`/token` over the mutual-TLS origin, renews, checks the old certificate, revokes and deletes the client. It reads
+`AUTH_URL`, `AUTH_MTLS_URL`, `CENTRAL_ADMIN_URL` and `CENTRAL_ADMIN_SECRET` from the environment, refuses to run unless every
+host is in `EST_SMOKE_ALLOWED_HOSTS`, never prints a token or a key, and waits for the renew window up to
+`EST_SMOKE_MAX_WAIT_SECONDS` (the window is a third of the certificate's life by default).
+
 ### Native apps through edge (#420)
 
 `edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's
@@ -555,6 +274,83 @@ nginx advertises, and writes `auth/dev/mtls/trusted-clients.crt` -- the listener
 terminator's -- as the listener's `trusted-certificates`, so one issued certificate serves an
 edge-fronted web client through nginx and a native one on `MPORT`. Without a
 `client-certificate-authority`, central refuses such a registration.
+
+### Edge's own mutual-TLS listener, and edge as a caller of `/userinfo`
+
+An API behind edge's `/resources` can be called with a token bound to the *caller's* client certificate
+(RFC 8705 §3). Edge's plain listener cannot see that certificate, so edge also serves
+`/resources/{resourceId}/{path}` -- and nothing else -- on `MPORT` (unset: 8083, `MBIND_HOST`) when
+`edge/dev/env.conf` has a `mutual-tls { certificate, private-key, trusted-certificates, external-url }` block.
+`trusted-certificates` is the CA(s) of the callers; a `Bearer` token with `cnf.x5t#S256` is accepted only for
+the certificate it names. The `local` target writes the block, generates the listener's own certificate
+(`edge/dev/mtls/{ca,server}.{crt,key}`) and trusts `auth/dev/mtls/ca.crt` for callers, so e2e's
+`EdgeResourcesMutualTlsSpec` signs a bank's certificate with that CA.
+
+Auth cannot verify the caller's token holder for such a request, so edge calls `/userinfo` over its **own**
+certificate (the one it presents to central) to auth's mutual-TLS listener (`native.auth-mutual-tls-url`).
+Auth takes it as the proof when the certificate names exactly one edge (`urn:versola:edge:<id>`) and was
+signed by a certificate in `mutual-tls.edge-trusted-certificates` -- a CA that issues edge certificates and
+nothing else, which `auth` checks is a CA at startup; the listener's `trusted-certificates` must also contain it, so
+that the handshake succeeds. Central must still list the edge (`GET /configuration/edges/registry`, which `auth` syncs)
+and have assigned it the tenant of the token's client, so deleting an edge cuts its certificate off. The
+`local` target sets it to `central/dev/mtls/ca.crt` (which signed `edge-client.*`) and adds that CA to
+`auth/dev/mtls/trusted-clients.crt`. Without it, a key-bound token or a certificate-bound token of a caller
+fails on an endpoint with `fetchUserInfo`.
+
+### The edge surface on central (#554)
+
+Central serves what an edge reads (`GET /edge/sync/*`) and the certificate signing an edge enrols
+through (`POST /edge/clients/edge-certificate/sign`) on one listener only: its `MPORT` mutual-TLS
+listener, configured by `mutual-tls { certificate, private-key, trusted-certificates }`. Every other
+central route, and auth's `/configuration/*` reads, stay on the main listener, which refuses an edge
+token.
+
+The listener is meant to be reachable from wherever an edge runs, so it is not left to network
+placement. Two things are required of every call: the TLS handshake presents a certificate that
+chains to `trusted-certificates`, and that certificate carries the URI name
+`urn:versola:edge:<edge id>` for the same edge the signed token names (`authorizeEdge`). The first
+keeps strangers off the port; the second means a certificate issued to one edge cannot be used with
+another's token, and a stolen token is useless without a certificate. `trusted-certificates` must
+therefore vouch for **edge certificates only** -- a dedicated CA or issuer, not the one that signs
+auth's clients' certificates, and not a public CA.
+
+On the edge, `central { url = "https://...", mutual-tls { certificate, private-key,
+trusted-certificates = [...] } }`: the certificate it presents and a **pin** on central's own leaf
+(a list, for the overlap-window rotation under (2) below; a CA is refused at startup). Edge refuses to
+start without it. The certificate files are read at startup, so renewing them -- cert-manager
+rewrites the mounted Secret, step-ca's renewal rewrites the file -- takes effect on the next
+restart; issue edge certificates with a lifetime comfortably longer than the interval between
+restarts you can guarantee. Nothing is registered in central when an edge certificate is renewed:
+the URI name is the only link, which is why it is a name and not a pinned fingerprint.
+
+`local` writes `central/dev/mtls/{ca,server,edge-client}.{crt,key}` (a CA of its own, central's
+leaf, and `edge-default`'s certificate) for both services and e2e's `EdgeSyncSurfaceSpec`.
+`MPORT=9011` there. docker-local: `mtls-init` issues `central-server.*` and `edge-client.*`
+into the shared `/app/mtls` volume; k8s: the chart's `pki` block (cert-manager).
+
+vps (the compose bundle that `versola-cli` deploys) splits the roles across three intermediates of one
+step-ca root, so the rule above is enforced by the handshake and not only by the name: `central`
+trusts `/app/mtls/edge-ca.crt`, which holds the **edge** intermediate and nothing else, so a client
+certificate (from the **client** intermediate) does not complete the handshake, and `auth` trusts
+`/app/mtls/auth-trust.crt` (client + edge; its `edge-trusted-certificates` is `/app/mtls/edge-ca.crt`, the
+edge intermediate alone: `/userinfo` takes a call over a certificate that intermediate signed and that
+names an edge as the proof that the edge verified the token's holder -- see "Edge's own mutual-TLS listener" below). The listener
+leaves come from the **server** intermediate (365 days), the edge identity of the local edge from the edge
+intermediate (365 days; `versola configure vps --cert-lifetime-days N`, 0 = unlimited). **`central` signs edge identities itself** (`/edge/enroll`,
+`/edge/certificate/renew`) with the edge intermediate, so that its listener, which trusts only that
+intermediate, accepts them: `mtls-init` puts `edge-ca.crt` and `edge-ca.key` (unencrypted PKCS#8, 0600)
+into `versola-central-ca-*` -- the volume only central mounts, `/app/ca`, never the shared
+`/app/mtls` -- and `central.conf` gets `edge-certificate-authority { certificate, private-key }`. That
+is acceptable because central already decides which edges exist (registering one and enrolling it are
+both its admin API). Clients' certificates are still signed by the client intermediate through
+step-ca's `central` provisioner (`client-certificates`). `central`'s `MPORT` is bound to loopback there (`MBIND_HOST`);
+central's `APORT` (8094, not auth's 8082) is the enrollment listener (`POST /edge/enroll` only), also loopback. A remote edge or
+an external client reaches them only through public names that are opt-in
+(`versola configure vps --mtls-domain`, `--central-mtls-domain`, `--central-domain`), which
+`versola-cli`'s proxy forwards; the first two are added to the leaf's SAN by `mtls-init` through
+`MTLS_DOMAIN` / `CENTRAL_MTLS_DOMAIN` of `versola-tools`. The local edge keeps using
+`https://127.0.0.1:8083` and `:8093`, never the public names.
+
 ### Certificate storage and rotation (#440)
 
 Three certificate relationships exist in the mTLS work, with different rotation properties:
@@ -563,6 +359,7 @@ Three certificate relationships exist in the mTLS work, with different rotation 
 |---|---|---|---|
 | 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
 | 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
+| 2b | edge's own certificate on central's `MPORT` listener, and central's trust anchor for it (`mutual-tls.trusted-certificates`) | PEM paths; the edge's certificate must carry `urn:versola:edge:<id>`; edge pins central's leaf as in (2) | the deployment re-issues the edge certificate from the edge CA (vps: `mtls-init`, 365 days by default, `MTLS_INIT_PHASE=identity`) and restarts the edge -- no registration in central; a CA change follows (1) |
 | 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
 
 **(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
@@ -587,13 +384,35 @@ it; (c) once every edge has the new set, drop the old entry. Edge reads the file
 a changed file needs a restart. A single-element list is the previous behaviour; the previous
 bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
 
+In the vps bundle the overlap is built in. Edge's pins are always the pairs
+`/app/mtls/server.crt` + `server.next.crt` (auth) and `central-server.crt` + `central-server.next.crt`
+(central); `<name>.next.crt` is a copy of the current leaf until a replacement is staged. `mtls-init`
+(`docker/versola-tools/mtls-init.sh`, whose header is the contract) does the steps of (a)-(c)
+as phases of `MTLS_INIT_PHASE`, run with
+`docker compose run --rm -e MTLS_INIT_PHASE=<phase> mtls-init` and driven by `versola certs renew`
+and `rollout`:
+
+1. `prepare`: for each server leaf that is due, write the replacement as `<name>.next.crt` and
+   `<name>.next.key`; the current pair is untouched. Printing `mtls-init: staged <name>` and
+   `mtls-init: changed`. Repeating it keeps what is staged, so a renewal cut off here goes on to 3.
+2. Restart `edge`: it now pins old and new.
+3. `commit`: the staged pair becomes the current pair (`mtls-init: committed <name>`); `<name>.next.crt`
+   stays as a copy of it. With nothing staged it prints nothing.
+4. Restart the service whose leaf changed (`auth` or `central`).
+
+`all` (the default, what `up` runs) skips the choreography and replaces what is due in place, with
+the short gap described in [deploy.md](deploy.md#mutual-tls-certificates); `identity` renews only
+`edge-client`, which nobody pins; `report` changes nothing and prints one line per certificate,
+`mtls-init: cert <file> notBefore=<UTC> notAfter=<UTC> subject=<CN or URN>`, for `doctor` and `status`.
+`docker/versola-tools/test/mtls-init.test.sh` runs every phase against a throwaway step-ca in Docker.
+
 **(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
 Central stores **neither a certificate nor a key** -- only that the client is enrolled
 (`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
 replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
 what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
-`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
+`POST /edge/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
 syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
 is enrolled and that the request is signed by its own key and names exactly the registered subject and
 alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and
@@ -651,3 +470,297 @@ central is #463.
 `/configuration/clients` with only `edgeClientCertificate` whenever the content changes
 (`CENTRAL_URL`, `CENTRAL_SECRET`/`CENTRAL_SECRET_FILE`/`CENTRAL_RESOURCE_SECRET`,
 `CERT_SYNC_INTERVAL_SECONDS`; `0` runs one pass). Off by default. Keys must be unencrypted PKCS#8.
+
+---
+
+## Secrets (OpenBao)
+
+1. [How it works](#how-it-works)
+2. [Automatic setup](#automatic-setup)
+3. [Changing a stored secret](#changing-a-stored-secret)
+4. [Moving a deployment that already has secrets](#moving-a-deployment-that-already-has-secrets)
+5. [Running OpenBao yourself](#running-openbao-yourself---setup-openbao)
+6. [The secret schema (adding a secret)](#the-secret-schema-adding-a-secret)
+7. [How the CLI applies the schema](#how-the-cli-applies-the-schema)
+
+### How it works
+
+For `docker-local` and `vps`, `auth.conf`, `central.conf` and `edge.conf` never contain a secret's
+value. Every secret field (JWT signing key, session and cookie secrets, Postgres password, admin
+bootstrap password, …) is a required `${VAR}` HOCON placeholder (`secretField`/`secretKeyField` in
+`gen-env.scala` say why it is required and not optional). `versola-cli` resolves each one against an
+[OpenBao](https://openbao.org/) server before it starts anything:
+
+- an existing value in OpenBao **wins** over the freshly generated candidate, so secrets survive every
+  reconfigure;
+- a missing one is generated and stored, except secrets the schema marks
+  `generate-on-first-install-only`, which are an error on an upgrade
+  ([schema](#the-secret-schema-adding-a-secret));
+- the result is written to `<service>.secrets.env` beside the configs, which Compose passes to the
+  containers. The services never talk to OpenBao.
+
+The code is `internal/openbao` and `internal/deploy/secrets.go` in `versola-cli`.
+
+Secrets live at `secret/versola/<target>/{auth,central,edge}` (KV v2), where `<target>` is `local` or
+`vps` — `versola-cli`'s names, not `docker-local`. One value is stored apart, at
+`secret/versola/<target>/utils`: the private key of the `utils` client (`loadgen provision`'s
+`provision.provisioner-private-key`), because nothing under a service's path may be a key that
+`central` must not hold. A stored key wins over the one `gen-env` generates on each run and central's
+public half is derived from it, so the pair survives reconfigures. `configure` leaves the resolved key in
+the bundle directory as `utils.private-key.jwk` (mode `0600`).
+
+### Automatic setup
+
+`versola configure <target> <version>` (and `bootstrap`) starts the `versola-openbao-<target>`
+container and, on its first run, **provisions it itself**: init with a single unseal key, unseal,
+enable KV v2 and AppRole, write a policy limited to `secret/data/versola/<target>/*`, create the
+`versola-<target>` role and store its credentials. It keeps two files in `~/.versola/openbao/`:
+
+| File | Holds |
+|---|---|
+| `<target>.json` | the AppRole `role-id`/`secret-id` it reads and writes secrets with (also printed on every `configure`) |
+| `<target>-admin.json` | the root token and unseal key |
+
+OpenBao comes back **sealed** after every container restart (there is no auto-unseal); `configure`
+unseals it with the key in `<target>-admin.json`, and recreates the container if it was stopped or its
+`openbao.hcl` went away with an old bundle. **Keep a copy of both files off the machine** — neither value
+is recoverable if lost. On `vps`, if saving `-admin.json` fails right after init, `configure` stops
+instead of printing a root token into a server terminal; that instance is then unusable and its volume
+has to be recreated.
+
+The container and its data volume (`versola-openbao-file-<target>`) are named per target. Both targets
+bind port 8200, so only one can run at a time on a machine; `configure` says so if the other is still up.
+
+### Changing a stored secret
+
+Use `bao kv patch`, which merges into a path; `bao kv put` **replaces the whole path** and wipes every
+other key there. Then run `versola configure <target> <version>` again with the deployment's usual flags
+(for `vps`, see [`deploy.md`](deploy.md#deploying-a-new-version)) and `versola up`, so the services get
+the new value:
+
+```bash
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
+  bao kv patch -mount=secret versola/vps/<service> KEY='<value>'
+```
+
+`POSTGRES_PASSWORD` is one password shared by `auth`, `central` and `edge` and must be identical under
+all three: `configure` refuses to continue if the stored values disagree, and `gen-env` stops on `vps`
+when the three `--*-postgres-password` flags differ. (`k8s` is the target with a password per service.)
+
+### Moving a deployment that already has secrets
+
+A fresh install needs none of this. It matters when a deployment that already runs with its own keys
+(from before OpenBao) is moved under `versola-cli`: several values `gen-env` would generate fresh have
+real, in-use counterparts, and each mismatch fails differently.
+
+| Secret | What depends on it, and the failure with a fresh value |
+|---|---|
+| `POSTGRES_PASSWORD` | the existing Postgres role's real password; wrong → connection refused at startup |
+| `JWT_PRIVATE_KEY` | `central` is the source of truth for signing keys (`JwksRepository`; auth caches a synced copy). Bootstrap seeding adds a key by `kid` instead of replacing, so a fresh one sits *beside* the real one, publishing a key nobody holds; auth matches its private key to a JWKS entry (an RSA key by modulus, an EC key by proof of possession: a challenge signed with the key must verify under the entry's public key) and the entry needs a usable `alg`, which is also the algorithm tokens are signed under. `gen-env` generates an EC P-256 key (`jwt-es256-<date>`, ES256) and publishes only its public half; a pre-existing RSA key is still accepted. Seed the real key so only one `kid` is in play |
+| `CLIENT_SECRETS_SECRET` | encrypts existing OAuth client secrets in `central`; a fresh one cannot decrypt them |
+| `PASSWORDS_SECRET` | the key of every stored password hash (`PasswordService`); a fresh one fails every user's login |
+| `REFRESH_TOKENS_SECRET` | the MAC key of every stored refresh token; a fresh one turns each, including on-device `offline_access` tokens, into `invalid_grant` |
+| `EDGE_TOKEN_ENC_KEY` | the AES key (exactly 32 bytes, base64url) of the refresh tokens in edge's session table; with a fresh one every session fails to decrypt in `refreshSession`, a server error rather than a re-login |
+| `CENTRAL_RESOURCE_SECRET` | `central` keeps its copy from first boot (create-only, AES-encrypted); `cert-sync` and operator tools present the store's value, so a fresh one is a 401 for them. Edge gets it by sync. A rotation through the admin API changes central's copy, not the store's |
+| `EDGE_PRIVATE_KEY`, `EDGE_KEY_ID`, `EDGE_PUBLIC_JWK`, `JWKS_JSON` | `central` already trusts the real edge's public key (its `kid` must equal `EDGE_KEY_ID`, and it must be RSA); a fresh pair makes every edge → central sync 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}` with the public key of `JWT_PRIVATE_KEY` (the same pair: same modulus for RSA, same point for EC) and an `alg`; the edge key is the one that must stay RSA, `JWT_PRIVATE_KEY` need not be |
+| `UTILITY_CLIENT_PUBLIC_JWK`, `UTILS_PRIVATE_KEY_JWK` | `central` re-applies the utility client's public key on every boot, so a fresh pair silently replaces the key loadgen and `versola-cli` authenticate with. Reuse the existing pair: the public half goes into central's path below; the private half is not in OpenBao at all, it stays wherever loadgen or the operator keeps it (the `utils.private-key.jwk` a fresh `configure` writes is a new, unrelated key — ignore it). `gen-env`'s reuse path takes an EC P-256 private JWK; `k8s/README.md` covers a client seeded with a `client_secret` |
+
+`ADMIN_BOOTSTRAP_PASSWORD` is deliberately absent: nothing outside `gen-env` owns it, so the generated
+value is correct.
+
+Existing values in OpenBao always win, but with automatic setup OpenBao exists only once `configure` has
+run, and that first run already stores generated values. So the order is:
+
+1. Run `versola configure vps …` once. It provisions OpenBao and stores generated values. It also prints
+   a `CREATE ROLE`/`ALTER ROLE` for a new Postgres password — **don't run it**: the existing role keeps
+   its real password, which goes into OpenBao in the next step. Don't run `migrate` or `up` yet.
+2. Overwrite the generated values with the real ones (root token from `~/.versola/openbao/vps-admin.json`):
+   ```bash
+   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
+     bao kv patch -mount=secret versola/vps/auth \
+       POSTGRES_PASSWORD='<real password>' JWT_PRIVATE_KEY='<real private key, base64>' \
+       CLIENT_SECRETS_SECRET='<real value>' PASSWORDS_SECRET='<real value>' \
+       REFRESH_TOKENS_SECRET='<real value>'
+   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
+     bao kv patch -mount=secret versola/vps/central \
+       POSTGRES_PASSWORD='<real password>' CLIENT_SECRETS_SECRET='<real value>' \
+       EDGE_PUBLIC_JWK='<real public JWK, single-line JSON>' JWKS_JSON='{"keys":[<real auth public JWK>]}' \
+       CENTRAL_RESOURCE_SECRET='<real value>' \
+       UTILITY_CLIENT_PUBLIC_JWK='<public half of the existing utils key, single-line JSON>'
+   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
+     bao kv patch -mount=secret versola/vps/edge \
+       POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>' \
+       EDGE_TOKEN_ENC_KEY='<real 32-byte base64url value>'
+   ```
+3. Run the same `versola configure vps …` again — it now resolves the real values into the bundle — then
+   `versola migrate` and `versola up`.
+
+With `--setup-openbao` nothing is stored before you do it: provision OpenBao by hand, write the real
+values with `bao kv put` (a path's very first write — `kv patch` fails on a path that does not exist yet),
+then `configure`.
+
+If containers named `versola-auth`, `versola-central` or `versola-edge` already run under a different
+Compose project (the vps compose file is always project `versola-vps`), the first `configure`/`up` fails
+with a container-name conflict. Stop and remove those containers by name first; nothing stateful lives in
+them (OpenBao's volume is external).
+
+### Running OpenBao yourself (`--setup-openbao`)
+
+`configure vps` and `bootstrap vps` accept `--setup-openbao`: the CLI then never calls OpenBao's admin
+API and expects AppRole credentials stored beforehand with `versola secrets login vps`. Unsealing after
+a restart is then yours too.
+
+TLS is disabled (see `openbao.hcl.template`) but `bao`'s own default is https, so `BAO_ADDR` must be set
+explicitly or every command fails with "server gave HTTP response to HTTPS client". With a small helper
+(address `127.0.0.1:8200` on `vps`; `BAO_TOKEN` is passed through when set):
+
+```bash
+bao() { docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 ${BAO_TOKEN:+-e BAO_TOKEN} versola-openbao-vps bao "$@"; }
+
+# 1. Initialize (first time only). Save BOTH the unseal key and the root token.
+bao operator init -key-shares=1 -key-threshold=1
+# 2. Unseal -- again after every container start or recreation.
+bao operator unseal <unseal key>
+
+# 3-4. KV v2 and AppRole (need the root token).
+export BAO_TOKEN=<root token>
+bao secrets enable -path=secret kv-v2
+bao auth enable approle
+
+# 5. A policy scoped to this target's own secrets only.
+bao policy write versola-vps - <<'EOF'
+path "secret/data/versola/vps/*" {
+  capabilities = ["create", "read", "update"]
+}
+EOF
+
+# 6. An AppRole role bound to that policy (long-lived credential for an unattended tool).
+bao write auth/approle/role/versola-vps \
+  token_policies="versola-vps" token_ttl=1h token_max_ttl=4h secret_id_ttl=0 token_num_uses=0
+
+# 7. The credentials versola-cli needs.
+bao read auth/approle/role/versola-vps/role-id
+bao write -f auth/approle/role/versola-vps/secret-id
+```
+
+On Windows PowerShell, write the policy to a local file first with `-Encoding ascii` (the default
+`utf8` adds a BOM that breaks OpenBao's HCL parser with "illegal char" at 1:1), `docker cp` it in and run
+`bao policy write versola-vps <path>`.
+
+Then store the credentials on the machine that runs `versola configure` (the server itself, for `vps`).
+`<secret-id>` is a separate masked prompt, not an argument, so it never lands in shell history or `ps`:
+
+```bash
+versola secrets login vps http://127.0.0.1:8200 <role-id>
+```
+
+### The secret schema (adding a secret)
+
+`scripts/gen-env.scala` declares every secret in one list, `SecretSchema.specs`, and writes it beside the
+configs as `secrets.schema.json` (one per target; no values, so it needs no special permissions).
+`versola-cli` uses it to find the secrets a new version needs that the store does not have yet.
+
+Each entry has:
+
+| Field | Meaning |
+|---|---|
+| `name`, `services` | what the secret is called and which services receive it. A value shared by several services is listed once; the same name in several entries is *separate* values (`k8s` has a `POSTGRES_PASSWORD` entry per service), so key a secret by `(name, service)`, never by name alone. `utils` is the holder of the `utils` client's private key, stored under `secret/versola/<target>/utils` |
+| `type`, `size` | the shape, a promise about every value the store may hold, made only where the services enforce it. `base64url`: URL-safe base64 of exactly `size` bytes, as the `Secret.Bytes16`/`Bytes32` decoders require (written without padding, accepted with `=` padding — validate the decoded length, not the characters). `rsa-private-key`: PKCS#8 in standard base64, any modulus size. `signing-private-key`: PKCS#8 in standard base64, RSA (any modulus size) or EC (what `gen-env` generates), for `JWT_PRIVATE_KEY`. `opaque`: no shape or size, for values an operator can set (`POSTGRES_PASSWORD`, `ADMIN_BOOTSTRAP_PASSWORD`) and values decoded as a plain `Secret` of any length (`ACCOUNT_RESOURCE_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_INTERNAL_SECRET`) |
+| `group` | secrets that only work as a set (e.g. a signing key and the public JWKS carrying it); one `onMissing` for all members: take all or none |
+| `onMissing` | what to do when the store lacks it. `generate`; `generate-on-first-install-only`, for a value something already depends on, so missing it on an upgrade is an error — either something outside the store holds it (`POSTGRES_PASSWORD`; the `utils` key pair, whose private half loadgen and `versola-cli` hold) or it protects stored data (`PASSWORDS_SECRET`, `REFRESH_TOKENS_SECRET`, `CLIENT_SECRETS_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_TOKEN_ENC_KEY`, the JWT and edge key pairs); or `external`, supplied by the operator |
+| `file` | where a value is written when it is not in a `*.generated-secrets.env` |
+| `since` | the schema revision in which the entry appeared (everything the schema started with is 1) |
+
+On `vps` `POSTGRES_PASSWORD` is one value for all three services; the users and URLs are separate flags
+and are not checked.
+
+**Revision.** The schema has its own revision, `SecretSchema.Revision` (`"revision"` at the top of
+`secrets.schema.json`; not `schemaVersion`, which is the version of the file's *format*). It is how
+`versola-cli` tells, on an upgrade, a secret that is new in this version (generate it) from one that was
+lost from the store (for `generate-on-first-install-only`, stop). A reader treats a file without
+`revision`/`since` as revision 1 / since 1. The revision is one number per file, shared by all targets, and
+the consumer records the revision it last applied. Members of a group share one `since`; removing or
+renaming a secret is not expressed by `since`.
+
+**Adding a secret takes five edits that must agree:**
+
+1. a `SecretSpec` in `SecretSchema.specs`;
+2. raise `Revision` by one and give the new secret `since = Revision`. If you forget (for a
+   `generate-on-first-install-only` secret), it looks like one that always existed and every upgrade
+   refuses to continue on it as "lost" — a safe failure, never a silently regenerated value, but it
+   fails every upgrade until fixed;
+3. a `secretField`/`secretKeyField` placeholder in the service's config;
+4. an entry in that service's `writeGeneratedSecrets` list;
+5. for `k8s`, `versola.requiredSecretVars` in `k8s/versola/templates/_helpers.tpl`.
+
+`gen-env` stops when the keys it writes differ from the schema; `sbt tools/test` covers the schema itself
+(including that every `since` is within `1..Revision`) and `.github/scripts/check-secret-schema.sh` runs
+the generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
+
+### How the CLI applies the schema
+
+Before writing anything, `configure` (so also `bootstrap`, and `rollout` for the version it moves to)
+builds a plan from three facts: the schema, what OpenBao holds, and the schema `revision` this machine
+last deployed (recorded in `~/.versola/active/state.json`). A problem in the plan stops the run with
+nothing written. A stored value always wins; the plan only decides what to do about a missing one. A
+`generate` secret is generated whenever it is missing and an `external` one is reported missing; only
+`generate-on-first-install-only` secrets depend on the state:
+
+- **first install** (no record here, OpenBao empty): everything is generated.
+- **upgrade** (record here, OpenBao not empty): a missing secret is generated only if it is new, i.e.
+  its `since` is above the recorded revision; otherwise it is "lost" and the run stops — a fresh value
+  would make stored data unreadable.
+- **alarm** (record here, OpenBao empty) and **unknown** (no record here, OpenBao not empty): a missing
+  one stops the run. `unknown` is also what a reinstall sees when OpenBao's volume outlived `uninstall`.
+- **installing** (an earlier first install here did not finish): continues it; a half-written key
+  group is generated again as a whole.
+- **local**: throwaway, anything missing is generated.
+
+A secret listed for several services is one value: stored copies that differ stop the run, a copy
+missing where others are stored is filled from them. A group is taken whole or not at all; a group
+stored only in part stops the run, unless it was left half-written by an unfinished first install or
+is new since the deployed revision (then it is generated again whole). The `utils` key pair is outside
+the plan (it has its own path and flow, see [How it works](#how-it-works)).
+
+`versola secrets plan <target> <version>` prints the plan without applying it (read-only, non-zero exit
+on problems, `--json` for scripts, never a value). **Run it before upgrading a production
+deployment.** Escape hatches, on `configure`, `bootstrap` and `rollout`: `--generate-missing NAME,...`
+(also on `secrets plan`, to preview it) lets the named secrets be generated although the plan would stop
+(a key group only if every member is named), and `--allow-legacy-secrets` settles a release without
+`secrets.schema.json` by the old rule — anything missing is generated — which is unsafe once OpenBao
+holds secrets.
+
+Versola's secret values are never printed by the CLI, only names and decisions. Two things are, by
+design: OpenBao's own AppRole `role-id`/`secret-id`, on every `configure` and on every `rollout` /
+`rollout --abort` step that prepares a version (not with `--setup-openbao`), and, on the first vps
+`configure` against a new OpenBao, the Postgres role's password in the `CREATE ROLE`/`ALTER ROLE`
+statements. For k8s a way to print values may be added behind an explicit flag; it is not implemented.
+
+The state file is in layout 4 since `versola-cli` 0.2.10 (2 added the revision, 3 the Postgres host and
+what a rolling upgrade records, 4 `--postgres-db`/`--postgres-ca`). An older CLI cannot read it and
+stops with a "newer schema" error — copy `state.json` before the first run of a newer CLI if you may go
+back. Details and examples: `versola-cli`'s README, "Secrets".
+
+Not covered yet: the record and the "installing" mark live per machine (a second machine running
+`configure` for the same OpenBao sees `unknown`); a soft-deleted KV v2 secret counts as missing; after
+an interrupted first install followed by `uninstall` on vps, half-written key groups stop `configure`
+and OpenBao has to be cleaned by hand (`uninstall` leaves its volume, `versola-openbao-file-vps`).
+
+---
+
+## CI/CD pipeline
+
+`.github/workflows/ci-cd.yml`:
+
+1. **On every push and PR to `main`** — builds and tests (`build` job).
+2. **On a published release** — builds and pushes the images to
+   `ghcr.io/versolauth/`, tagged with the release tag verbatim (no `v`):
+   `versola-auth`, `versola-central`, `versola-edge`, and `versola-tools`, which
+   also carries this release's admin console (`central-ui` is built in the
+   `docker-tools` job) and every service's migrations.
+3. **Manually (`workflow_dispatch`)** with a `test_tag` input — the same image
+   builds, published under that tag, for trying a build on a server without
+   cutting a release. The tag can't be `latest` or an existing git tag.
+
+Nothing here deploys: production is updated with `versola-cli` from the server
+itself — see [`deploy.md`](deploy.md#deploying-a-new-version).

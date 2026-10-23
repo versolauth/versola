@@ -75,18 +75,71 @@ object AccountSettingsEdgeSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         stale <- login(s, auth)
-        caller <- login(s, auth)
+        caller <- loginSensitive(s, auth)
         result <- auth.edgeRevokeAccountSession(Some(caller.accessToken), stale.sessionId)
         remaining <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formItems("sessions"))
       yield assertTrue(result.status == Status.NoContent) &&
         assertTrue(!remaining.exists(session => str(session, "id").contains(stale.sessionId)))
           .label("the revoked session must be gone from the page")
     },
+    test("asks a caller whose sign-in is not strong enough to sign in again before changing who can sign in") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        stale <- login(s, auth)
+        caller <- login(s, auth)
+        token = Some(caller.accessToken)
+        revoke <- auth.edgeRevokeAccountSession(token, stale.sessionId)
+        delete <- auth.edgeDeleteAccountPasskey(token, "AAAA")
+        start <- auth.edgeStartPasskeyEnrollment(token)
+        remaining <- auth.edgeAccountPage(token).flatMap(_.formItems("sessions"))
+        challenges = List(revoke, delete, start).map(_.response.headers.get("WWW-Authenticate"))
+      yield assertTrue(List(revoke, delete, start).forall(_.status == Status.Unauthorized))
+        .label("each of the three calls is answered with a challenge") &&
+        assertTrue(challenges.forall(_.exists(_.contains("""error="insufficient_user_authentication""""))))
+          .label(s"the challenge is RFC 9470's: $challenges") &&
+        assertTrue(challenges.forall(_.exists(_.contains("""acr_values="sensitive"""")))) &&
+        assertTrue(challenges.forall(_.exists(!_.contains("max_age"))))
+          .label("a sign-in that has just happened is not asked to be fresher: only what is missing is named") &&
+        assertTrue(remaining.exists(session => str(session, "id").contains(stale.sessionId)))
+          .label("the session survives the refused revocation")
+    },
+    test("renaming a passkey and reading the page ask for nothing more than a plain sign-in") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        rename <- auth.edgeRenameAccountPasskey(Some(caller.accessToken), "AAAA", Some("Renamed"))
+        page <- auth.edgeAccountPage(Some(caller.accessToken))
+      yield assertTrue(rename.status != Status.Unauthorized, page.status == Status.Ok)
+    },
+    test("rejects a password change when the current password is wrong") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), "WrongPass1!", "NewPass-Changed-1!")
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("current_password_incorrect"))
+    },
+    test("rejects a new password the tenant's policy does not allow") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, "short")
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_not_allowed"))
+    },
+    test("rejects a reused password on change") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, s.password)
+        refusal <- result.json
+      yield assertTrue(result.status == Status.BadRequest, str(refusal, "error").contains("password_reused"))
+    },
     test("enrolls, renames and deletes a passkey through the full ceremony") {
       val name = "E2E Edge Key"
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        caller <- login(s, auth)
+        caller <- loginSensitive(s, auth)
         token = Some(caller.accessToken)
         started <- auth.edgeStartPasskeyEnrollment(token)
         ceremony <- enrollment(started)
@@ -108,6 +161,18 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(!afterDelete.exists(passkey => str(passkey, "id").contains(credential.id)))
           .label("the deleted passkey must be gone from the page")
     },
+    test("changes the password when the current password is correct") {
+      val changed = "NewPass-Changed-1!"
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, changed)
+        restorer <- login(s.copy(password = changed), auth)
+        restored <- auth.edgeChangePassword(Some(restorer.accessToken), changed, s.password)
+      yield assertTrue(result.status == Status.NoContent) &&
+        assertTrue(restored.status == Status.NoContent)
+          .label(s"the shared user's password must be restored, got: ${restored.status} ${restored.body}")
+    },
   ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
 
   /** Edge authorizes against the roles baked into the access token, and the shared e2e user
@@ -125,6 +190,37 @@ object AccountSettingsEdgeSpec extends E2ESpec:
     * the access token edge authenticates, and the `sid` it will inject as the caller's session.
     */
   private def login(setup: Flows.Setup, auth: OAuthClient): Task[Caller] =
+    signIn(setup, auth).map(_._1)
+
+  /** [[login]] and then a step-up for [[Acr.Sensitive]], as the page's sign-in does when edge asks for it:
+    * the endpoints that change who can sign in demand it, seeded by bootstrap. The flow of the shared user
+    * takes the password inline, which is asked for on its own for a user the conversation already knows.
+    */
+  private def loginSensitive(setup: Flows.Setup, auth: OAuthClient): Task[Caller] =
+    for
+      (_, first) <- signIn(setup, auth)
+      started <- auth.authorizeRaw(
+        clientId = setup.clientId,
+        redirectUri = setup.redirectUri,
+        prompt = Some("login"),
+        acrValues = Some(Acr.Sensitive),
+        idTokenHint = Some(first),
+      ).assertChallengeRedirect
+      cookie = started.conversationCookie.get
+      challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Password)
+      code <- auth.submitPassword(cookie, setup.password, challenge.csrf).assertRedirect(auth, cookie)
+      token <- auth.token(
+        code,
+        started.verifier,
+        clientId = Some(setup.clientId),
+        clientSecret = Some(setup.clientSecret),
+        redirectUri = Some(setup.redirectUri),
+      ).success
+      sessionId <- sessionIdOf(token)
+    yield Caller(token.accessToken, sessionId)
+
+  /** The caller of a plain sign-in, and the id token the step-up names the user by. */
+  private def signIn(setup: Flows.Setup, auth: OAuthClient): Task[(Caller, String)] =
     for
       authorize <- auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri))
         .assertChallengeRedirect
@@ -140,7 +236,8 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         redirectUri = Some(setup.redirectUri),
       ).success
       sessionId <- sessionIdOf(token)
-    yield Caller(token.accessToken, sessionId)
+      idToken <- ZIO.fromOption(token.idToken).orElseFail(RuntimeException("token response carries no id_token"))
+    yield (Caller(token.accessToken, sessionId), idToken)
 
   private def sessionIdOf(token: TokenResult.Success): Task[String] =
     for

@@ -19,13 +19,13 @@ object AuthorizationPresetsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends AuthorizationPresetsSyncClient:
-    private val PresetsURL = config.central.url / "configuration" / "auth-request-presets" / "sync"
+    private val PresetsURL = config.central.url / "edge" / "sync" / "auth-request-presets"
 
     override def getAll: Task[Map[PresetId, AuthorizationPreset]] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(PresetsURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetAuthorizationPresetsSyncResponse]))
+        response <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetAuthorizationPresetsSyncResponse]))
       yield response.presets.map(x => x.id -> x).toMap
 
     private case class GetAuthorizationPresetsSyncResponse(

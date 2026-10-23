@@ -2,6 +2,7 @@ package versola.e2e.flows.consent
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Header
 import zio.test.*
 
 /** Consent gate between a satisfied authentication and the authorization code. */
@@ -84,9 +85,12 @@ object ConsentFlowSpec extends E2ESpec:
         assertTrue(consent.html.contains("email"))
           .label("the consent screen must list the requested 'email' scope") &&
         assertTrue(consent.html.contains("consent-scopes-container"))
-          .label("the requested scopes must be rendered in a scrollable region") &&
-        assertTrue(consent.html.contains("overflow-y: auto"))
-          .label("the scopes region must enable vertical scrolling when it overflows")
+          .label("the requested scopes must be rendered in their own region") &&
+        // A box that scrolls inside the card hides the scopes below its edge on screens whose scrollbars are
+        // invisible, and a consent screen must show everything it asks for: the card grows with the list and
+        // the page scrolls instead.
+        assertTrue(!consent.html.contains("overflow-y: auto"))
+          .label("the scopes region must not hide some scopes behind a scroll box")
     },
     test("the consent screen shows all client scopes when scope is omitted") {
       for
@@ -180,6 +184,20 @@ object ConsentFlowSpec extends E2ESpec:
         step <- auth.getChallenge(cookie)
       yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
         .label("a denied grant must not issue an authorization code")
+    },
+    test("the access-denied screen is rendered in the language the user switched the consent screen to") {
+      for
+        (s, auth) <- setup(Flows.Id.Consent)
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s)
+        denied <- auth.denyConsent(cookie, consent.csrf, uiLocale = Some("ru"))
+        next = denied.response.header(Header.Location).map(_.url.queryParams.getAll("ui_locale")).getOrElse(Nil)
+        step <- auth.getChallenge(cookie, uiLocale = next.headOption)
+      yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
+        .label("a denied grant must still render access-denied") &&
+        assertTrue(step.html.contains("\"locale\":\"ru\""))
+          .label("access-denied must render in the language chosen on the consent screen") &&
+        assertTrue(next == List("ru"))
+          .label("the redirect after the submit must carry the chosen language to the next page")
     },
     test("a partial grant narrows the scope carried by the issued token") {
       for

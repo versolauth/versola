@@ -23,6 +23,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     authMethod = AuthMethod.client_secret,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   private val native = CreateNativeClientRequest(
@@ -37,6 +38,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     authMethod = AuthMethod.none,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   private val service = CreateServiceClientRequest(
@@ -65,7 +67,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       permissions = Set.empty[Permission],
       theme = "default",
       authFlow = request.authFlow,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -88,6 +89,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       template = request.template,
       createdAt = java.time.Instant.EPOCH,
       applicationType = request.applicationType.getOrElse(ApplicationType.web),
+      themeOverrides = None,
     )
 
   def spec = suite("typed client registration rules")(
@@ -174,7 +176,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
         assertTrue(
           fixed.redirectUris.isEmpty,
           fixed.authFlow.isEmpty,
-          fixed.registrationFlow.isEmpty,
           fixed.consentFlow.isEmpty,
           fixed.refreshTokenTtl.isEmpty,
           !fixed.requirePushedAuthorizationRequests,

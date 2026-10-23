@@ -5,6 +5,7 @@ import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   ChallengeSettingsService,
+  EmailRegistration,
   MtlsCertificateEncoding,
   OtpChallengeRepository,
   OtpTemplateChannel,
@@ -34,10 +35,9 @@ import versola.central.configuration.clients.{
   PresetId,
   PrimaryAuthFlow,
   PrimaryCredential,
-  RegistrationFlow,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -63,6 +63,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
+import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -253,6 +254,7 @@ object BootstrapService:
     "DELETE" -> "/settings/passkeys",
     "POST" -> "/settings/passkeys/register/start",
     "POST" -> "/settings/passkeys/register/finish",
+    "PATCH" -> "/settings/password",
   )
 
   /** Endpoints of the account page. Granted to every seeded role - each of them belongs to
@@ -285,7 +287,44 @@ object BootstrapService:
   private[versola] def accountAllowExpression(method: String, path: String): Option[String] =
     Option.when(method == "DELETE" && path == "/settings/sessions")("token.sid != request.body.targetSessionId")
 
+  /** The class `auth` defines itself (`AcrResolutionService.Sensitive`): the strongest sign-in the user has,
+    * a passkey if they have one. Which factor that is depends on the user, so it is named here and resolved
+    * by `auth`, not listed in the tenant's vocabulary. */
+  private val sensitiveAcr = "sensitive"
+
+  /** How old the sign-in behind a request to a step-up endpoint may be. */
+  private val accountStepUpMaxAgeSeconds = 300
+
+  /** The calls that change who can sign in to the account or who is signed in: removing a passkey, starting
+    * to add one, and signing another session out. Seeded asking for [[sensitiveAcr]], so a session that
+    * only passed a one-time code cannot do them for an account that has a passkey. Reading the page and
+    * renaming a passkey change neither, the second half of an enrollment is bound by the ticket its first
+    * half returned, and a password change asks for the current password, which is what an attacker holding only a
+    * one-time code lacks, so none of those asks. An operator can change any of this; a restart keeps what they set. */
+  private val accountStepUpEndpoints: Set[(String, String)] = Set(
+    "DELETE" -> "/settings/sessions",
+    "DELETE" -> "/settings/passkeys",
+    "POST" -> "/settings/passkeys/register/start",
+  )
+
+  /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
+    * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
+    * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
+    * operator turns on for it. */
+  private[versola] def mergeAccountEndpoints(
+      desired: List[ResourceEndpointRecord],
+      existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
+  ): List[ResourceEndpointRecord] =
+    desired.map: endpoint =>
+      existingById.get(endpoint.id).fold(endpoint): current =>
+        endpoint.copy(
+          stepUpCondition = current.stepUpCondition,
+          stepUpAcr = current.stepUpAcr,
+          maxAge = current.maxAge,
+        )
+
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
+    val stepUp = accountStepUpEndpoints.contains(method -> path)
     ResourceEndpointRecord(
       id = endpointId(method, path),
       path = path,
@@ -293,9 +332,9 @@ object BootstrapService:
       fetchUserInfo = false,
       allowExpression = accountAllowExpression(method, path),
       inject = accountCallerInjects(method, path),
-      stepUpCondition = None,
-      stepUpAcr = None,
-      maxAge = None,
+      stepUpCondition = Option.when(stepUp)("true"),
+      stepUpAcr = Option.when(stepUp)(sensitiveAcr),
+      maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
     )
 
   private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
@@ -392,6 +431,8 @@ object BootstrapService:
         endpointId("GET", "/users/passkeys"),
         endpointId("GET", "/users/roles"),
         endpointId("GET", "/users/sessions"),
+        endpointId("GET", "/users/user-agents"),
+        endpointId("GET", "/users/refresh-tokens"),
       ),
     ),
     (
@@ -400,11 +441,14 @@ object BootstrapService:
       Set(
         endpointId("POST", "/users"),
         endpointId("PATCH", "/users"),
+        endpointId("DELETE", "/users"),
         endpointId("PATCH", "/users/claims"),
         endpointId("PATCH", "/users/passkeys"),
         endpointId("DELETE", "/users/passkeys"),
         endpointId("PATCH", "/users/roles"),
         endpointId("DELETE", "/users/sessions"),
+        endpointId("DELETE", "/users/user-agents"),
+        endpointId("DELETE", "/users/refresh-tokens"),
         endpointId("POST", "/users/limits/reset"),
         endpointId("POST", "/users/password/reset"),
       ),
@@ -422,6 +466,10 @@ object BootstrapService:
       localized("View forms", "Просмотр форм"),
       Set(
         endpointId("GET", "/configuration/forms"),
+        endpointId("GET", "/configuration/forms/previews"),
+        endpointId("GET", "/configuration/themes"),
+        endpointId("GET", "/configuration/themes/presets"),
+        endpointId("POST", "/configuration/themes/css"),
       ),
     ),
     (
@@ -430,6 +478,9 @@ object BootstrapService:
       Set(
         endpointId("PUT", "/configuration/forms"),
         endpointId("PUT", "/configuration/forms/active"),
+        endpointId("POST", "/configuration/themes"),
+        endpointId("PUT", "/configuration/themes"),
+        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
@@ -452,7 +503,6 @@ object BootstrapService:
       localized("View tenants", "Просмотр тенантов"),
       Set(
         endpointId("GET", "/configuration/tenants"),
-        endpointId("GET", "/configuration/themes"),
       ),
     ),
     (
@@ -462,9 +512,6 @@ object BootstrapService:
         endpointId("POST", "/configuration/tenants"),
         endpointId("PUT", "/configuration/tenants"),
         endpointId("DELETE", "/configuration/tenants"),
-        endpointId("POST", "/configuration/themes"),
-        endpointId("PUT", "/configuration/themes"),
-        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
@@ -738,13 +785,21 @@ object BootstrapService:
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
-  private def defaultChallengeSettings(
+  /** The authentication context classes a new tenant starts with, each named for the factor it requires: `otp` asks for
+    * a one-time code and `passkey` for a passkey. A session that already passed the factor satisfies the class; a
+    * client that wants it asked for again on every request says `prompt=login`. */
+  private[versola] val DefaultAcrVocabulary: Map[String, List[String]] =
+    Map("otp" -> List("otp"), "passkey" -> List("passkey"))
+
+  private[versola] def defaultChallengeSettings(
       tenantId: TenantId,
       passkeyConfig: CentralConfig.PasskeyConfig,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      allowedPrefixes = List.empty,
+      phoneRegions = List.empty,
+      emailRegistration = EmailRegistration.Closed,
+      defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
       submissionLimits = SubmissionLimits.recommended,
       otpLength = 6,
       otpResendAfter = 60,
@@ -759,7 +814,7 @@ object BootstrapService:
       sessionIdleTtlSeconds = None,
       userAgentTtlSeconds = 15552000,
       ipHeader = "X-Real-IP",
-      acrVocabulary = None,
+      acrVocabulary = Some(DefaultAcrVocabulary),
       postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
@@ -769,15 +824,18 @@ object BootstrapService:
       signingKeyId = None,
       clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
       securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
+      logoLight = None,
+      logoDark = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */
   private val defaultThemeId = "default"
 
-  /** Default locales seeded for the console. */
-  private val defaultLocales: Vector[LocaleRecord] = Vector(
+  /** Default locales seeded for the console. A locale's name is written in that language (`Русский`, not
+    * `Russian`): the login forms' language selector shows it as it is, so a visitor can find their own. */
+  private[versola] val defaultLocales: Vector[LocaleRecord] = Vector(
     LocaleRecord("en", "English", isDefault = true, active = true),
-    LocaleRecord("ru", "Russian", isDefault = false, active = true),
+    LocaleRecord("ru", "Русский", isDefault = false, active = true),
   )
 
   /** Default forms loaded from classpath resources, with their backend properties. */
@@ -845,6 +903,7 @@ object BootstrapService:
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
     "GET" -> "/configuration/forms",
+    "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
     "PUT" -> "/configuration/forms/active",
     "GET" -> "/configuration/jwks",
@@ -881,12 +940,15 @@ object BootstrapService:
     "PUT" -> "/configuration/tenants",
     "DELETE" -> "/configuration/tenants",
     "GET" -> "/configuration/themes",
+    "GET" -> "/configuration/themes/presets",
+    "POST" -> "/configuration/themes/css",
     "POST" -> "/configuration/themes",
     "PUT" -> "/configuration/themes",
     "DELETE" -> "/configuration/themes",
     "GET" -> "/users",
     "POST" -> "/users",
     "PATCH" -> "/users",
+    "DELETE" -> "/users",
     "PATCH" -> "/users/claims",
     "GET" -> "/users/passkeys",
     "PATCH" -> "/users/passkeys",
@@ -895,6 +957,10 @@ object BootstrapService:
     "PATCH" -> "/users/roles",
     "GET" -> "/users/sessions",
     "DELETE" -> "/users/sessions",
+    "GET" -> "/users/user-agents",
+    "DELETE" -> "/users/user-agents",
+    "GET" -> "/users/refresh-tokens",
+    "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
   )
@@ -910,6 +976,24 @@ object BootstrapService:
     * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
     * secret this client replaces could read every one of them.
     */
+  /** `default` is a visual theme: the built-in `versola` base, no overrides, no CSS of its own. The foundation stylesheet
+    * every token theme is composed on is not stored in it (it is a resource of `util`, see `ThemeCss.baseStylesheet`).
+    * A stylesheet `default` row is what earlier versions seeded from `common.css` at every start, so it is converted
+    * and nothing is lost; a token row is the administrator's and is left alone.
+    */
+  private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None, variables = None))
+    for
+      _ <- ZIO.logInfo("Seeding default theme...")
+      themes <- themeRepo.getAll
+      _ <- themes.find(_.id == defaultThemeId) match
+        case None => themeRepo.create(ThemeRecord(defaultThemeId, "", None, tokens))
+        case Some(theme) if theme.tokens.isEmpty =>
+          ZIO.logInfo("Converting the default theme from a stylesheet to a visual theme (base versola)") *>
+            themeRepo.update(ThemeRecord(defaultThemeId, "", theme.tenantId, tokens))
+        case Some(_) => ZIO.unit
+    yield ()
+
   private[versola] val utilityClientPermissions: Set[Permission] = Set(
     Permission("oauth:read"),
     Permission("oauth:manage"),
@@ -1034,12 +1118,12 @@ object BootstrapService:
       * revokes) later survive a restart.
       */
     private def seedRegistrationRole(tenantId: TenantId): Task[Unit] =
-      roleRepo.findRole(tenantId, RegistrationFlow.defaultRoleId).flatMap:
+      roleRepo.findRole(tenantId, ChallengeSettingsRecord.DefaultRoleId).flatMap:
         case Some(_) => ZIO.unit
         case None =>
           roleRepo.upsertRole(
             tenantId,
-            RegistrationFlow.defaultRoleId,
+            ChallengeSettingsRecord.DefaultRoleId,
             localized("User", "Пользователь"),
             List(accountPermission),
           )
@@ -1092,17 +1176,7 @@ object BootstrapService:
       systemSettingsRepo.getAll.unit.catchAll: _ =>
         systemSettingsRepo.upsert(SystemSettingsRecord.default)
 
-    private def seedTheme(): Task[Unit] =
-      for
-        _ <- ZIO.logInfo("Seeding default theme from resources...")
-        themes <- themeRepo.getAll
-        current = themes.find(_.id == defaultThemeId)
-        css <- readResource("forms/common.css")
-        _ <- current match
-          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
-          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
-          case Some(_) => ZIO.unit
-      yield ()
+    private def seedTheme(): Task[Unit] = seedDefaultTheme(themeRepo)
 
     private def seedLocales(): Task[Unit] =
       for
@@ -1203,7 +1277,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = Some(authFlow),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
@@ -1228,6 +1301,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // Issued by central: `register` takes the profile enforcement as it is, which for the one
       // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
@@ -1252,7 +1326,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = Some(Patch.Modified(authFlow)),
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
@@ -1283,6 +1356,7 @@ object BootstrapService:
                   if credential.issueEdgeClientCertificate then None
                   else Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1319,7 +1393,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -1344,6 +1417,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = false,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1374,7 +1448,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = None,
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
@@ -1395,6 +1468,7 @@ object BootstrapService:
                 edgeSigningKey = None,
                 edgeClientCertificate = None,
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1457,7 +1531,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the
@@ -1560,15 +1634,7 @@ object BootstrapService:
             )
           case Some(existing) =>
             val existingById = existing.endpoints.map(endpoint => endpoint.id -> endpoint).toMap
-            // The catalog, its injects and its access rules belong to bootstrap and have to
-            // converge on every start; step-up policy is operator-tuned and is kept as found.
-            val mergedEndpoints = desiredEndpoints.map: desired =>
-              existingById.get(desired.id).fold(desired): current =>
-                desired.copy(
-                  stepUpCondition = current.stepUpCondition,
-                  stepUpAcr = current.stepUpAcr,
-                  maxAge = current.maxAge,
-                )
+            val mergedEndpoints = mergeAccountEndpoints(desiredEndpoints, existingById)
             val staleEndpoints = existingById.keySet -- desiredEndpoints.map(_.id).toSet
             val desiredUrl = ResourceUri(bootstrapConfig.authAdditionalUrl.encode)
             val needsUpdate = existing.resource != desiredUrl || existing.endpoints != mergedEndpoints

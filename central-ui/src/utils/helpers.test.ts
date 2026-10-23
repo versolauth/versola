@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
+import { createDefaultAuthFlow, createDefaultConsentFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
 
 const WITH_PARTNER = ['default', 'partner'];
 
@@ -8,6 +8,12 @@ describe('isPartnerClient', () => {
     expect(isPartnerClient({ consentFlow: createDefaultConsentFlow() })).toBe(true);
     expect(isPartnerClient({ consentFlow: null })).toBe(false);
     expect(isPartnerClient({})).toBe(false);
+  });
+});
+
+describe('createDefaultConsentFlow', () => {
+  it('remembers a grant for 90 days, one of the presets the wizard offers', () => {
+    expect(createDefaultConsentFlow().rememberDurationDays).toBe(90);
   });
 });
 
@@ -41,9 +47,5 @@ describe('default sign-in flows', () => {
       { type: 'otp', required: true },
       { type: 'passkeyEnroll', required: false },
     ]);
-  });
-
-  it('offers a passkey after the OTP when registering', () => {
-    expect(createDefaultRegistrationFlow().steps).toEqual([{ type: 'otp' }, { type: 'passkeyEnroll' }]);
   });
 });

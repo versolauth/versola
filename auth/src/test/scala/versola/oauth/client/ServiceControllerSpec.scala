@@ -3,6 +3,7 @@ package versola.oauth.client
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.jwks.JwksService
+import versola.oauth.mtls.EdgeCertificateTrust
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.EnvName
@@ -49,6 +50,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OAuthConfigurationService](configuration) ++
                 ZEnvironment[UserRepository](userRepository) ++
                 ZEnvironment[JwksService](jwksService) ++
+                ZEnvironment[EdgeCertificateTrust](EdgeCertificateTrust.none) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment(TestEnvConfig.coreConfig) ++
                 tracing,

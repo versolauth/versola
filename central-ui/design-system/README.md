@@ -1,0 +1,451 @@
+# Admin console design system
+
+The rules, tokens, patterns and components of the admin console (`central-ui/src`). Read this
+before changing a console screen; `.claude/rules/frontend.md` makes it mandatory. The login forms
+(`central-ui/forms`) share the palette's neutrals and accent but are a separate stack with their
+own rules.
+
+Files next to this one:
+
+- `specimen.html`: a static page that shows every token and the main patterns in both themes.
+  Open it in a browser (no server needed); the switch in its sidebar footer flips the page theme.
+  Its token block is a copy of `index.html`'s; keep it in step.
+- `contrast.mjs`: the WCAG check over the tokens in `index.html`. `npm run design:contrast`
+  fails when a required pair is below its threshold; `-- --md` prints the full table.
+
+## Principles
+
+1. **One brand.** The console, the login forms (`forms/common.css`, the `default` theme) and
+   the website (`versola.kz/design`, `public/css/tokens.css`) share one set of tokens: warm
+   neutrals (near-white page, white sheet, soft filled fields, ink text), the petrol brand colour
+   (`#155e75`) and the system UI face with JetBrains Mono for code. **Ink primary, brand accent:**
+   the primary button is ink (inverse in dark), the brand colour is the accent for links, IDs,
+   group labels, the active nav item and focus. No gradients. Where a site value cannot meet a
+   contrast rule the console departs from it; the departures are listed under Tokens.
+2. **Tokens, never literals.** Every colour is a custom property defined once per theme in
+   `index.html`; every corner is a `--radius-*` token, every shadow a `--shadow-*` token. A
+   component never writes a hex, `rgb()` or `white`. A new colour is a new token with a value in
+   both themes, a line in the table below, and a green `design:contrast`.
+3. **View first.** A record opens read-only (title, meta, one card per group with its own Edit,
+   a Fixed card, the danger card last): on a page for a large entity, in the side panel next to
+   its table for a small one. A list never edits; it opens.
+4. **One primary action per page.** The page header carries it; cards carry secondary buttons.
+5. **Same words everywhere.** A setting looks the same where it is chosen (wizard), where it is
+   read (record card) and where it is changed (group editor).
+6. **Quiet by default.** Neutral surfaces, colour only for the accent, states and danger. Hover
+   changes a border or a text colour, not the layout. No meaningless counters: a number that names
+   nothing (`3 permissions`, `(2 selected)`, `GROUP · 4`) gives way to the values themselves (up to
+   two chips and `+N`); meta chips in a panel header carry status only (`Inactive`, `Missing: ru`).
+   Filter pills carry no counts either (`All`, `Active`).
+7. **Accessible by construction.** Text 4.5:1, controls and focus 3:1, targets 24px, visible focus,
+   native elements, labels on everything, motion off under `prefers-reduced-motion`.
+
+## Tokens
+
+Defined in `index.html` under `:root[data-theme='light']` (also the bare `:root`) and
+`:root[data-theme='dark']`. They inherit into every shadow root, so `src/styles/theme.ts` defines
+only the non-colour tokens (fonts, spacing, radius, transitions).
+
+Semantic sets follow one rule: `X` is the colour on a surface (text, icon, outline, solid fill for
+danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the text on `X-subtle`,
+`X-border` is the outline of something filled with `X-subtle`.
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--bg-page` | `#faf9f7` | `#080f11` | Page background; nested panels inside a card. Dark is the forms' page: brand 10% on `#060707` |
+| `--surface` | `#ffffff` | `#1e2324` | Cards, tables, the side panel (the sheet). Dark: brand 7% on `#1f1f20` |
+| `--surface-inset` | `#f5f3ee` | `#292f31` | A panel inside a card (claims, permissions, nested rows), hovered table row, disabled button; the site's `--surface-alt` |
+| `--surface-raised` | `#ffffff` | `#262c2e` | Popovers, dropdowns, menus (with `--shadow-card`) |
+| `--sidebar-bg` | `#e2e6e4` | `#0c1416` | The sidebar: the site's `--page` tint (brand 9% on `#f6f4ef` in oklab, the header behind versola.kz) |
+| `--sidebar-hover-bg` | `#d6d9d6` | `#1b2426` | A hovered nav item (the same tint one step deeper). The active item is `--accent-subtle` / `--accent-text` with a 3px `--accent` bar on its left edge |
+| `--field` | `#f5f3ee` | `#292f31` | The fill of an input, select, textarea, the tenant selector, a code editor: the forms' soft filled field. Focus lifts the field to `--surface` with an ink border |
+| `--field-hover` | `#edeae3` | `#30383b` | A hovered field |
+| `--code-bg` | `#f5f3ee` | `#080f11` | Code blocks |
+| `--selection-bg` | `#cfe3ea` | `#2a4a54` | `::selection` |
+| `--backdrop` | `rgba(28,27,25,.5)` | `rgba(0,0,0,.6)` | Behind a dialog or the mobile drawer |
+| `--border-subtle` | `#ebe8e2` | `#2b3133` | Row dividers inside a card |
+| `--border-default` | `#e6e2d8` | `#353d3f` | Card and table outlines, dividers between sections (the site's `--line`; decorative, no contrast requirement) |
+| `--border-strong` | `#847e74` | `#7a8689` | A boundary that must be seen (3:1): a bordered control that is not an input |
+| `--border-input` | `#857e72` | `#7a8689` | The 1.5px line of inputs, selects, textareas, the secondary button, filter pills, menu buttons (3:1 on `--surface`, `--field`, `--field-hover` and `--sidebar-bg`). **Departs from the site:** its `--line-strong` (`#cfc9bb` / the forms' dark `#55535a`) is 1.6:1 / 2.1:1, below SC 1.4.11 |
+| `--text-primary` | `#1c1b19` | `#f3f2f0` | Body text, values, titles, the wordmark; the fill of the active filter pill and of the secondary button's hover border |
+| `--text-secondary` | `#55534e` | `#b4b6b8` | Labels, hints, table headers, nav items |
+| `--text-muted` | `#656460` | `#a9a9b0` | Placeholders, disabled text, the quietest text that must still be read (4.5:1 on every surface, the sidebar tint included). **Departs from the forms' `#6b6a66`** in light, which is 4.3:1 on the sidebar tint |
+| `--accent` | `#155e75` | `#8dacb8` | The brand colour as the accent: links, IDs, nav group labels, the dot of the mark, accent outlines. Dark is the forms' focus colour, `color-mix(in oklab, #155e75 50%, white)` resolved to hex (≥ 4.97:1 on every surface) |
+| `--accent-hover` | `#104c5f` | `#a3c1ca` | A hovered link |
+| `--on-accent` | `#ffffff` | `#0c1a1e` | Text and the toggle knob on `--accent` (dark: near-black on the light petrol) |
+| `--accent-subtle` | `#e1eef2` | `#1f3a42` | Accent fills: tags, the active nav item, selected rows |
+| `--accent-text` | `#114d61` | `#9fc6d2` | Text on `--accent-subtle` |
+| `--accent-border` | `#74b2c4` | `#3a5f69` | Outline of an accent-filled chip or tag, the ring of a selected (not focused) card. 2.3:1 on surfaces: never a focus indicator |
+| `--focus-ring` | `#155e75` | `#8dacb8` | The one focus indicator: `outline: 2px solid` (offset 2px around a control and around a field, -2px inside a nav or menu item). 3:1 on every surface, checked |
+| `--btn`, `--btn-hover`, `--on-btn` | `#1c1b19`, `#000000`, `#ffffff` | `#f3f2f0`, `#ffffff`, `#1c1b19` | The primary button: ink, as on the site and in the login forms; inverted in dark as the forms do. Also the active page number |
+| `--success`, `-subtle`, `-text`, `-border` | `#2a7a35`, `#e6f3e2`, `#1f5f26`, `#8ac48e` | `#62c472`, `#1a3121`, `#8bd998`, `#336b3e` | Positive state: FAPI 2.0 chip outline, "created" banner, GET badge |
+| `--warning`, `-subtle`, `-text`, `-border` | `#9a5200`, `#fbf0dc`, `#7a4100`, `#dca452` | `#e0a63a`, `#332b15`, `#efc45f`, `#7a5b1a` | Attention: secret rotation chip, drift panel, PATCH badge |
+| `--danger`, `--on-danger` | `#c0341d`, `#ffffff` | `#ff8a73`, `#1c1b19` | Destructive: danger card outline and title, invalid field border, the solid danger button |
+| `--danger-subtle`, `-text`, `-border` | `#fbeae6`, `#9c2915`, `#ec9a88` | `#3c201c`, `#ffab98`, `#80362c` | Danger fills and the outline danger button text |
+| `--info`, `-subtle`, `-text`, `-border` | same as accent | same as accent | Informational banners and badges (POST badge). Because it is the accent hue, a link inside a banner is **underlined** (`.banner a`); colour alone would not tell it from the text |
+| `--toggle-track-off`, `--toggle-knob-off` | `#7c766b`, `#ffffff` | `#7a8689`, `#f3f2f0` | A switch in the off position (on: `--accent` / `--on-accent`) |
+| `--logo-swatch-light`, `--logo-swatch-dark` | `#fffdf9`, `#1c1b19` | same | The login forms' sheet of each scheme, behind a tenant logo preview (Security › Branding); the same in both console themes because the preview shows the logo where it is seen |
+| `--select-chevron` | image | image | The `<select>` and tenant-selector chevron, drawn in `--text-secondary` (an image cannot read a `var()`) |
+| `--shadow-card` | three layers, `rgba(16,24,40,.02/.04/.09)` | `rgba(0,0,0,.2/.3/.45)` | The site's soft layered card shadow: every `.card`, menus and popovers (`--surface-raised`) |
+| `--shadow-sheet` | `0 30px 60px -24px rgba(0,0,0,.45)` | `… rgba(0,0,0,.8)` | The login sheet's shadow: the side panel |
+| `--shadow-sm` / `-md` / `-lg` | `rgba(28,27,25,…)` | `rgba(0,0,0,…)` | The older elevation steps: `-lg` for the mobile drawer, `-md` for suggestion lists |
+| `--ch-*`, `--cel-*` | GitHub Light-derived | GitHub Dark-derived | Syntax highlighting (`src/styles/code-highlight.ts`, `cel-highlight.ts`); every one passes 4.5:1 on `--code-bg` and `--bg-page` |
+
+Non-colour tokens (`src/styles/theme.ts`): `--font-family` (`system-ui, -apple-system,
+BlinkMacSystemFont, 'Segoe UI', sans-serif`: the site's and the forms' face, no webfont),
+`--font-mono` (`'JetBrains Mono', 'Fira Code', monospace`; `index.html` loads JetBrains Mono as the
+site does); `--spacing-xs` 0.25rem, `-sm` 0.5rem, `-md` 1rem, `-lg` 1.5rem, `-xl` 2rem;
+`--transition-fast` 0.15s, `-base` 0.25s, `-slow` 0.4s.
+
+Shapes: the site's rounded corners one step tighter, for the console's denser controls (the site
+and the forms use 14 / 24).
+
+| Token | Value | Use |
+|---|---|---|
+| `--radius-sm` | 8px | A small inline thing: a key cap, an inline code chip, a focus ring around a text link |
+| `--radius-md` | 12px | Fields, buttons, the tenant selector, nav items, menu items, the row menu button |
+| `--radius-inner` | 16px | A box inside a card or the panel: a menu, a popover, an editor box, a banner, a code block, a wizard section |
+| `--radius-lg` | 20px | Cards, the table card, the side panel's free edge, dialogs |
+| `--radius-pill` | 999px | Chips, tags, badges, filter options, the search field, the method badge |
+
+Type: headlines are 800 with `-0.02em` tracking (the page title at `--text-4xl`, the panel title);
+kickers (table headers, form labels, nav group labels, the tenant label) are `--text-xs`, 700,
+uppercase, `0.08em` (`0.1em` for the nav group labels, which are in `--accent`). Buttons are 700.
+
+Theme-independent scales, defined once in `index.html` (bare `:root`) and inherited everywhere:
+
+| Token | Value | Use |
+|---|---|---|
+| `--text-xs` | 0.75rem (12px) | Chips, badges, table headers, section titles, hints. **The smallest size in the console**: nothing is set below 12px |
+| `--text-sm` | 0.8125rem (13px) | Secondary text, the filter bar, a record card's subheading, IDs in meta |
+| `--text-base` | 0.875rem (14px) | Body, inputs, buttons, nav items, table cells |
+| `--text-md` | 0.9375rem (15px) | A row title in a list |
+| `--text-lg` | 1rem (16px) | A card heading, `.btn-lg` |
+| `--text-xl` | 1.125rem (18px) | An empty-state heading |
+| `--text-2xl` | 1.25rem (20px) | `.card-title`, the brand wordmark |
+| `--text-3xl` | 1.5rem (24px) | The page title below 720px |
+| `--text-4xl` | 2rem (32px) | The page title |
+| `--z-dropdown` | 20 | A menu, listbox, suggestion list or tooltip over its page |
+| `--z-backdrop` / `--z-drawer` | 150 / 200 | The mobile drawer's backdrop and the drawer; the side panel and its backdrop share these layers (the two are never open together: the sheet covers the drawer toggle) |
+| `--z-modal` | 1000 | A dialog and its backdrop (`confirm-dialog.ts`, the users' password popups) |
+| `--z-toast` | 1100 | A toast, above a dialog (reserved; nothing uses it yet) |
+
+The shared styles (`components.ts`), the shell and the shared components use the scale; the
+older screens still carry literal sizes and move to the scale as they are redesigned, except that
+every size under 12px has already been replaced by `--text-xs`.
+
+Motion: `index.html` and `theme.ts` both carry a `prefers-reduced-motion: reduce` block that
+zeroes every animation and transition (the one in `theme.ts` is needed because a document rule
+does not reach into a shadow root).
+
+Deliberate literals, the only ones in `src/`: the theme sketches in `theme-thumb.ts` and the swatches in
+`theme-token-controls.ts` draw the *login forms'* page colours (`#fffdf9` sheet, `#1c1b19` ink,
+the `color-mix` brand tints) so a preset looks the same whatever the console theme is; the brand
+swatches in `theme-token-controls.ts` are the preset colours themselves. Nothing else.
+
+### Contrast
+
+`npm run design:contrast` checks every pair the console relies on (text on each surface, the field
+fills and the sidebar tint included; accent as text and as a boundary on every surface; `--focus-ring`
+on every surface it can sit on; `--on-btn` on the ink button, `--on-accent` on the accent; the active
+filter's page-coloured text on ink; `--border-input` on `--surface`, `--field` and `--field-hover`;
+badge text on badge fills; syntax tokens on `--code-bg`). The 212 required pairs all pass in both
+themes (lowest: `--border-input` on `--field` in light, 3.1:1, and on `--field-hover` in dark,
+3.1:1, chosen just above the line so fields do not look heavy). The `*-border` outlines on `*-subtle` fills are
+1.7–2.2:1 and are listed as informative: the badge's text carries its meaning, the outline is
+decoration. `--focus-ring` against the solid `--accent` and `--danger` fills is informative too:
+no colour is 3:1 against both white and the petrol accent, which is why the outline is offset 2px
+and the gap shows the surface. The script also prints a note that `--info` equals `--accent`.
+
+## Theme mechanism
+
+- The stored choice is `localStorage['versola-theme']` = `auto` | `light` | `dark` (default
+  `auto`; a `light`/`dark` stored before `auto` existed still works).
+- `index.html`'s inline pre-paint script resolves `auto` through
+  `matchMedia('(prefers-color-scheme: dark)')`, sets `data-theme` (the painted theme) and
+  `data-theme-pref` (the choice) on `<html>` and swaps the favicon, synchronously, before the
+  first paint. `color-scheme` is set per theme so native controls and scrollbars follow;
+  `<meta name="color-scheme" content="light dark">` says both exist.
+- `src/utils/theme.ts` is the API: `getStoredPreference()`, `getResolvedTheme()`,
+  `setThemePreference(pref)`, `watchSystemTheme()` (called by `admin-app`; repaints on an OS change
+  while the choice is `auto`), and the `versola-theme-change` event (detail: the painted
+  `ThemeName`) for the few components that cannot follow by CSS alone.
+- The switcher is `versola-theme-switcher` in the sidebar footer: an icon button (half circle
+  Auto, sun Light, moon Dark; accessible name `Colour scheme: <choice>`) that opens a listbox.
+  Keyboard: arrows open and move, Enter/Space pick, Escape closes and returns focus, Tab and an
+  outside click close. It is the login forms' control (`forms/shared/scheme-toggle.tsx`) in Lit.
+- Tests: `src/utils/theme.test.ts` (Vitest), `tests/theme-switcher.spec.ts` (keyboard,
+  persistence, OS follow via `page.emulateMedia`), `tests/accessibility.spec.ts` (axe over every
+  list screen with Auto on a dark and a light OS, Light and Dark).
+
+## Shell
+
+`versola-admin` lays out a flex row: `versola-navigation` (250px, sticky, `--sidebar-bg`) and
+`<main class="main-content">` (padding 2rem, max-width 1400px). Below 768px the sidebar is an
+off-canvas drawer opened by the `versola-nav-toggle` in each page header, with a `--backdrop`.
+
+Sidebar, top to bottom: brand (the V-and-dot mark from `versola-logo`, drawn with
+`--text-primary` and `--accent`, followed by the website's monoline wordmark SVG
+(`Wordmark.astro` of versola-website) in `--text-primary`, 20px tall; the favicons keep the mark
+alone), tenant selector (looks like every other field: `--field` fill, the 1.5px line, chevron at
+the same inset), the nav (`Tenant Scoped`, `Global` as kickers in `--accent`; items are buttons
+with `aria-current="page"` on the active one; hover is a `--sidebar-hover-bg` fill, active is
+`--accent-subtle` with a 3px `--accent` bar on the left edge, the weight never changes so the
+label's width never shifts; 44px tall in the drawer), and a footer that stays put:
+the `Theme` row with the switcher, `My Security`, `Log out`. The brand, tenant and nav scroll as
+one block with a thin, always-reserved scrollbar when they are taller than the viewport; with
+every permission the whole list fits at 1440×900.
+
+Page header: `content-header` with `title`, an optional `description` (one line under the title)
+and the single primary action in its `actions` slot. A record page uses `versola-record-header`
+instead (see below). Breadcrumbs exist only on record pages: `List › Record`, the list a link.
+
+## Page patterns
+
+**List.** `content-header` (title, `+ Create X` as the only primary action) → optional banner
+(a created secret, an error) → toolbar (a `search` input, max-width 28rem, and a
+`versola-filter-bar`) → `versola-data-table`, or `versola-empty-state` when there is nothing or
+nothing matches, or `versola-loading-cards` while loading, or `versola-error-card` with Retry.
+Rows open the record; the row menu holds Open, Copy ID and Delete. Below 720px the table is a
+stack of cards. Reference: `clients-list.ts`.
+
+**Table + panel (small entities).** The list above, and the record in `versola-side-panel`
+next to it: an entity with at most two editable groups and no wizard (Scopes, Permissions,
+Roles, Tenants, Edges; later JWKS keys, OTP templates, authorization detail types) never gets a
+page of its own. A row click, Enter on the row's `.row-link` or the row menu's Open selects the
+row (`selectedKey`) and opens the panel in view mode: kind label, title, ID with copy, chips,
+`Open page`, Close; then the same `versola-record-card` groups a page would show, each with its
+Edit, the read-only reverse references (Requested by, Granted by, Linked tenants), Fixed with its
+reasons, the danger card last. Edit turns the same panel into the group editor (breadcrumb
+`Record › Edit <group>`, modal with a backdrop, footer Cancel / `Save <group>`); the page's one
+primary action opens it in create mode (`Create <entity>`), which lands on the new row selected.
+While an editor is open the list passes no `selectedKey`: the row behind the backdrop is not drawn
+selected (a second active element); the selection returns when the editor closes.
+Escape and Close return focus to the row (`versola-data-table.focusRow`). The URL carries the
+state so a reload restores it: `?view=scopes&id=profile`, `&edit=claims`, `&new=1`; `Open page`
+adds `&layout=page` and renders the same groups under a `versola-record-header` for sharing and
+docs. Reference: `scopes-list.ts`; the pattern's mockups are the approved UX proposal.
+An editor with many fields still opens in the panel, `wide`: Edges' *Overload protection* (`edges-list.ts`,
+`overload-policy-editor.ts`, rules and messages in `utils/overload-policy.ts`) is a patch over the
+deployment, so every field is optional, empty means "inherit", and the built-in default and its
+environment variable are written under the field; rare fields sit under a native `<details>` "Advanced";
+a mode is a segmented control (`segmentedStyles`) with one line on the chosen value; the footer's
+`Reset to deployment defaults` (left) sends `{}` after a confirmation.
+
+**Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
+kind chip, status chips, created) → a status banner when the page can say something about the
+whole record (`.banner`, `.banner.ok`) → one `versola-record-card` per group of settings, each
+with its own Edit that opens only that group as a page with Cancel and `Save <group>`; settings
+fixed at creation sit in a card with the `Fixed` lock, each row with its reason (`By type`) →
+`versola-danger-card` last, named for what it deletes. Reference: `clients-list.ts`
+(`renderClientView`).
+
+**Search-first record (Users).** There is no list-all endpoint, so the list is a search (field select
+with auto-detect, input, `Search`; an empty state before the first search) and the record page loads
+its user by ID, so `?view=users&id=<id>` opens from a reload and `&edit=identifiers|roles|claims` opens a
+group editor. The record carries the record-view groups plus two live parts that load and fail on
+their own (a part's error is inline with Retry, never a page error): *Signed-in devices*, one row per user
+agent as auth stores it (user agent → at most one SSO session → the clients entered during it; the
+device line says when the session expires, the idle timeout when there is one, and until when the device
+is remembered; a signed-out device stays listed by its user agent's name until it is forgotten, with
+**Forget device** beside it, and a refresh token whose session no device names shows as an unnamed
+signed-out device), and *Apps with access*, one row per
+refresh token. All nested device tables share one column grid so dates line up down the page. The
+wording is fixed: **Sign out** for sessions, **Forget device** for a remembered user agent, **Revoke** for offline access (the refresh token, shown as an
+`Offline access` chip followed by an `Apps with access` text link to the Apps card), never "long-lived" or "invalidate". No counters
+anywhere. Delete user is the danger card with a D5 confirm that names the user and the consequences.
+Reference: `users-list.ts`, `user-record.ts`.
+
+**Record with a nested table and a master/detail editor (Resources).** A large entity whose main
+content is a list of its own (a resource's endpoints) keeps the record-view rules and adds two things.
+The list is a table *inside* a record card (`versola-resource-endpoints-table`), whose columns answer the
+questions an operator asks without opening an editor (which request, who may call it, what step-up, what
+is added to the forwarded request); below 720px of room each row is a card and each cell names its
+column. The card's one button is `Edit endpoints`, which opens `&edit=endpoints`: the list on the left
+(method, path, `new` / `edited` markers, which rules each row carries) and the selected row's panels on the
+right (Request, Who may call, Step-up, Inject), a bar at the bottom that names what is not saved yet
+(`Not saved yet: GET /x (new), POST /y (edited)`) and Cancel / `Save endpoints`. Edits only change drafts;
+Save sends the removed IDs and the new and edited rows in one request, an edited row under its own ID.
+Removing a row that something refers to says what loses it. Small groups (General, Audience) sit side by
+side; the secret and Fixed cards pair the same way; the page has no primary action; the ID is the title in
+mono (`idAsTitle` on the record header) and a banner carries the secret that create and rotate return,
+once, asking before the operator leaves without saving it. Create is a single form (the endpoints are added
+on the record, where the permissions that guard them are visible). Reference: `resources-list.ts`,
+`resource-record.ts`, `resource-endpoints-editor.ts`.
+
+**Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
+record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
+editor, with a live preview pinned beside it (`versola-preview-pane`: 500px at 1440, 340px at 1024, 560px
+for a theme's login form, a collapsible band above the controls below 900px; the previewed page is scaled to
+the room it has). Nothing is saved until the one primary action: a **form**'s is `Save as new version` in the
+header (saving stores a version without activating it; `Set active` on any stored version lives under the
+Versions tab, with a "stored but not active" warning and no delete, because the API has none); a **theme**'s is
+`Save theme` in a bar that sticks to the bottom of the page with Cancel and names what is not saved yet
+(`Unsaved: brand colour, shape`), Delete is the last card, disabled with the clients that block it. Leaving
+with edits asks (`confirmDiscardDraft`). Forms: tabs `Texts` (ONE JSON editor for all languages, `{ "en": { "<key>": "..." }, "ru": { ... } }`, the shape of
+`forms/<name>/<name>.i18n.json`: a compact read-only summary above it names the languages present and the keys each
+lacks with `+N`; problems are listed under it in an `aria-live` region and the typed text is kept; a Language
+switch in the preview toolbar picks the language the preview shows), `Style`, `Script`,
+`Properties` (custom forms only: a built-in form's states come from central) and `Versions`; the tab is
+`?edit=<tab>`. Themes: Base theme (a wrapping row of pills, each with its brand colour as a dot, the selected one filled, and a
+one-line hint of what it sets: no thumbnails, the preview shows the result; a built-in theme is never "dark" or "light", the
+Colour scheme control and the preview's Light/Dark are the only place the scheme shows), Look (each overridden token with
+an `Overridden` badge and Reset, `Clear overrides`) and an Advanced card after Look: Token overrides (rows of one token each; the
+token list, its nine groups, kinds, descriptions and defaults come from central, `GET /configuration/themes/variables`,
+and the select is grouped by them with the description and default under it; a colour that is a pair has Light and Dark
+inputs and a "Same for both" toggle, a length is a number in px, a shadow, weight or font is text; every kind is validated
+by `src/utils/theme-variables.ts`) and Custom CSS (the last resort: collapsed behind "Add custom CSS" while empty, open when
+the theme has CSS; a `versola-code-editor` (css), the hint that most things are tokens above and that its rules win, with
+contrast and small screens the author's, and the variables a rule may target; the preview includes both, the unsaved bar
+names "token overrides" and "custom CSS"). A theme stored with CSS and no values opens in the same editor on the
+Versola base with the CSS card open; the list shows it as "Versola + custom CSS". "Used by" is computed in
+the console from the tenant's clients (central has no usage endpoint). Lists are tables with a kind filter and
+no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
+`forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.
+
+**Wizard (create).** Stepped, with a step list on top, each step a stack of bordered panels
+(title, one-line subtitle, body), a rule the type sets shown as a locked row (lock icon, text,
+reason), and a review step in the page's own groups with `Change` back to the step that sets it.
+Reference: `client-form.ts`.
+
+**Group editor and simple forms.** A page state, not a modal: a title-only header, one card with
+the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline errors under the
+field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
+with Cancel and the one primary submit. No second Close at the top.
+
+**Settings pages** (System settings, Security, Keys & metadata). Security's section rail uses the
+sidebar's item treatment: `--sidebar-hover-bg` on hover, `--accent-subtle` / `--accent-text` with a 3px
+`--accent` bar for the section in view. Read-only cards in the
+record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
+inputs, never two primary buttons in one region.
+
+## Component catalogue
+
+| Component | Element | Use it for | Not for |
+|---|---|---|---|
+| `content-header` | `<content-header title description>` + `slot="actions"` | Every list and settings page: title, one-line description, the one primary action | Record pages (use the record header) |
+| Record header | `<versola-record-header .crumbs .heading .recordId idLabel ?idAsTitle .meta>` + `slot="actions"` (the page's primary action, when the record is its own editor) | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips; `idAsTitle` for a record named by its ID (the title is mono and the ID is not printed twice) | Pages with no ID |
+| Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .editLabel .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
+| Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
+| Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
+| Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
+| Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel ?selectable .selectedKey @row-select>` + `focusRow(key)` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`). `selectable` makes a click anywhere on a row (outside its menu) fire `row-select`; `selectedKey` draws that row selected (`aria-current`, accent fill, 3px bar); `focusRow` is where a closing panel returns focus | Editing in place; nested detail |
+| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; no counts in the group headers or the host's title | A single choice (use a `select`) |
+| Endpoint picker | `<versola-endpoint-picker .resources .value @change>` | A permission's endpoints (D8): add a resource, then its endpoints one by one, each a row with method badge, path and Remove; endpoint ids no resource carries any more are listed as detached | Anything that is not resource → endpoint |
+| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value, plus a `Missing: ru` warning chip when an active locale has none (a count of languages says nothing); `languagesCell` is the list's Languages column, the language codes as chips or the Missing chip | Editing (use `versola-localized-text-editor`) |
+| Typeahead select | `<versola-typeahead-select label placeholder emptyText .options .value @change>` | A filter with too many values for a row of pills (Permissions › Resource): the ARIA 1.2 combobox with list autocomplete (`role=combobox` field, `role=listbox` of the matches). Opens on focus, click or the down arrow; typing filters; arrows move, Home/End jump, Enter picks, the first Escape closes the list (the side panel does not close), Tab leaves; a clear button while a value is chosen. The screen keeps the `All` / `Unlinked` pills next to it | Fewer than about six values (use the filter bar) |
+| Value chips | `valueChips(values, { max, empty, mono, extra })` from `value-chips.ts` | A list column that holds values (Roles › Permissions, Scopes › Claims, Permissions › Endpoints and Resources): up to two chips (`.chip.value`, mono for IDs and paths, cut with an ellipsis) and `+N` (`.chip.more`) whose `title` names the rest. A count alone never stands for values | A single value (print it) |
+| Client picker | `<versola-client-picker label heading .clients .value @change>` | Choosing clients (D7: a resource's audience): a filter field from four clients, one bordered group headed by `heading` with `Select all` / `Clear all`, a checkbox per client with its name; ids the tenant no longer has stay listed so they can be unticked | One client (use a `select`) |
+| Endpoints table | `<versola-resource-endpoints-table .endpoints .permissionsByEndpoint .resourceId>` | The endpoints of a resource inside its record card, read-only: method badge and path (breaking after `/`), `userinfo` tag, permissions joined by `or` and the `allow` rule, step-up (ACR, condition, `at most 5m` with the seconds in its title), the injections | Editing (the endpoints editor) |
+| Break text | `breakPath(path)`, `breakHost(host)`, `breakAfter(value, chars)` from `break-text.ts` | A path or a host in a place that may wrap: a `<wbr>` after each `/` or `.` is the only place it breaks, never inside a word | IDs (they do not break at all) |
+| Preview pane | `<versola-preview-pane heading .logicalWidth .logicalHeight ?busy ?stale>` + `slot="toolbar"`, an `<iframe>` in the default slot, `slot="note"` | The live preview of a record that is its own editor: sticky card, toolbar, the previewed page scaled to the room, a collapsible band below 900px, scrolls inside itself when taller than the window | A static picture |
+| Theme thumb | `themeThumb(tokens, { small })` from `theme-thumb.ts` | A sketch of what a theme gives a login page (page, sheet, brand): the themes list's `small` one | The console's own colours |
+| Segmented pills | `segmentedStyles`: `.ctrl-group`, `.ctrl-label`, `.seg-control`, `button.seg-btn[.seg-active]` | A choice of one (or several) among a few in a preview toolbar or a theme's controls; the active pill is ink-filled like the filter bar's | Filtering a table (the filter bar) |
+| Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters above a table (no counts), as outlined pills; the active one is ink-filled with `--bg-page` text | Multi-select (use checkboxes) |
+| Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
+| Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
+| Loading cards | `<versola-loading-cards .count>` | While a list loads, same height as the rows that will replace it | Buttons (disable them instead) |
+| Status icon | `statusIcon(name)` from `status-icon.ts` | Stroke icons for state (lock, check, x, shield, alert, info, dots, copy) | Emoji, text glyphs (`✎`, `▼`) |
+| Theme switcher | `<versola-theme-switcher>` | The sidebar footer only | Anywhere else |
+| Tenant selector | `<tenant-selector>` | The sidebar only | |
+| Chips | `chipStyles`: `.chips`, `.chip`, `.chip.ok`, `.chip.warn`, `.chip.danger` | A kind or a state as a small outlined pill; the text carries the meaning (`danger`: an inactive role) | Interactive tags |
+| Tags | `tagStyles`: `.tag-list`, `.tag`, `button.tag`, `.tag.quiet` | One value of a list in mono on the accent fill, as a pill (a scope, a permission, a tenant); a `button.tag` opens the record it names | States (use a chip) |
+| Banners | `bannerStyles`: `.banner`, `.banner.ok`, `.warn`, `.info`, `.banner-text`, `.banner-title` | What a page or a panel says about the whole record, above its cards; an action button may sit on the right | Field errors |
+| Editor boxes | `editorStyles`: `.editor-box` (h3, `.editor-sub`, fields), `.editor-error`, `.option-cards` / `.option-card[aria-pressed]` | The bordered groups of a panel editor or a wizard step; a choice between a few options as pressed cards (the tenant's security profile) | A list of records |
+| Switch row | `toggleStyles`: `label.toggle-row` > `span.toggle` > `input[type=checkbox][role=switch]` + text, a `.hint` under it tied by `aria-describedby` | One on/off setting in a group editor (a role's Active). The input covers the track so it is the click and focus target; the ring sits on the track; disabled is a colour state | A choice between more than two options (option cards or a `select`); a list of flags (checkboxes) |
+| Badges | `badgeStyles`: `.badge-success`, `.badge-warning`; `methodBadgeStyles` for HTTP methods | Filled state labels | |
+| Buttons | `buttonStyles`: `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.btn-danger-secondary`, `.btn-sm`, `.btn-lg` | Primary = solid ink (`--btn` / `--on-btn`), one per page; secondary = transparent with the 1.5px `--border-input` line, ink line on hover; danger = solid red, only on confirmation | Icon-only actions (use `iconButtonStyles` with `aria-label`) |
+| Cards | `cardStyles`: `.card`, `.card-header`, `.card-title` | Forms, banners, nested detail: a white sheet on `--border-default` with `--shadow-card`, `--radius-lg`; inside the side panel (`.record-compact`) flat with `--radius-inner` | Lists of records (use the table) |
+| Record styles | `recordStyles` | Include in the host of record cards / rows / danger card (they render into light DOM); `.record-compact` around them is the panel's narrower grid (8rem label, the Fixed reason under the value) | |
+
+`versola-record-card`, `versola-record-row` and `versola-danger-card` render into **light DOM**
+on purpose: the body of a card is the screen's own markup (a flow chain, a list of URIs) and keeps
+the screen's styles, and a test reads the whole card through its region
+(`getByRole('region', { name })`). The host includes `recordStyles`, `buttonStyles` and
+`cardStyles`. `versola-data-table` and `versola-record-header` render cells and meta through
+properties inside their shadow root, so the styles a cell can rely on are the ones they ship
+(`.row-link`, `.row-title`, `.row-id`, `.muted`, `.type-label`, `.icon`, chips).
+
+`versola-side-panel` renders its own chrome in its shadow root and the screen's content through
+slots, so the record cards inside it keep the host's `recordStyles`. A test reaches that content
+from the host element, not from the dialog: `sidePanel(page, heading)` in `tests/fixtures.ts`
+(the slotted nodes are DOM children of the host; the accessibility tree still places them inside
+the dialog), and `sidePanelDialog` for the dialog's own ARIA state and box.
+
+Naming: elements are `versola-<name>` (the older `content-header`, `tenant-selector` stay).
+Shared styles are exported from `src/styles/components.ts`; a style used by two screens moves
+there, a style used by one stays in the screen.
+
+## States
+
+Every screen shows, and a spec covers: empty (empty state), loading (loading cards, no layout
+jump), error (error card with Retry), disabled (`.btn:disabled` is a colour state:
+`--surface-inset` fill, `--text-muted` text, never opacity), hover (border or text colour),
+focus (`--focus-ring` outline), validation (inline, per field, `--danger` border,
+`aria-invalid`), success (banner `.banner.ok` or `--success-text` line), a very long unbroken
+string (`overflow-wrap: anywhere` on values, `word-break: break-all` on IDs), a one-character
+value, many items (the table scrolls inside its card, the page never scrolls sideways). A pending
+submit disables its button; one click or Enter sends one request.
+
+## Accessibility rules
+
+WCAG 2.2 AA. Text 4.5:1 (3:1 for 18pt / 14pt bold); control boundaries, icons and focus
+indicators 3:1 (`design:contrast` proves the tokens; `tests/accessibility.spec.ts` proves the
+screens). Targets at least 24×24 CSS px (`iconButtonStyles` enforce it; nav items are 44px in the
+mobile drawer). Focus always visible, and always the same thing: **every focus indicator is a
+2px `outline` in `--focus-ring`** (`outline-offset` 2px around a control and around a field,
+-2px inside a nav or menu item). A field also lifts to `--surface` with an ink border, and a halo
+(`box-shadow`) may be added on top of the outline, but never replaces it: `--accent-border` is
+2.3:1 on the surfaces, below the 3:1 a focus indicator needs. `outline: none` appears only where
+a wrapper draws the ring for the element inside it (`code-editor`, `cel-editor`) and on the
+focus flash of `.main-content` after the drawer closes (`admin-app.ts`), which uses `--accent`
+and falls back to an outline under `prefers-reduced-motion`. Native elements first: a nav item is
+a `<button>`, a list is a `<table>`, a popover is a listbox or a menu with the ARIA pattern the
+login forms use (see the row menu below). Every input
+has a label; icon-only buttons have `aria-label` and `title`; errors are tied to their field.
+Dialogs trap focus, close on Escape and return focus: the confirm dialog, and the side panel in
+its modal modes (view mode is a non-modal dialog, so the list stays reachable; Escape still
+closes it and returns focus to the row). Motion respects `prefers-reduced-motion`.
+
+## How to render and verify a screen
+
+1. Playwright renders the console with a mocked API (`tests/mocks.ts`), no backend. Write a
+   throwaway spec in `tests/` that calls `loadAdminApp(page, { path, state })`, sets the viewport,
+   sets the theme with `page.addInitScript(v => localStorage.setItem('versola-theme', v), 'dark')`
+   (or `page.emulateMedia({ colorScheme })` for Auto) and `page.screenshot({ path })`; a record
+   opens straight from the URL (`&id=`, `&edit=`, `&new=1`, `&layout=page`). Run it with
+   `npx playwright test <file> --output=/tmp/pw-out` so `test-results/` is not wiped. Delete the
+   spec before committing.
+2. Shoot 1440 and 1024 in both themes, and 375 for list screens (card mode) and for a panel (the
+   sheet). Open the PNGs and
+   check them against `.claude/rules/frontend.md` (overlap, clipping, no sideways scroll,
+   alignment, layering); fix before showing.
+3. `npm run type-check`, `npm run test:unit`, `npm run design:contrast`, `npx playwright test`
+   (one run at a time; it owns port 4173).
+4. A screen the public docs show needs its screenshots retaken with the generator below and a
+   `versola-website` PR (`.claude/rules/documentation.md`).
+
+## Docs screenshots
+
+The images in the public documentation (`versola-website`, `public/img/docs/`) are generated, never
+taken by hand, so a changed screen cannot leave a stale picture behind.
+
+- `tests/docs-screenshots.manifest.ts` is the contract: one entry per image a docs page references,
+  with the console path, the mock state (`tests/mocks.ts`, `example.com` data), the actions that
+  reach the state, and the kind: `frame` (the 1440×900 viewport; `fullPage` grows it to the document
+  while a screen is still taller than one frame), `crop` (one card, located by its anchor id or
+  region name, with 16px padding) or `login` (a login form through `tests/form-harness.ts`). Every
+  entry yields a pair, dark `name.png` and light `name-light.png`, under
+  `test-results/docs-screenshots/{console,entities,login}/`.
+- `npm run docs:screenshots` runs `tests/docs-screenshots.spec.ts` (the `docs` Playwright project,
+  whose artifacts live apart so a partial re-run keeps the pairs it does not retake), which iterates
+  the manifest in both themes. It is not an assertion suite; a failing scene means the recipe no
+  longer matches the screen, so fix the entry, not the test. Playwright empties `test-results/` when
+  the `console` project runs, so generate and sync in one sitting.
+- `npm run docs:screenshots:sync -- <website-checkout>` copies the output into
+  `public/img/docs/` and fails listing (a) images a page references that the manifest lacks, (b)
+  manifest entries no page references and (c) files in the website folder nobody references; (c) is
+  reported only, `--prune` deletes them, `--dry-run` reports without copying.
+- A new or renamed screen: add or rename the manifest entry and the `Screenshot` in the EN page
+  and its RU twin in the same docs PR; the sync check turns red until both agree. A card that is
+  documented on its own gets a `crop` entry named `<screen>-<card>`.

@@ -5,6 +5,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.util.theme.{Background, BrandColor, Mode, Shape, Surface, ThemeOverrides}
 import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
 import zio.http.URL
@@ -42,7 +43,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -64,12 +64,12 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
-  /** Applies a registration-flow patch, leaving every other field of the client alone. */
+  /** Applies a patch to the nullable fields, leaving every other field of the client alone. */
   private def patchNullableFields(
       env: OAuthClientRepositorySpec.Env,
-      registrationFlow: Option[Patch[RegistrationFlow]] = None,
       authFlow: Option[Patch[AuthFlow]] = None,
       frontChannelLogoutUri: Option[Patch[URL]] = None,
       backChannelLogoutUri: Option[Patch[URL]] = None,
@@ -78,17 +78,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       clientId,
       OAuthClientPatch.empty.copy(
         authFlow = authFlow,
-        registrationFlow = registrationFlow,
         frontChannelLogoutUri = frontChannelLogoutUri,
         backChannelLogoutUri = backChannelLogoutUri,
       ),
     )
-
-  private def patchRegistrationFlow(
-      env: OAuthClientRepositorySpec.Env,
-      registrationFlow: Option[Patch[RegistrationFlow]],
-  ) =
-    patchNullableFields(env, registrationFlow = registrationFlow)
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
     List(
@@ -173,53 +166,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           ),
         )
       },
-      test("create and find client with a registration flow") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found === Some(registering),
-        )
-      },
-      test("update client should leave the registration flow untouched when the patch is absent") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          _ <- patchRegistrationFlow(env, None)
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(RegistrationFlow.default),
-        )
-      },
-      test("update client should clear the registration flow when the patch is an explicit None") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          _ <- patchRegistrationFlow(env, Some(Patch.Deleted))
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.map(_.registrationFlow) === Some(None),
-        )
-      },
-      test("update client should replace the registration flow when the patch carries one") {
-        val updated = RegistrationFlow(
-          credential = RegistrationCredential.phone,
-          steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()),
-          roleIds = Set(RegistrationFlow.defaultRoleId),
-        )
-
-        for
-          _ <- env.repository.createClient(client)
-          _ <- patchRegistrationFlow(env, Some(Patch.Modified(updated)))
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(updated),
-        )
-      },
       test("update client should leave the auth flow untouched when the patch is absent") {
         for
           _ <- env.repository.createClient(client)
@@ -279,6 +225,42 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         yield assertTrue(
           created === Some(consenting),
           updated.flatMap(_.consentFlow) === Some(widened),
+        )
+      },
+      test("create and find a client with theme overrides, then replace and clear them") {
+        val branded = client.copy(themeOverrides =
+          Some(ThemeOverrides(
+            brand = BrandColor.parse("#112233").toOption,
+            shape = Some(Shape.sharp),
+            surface = None,
+            mode = None,
+            background = None,
+          )),
+        )
+        val replaced =
+          ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark), brand = None, shape = None, background = Some(Background.flat))
+
+        for
+          _ <- env.repository.createClient(branded)
+          created <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(replaced)))
+          replacedFound <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(clientName = Some(Map("en" -> "patched"))))
+          untouched <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(
+            clientId,
+            OAuthClientPatch.empty.copy(themeOverrides =
+              Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+            ),
+          )
+          cleared <- env.repository.find(clientId)
+        yield assertTrue(
+          created === Some(branded),
+          replacedFound.flatMap(_.themeOverrides) == Some(replaced),
+          // a patch of something else changed the row, and left the overrides as they were
+          untouched.map(_.clientName) == Some(Map("en" -> "patched")),
+          untouched.flatMap(_.themeOverrides) == Some(replaced),
+          cleared.map(_.themeOverrides) == Some(None),
         )
       },
       test("create and find a client with a DPoP proof key policy") {

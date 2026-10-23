@@ -6,6 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsService,
+  EmailRegistration,
   MtlsCertificateEncoding,
   PasskeySettings,
   SecurityProfile,
@@ -26,6 +27,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides}
 import versola.util.{
   ClientAssertion,
   Dpop,
@@ -137,7 +139,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -159,6 +160,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -174,7 +176,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(writePermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -196,6 +197,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -209,7 +211,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -234,6 +235,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = None,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is
@@ -278,7 +280,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -299,6 +300,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -311,7 +313,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -332,13 +333,16 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   /** A tenant whose reverse proxy terminates mTLS and forwards the certificate, which RFC
     * 8705 §6.5 makes a precondition of registering `mtlsAuth` at all. */
   private val mtlsTerminatingSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List.empty,
+    phoneRegions = List.empty,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -356,6 +360,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   /** #421: the registration an edge-fronted native app is held to -- `tls_client_auth` with a
@@ -385,7 +391,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
     val tenantRepository = stub[TenantRepository]
-    val roleRepository = stub[RoleRepository]
     val challengeSettingsService = stub[ChallengeSettingsService]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
@@ -394,7 +399,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       cache,
       repository,
       tenantRepository,
-      roleRepository,
       challengeSettingsService,
       secureRandom,
       securityService,
@@ -495,7 +499,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         permissions = Set(readPermission),
         theme = "default",
         authFlow = Some(AuthFlow.default),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -517,6 +520,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         edgeClientCertificate = None,
         template = None,
         createdAt = Instant.EPOCH,
+        themeOverrides = None,
       )
 
       for
@@ -549,6 +553,92 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // Handed back as well as stored: the caller holding the client it just sent has no
         // other way to know when central dated it.
         result.createdAt == created.createdAt,
+      )
+    },
+    test("registerClient stores the theme overrides it was given, and none for an empty value") {
+      val env = new Env()
+      val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)
+      val partnerRequest = createRequest.copy(consentFlow = Some(ConsentFlowDto(allowPartial = true, rememberDuration = None)))
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides =
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+        ))
+        _ <- env.service.registerClient(createRequest.copy(themeOverrides =
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+        ))
+        _ <- env.service.registerClient(createRequest)
+        stored = env.repository.createClient.calls.map(_.themeOverrides)
+      yield assertTrue(stored == List(Some(overrides), None, None, None))
+    },
+    test("registerClient refuses theme overrides on a client that does not ask for consent, and stores nothing") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(themeOverrides =
+          Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient hands the theme overrides of a partner client to the repository, and an empty value to clear them") {
+      val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
+      val env = new Env(Vector(partner))
+      val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides =
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+        ))
+        _ <- env.service.updateClient(noopUpdate)
+        patched = env.repository.updateClient.calls.map(_._2.themeOverrides)
+      yield assertTrue(patched == List(
+        Some(overrides),
+        Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+        None,
+      ))
+    },
+    test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
+      val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
+      val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
+      val partner = new Env(Vector(cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))))
+      val refused = (result: Either[Any, Unit]) =>
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case _ => false
+
+      for
+        _ <- firstParty.repository.updateClient.succeedsWith(())
+        _ <- partner.repository.updateClient.succeedsWith(())
+        withoutConsent <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
+        // the same patch that gives the consent flow is a partner's from the start
+        giving <- firstParty.service.updateClient(noopUpdate.copy(
+          themeOverrides = Some(overrides),
+          consentFlow = Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None))),
+        )).either
+        // clearing is always allowed, so a client with overrides from before can be brought in line
+        clearing <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides =
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+        )).either
+        keeping <- partner.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
+        updateCalls = firstParty.repository.updateClient.times
+      yield assertTrue(
+        refused(withoutConsent),
+        giving.isRight,
+        clearing.isRight,
+        keeping.isRight,
+        updateCalls == 2,
       )
     },
     test("registerClient leaves the template unset for a registration that names none") {
@@ -1428,119 +1518,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         patched = env.repository.updateClient.calls.head._2.frontChannelLogoutUri
       yield assertTrue(patched == Some(Patch.Modified(URL.decode("https://rp.example.com/front-logout").toOption.get)))
     },
-    test("registerClient rejects a registration flow granting an unknown role") {
-      val env = new Env()
-
-      for
-        _ <- env.roleRepository.findRole.succeedsWith(None)
-        result <- env.service
-          .registerClient(createRequest.copy(registrationFlow = Some(RegistrationFlow.default)))
-          .either
-        createCalls = env.repository.createClient.times
-      yield assertTrue(
-        result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("does not exist")
-          case _ => false,
-        createCalls == 0,
-      )
-    },
-    test("registerClient accepts a registration flow granting an existing role") {
-      val env = new Env()
-      val role = RoleRecord(
-        RegistrationFlow.defaultRoleId,
-        tenantId,
-        Map("en" -> "User"),
-        Set.empty,
-        active = true,
-      )
-
-      for
-        _ <- env.roleRepository.findRole.succeedsWith(Some(role))
-        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
-        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
-        _ <- env.repository.createClient.succeedsWith(())
-        _ <- env.service.registerClient(createRequest.copy(registrationFlow = Some(RegistrationFlow.default)))
-        created = env.repository.createClient.calls.head
-      yield assertTrue(created.registrationFlow == Some(RegistrationFlow.default))
-    },
-    test("registerClient rejects registration for a login+password flow") {
-      val env = new Env()
-      val loginFlow = AuthFlow.default.copy(
-        primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.login), inlinePassword = true),
-      )
-
-      for
-        result <- env.service
-          .registerClient(createRequest.copy(authFlow = Some(loginFlow), registrationFlow = Some(RegistrationFlow.default)))
-          .either
-        createCalls = env.repository.createClient.times
-      yield assertTrue(
-        result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
-          case _ => false,
-        createCalls == 0,
-      )
-    },
-    test("registerClient rejects registration when the credential card asks for a password inline") {
-      val env = new Env()
-      val inlineFlow = AuthFlow.default.copy(
-        primary = AuthFlow.default.primary.copy(
-          credentials = List(PrimaryCredential.phone),
-          inlinePassword = true,
-        ),
-      )
-
-      for
-        result <- env.service
-          .registerClient(createRequest.copy(authFlow = Some(inlineFlow), registrationFlow = Some(RegistrationFlow.default)))
-          .either
-        createCalls = env.repository.createClient.times
-      yield assertTrue(
-        result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("password inline")
-          case _ => false,
-        createCalls == 0,
-      )
-    },
-    test("registerClient rejects registration for a card offering several credentials") {
-      val env = new Env()
-      val multiFlow = AuthFlow.default.copy(
-        primary = AuthFlow.default.primary.copy(
-          credentials = List(PrimaryCredential.phone, PrimaryCredential.email),
-        ),
-      )
-
-      for
-        result <- env.service
-          .registerClient(createRequest.copy(authFlow = Some(multiFlow), registrationFlow = Some(RegistrationFlow.default)))
-          .either
-        createCalls = env.repository.createClient.times
-      yield assertTrue(
-        result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("exactly one primary credential")
-          case _ => false,
-        createCalls == 0,
-      )
-    },
-    test("updateClient validates the registration flow against the stored auth flow") {
-      val loginFlow = AuthFlow.default.copy(
-        primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.login), inlinePassword = true),
-      )
-      val env = new Env(Vector(cachedClient.copy(authFlow = Some(loginFlow))))
-
-      for
-        _ <- env.repository.updateClient.succeedsWith(())
-        result <- env.service
-          .updateClient(updateRequest.copy(registrationFlow = Some(Patch.Modified(RegistrationFlow.default))))
-          .either
-        updateCalls = env.repository.updateClient.times
-      yield assertTrue(
-        result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
-          case _ => false,
-        updateCalls == 0,
-      )
-    },
     // The patch names no signing key, so validating only what it carries would let this
     // through and leave the edge holding a key auth can no longer verify anything against.
     test("updateClient refuses a jwks patch that leaves the stored edge signing key unpublished") {
@@ -1617,23 +1594,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case Patch.Modified(stored) => !stored.sameElements(storedEdgeClientCertificate)
           case Patch.Deleted => false,
       )
-    },
-    test("updateClient clears the registration flow when the patch carries an explicit None") {
-      val role = RoleRecord(
-        RegistrationFlow.defaultRoleId,
-        tenantId,
-        Map("en" -> "User"),
-        Set.empty,
-        active = true,
-      )
-      val env = new Env(Vector(cachedClient.copy(registrationFlow = Some(RegistrationFlow.default))))
-
-      for
-        _ <- env.roleRepository.findRole.succeedsWith(Some(role))
-        _ <- env.repository.updateClient.succeedsWith(())
-        _ <- env.service.updateClient(updateRequest.copy(registrationFlow = Some(Patch.Deleted)))
-        patched = env.repository.updateClient.calls.head._2.registrationFlow
-      yield assertTrue(patched == Some(Patch.Deleted))
     },
     test("rotateClientSecret returns new secret and stores encrypted secret") {
       val env = new Env()

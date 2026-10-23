@@ -33,6 +33,11 @@ object Observability:
     * request/redirect that carried the failure). */
   val error = LogAnnotation[ErrorDetails]("error", (_, r) => r, _.toJson)
 
+  /** What the antifraud check made of the request being handled: the decision, its score and the rules that fired,
+    * and how the step ended. Rendered under the `antifraud` key of the log lines after it is filled in, so the
+    * `receive-http` line of the request carries it; there is no line of its own. */
+  val antifraud = LogAnnotation[AntifraudDetails]("antifraud", (_, r) => r, _.toJson)
+
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
@@ -89,6 +94,15 @@ object Observability:
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
 
+  /** Fills in the antifraud context of the request currently being handled; like [[updateAuth]], called mid-flow as
+    * the check and the outcome become known. */
+  def updateAntifraud(initial: AntifraudDetails)(f: AntifraudDetails => AntifraudDetails): UIO[Unit] =
+    logContext.update(context => context.annotate(antifraud, f(context.get(antifraud).getOrElse(initial))))
+
+  /** The IP of the request being handled, as [[setIp]] recorded it. */
+  val currentIp: UIO[Option[String]] =
+    logContext.get.map(_.get(auth).flatMap(_.ip))
+
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
   }
@@ -131,6 +145,53 @@ object Observability:
   def setRoutePath(path: String): UIO[Unit] =
     routePath.set(Some(path))
 
+  /** What `receive-http` lines are written, from `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and
+    * `HTTP_ACCESS_LOG_SAMPLE_RATE` (see [[AccessLogSettings]]). Replaced as a whole while the process runs, which is how
+    * a policy from central would be applied ([[AccessLogPolicy.applyTo]] over [[accessLogBase]]).
+    */
+  val accessLog: java.util.concurrent.atomic.AtomicReference[AccessLogSettings] =
+    new java.util.concurrent.atomic.AtomicReference(AccessLogSettings.fromEnv)
+
+  /** What the process started with, the base an [[AccessLogPolicy]] is a patch over. */
+  val accessLogBase: AccessLogSettings = accessLog.get
+
+  def updateAccessLog(next: AccessLogSettings): UIO[Unit] = ZIO.succeed(accessLog.set(next))
+
+  /** The peers (`host:port`) of this deployment's own services (central, auth, ...). A successful call to one of them is
+    * written at DEBUG: high volume, and the metrics have it. A call to any other peer (an OTP, SMS or e-mail provider,
+    * any third-party integration) is external and a success is written at INFO whatever the access-log mode: that line
+    * is the record that a message was handed over, for support and billing questions and for fraud investigations.
+    * Empty until the service sets it at start-up (see `VersolaApp.internalPeers`), so a peer nobody classified is
+    * external: an extra line is the safe mistake.
+    */
+  val internalPeers: java.util.concurrent.atomic.AtomicReference[Set[String]] =
+    new java.util.concurrent.atomic.AtomicReference(Set.empty)
+
+  def setInternalPeers(peers: Set[String]): UIO[Unit] = ZIO.succeed(internalPeers.set(peers))
+
+  private val internalCall: FiberRef[Boolean] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(false)
+  }
+
+  /** Marks the calls made inside `zio` as internal whatever their peer: for a hot path whose peers are not known at
+    * start-up (edge's proxied upstreams), where an INFO line per success would be the cost this setting exists to avoid.
+    */
+  def asInternalCall[R, E, A](zio: ZIO[R, E, A]): ZIO[R, E, A] = internalCall.locally(true)(zio)
+
+  /** Lowest level the JSON logger writes, from `LOG_LEVEL` (`trace`, `debug`, `info`, `warn`, `error`; default `info`).
+    * Known here so a line below it is not built at all, see [[logsDebug]]. */
+  val minLogLevel: LogLevel =
+    Option(java.lang.System.getenv("LOG_LEVEL")).map(_.trim.toLowerCase) match
+      case Some("trace") => LogLevel.Trace
+      case Some("debug") => LogLevel.Debug
+      case Some("warn" | "warning") => LogLevel.Warning
+      case Some("error") => LogLevel.Error
+      case _ => LogLevel.Info
+
+  /** Whether a `DEBUG` line is written. Successful `send-http` lines are `DEBUG`, and building one (request and response
+    * records, header masking, JSON) is most of its cost, so it is skipped when it would be dropped. Settable for tests. */
+  @volatile var logsDebug: Boolean = minLogLevel <= LogLevel.Debug
+
   val serverLogging: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
   }
@@ -163,7 +224,8 @@ object Observability:
 
   /** Outbound requests in flight per target, queued for a pooled connection included. Where the
     * pool is too small this is what climbs (a request waiting for a connection is in flight from its
-    * caller's side), long before any CPU or latency average moves.
+    * caller's side), long before any CPU or latency average moves. Calls held back by the
+    * [[OutboundGuard]] (in front of the pool) are not in it: they are `http_client_guard_waiting`.
     */
   private val clientActiveRequests =
     Metric.gauge("http_client_active_requests")
@@ -183,6 +245,10 @@ object Observability:
       case Forbidden => ZIO.succeed(Response.forbidden)
       case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
       case ex: HttpCodecError => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
+      // Shed, not broken: the caller may retry shortly. Not logged as an error, a rejected call is meant to be cheap.
+      case ex: OutboundOverloaded =>
+        ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
+      case ex: OutboundTimedOut => ZIO.succeed(Response.status(Status.GatewayTimeout))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
@@ -269,8 +335,6 @@ object Observability:
                     response <- activeRequests.tagged(baseTags).increment
                       .zipRight(handler(request))
                       .ensuring(activeRequests.tagged(baseTags).decrement)
-                    masking <- serverLogging.get
-                    (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
                     after <- Clock.nanoTime
                     status = response.status.code
                     statusClass = s"${status / 100}xx"
@@ -287,21 +351,30 @@ object Observability:
                     _ <- requestDuration
                       .tagged(tags + MetricLabel("status_class", statusClass))
                       .update((after - now) / 1e9)
-                    log = receiveHttp(
-                      ReceiveHttpLog(
-                        request = requestLog,
-                        response = responseLog,
-                        startTime = startTime,
-                        elapsedMillis = (after - now) / 1000000,
-                      ),
-                    )
-                    loggerName = logging.loggerName("versola.http.HttpServer")
                     cause <- cause.get
-                    _ <- cause match
-                      case Some(cause) =>
-                        ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
-                      case None =>
-                        ZIO.logInfo("receive-http") @@ log @@ loggerName
+                    elapsedMillis = (after - now) / 1000000
+                    // decided before anything of the line is built: a request that is not logged costs no
+                    // header/cookie collection, no record and no JSON
+                    traceId <- tracing.getCurrentSpanContextUnsafe.map(_.getTraceId)
+                    _ <- ZIO.when(accessLog.get.logReceive(status, cause.isDefined, elapsedMillis, traceId)):
+                      for
+                        masking <- serverLogging.get
+                        (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
+                        log = receiveHttp(
+                          ReceiveHttpLog(
+                            request = requestLog,
+                            response = responseLog,
+                            startTime = startTime,
+                            elapsedMillis = elapsedMillis,
+                          ),
+                        )
+                        loggerName = logging.loggerName("versola.http.HttpServer")
+                        _ <- cause match
+                          case Some(cause) =>
+                            ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
+                          case None =>
+                            ZIO.logInfo("receive-http") @@ log @@ loggerName
+                      yield ()
                     _ <- Observability.cause.set(None)
                   yield response,
                 ),
@@ -318,7 +391,7 @@ object Observability:
   /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
     * value falls back to its default):
     *
-    *   - `HTTP_CLIENT_POOL_KIND`: `fixed` (default) or `dynamic`.
+    *   - `HTTP_CLIENT_POOL_KIND`: `dynamic` (default, also for an unset or unknown value) or `fixed`.
     *   - `HTTP_CLIENT_POOL_SIZE`: connections per target, default [[defaultClientPoolSize]]. For `dynamic` this is the maximum.
     *   - `HTTP_CLIENT_POOL_MIN`: `dynamic` only, connections kept open when idle, default 0.
     *   - `HTTP_CLIENT_POOL_TTL`: `dynamic` only, how long the pool must be unused before it shrinks back to the minimum,
@@ -338,7 +411,21 @@ object Observability:
     *     connection is released. So a too small `max` shows as latency and as `http_client_active_requests`, never as errors.
     *   - A pooled channel that has closed is discarded on checkout and another is tried, up to `max` times.
     *
-    * `Fixed` is the pre-existing behaviour. zio-http's own default is `Fixed(10)`, and an HTTP/1.1 connection serves one request
+    * The default is `Dynamic(0, 128, 30s)`: `Fixed(128)` opens all 128 connections to a target on its first use (128 mTLS
+    * handshakes to auth; the first admin login after a start took 2.7-3.5 s against 1.6 s), `Dynamic` opens them as
+    * concurrency needs them. Measured on Yandex Cloud (one auth+edge pair on one 8-vCPU node, 1M users, 2 runs per variant,
+    * round-robin), cores being edge+auth CPU per 1000 steps/s:
+    *
+    *   - steady load: `Fixed(128)` 2.10 cores (runs 2.04 and 2.16), edge p99 50 ms, edge memory 822 MiB; `Dynamic(0, 128)` 2.05
+    *     (2.00, 2.10), 50 ms, 785 MiB; `Dynamic(32, 128)` 2.09 (2.02, 2.16), 50 ms, 802 MiB. The differences are inside the
+    *     run-to-run spread: no CPU or latency cost, and the edge holds ~40 MiB less.
+    *   - overload at ~1.25x the knee with the shipped overload defaults: errors per run 3.4% and 0.20% for `Fixed`, 3.8% and 9.1%
+    *     for `Dynamic(0, 128)`, 0.15% and 9.3% for `Dynamic(32, 128)`; edge p99 ~6 s everywhere. Repeats of one variant differ
+    *     more than variants do, so the pool kind does not decide behaviour under overload; the overload protection does.
+    *   - limits: one pair, one backend, two runs per variant.
+    *
+    * `HTTP_CLIENT_POOL_KIND=fixed` keeps the previous behaviour. The size matters for either kind: zio-http's own default is
+    * `Fixed(10)`, and an HTTP/1.1 connection serves one request
     * at a time, so ten of them cap a pod at `10 / latency` requests per second towards each target: ~780/s at
     * 13 ms, 200/s at 50 ms, however idle its CPU is. Seen on the Yandex Cloud step-load test: one edge
     * pod, at 780 rps to a backend answering in 13 ms, tipped over that line, queued 486 requests and
@@ -360,12 +447,11 @@ object Observability:
   ): ConnectionPoolConfig =
     val maximum = size.flatMap(_.trim.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
     kind.map(_.trim.toLowerCase) match
-      case Some("dynamic") =>
+      case Some("fixed") => ConnectionPoolConfig.Fixed(maximum)
+      case _ =>
         val minimum = min.flatMap(_.trim.toIntOption).filter(m => m >= 0 && m <= maximum).getOrElse(defaultClientPoolMin.min(maximum))
         val keepAlive = ttl.flatMap(parseDuration).getOrElse(defaultClientPoolTtl)
         ConnectionPoolConfig.Dynamic(minimum, maximum, keepAlive)
-      case _ =>
-        ConnectionPoolConfig.Fixed(maximum)
 
   private def parseDuration(value: String): Option[Duration] =
     Try(ScalaDuration(value.trim)).toOption
@@ -394,10 +480,21 @@ object Observability:
 
   def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] = pooledClient(ConnectionPoolConfig.Fixed(poolSize))
 
-  val client: ZLayer[Tracing, Throwable, Client] =
+  /** The shared client, with the [[OutboundGuard]] that bounds its calls; the guard is also an output so settings can be
+    * changed while the process runs.
+    */
+  val client: ZLayer[Tracing, Throwable, Client & OutboundGuard] =
     (ZLayer.fromZIO(ZIO.logInfo(s"outbound HTTP client pool: $clientPoolConfig (per target)")) ++
-      pooledClient(clientPoolConfig) ++ ZLayer.service[Tracing]).map: env =>
-      ZEnvironment(env.get[Client] @@ clientMiddleware(env.get[Tracing]))
+      pooledClient(clientPoolConfig) ++ ZLayer.service[Tracing] ++
+      ZLayer.fromZIO(
+        OutboundGuard.make(OutboundGuard.initialSettings(clientPoolSize)).tap(g =>
+          g.current.flatMap(s => ZIO.logInfo(s"outbound HTTP guard: $s")),
+        ),
+      )).map: env =>
+      ZEnvironment(
+        (env.get[Client] @@ clientMiddleware(env.get[Tracing]) @@ env.get[OutboundGuard].aspect): Client,
+        env.get[OutboundGuard],
+      )
 
   def clientMiddleware(tracing: Tracing): ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
     new ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response]:
@@ -433,7 +530,8 @@ object Observability:
                   (duration, exit) = result
                   masking <- clientLogging.get
                   route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))
-                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit)
+                  internal <- internalCall.get
+                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit, internal)
                   response <- exit.unsandbox
                 yield response
 
@@ -455,90 +553,102 @@ object Observability:
       duration: Duration,
       masking: HttpObservabilityConfig.Client,
       exit: Exit[Cause[Any], Response],
+      internalCall: Boolean,
   ): UIO[Unit] =
-    val query = url.queryParams.map
-      .collect { case (k, vs) if masking.logQuery.contains(k) => s"$k=${vs.mkString(",")}" }
-      .toSeq
-    val maskedHeaders = headers.collect:
-      case h if h.headerName == Header.Authorization.name => s"${h.headerName}=${maskAuthorization(h.renderedValue)}"
-      case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
-    .toSeq
     val baseUri = url.kind match
       case loc: URL.Location.Absolute => s"${loc.scheme.encode}://${loc.host}:${loc.port}"
       case URL.Location.Relative => ""
     val peer = url.kind match
       case loc: URL.Location.Absolute => s"${loc.host}:${loc.port}"
       case URL.Location.Relative => "unknown"
-    val bodyEffect =
-      if masking.logRequestBody && body.isComplete then body.asString.asSome.orElseSucceed(None)
-      else ZIO.none
 
     val loggerName = logging.loggerName("versola.http.HttpClient")
     val seconds = duration.toNanos / 1e9
 
-    bodyEffect.flatMap { body =>
-      val requestLog = HttpClientRequestLog(
-        method = method.name,
-        baseUri = baseUri,
-        path = url.path.encode,
-        queryParams = query,
-        body = body,
-        headers = maskedHeaders,
-      )
+    // Only called for a line that will be written: collecting masked query/headers and the request body is most of
+    // what a line costs.
+    def requestLog: UIO[HttpClientRequestLog] =
+      val query = url.queryParams.map
+        .collect { case (k, vs) if masking.logQuery.contains(k) => s"$k=${vs.mkString(",")}" }
+        .toSeq
+      val maskedHeaders = headers.collect:
+        case h if h.headerName == Header.Authorization.name => s"${h.headerName}=${maskAuthorization(h.renderedValue)}"
+        case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
+      .toSeq
+      val bodyEffect =
+        if masking.logRequestBody && body.isComplete then body.asString.asSome.orElseSucceed(None)
+        else ZIO.none
+      bodyEffect.map: requestBody =>
+        HttpClientRequestLog(
+          method = method.name,
+          baseUri = baseUri,
+          path = url.path.encode,
+          queryParams = query,
+          body = requestBody,
+          headers = maskedHeaders,
+        )
 
-      exit match
-        case Exit.Failure(cause) =>
-          val failTags = Set(
-            MetricLabel("method", method.name),
-            MetricLabel("peer", peer),
-            MetricLabel("route", route),
-            MetricLabel("status_class", "error"),
-          )
-          val responseLog = HttpClientResponseLog(code = 500, body = None, headers = Seq.empty)
-          val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
-          clientRequestsCount.tagged(failTags).increment *>
-            clientRequestDuration.tagged(failTags).update(seconds) *>
-            (ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName)
-        case Exit.Success(response) =>
-          val status = response.status.code
-          val statusClass = s"${status / 100}xx"
-          val tags = Set(
-            MetricLabel("method", method.name),
-            MetricLabel("peer", peer),
-            MetricLabel("route", route),
-            MetricLabel("status", status.toString),
-            MetricLabel("status_class", statusClass),
-          )
-          val durationTags = Set(
-            MetricLabel("method", method.name),
-            MetricLabel("peer", peer),
-            MetricLabel("route", route),
-            MetricLabel("status_class", statusClass),
-          )
-          val bodyEffect =
-            if !masking.logResponseBody then ZIO.none
-            else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then ZIO.some("<html>")
-            else if response.body.isComplete then response.body.asString.asSome.orElseSucceed(None)
-            else ZIO.none
-          bodyEffect.flatMap: body =>
-            val responseLog = HttpClientResponseLog(
-              code = status,
-              body = body,
-              headers = response.headers.collect {
-                case h if masking.logResponseHeaders.contains(h.headerName) =>
-                  s"${h.headerName}=${h.renderedValue}"
-              }.toSeq,
-            )
+    exit match
+      case Exit.Failure(cause) =>
+        val failTags = Set(
+          MetricLabel("method", method.name),
+          MetricLabel("peer", peer),
+          MetricLabel("route", route),
+          MetricLabel("status_class", "error"),
+        )
+        clientRequestsCount.tagged(failTags).increment *>
+          clientRequestDuration.tagged(failTags).update(seconds) *>
+          requestLog.flatMap: requestLog =>
+            val responseLog = HttpClientResponseLog(code = 500, body = None, headers = Seq.empty)
             val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
-            clientRequestsCount.tagged(tags).increment *>
-              clientRequestDuration.tagged(durationTags).update(seconds) *>
-              (
-                if response.status.isServerError then
-                  ZIO.logError("send-http") @@ sendHttp(log) @@ loggerName
-                else
-                  ZIO.logInfo("send-http") @@ sendHttp(log) @@ loggerName
+            ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName
+      case Exit.Success(response) =>
+        val status = response.status.code
+        val statusClass = s"${status / 100}xx"
+        val tags = Set(
+          MetricLabel("method", method.name),
+          MetricLabel("peer", peer),
+          MetricLabel("route", route),
+          MetricLabel("status", status.toString),
+          MetricLabel("status_class", statusClass),
+        )
+        val durationTags = Set(
+          MetricLabel("method", method.name),
+          MetricLabel("peer", peer),
+          MetricLabel("route", route),
+          MetricLabel("status_class", statusClass),
+        )
+        // A successful call to one of our own services is DEBUG unless it was slow; a call to an external peer, and any
+        // failure, keeps INFO or above.
+        val level =
+          if response.status.isServerError then LogLevel.Error
+          else if status >= 400 || accessLog.get.isSlow(duration.toMillis) || !(internalCall || internalPeers.get.contains(peer)) then LogLevel.Info
+          else LogLevel.Debug
+        val write = level != LogLevel.Debug || logsDebug
+        val bodyEffect =
+          if !write || !masking.logResponseBody then ZIO.none
+          else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then ZIO.some("<html>")
+          else if response.body.isComplete then response.body.asString.asSome.orElseSucceed(None)
+          else ZIO.none
+        clientRequestsCount.tagged(tags).increment *>
+          clientRequestDuration.tagged(durationTags).update(seconds) *>
+          ZIO.when(write):
+            (requestLog <&> bodyEffect).flatMap: (requestLog, body) =>
+              val responseLog = HttpClientResponseLog(
+                code = status,
+                body = body,
+                headers = response.headers.collect {
+                  case h if masking.logResponseHeaders.contains(h.headerName) =>
+                    s"${h.headerName}=${h.renderedValue}"
+                }.toSeq,
               )
-    }
+              val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
+              val line = level match
+                case LogLevel.Error => ZIO.logError("send-http")
+                case LogLevel.Info => ZIO.logInfo("send-http")
+                case _ => ZIO.logDebug("send-http")
+              line @@ sendHttp(log) @@ loggerName
+          .unit
 
   @jsonMemberNames(SnakeCase)
   case class HttpClientRequestLog(
@@ -615,6 +725,18 @@ object Observability:
 
   object AuthDetails:
     val empty: AuthDetails = AuthDetails()
+
+  /** The antifraud check of a request. `decision` is the action taken (`Allow`, `Block`, `Fake`, ...), `rules` the
+    * names of the rules that fired; `outcome` is how the step ended and is set once it did. */
+  @jsonMemberNames(SnakeCase)
+  case class AntifraudDetails(
+      action: String,
+      decision: String,
+      score: Int,
+      rules: List[String],
+      destPrefix: Option[String],
+      outcome: Option[String],
+  ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key
     * (e.g. `otp_wrong`, `rate_limit_exceeded`, `service_unavailable`); `description` is

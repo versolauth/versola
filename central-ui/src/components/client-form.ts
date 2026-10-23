@@ -3,10 +3,11 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, FormPreviewScenario, FormRecord, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ThemeTokens, ResolvedThemeTokens } from '../types';
+import { createDefaultAuthFlow, createDefaultConsentFlow, DEFAULT_CONSENT_REMEMBER_DAYS, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
+import './client-consent-preview';
 import './client-kind-step';
 import {
   CLIENT_KINDS,
@@ -48,6 +49,9 @@ import {
   describeJwks,
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
+import { estStateSummary } from '../utils/est-state';
+import './theme-token-controls';
+import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
 
 /** The groups of settings the client page offers an Edit button for. */
@@ -60,9 +64,14 @@ export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   signin: 'Sign-in',
   tokens: 'Tokens',
   keys: 'Keys',
-  registration: 'Registration and consent',
+  registration: 'Ownership',
   branding: 'Branding and logout',
 };
+
+/** The overrides without absent members, so a spread of them does not blank a value with `undefined`. */
+function definedOverrides(overrides: ThemeOverrides | undefined): ThemeOverrides {
+  return Object.fromEntries(Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined));
+}
 
 @customElement('versola-client-form')
 export class VersolaClientForm extends LitElement {
@@ -75,13 +84,20 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
+  /** The built-in themes a theme is built on; empty from a central that has none, which hides the
+   *  client's own appearance, since there is then nothing to show it against. */
+  @property({ attribute: false }) availableThemePresets: ThemePreset[] = [];
+  /** The active consent form and the scenario of the preview catalog the appearance block draws; `null` when central has
+   *  no consent form, the catalog lacks it, or the console may not read them. The block then says so instead. */
+  @property({ attribute: false }) consentPreviewForm: FormRecord | null = null;
+  @property({ attribute: false }) consentPreviewScenario: FormPreviewScenario | null = null;
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   /** The profile the tenant's clients are held to; decides what a kind sets. */
   @property({ attribute: false }) securityProfile: SecurityProfile = 'fapi2';
   @property({ attribute: false }) availableRoles: Role[] = [];
   @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
-  /** The tenant's RFC 8705 section 6.5 certificate header, from Challenges & Security. `null`
+  /** The tenant's RFC 8705 section 6.5 certificate header, from Security › Tokens & keys. `null`
    *  means the tenant configured none, in which case an mTLS-authenticating client registered
    *  here could never actually authenticate - see
    *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
@@ -98,7 +114,6 @@ export class VersolaClientForm extends LitElement {
     theme: 'default',
     clientType: 'web',
     authFlow: createDefaultAuthFlow(),
-    registrationFlow: null,
     consentFlow: null,
     frontChannelLogoutSessionRequired: true,
     dpopBoundAccessTokens: false,
@@ -226,10 +241,10 @@ export class VersolaClientForm extends LitElement {
       .autocomplete-dropdown {
         width: 100%;
         box-sizing: border-box;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(var(--accent-tint), 0.08);
+        box-shadow: 0 8px 24px var(--surface-inset), 0 0 0 1px var(--accent-border);
         overflow: hidden;
         max-height: 220px;
         overflow-y: auto;
@@ -256,7 +271,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .autocomplete-option:hover {
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
       }
 
@@ -278,8 +293,8 @@ export class VersolaClientForm extends LitElement {
         align-items: center;
         gap: 0.5rem;
         padding: 0.375rem 0.75rem;
-        background: rgba(var(--accent-tint), 0.15);
-        border: 1px solid var(--border-dark);
+        background: var(--accent-subtle);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         color: var(--accent);
         font-size: 0.875rem;
@@ -309,7 +324,7 @@ export class VersolaClientForm extends LitElement {
         align-items: center;
         gap: 0.5rem;
         padding: 0.5rem;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         cursor: pointer;
         transition: all var(--transition-fast);
@@ -317,7 +332,7 @@ export class VersolaClientForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.05);
+        background: var(--accent-subtle);
       }
 
       .checkbox-item input[type="checkbox"] {
@@ -357,7 +372,7 @@ export class VersolaClientForm extends LitElement {
         border: 0;
         background: transparent;
         color: var(--accent);
-        font-size: 0.625rem;
+        font-size: var(--text-xs);
         font-weight: 700;
         line-height: 1;
         padding: 0;
@@ -370,9 +385,9 @@ export class VersolaClientForm extends LitElement {
         content: '';
         position: absolute;
         inset: 0.25rem;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         z-index: -1;
       }
 
@@ -391,30 +406,30 @@ export class VersolaClientForm extends LitElement {
       }
 
       .option-info-button:hover::before {
-        background: rgba(var(--accent-tint), 0.18);
-        border-color: rgba(var(--accent-tint), 0.55);
+        background: var(--accent-subtle);
+        border-color: var(--accent);
       }
 
       .option-info-button:focus-visible {
-        outline: none;
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
         border-radius: 999px;
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
       .option-tooltip {
         position: absolute;
         right: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         max-height: 18rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--surface-overlay);
-        box-shadow: var(--surface-overlay-shadow);
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-lg);
         display: none;
       }
 
@@ -460,7 +475,7 @@ export class VersolaClientForm extends LitElement {
 
       .option-claim-row,
       .option-tooltip-group {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         background: var(--surface-inset);
         padding: 0.625rem 0.75rem;
@@ -526,11 +541,11 @@ export class VersolaClientForm extends LitElement {
       }
 
       .ttl-unit-select:hover {
-        background: rgba(var(--accent-tint), 0.1);
+        background: var(--accent-subtle);
       }
 
       .ttl-unit-select:focus {
-        background: rgba(var(--accent-tint), 0.16);
+        background: var(--accent-subtle);
       }
 
       /* Custom dropdown indicator using pseudo-element */
@@ -546,7 +561,7 @@ export class VersolaClientForm extends LitElement {
         top: 50%;
         transform: translateY(-50%);
         color: var(--accent);
-        font-size: 0.625rem;
+        font-size: var(--text-xs);
         pointer-events: none;
       }
 
@@ -556,7 +571,7 @@ export class VersolaClientForm extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .secondary-action-button {
@@ -587,7 +602,7 @@ export class VersolaClientForm extends LitElement {
         font-size: 0.8125rem;
         padding: 0.25rem 0.625rem;
         border-radius: 999px;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         color: var(--text-secondary);
       }
 
@@ -600,7 +615,7 @@ export class VersolaClientForm extends LitElement {
         gap: 0.75rem;
         align-items: flex-start;
         padding: 0.75rem 0;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .locked-setting:first-child {
         border-top: none;
@@ -622,7 +637,7 @@ export class VersolaClientForm extends LitElement {
         font-size: 0.8125rem;
         padding: 0.125rem 0.625rem;
         border-radius: 999px;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         color: var(--text-secondary);
         white-space: nowrap;
       }
@@ -650,7 +665,7 @@ export class VersolaClientForm extends LitElement {
 
       .template-badge.drift {
         border-color: var(--warning);
-        background: rgba(210, 153, 34, 0.12);
+        background: var(--warning-subtle);
         color: var(--warning);
       }
 
@@ -665,7 +680,7 @@ export class VersolaClientForm extends LitElement {
 
       .drift-panel {
         border-left: 3px solid var(--warning);
-        background: rgba(210, 153, 34, 0.08);
+        background: var(--warning-subtle);
         border-radius: var(--radius-sm);
         padding: 1rem 1.25rem;
         margin-bottom: var(--spacing-lg);
@@ -713,7 +728,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .edit-section {
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
 
       .edit-section-head {
@@ -753,23 +768,23 @@ export class VersolaClientForm extends LitElement {
       }
 
       .section-tag {
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 500;
         padding: 0.15rem 0.5rem;
         border-radius: var(--radius-sm);
-        background: rgba(139, 148, 158, 0.15);
+        background: var(--surface-inset);
         color: var(--text-secondary);
       }
 
       .section-tag.changed {
-        background: rgba(210, 153, 34, 0.15);
+        background: var(--warning-subtle);
         color: var(--warning);
       }
 
       .flow-subsection {
         margin-top: 0.875rem;
         padding-top: 0.875rem;
-        border-top: 1px dashed var(--border-dark);
+        border-top: 1px dashed var(--border-default);
       }
 
       .flow-subsection:first-of-type {
@@ -811,7 +826,7 @@ export class VersolaClientForm extends LitElement {
         justify-content: center;
         text-align: center;
         padding: 0.625rem 0.75rem;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         background: transparent;
         color: var(--text-primary);
@@ -823,12 +838,12 @@ export class VersolaClientForm extends LitElement {
 
       .cred-mode-card:hover {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.05);
+        background: var(--accent-subtle);
       }
 
       .cred-mode-card.selected {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
       }
 
       .cred-mode-card:disabled {
@@ -837,7 +852,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .cred-mode-card:disabled:hover {
-        border-color: var(--border-dark);
+        border-color: var(--border-default);
         background: transparent;
       }
 
@@ -847,20 +862,37 @@ export class VersolaClientForm extends LitElement {
 
       .cred-mode-card.selected:disabled:hover {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
       }
+
+      .appearance {
+        margin-top: var(--spacing-lg);
+        padding: var(--spacing-md);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-md);
+      }
+      .appearance-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-xs, 0.25rem);
+      }
+      .appearance-head h3 { margin: 0; font-size: 0.9375rem; }
+      .appearance-sub { font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
+      .appearance .link-button { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
       .cred-options {
         margin-top: 0.75rem;
         padding-top: 0.75rem;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .otp-settings-grid {
         display: grid;
         gap: 0.75rem;
         padding-top: 0.875rem;
-        border-top: 1px dashed var(--border-dark);
+        border-top: 1px dashed var(--border-default);
       }
 
       .otp-settings-section {
@@ -885,7 +917,7 @@ export class VersolaClientForm extends LitElement {
       .logout-settings-title {
         margin-bottom: 0.875rem;
         padding-bottom: 0.875rem;
-        border-bottom: 1px dashed var(--border-dark);
+        border-bottom: 1px dashed var(--border-default);
       }
 
       .plain-checkboxes {
@@ -926,7 +958,7 @@ export class VersolaClientForm extends LitElement {
         gap: 0.75rem;
         margin-top: 0.75rem;
         padding-top: 0.75rem;
-        border-top: 1px dashed var(--border-dark);
+        border-top: 1px dashed var(--border-default);
       }
 
       .registration-row {
@@ -970,9 +1002,9 @@ export class VersolaClientForm extends LitElement {
         min-height: 2.5rem;
         box-sizing: border-box;
         padding: 0.625rem 0.75rem;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
         color: var(--text-primary);
         font-family: var(--font-mono);
         font-size: 0.875rem;
@@ -987,9 +1019,9 @@ export class VersolaClientForm extends LitElement {
         min-height: 2.5rem;
         box-sizing: border-box;
         padding: 0.625rem 0.75rem;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
       }
 
       .registration-lock {
@@ -1053,7 +1085,7 @@ export class VersolaClientForm extends LitElement {
         position: absolute;
         inset: 0;
         background: var(--toggle-track-off);
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: 9999px;
         transition: background 0.2s, border-color 0.2s;
       }
@@ -1074,7 +1106,7 @@ export class VersolaClientForm extends LitElement {
       }
       .toggle:has(input:checked)::after {
         transform: translateX(16px);
-        background: #fff;
+        background: var(--on-accent);
       }
 
       .wizard-steps {
@@ -1084,7 +1116,7 @@ export class VersolaClientForm extends LitElement {
         flex-wrap: wrap;
         padding-bottom: var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
       .wizard-step {
         display: inline-flex;
@@ -1104,13 +1136,13 @@ export class VersolaClientForm extends LitElement {
         width: 1.35rem;
         height: 1.35rem;
         border-radius: 50%;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         font-size: 0.75rem;
       }
       .wizard-step.active .wizard-step-dot {
         border-color: var(--accent);
         background: var(--accent);
-        color: #fff;
+        color: var(--on-accent);
       }
       .wizard-step.done .wizard-step-dot {
         border-color: var(--success);
@@ -1120,7 +1152,7 @@ export class VersolaClientForm extends LitElement {
         flex: 1 1 1rem;
         min-width: 1rem;
         height: 1px;
-        background: var(--border-dark);
+        background: var(--border-default);
       }
 
       .wizard-head {
@@ -1152,11 +1184,11 @@ export class VersolaClientForm extends LitElement {
         margin-top: var(--spacing-lg);
       }
       .wizard-note {
-        background: rgba(var(--accent-tint), 0.07);
-        border-left: 3px solid var(--border-dark);
+        background: var(--accent-subtle);
+        border-left: 3px solid var(--border-default);
       }
       .wizard-warn {
-        background: rgba(var(--warning-tint, 180, 83, 9), 0.08);
+        background: var(--warning-subtle);
         border-left: 3px solid var(--warning);
       }
       .wizard-note strong,
@@ -1178,7 +1210,7 @@ export class VersolaClientForm extends LitElement {
       }
       .review-tier-badge.high {
         color: var(--success);
-        background: rgba(var(--success-tint, 22, 163, 74), 0.12);
+        background: var(--success-subtle);
       }
       .review-change {
         background: none;
@@ -1201,7 +1233,7 @@ export class VersolaClientForm extends LitElement {
         grid-template-columns: minmax(10rem, 16rem) 1fr;
         gap: 0.75rem;
         padding: 0.625rem var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
         font-size: 0.875rem;
       }
       .review-group > :last-child {
@@ -1218,15 +1250,15 @@ export class VersolaClientForm extends LitElement {
         color: var(--text-secondary);
       }
       .review-banner {
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-inner);
         padding: var(--spacing-md) var(--spacing-lg);
-        background: var(--bg-dark-card);
+        background: var(--surface);
         color: var(--text-primary);
       }
       .review-banner.ok {
         border-color: var(--success);
-        background: rgba(63, 185, 80, 0.08);
+        background: var(--success-subtle);
       }
       .review-banner-title {
         display: flex;
@@ -1293,9 +1325,9 @@ export class VersolaClientForm extends LitElement {
         margin-bottom: 0.9rem;
       }
       .wizard-section {
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-lg);
-        background: var(--bg-dark-card);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-inner);
+        background: var(--surface);
         margin-top: var(--spacing-lg);
         overflow: hidden;
       }
@@ -1305,7 +1337,7 @@ export class VersolaClientForm extends LitElement {
         align-items: flex-start;
         gap: var(--spacing-md);
         padding: var(--spacing-md) var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
       .wizard-section-title {
         margin: 0;
@@ -1337,7 +1369,7 @@ export class VersolaClientForm extends LitElement {
       }
       .wizard-rule {
         border: none;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         margin: var(--spacing-lg) 0 0;
       }
       .wizard-group {
@@ -1346,15 +1378,15 @@ export class VersolaClientForm extends LitElement {
 
       .seg {
         display: inline-flex;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-sm);
         overflow: hidden;
       }
       .seg button {
         padding: 0.5rem 0.9rem;
-        background: var(--bg-dark);
+        background: var(--bg-page);
         border: none;
-        border-right: 1px solid var(--border-dark);
+        border-right: 1px solid var(--border-input);
         color: var(--text-secondary);
         font-family: var(--font-mono);
         font-size: 0.8125rem;
@@ -1364,7 +1396,7 @@ export class VersolaClientForm extends LitElement {
         border-right: none;
       }
       .seg button[aria-pressed='true'] {
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-weight: 600;
       }
@@ -1379,7 +1411,7 @@ export class VersolaClientForm extends LitElement {
         font-size: 0.8125rem;
         padding: 0.28rem 0.6rem;
         border-radius: 999px;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         background: none;
         color: var(--text-secondary);
         cursor: pointer;
@@ -1387,7 +1419,7 @@ export class VersolaClientForm extends LitElement {
       .chip[aria-pressed='true'] {
         border-color: var(--accent);
         color: var(--accent);
-        background: rgba(var(--accent-tint), 0.1);
+        background: var(--accent-subtle);
       }
       .chip.fixed {
         border-style: dashed;
@@ -1419,11 +1451,11 @@ export class VersolaClientForm extends LitElement {
         height: 1rem;
         border-radius: var(--radius-sm);
         margin-top: 0.15rem;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         display: grid;
         place-items: center;
-        font-size: 0.7rem;
-        color: #fff;
+        font-size: var(--text-xs);
+        color: var(--on-accent);
       }
       .check-row.on .box {
         background: var(--accent);
@@ -1439,12 +1471,12 @@ export class VersolaClientForm extends LitElement {
         gap: var(--spacing-md);
       }
       .path {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         padding: 0.85rem 0.9rem;
       }
       .path.alt {
-        background: rgba(var(--accent-tint), 0.04);
+        background: var(--accent-subtle);
       }
       .path-head {
         display: flex;
@@ -1455,11 +1487,11 @@ export class VersolaClientForm extends LitElement {
         margin-bottom: 0.5rem;
       }
       .path-tag {
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 500;
         padding: 0.1rem 0.4rem;
         border-radius: var(--radius-sm);
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
       }
 
@@ -1479,7 +1511,7 @@ export class VersolaClientForm extends LitElement {
       }
       .opt-chevron {
         color: var(--text-secondary);
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         width: 0.8rem;
       }
       .opt-title {
@@ -1572,7 +1604,7 @@ export class VersolaClientForm extends LitElement {
       }
       details.advanced {
         margin-top: var(--spacing-md);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding-top: 0.75rem;
       }
       details.advanced > summary {
@@ -1658,7 +1690,7 @@ export class VersolaClientForm extends LitElement {
       }
     }
 
-    if (this.isAccessTokenTtlInvalid) {
+    if (this.isAccessTokenTtlInvalid || this.themeBrandInvalid) {
       return;
     }
 
@@ -1694,12 +1726,6 @@ export class VersolaClientForm extends LitElement {
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
-    const registrationCredential = this.authFlow.primaryCredentials.find(
-      credential => credential === 'phone' || credential === 'email',
-    ) as RegistrationCredential | undefined;
-    const registrationFlow = this.registrationSupported && this.formData.registrationFlow && registrationCredential
-      ? { ...this.formData.registrationFlow, credential: registrationCredential }
-      : null;
     const scope = this.formData.scope || [];
     const hasOfflineAccess = scope.includes('offline_access');
     const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
@@ -1751,7 +1777,6 @@ export class VersolaClientForm extends LitElement {
       theme: authFlowTheme,
       otpTemplateId: authFlowOtpTemplateId,
       authFlow,
-      registrationFlow,
       frontChannelLogoutUri: frontChannelLogoutUri || null,
       frontChannelLogoutSessionRequired: frontChannelLogoutUri
         ? !!this.formData.frontChannelLogoutSessionRequired
@@ -1776,6 +1801,8 @@ export class VersolaClientForm extends LitElement {
       template: this.client?.template ?? (this.kind ? { kind: this.kind } : null),
       edgeFronted: !this.client && this.clientCredentialMode === 'edge',
       createdAt: this.client?.createdAt ?? null,
+      // Only an app that asks for consent has an appearance of its own (central refuses overrides otherwise).
+      themeOverrides: authFlow && this.formData.consentFlow ? this.formData.themeOverrides ?? null : null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -1890,7 +1917,7 @@ export class VersolaClientForm extends LitElement {
 
   private async loadServerDpopAlgs() {
     try {
-      const advertised = (await fetchServerMetadata()).dpop_signing_alg_values_supported;
+      const advertised = (await fetchServerMetadata())?.dpop_signing_alg_values_supported;
       if (Array.isArray(advertised) && advertised.every(alg => typeof alg === 'string')) {
         this.serverDpopAlgs = advertised as string[];
       }
@@ -2396,7 +2423,6 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       authFlow: enablingAuthFlow ? createDefaultAuthFlow() : null,
-      registrationFlow: enablingAuthFlow ? this.formData.registrationFlow ?? null : null,
       scope: enablingAuthFlow
         ? (this.formData.scope || [])
         : (this.formData.scope || []).filter(scope => scope !== 'openid'),
@@ -2426,15 +2452,9 @@ export class VersolaClientForm extends LitElement {
 
   private setAuthFlow(patch: Partial<AuthFlow>) {
     const nextAuthFlow = { ...this.authFlow, ...patch };
-    const nextCredential = nextAuthFlow.primaryCredentials.find(
-      credential => credential === 'phone' || credential === 'email',
-    ) as RegistrationCredential | undefined;
     this.formData = {
       ...this.formData,
       authFlow: nextAuthFlow,
-      registrationFlow: this.formData.registrationFlow && nextCredential
-        ? { ...this.formData.registrationFlow, credential: nextCredential }
-        : this.formData.registrationFlow,
     };
     if (this.authFlowError) {
       this.authFlowError = '';
@@ -2452,54 +2472,6 @@ export class VersolaClientForm extends LitElement {
     }
 
     return '';
-  }
-
-  /** Registration needs a phone/email entry credential to prove ownership of. */
-  private get registrationSupported(): boolean {
-    return this.hasAuthFlow && this.credentialMode === 'phone-email' && !this.authFlow.inlinePassword;
-  }
-
-  private get hasRegistrationFlow(): boolean {
-    return this.formData.registrationFlow != null;
-  }
-
-  private get registrationFlow(): RegistrationFlow {
-    return this.formData.registrationFlow ?? createDefaultRegistrationFlow();
-  }
-
-  private setRegistrationFlow(patch: Partial<RegistrationFlow>) {
-    this.formData = {
-      ...this.formData,
-      registrationFlow: { ...this.registrationFlow, ...patch },
-    };
-  }
-
-  /** The optional challenge that follows OTP; the admin picks at most one. */
-  private get registrationChallenge(): 'none' | 'setPassword' | 'passkeyEnroll' {
-    const challenge = this.registrationFlow.steps.find(step => step.type !== 'otp');
-    return (challenge?.type as 'setPassword' | 'passkeyEnroll') ?? 'none';
-  }
-
-  private setRegistrationChallenge(challenge: 'none' | 'setPassword' | 'passkeyEnroll') {
-    const steps: { type: RegistrationStepType }[] = [{ type: 'otp' }];
-    if (challenge !== 'none') steps.push({ type: challenge });
-    this.setRegistrationFlow({ steps });
-  }
-
-  private toggleRegistrationEnabled() {
-    this.formData = {
-      ...this.formData,
-      registrationFlow: this.hasRegistrationFlow ? null : createDefaultRegistrationFlow(),
-    };
-  }
-
-  private toggleRegistrationRole(roleId: string) {
-    const roleIds = this.registrationFlow.roleIds;
-    this.setRegistrationFlow({
-      roleIds: roleIds.includes(roleId)
-        ? roleIds.filter(id => id !== roleId)
-        : [...roleIds, roleId],
-    });
   }
 
   private get hasConsentFlow(): boolean {
@@ -2532,7 +2504,10 @@ export class VersolaClientForm extends LitElement {
   private toggleConsentEnabled() {
     if (this.consentLocked) return;
     const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
-    this.formData = { ...this.formData, consentFlow };
+    // The appearance block goes with the consent flow, and so must what was set in it.
+    // Creating a first-party app offers no branding, so a theme picked for a partner does not stay behind.
+    this.formData = { ...this.formData, consentFlow, ...(consentFlow ? {} : { themeOverrides: null, ...(this.client ? {} : { theme: 'default' }) }) };
+    if (!consentFlow) this.themeBrandInvalid = false;
     this.syncPartnerTemplate();
   }
 
@@ -2555,7 +2530,7 @@ export class VersolaClientForm extends LitElement {
   }
 
   private setConsentRemember(mode: 'forever' | 'days') {
-    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : 180 });
+    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : DEFAULT_CONSENT_REMEMBER_DAYS });
   }
 
   private get credentialMode(): 'phone-email' | 'login-password' {
@@ -2590,8 +2565,6 @@ export class VersolaClientForm extends LitElement {
       inlinePassword: true,
       factors: this.withPasskeyEnroll(otp ? [otp] : []),
     });
-    // Registration has no credential to verify in a login+password flow.
-    this.formData = { ...this.formData, registrationFlow: null };
   }
 
   private setOtpType(otpType: 'sms' | 'email') {
@@ -3341,20 +3314,6 @@ export class VersolaClientForm extends LitElement {
             <button type="button" aria-pressed=${primary === 'phone'} @click=${() => this.selectPhoneEmailMode('phone')}>Phone</button>
             <button type="button" aria-pressed=${primary === 'login'} @click=${() => this.selectLoginPasswordMode()}>Login + password</button>
           </div>
-          ${primary === 'login' ? html`
-            <div class="plan">
-              ${this.renderPlanLine(
-                'na',
-                'Users cannot sign themselves up',
-                'Sign-up verifies ownership of an email or a phone. A login has neither, so accounts are created in Central.',
-              )}
-            </div>
-          ` : this.renderCheckRow(
-            this.hasRegistrationFlow,
-            'Let users sign themselves up',
-            `The ${primary} is the credential whose ownership is verified. Off means accounts are created in Central.`,
-            () => this.toggleRegistrationEnabled(),
-          )}
         </div>
 
         <div class="path alt">
@@ -3458,20 +3417,30 @@ export class VersolaClientForm extends LitElement {
       )}
 
       ${this.wizardSection(
-        'Consent',
-        'No prompt is the normal choice for an app you own.',
+        'Ownership',
+        'Whose app this is decides whether its users are asked for consent.',
         html`
-        <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
+        <div class="seg" role="group" aria-label="Who the app belongs to" style="margin-bottom:.6rem">
           <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
-            First party, no prompt
+            First party app
           </button>
           <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
-            Ask for consent
+            Partner app
           </button>
         </div>
+        <div class="hint" style="margin:0 0 ${this.hasConsentFlow ? '.9rem' : '0'}">
+          ${this.hasConsentFlow
+            ? 'Someone else\'s app: users are asked for consent, its SMS codes name the app, and consent cannot be turned off once the client is created.'
+            : 'Your own app: users are not asked for consent. Pick Partner app for an app that belongs to someone else.'}
+        </div>
         ${this.hasConsentFlow ? html`
-          <div class="hint" style="margin:-.4rem 0 .9rem">This makes the client a partner: its SMS codes name the app, and consent cannot be turned off once the client is created.</div>
           ${this.renderWizardConsentSettings()}
+          ${this.hasAuthFlow ? html`
+            <div class="wizard-group-head" style="font-size:.875rem;margin-top:var(--spacing-md)">Branding</div>
+            <div class="wizard-group-sub">How the sign-in and consent screens look for this partner's users.</div>
+            ${this.renderThemeSelect()}
+            ${this.renderAppearance()}
+          ` : ''}
         ` : ''}
         `,
       )}
@@ -3482,16 +3451,10 @@ export class VersolaClientForm extends LitElement {
   private renderWizardConsentSettings() {
     const days = this.consentFlow.rememberDurationDays;
     const remember = days == null ? 'forever' : String(days);
+    const presetDays = ['30', '90', 'forever', '0'];
     return html`
       <div class="path alt" style="padding:1rem">
-        ${this.renderCheckRow(
-          this.consentFlow.allowPartial,
-          'Let the user grant part of it',
-          'Off is the default - all or nothing. On lets optional scopes be unticked.',
-          () => this.setConsentFlow({ allowPartial: !this.consentFlow.allowPartial }),
-        )}
-
-        <div class="wizard-field inline-field" style="margin-top:.7rem">
+        <div class="wizard-field inline-field">
           <label for="consent-remember">Reuse the grant for</label>
           <select
             id="consent-remember"
@@ -3506,8 +3469,18 @@ export class VersolaClientForm extends LitElement {
             <option value="90" ?selected=${remember === '90'}>90 days</option>
             <option value="forever" ?selected=${remember === 'forever'}>Until the user revokes it</option>
             <option value="0" ?selected=${remember === '0'}>Ask every time</option>
+            ${presetDays.includes(remember) ? '' : html`<option value=${remember} selected>${remember} days</option>`}
           </select>
           <div class="hint">How long before the same scopes are asked for again.</div>
+        </div>
+
+        <div style="margin-top:.7rem">
+          ${this.renderCheckRow(
+          this.consentFlow.allowPartial,
+          'Let the user grant part of it',
+          'Off is the default - all or nothing. On lets optional scopes be unticked.',
+          () => this.setConsentFlow({ allowPartial: !this.consentFlow.allowPartial }),
+        )}
         </div>
 
         <hr class="wizard-rule" style="margin:var(--spacing-md) 0" />
@@ -3595,8 +3568,10 @@ export class VersolaClientForm extends LitElement {
         return this.clientType === 'native'
           ? 'tls_client_auth · certificate enrolled by edge'
           : 'tls_client_auth · certificate issued by central for edge';
-      case 'mtls':
-        return `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+      case 'mtls': {
+        const summary = `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
+        return this.client?.est ? `${summary} · ${estStateSummary(this.client.est)}` : summary;
+      }
       case 'mtls-self-signed':
         return 'self_signed_tls_client_auth · matched against the registered key set';
       case 'private-key-jwt':
@@ -3745,13 +3720,12 @@ export class VersolaClientForm extends LitElement {
             ${this.renderReviewGroup('Sign-in', 3, [
               ['First screen', this.hasAuthFlow ? this.firstScreenSummary : 'no sign-in flow', !this.hasAuthFlow],
               ['Passkey', this.authFlow.passkey ? 'offered as an alternative' : 'not offered', !this.authFlow.passkey],
-              ['Self-service sign-up', this.hasRegistrationFlow ? 'on' : 'off - accounts come from Central', !this.hasRegistrationFlow],
             ])}
             ${this.renderReviewGroup('Scopes', 3, [
               ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
             ])}
-            ${this.renderReviewGroup('Consent', 3, [
-              ['Consent', this.hasConsentFlow ? 'asked' : 'first party, no prompt', !this.hasConsentFlow],
+            ${this.renderReviewGroup('Ownership', 3, [
+              ['Ownership', this.hasConsentFlow ? 'partner, users are asked for consent' : 'first party', !this.hasConsentFlow],
             ])}
             ${this.renderReviewGroup('Logout', 2, [
               ['Logout notice', this.logoutMode === 'none' ? 'none' : `${this.logoutMode}-channel`, this.logoutMode === 'none'],
@@ -3869,7 +3843,7 @@ export class VersolaClientForm extends LitElement {
       case 'keys':
         return html`<div class="form-group">${this.renderJwksField()}</div>`;
       case 'registration':
-        return html`${this.renderRegistrationSection()}${this.renderConsentSection()}`;
+        return this.renderConsentSection();
       case 'branding':
         return html`${this.renderThemeField()}${this.hasAuthFlow ? this.renderLogoutSettings() : ''}`;
     }
@@ -3897,7 +3871,8 @@ export class VersolaClientForm extends LitElement {
 
           <div class="form-actions">
             <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
-            <button type="submit" class="btn btn-primary">Save ${title.toLowerCase()}</button>
+            ${this.themeBrandInvalid ? html`<span class="error-message" role="alert">Fix the brand colour (#rrggbb) before saving.</span>` : ''}
+            <button type="submit" class="btn btn-primary" ?disabled=${this.themeBrandInvalid}>Save ${title.toLowerCase()}</button>
           </div>
         </form>
       </div>
@@ -4558,119 +4533,73 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
-  /** Self-service sign-up, only offered when a phone or email credential can prove ownership. */
-  private renderRegistrationSection() {
-    return html`
-            ${this.registrationSupported ? html`
-              <div class="form-group">
-                <div class="flow-toggle-row">
-                  <label style="margin: 0; line-height: 18px;">Registration</label>
-                  <label class="toggle">
-                    <input
-                      type="checkbox"
-                      .checked=${this.hasRegistrationFlow}
-                      @change=${() => this.toggleRegistrationEnabled()}
-                    />
-                  </label>
-                </div>
-
-                ${this.hasRegistrationFlow ? html`
-                  <div class="registration-settings">
-                    <div class="registration-row">
-                      <div class="registration-label">Credential</div>
-                      <div>
-                        <div class="registration-value" aria-label="Registration credential (locked)">
-                          <span>${this.authFlow.primaryCredentials[0]}</span>
-                          <span class="registration-lock" aria-hidden="true" title="Locked">🔒</span>
-                        </div>
-                        <div class="registration-hint">
-                          New users prove ownership of their ${this.authFlow.primaryCredentials[0]} with an OTP.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="registration-row">
-                      <label class="registration-label" for="registration-challenge">Challenge</label>
-                      <select
-                        id="registration-challenge"
-                        class="compact-input"
-                        .value=${this.registrationChallenge}
-                        @change=${(e: Event) =>
-                          this.setRegistrationChallenge((e.target as HTMLSelectElement).value as 'none' | 'setPassword' | 'passkeyEnroll')}
-                      >
-                        <option value="none" ?selected=${this.registrationChallenge === 'none'}>none</option>
-                        <option value="setPassword" ?selected=${this.registrationChallenge === 'setPassword'}>set password</option>
-                        <option value="passkeyEnroll" ?selected=${this.registrationChallenge === 'passkeyEnroll'}>enroll passkey</option>
-                      </select>
-                    </div>
-
-                    <div class="registration-row">
-                      <div class="registration-label">Assigned roles *</div>
-                      <div>
-                        <div class="registration-role-list" role="group" aria-label="Assigned roles">
-                          ${this.availableRoles.length === 0
-                            ? this.registrationFlow.roleIds.map(roleId => html`
-                              <label class="plain-checkbox-label">
-                                <input type="checkbox" checked disabled />
-                                ${roleId}
-                              </label>
-                            `)
-                            : this.availableRoles.map(role => {
-                              const checked = this.registrationFlow.roleIds.includes(role.id);
-                              return html`
-                                <label class="plain-checkbox-label">
-                                  <input
-                                    type="checkbox"
-                                    .checked=${checked}
-                                    ?disabled=${checked && this.registrationFlow.roleIds.length === 1}
-                                    @change=${() => this.toggleRegistrationRole(role.id)}
-                                  />
-                                  ${role.id}
-                                </label>
-                              `;
-                            })}
-                        </div>
-                        <div class="registration-hint">Granted once, when the account is created.</div>
-                      </div>
-                    </div>
-                  </div>
-                ` : ''}
-              </div>
-            ` : ''}
-    `;
-  }
-
   private renderConsentSection() {
     return html`
             ${this.hasAuthFlow ? html`
               <div class="form-group">
                 <div class="flow-toggle-row">
-                  <label style="margin: 0; line-height: 18px;">Consent</label>
+                  <span style="margin: 0; line-height: 18px; font-weight: 600;" id="ownership-label">Ownership</span>
                   ${this.renderOptionInfo(
                     'consent',
-                    'Consent screen',
-                    html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
-                    'Consent settings info',
+                    'Ownership',
+                    html`<div class="option-tooltip-item">A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.</div>`,
+                    'Ownership info',
                   )}
-                  ${this.consentLocked ? html`
-                    ${this.statusIcon('lock', 'locked-icon')}
-                    <span class="locked-state on">Always on</span>
-                  ` : html`
-                    <label class="toggle">
-                      <input
-                        type="checkbox"
-                        .checked=${this.hasConsentFlow}
-                        @change=${() => this.toggleConsentEnabled()}
-                      />
-                    </label>
-                  `}
+                  ${this.consentLocked ? this.statusIcon('lock', 'locked-icon') : ''}
+                </div>
+                <div class="seg" role="group" aria-labelledby="ownership-label" style="margin-top:.5rem">
+                  <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
+                    First party app
+                  </button>
+                  <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
+                    Partner app
+                  </button>
                 </div>
                 ${this.consentLocked ? html`
-                  <div class="hint" style="margin-top:.35rem">A partner client asks users for consent for good: this cannot be turned off.</div>
+                  <div class="hint" style="margin-top:.35rem">A partner app asks users for consent for good: it cannot be made a first party app.</div>
                 ` : ''}
 
                 ${this.hasConsentFlow ? html`
                   <div class="registration-settings">
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-remember">Remember</label>
+                        ${this.renderOptionInfo(
+                          'consent-remember',
+                          'Remember grant',
+                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
+                          'Remember consent info',
+                        )}
+                      </div>
+                      <div>
+                        <div class="consent-remember-row">
+                          <select
+                            id="consent-remember"
+                            class="compact-input"
+                            .value=${this.consentRemember}
+                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
+                          >
+                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
+                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
+                          </select>
+                          ${this.consentRemember === 'days' ? html`
+                            <input
+                              class="compact-input"
+                              type="number"
+                              min="1"
+                              aria-label="Remember duration in days"
+                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
+                              @input=${(e: Event) => this.setConsentFlow({
+                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                              })}
+                            />
+                            <span class="registration-hint">days</span>
+                          ` : ''}
+                        </div>
+                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
+                      </div>
+                    </div>
+
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">
                         <span>Partial grants</span>
@@ -4746,45 +4675,6 @@ export class VersolaClientForm extends LitElement {
                         </div>
                       </div>
                     ` : ''}
-
-                    <div class="registration-row">
-                      <div class="registration-label consent-property-label">
-                        <label for="consent-remember">Remember</label>
-                        ${this.renderOptionInfo(
-                          'consent-remember',
-                          'Remember grant',
-                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
-                          'Remember consent info',
-                        )}
-                      </div>
-                      <div>
-                        <div class="consent-remember-row">
-                          <select
-                            id="consent-remember"
-                            class="compact-input"
-                            .value=${this.consentRemember}
-                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
-                          >
-                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
-                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
-                          </select>
-                          ${this.consentRemember === 'days' ? html`
-                            <input
-                              class="compact-input"
-                              type="number"
-                              min="1"
-                              aria-label="Remember duration in days"
-                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
-                              @input=${(e: Event) => this.setConsentFlow({
-                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
-                              })}
-                            />
-                            <span class="registration-hint">days</span>
-                          ` : ''}
-                        </div>
-                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
-                      </div>
-                    </div>
 
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">
@@ -4910,7 +4800,13 @@ export class VersolaClientForm extends LitElement {
   private renderThemeField() {
     return html`
 
-            ${this.hasAuthFlow ? html`
+            ${this.hasAuthFlow ? this.renderThemeSelect() : ''}
+            ${this.hasAuthFlow && this.hasConsentFlow ? this.renderAppearance() : ''}
+    `;
+  }
+
+  private renderThemeSelect() {
+    return html`
             <div class="form-group">
               <label for="client-theme">Forms Theme</label>
               <select
@@ -4926,7 +4822,82 @@ export class VersolaClientForm extends LitElement {
                   `)}
               </select>
             </div>
-            ` : ''}
+    `;
+  }
+
+  /** The tokens of the theme the client uses, which its own overrides are laid over. A theme stored with CSS and no
+   *  tokens has none to read: the block then shows nothing as inherited and writes every choice as an override. */
+  private get themeBase(): { tokens?: ResolvedThemeTokens; cssOnly: boolean } | null {
+    const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
+    const preset = (id: string) => this.availableThemePresets.find(p => p.id === id)?.tokens;
+    const own = record?.tokens ? preset(record.tokens.base) : undefined;
+    if (record?.tokens && own) {
+      return { tokens: { ...own, ...definedOverrides(record.tokens.overrides) }, cssOnly: false };
+    }
+    // The values of a CSS-only theme are not known, so none are claimed; a theme not found yet falls back to the default preset.
+    if (record && !record.tokens) return { cssOnly: true };
+    const fallback = preset('versola');
+    return fallback ? { tokens: fallback, cssOnly: false } : null;
+  }
+
+  /** What central is asked to render for the preview: the theme the client uses (a theme stored with CSS only has no tokens), and a
+   *  built-in default look while the theme is not found yet. */
+  private get previewTheme(): { tokens: ThemeTokens | null; css: string } {
+    const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
+    if (!record) return { tokens: { base: 'versola' }, css: '' };
+    return { tokens: record.tokens ?? null, css: record.css };
+  }
+
+  /** The colour scheme the client's look is fixed to, if it is: the preview has no dark variant to switch on then. */
+  private previewFixedMode(base: { tokens?: ResolvedThemeTokens }, overrides: ThemeOverrides): 'light' | 'dark' | null {
+    const mode = overrides.mode ?? base.tokens?.mode;
+    return mode === 'light' || mode === 'dark' ? mode : null;
+  }
+
+  /** The scheme the appearance preview shows, which the background thumbnails are drawn in. */
+  @state() private previewScheme: 'light' | 'dark' | '' = '';
+
+  /** The brand colour field of the appearance block holds text that is not a #rrggbb colour. */
+  @state() private themeBrandInvalid = false;
+
+  private setThemeOverrides(change: OverridesChange) {
+    this.themeBrandInvalid = change.brandInvalid;
+    const empty = Object.keys(change.overrides).length === 0;
+    this.formData = { ...this.formData, themeOverrides: empty ? null : change.overrides };
+  }
+
+  private clearThemeOverrides() {
+    this.renderRoot.querySelector<VersolaThemeTokenControls>('versola-theme-token-controls')?.clearBrandText();
+    this.setThemeOverrides({ overrides: {}, brandInvalid: false });
+  }
+
+  private renderAppearance() {
+    const base = this.themeBase;
+    if (!base) return '';
+    const overrides: ThemeOverrides = this.formData.themeOverrides ?? {};
+    const count = Object.keys(overrides).length;
+    return html`
+      <section class="appearance" aria-labelledby="client-appearance-title">
+        <div class="appearance-head">
+          <h3 id="client-appearance-title">Appearance for this app</h3>
+          ${count > 0 ? html`<button type="button" class="link-button" @click=${() => this.clearThemeOverrides()}>Clear overrides</button>` : ''}
+        </div>
+        <div class="appearance-sub">
+          ${count === 0
+            ? 'This app uses the theme as it is.'
+            : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
+          ${base.cssOnly ? ' The theme is only custom CSS: what is set here is applied on top of it, and its own values are not shown.' : ''}
+        </div>
+        <versola-client-consent-preview
+          .form=${this.consentPreviewForm} .scenario=${this.consentPreviewScenario}
+          .tokens=${this.previewTheme.tokens} .themeCss=${this.previewTheme.css} .overrides=${overrides}
+          .fixedMode=${this.previewFixedMode(base, overrides)}
+          @scheme-change=${(e: CustomEvent<'light' | 'dark'>) => { this.previewScheme = e.detail; }}
+          .clientName=${this.formData.clientName ?? {}} .logoUri=${this.formData.logoUri ?? ''} .locales=${this.locales}></versola-client-consent-preview>
+        <versola-theme-token-controls inheritedNote="From the theme"
+          .base=${base.tokens} ?cssOnly=${base.cssOnly} .scheme=${this.previewScheme} .overrides=${overrides}
+          @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
+      </section>
     `;
   }
 

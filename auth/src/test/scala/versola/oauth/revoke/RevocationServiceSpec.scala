@@ -60,7 +60,6 @@ object RevocationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -78,6 +77,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

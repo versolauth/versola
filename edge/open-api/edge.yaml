@@ -28,7 +28,9 @@ info:
       for native clients.
     * **Operations** — `/liveness`, `/readiness` and `/metrics`, served on the separate
       diagnostics port (`DPORT`, default 8081) rather than the public one, and, outside
-      production only, `/service/configuration/sync` on the main port.
+      production only, `/service/configuration/sync` on the main port. That endpoint is the
+      edge's internal surface and is mounted only when the edge runs as the operator's own
+      (`mode = "first-party"`, the default); a partner edge has no such surface.
 
     ## Authentication of callers
 
@@ -40,9 +42,23 @@ info:
 
     The token's `cnf` claim, not the scheme the caller chose, decides what must be proven. A
     token bound to a key (`cnf.jkt`) is refused over `Bearer` and requires a valid DPoP proof.
-    A token bound to a certificate (`cnf.x5t#S256`) is honoured only out of the session
-    cookie, because the certificate is edge's own. When the session cookie carries an expired
-    access token, edge transparently refreshes it and replies with a rotated cookie.
+    A token bound to a certificate (`cnf.x5t#S256`) is honoured out of the session cookie,
+    where the certificate is edge's own, and on edge's mutual-TLS listener (below) when the
+    caller presented the certificate the token names. Presented as `Bearer` on the plain
+    listener it is refused: edge cannot see a caller's certificate there. When the session cookie
+    carries an expired access token, edge transparently refreshes it and replies with a rotated
+    cookie.
+
+    ## Mutual-TLS listener
+
+    When the `mutual-tls` block is configured, edge also listens on `MPORT` (default 8083),
+    terminating TLS itself and requiring a client certificate in the handshake. It serves
+    `/resources/{resourceId}/{path}` and nothing else. A `Bearer` token with `cnf.x5t#S256` is
+    accepted there if, and only if, the SHA-256 thumbprint of the certificate presented equals
+    it (RFC 8705 §3); any other certificate, even one the listener trusts, is answered `401`.
+    Everything after authentication (revocation, permissions, audience, `userinfo`, injection)
+    is as on the plain listener. Edge calls Auth's `/userinfo` for such a token over its own
+    certificate, which Auth trusts to have verified the holder.
 
     ## DPoP challenges
 
@@ -764,7 +780,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: An access token issued by Auth. Refused if the token is key-bound (`cnf.jkt`).
+      description: |
+        An access token issued by Auth. Refused if the token is key-bound (`cnf.jkt`). A token bound
+        to a certificate (`cnf.x5t#S256`) is accepted only on edge's mutual-TLS listener, over the
+        certificate it names.
     dpop:
       type: apiKey
       in: header
@@ -777,8 +796,9 @@ components:
       in: cookie
       name: EDGE_SESSION
       description: |
-        Set by `/complete`. Holds `<presetId>:<accessToken>`. The only presentation under
-        which certificate-bound tokens are honoured, and the only one edge refreshes.
+        Set by `/complete`. Holds `<presetId>:<accessToken>`. The presentation under which
+        certificate-bound tokens are honoured on the plain listener, and the only one edge
+        refreshes.
     internalBasic:
       type: http
       scheme: basic

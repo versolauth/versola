@@ -1,8 +1,10 @@
 package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, PasskeyName, Password}
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
+  Acr,
   AuthFactor,
   AuthFactorType,
   AuthFlow,
@@ -13,6 +15,7 @@ import versola.oauth.client.model.{
   PassedFactorRecord,
   PasskeyAuthFlow,
   PasskeySettings,
+  PhoneRegion,
   PrimaryAuthFlow,
   PrimaryCredential,
   RegistrationCredential,
@@ -29,6 +32,7 @@ import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
+import zio.prelude.NonEmptyList
 import zio.test.*
 import zio.{Exit, ZIO}
 
@@ -42,6 +46,8 @@ object ConversationRouterSpec extends UnitSpecBase:
   val testUserId = UserId(UUID.randomUUID())
   val email = Email("test@example.com")
   val phone = Phone("+1234567890")
+
+  /** A region that takes `phone` and lets it register. */
   val otpCode = OtpCode("123456")
 
   val clientId = ClientId("test-client")
@@ -185,10 +191,15 @@ object ConversationRouterSpec extends UnitSpecBase:
     registrationFlow = Some(RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), Set(roleId))),
   )
 
+  /** What the tenant's policy gives an unknown phone number: the one-time code, then the default roles. */
+  val tenantRegistrationFlow = RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp()), Set(roleId))
+
   class Env:
     val conversationRepository = stub[ConversationRepository]
     val otpConversationService = stub[ConversationService]
     val configService = stub[OAuthConfigurationService]
+    // Registration is the tenant's decision; a test about it says what the tenant decided.
+    configService.registrationFor.returnsWith(ZIO.succeed(None))
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
     val router = ConversationRouter.Impl(
@@ -198,6 +209,19 @@ object ConversationRouterSpec extends UnitSpecBase:
       secureRandom,
       userRepository,
     )
+
+  private val passkeyOnlyAcr = Acr("passkey-level")
+  private val poFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+  private val poStep = ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true)
+  private val poRecord = initialRecord.copy(
+    step = poStep,
+    authFlow = poFlow,
+    targetAcr = Some(passkeyOnlyAcr),
+    userId = Some(testUserId),
+    userPhone = Some(phone),
+  )
+  private val poVocabulary = Map(passkeyOnlyAcr -> NonEmptyList(PassedAuthFactor.passkey))
+  private val poDenied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
 
   val spec = suite("ConversationRouter")(
     suite("getConversation")(
@@ -514,6 +538,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(
             RegistrationEntry.Registering(
@@ -532,6 +557,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(ConversationResult.WriteConflict)
           (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
@@ -549,6 +575,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(RegistrationEntry.Registering(registering))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
@@ -559,6 +586,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(
             RegistrationEntry.Registering(registrationRecord.copy(registrationStep = Some(0), credential = Some(Right(phone)))),
@@ -568,6 +596,36 @@ object ConversationRouterSpec extends UnitSpecBase:
         yield assertTrue(
           result == conversationResult,
         )
+      },
+      test("an unknown credential the tenant does not let register takes the ordinary sign-in path") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(None)
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          startTimes = env.otpConversationService.startRegistration.times
+        yield assertTrue(result == conversationResult, startTimes == 0)
+      },
+      test("an unknown email registers when the tenant lets it") {
+        val env = Env()
+        val emailRecord = registrationRecord.copy(
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email))),
+          registrationFlow = Some(RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp()), Set(roleId))),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow.copy(credential = RegistrationCredential.email)))
+          _ <- env.otpConversationService.startRegistration.succeedsWith(
+            RegistrationEntry.Registering(emailRecord.copy(registrationStep = Some(0), credential = Some(Left(email)))),
+          )
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          startTimes = env.otpConversationService.startRegistration.times
+        yield assertTrue(result == conversationResult, startTimes == 1)
       },
       test("an existing credential uses authentication instead of registration") {
         val env = Env()
@@ -686,7 +744,134 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
       },
     ),
+    suite("passkey-only step cannot be passed another way")(
+      test("a one-time code is not accepted: there is no OTP step to answer") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+          checks = env.otpConversationService.checkOtp.calls
+        yield assertTrue(result == ConversationResult.BadRequest, checks.isEmpty)
+      },
+      test("a phone number cannot be submitted to switch to the OTP route") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(poDenied)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          prepared = env.otpConversationService.prepareInitialOtp.calls
+        yield assertTrue(result == poDenied, prepared.isEmpty)
+      },
+      test("skipping is not offered: there is no enrollment step to skip") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          (result, _) <- env.router.submit(authId, PasskeySkipSubmission("test-csrf"), None, None)
+          finished = env.otpConversationService.finish.calls
+        yield assertTrue(result == ConversationResult.BadRequest, finished.isEmpty)
+      },
+      test("a correct password does not finish the conversation, the passkey is asked for again") {
+        val env = Env()
+        val passed = poRecord.copy(amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.now(), Set(AuthMethodRef.pwd))))
+        val prompt = ConversationResult.RenderStep(poStep)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(ConversationResult.StepPassed(passed))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(poVocabulary)
+          _ <- env.otpConversationService.promptPasskey.succeedsWith(prompt)
+          (result, _) <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
+          finished = env.otpConversationService.finish.calls
+        yield assertTrue(result == prompt, finished.isEmpty)
+      },
+      test("'passkey unavailable' denies, and is refused outside a passkey-only step") {
+        val env = Env()
+        val ordinary = poRecord.copy(step = poStep.copy(passkeyOnly = false))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(poDenied)
+          (onlyResult, _) <- env.router.submit(authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
+          _ <- env.otpConversationService.find.succeedsWith(Some(ordinary))
+          (ordinaryResult, _) <- env.router.submit(authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
+        yield assertTrue(onlyResult == poDenied, ordinaryResult == ConversationResult.BadRequest)
+      },
+    ),
     suite("advance")(
+      test("asks for the passkey straight away, before any other factor, when the target ACR needs one") {
+        val env = Env()
+        val acr = Acr("passkey-level")
+        val passkeyFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+        val record = otpRecord.copy(authFlow = passkeyFlow, targetAcr = Some(acr), userId = Some(testUserId))
+        val passkeyResult = ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, true, passkeyOnly = true))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.passkey)))
+          _ <- env.otpConversationService.promptPasskey.succeedsWith(passkeyResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 1, otpTimes == 0)
+      },
+      test("does not ask for the passkey again once one was passed") {
+        val env = Env()
+        val now = Instant.now()
+        val acr = Acr("passkey-level")
+        val passkeyFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+        val record = otpRecord.copy(
+          authFlow = passkeyFlow,
+          targetAcr = Some(acr),
+          amr = Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk))),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.passkey)))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+        yield assertTrue(promptTimes == 0)
+      },
+      test("asks for the passkey straight away when a built-in class fixed it for this user") {
+        val env = Env()
+        val passkeyFlow = otpAuthFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+        val record = otpRecord.copy(
+          authFlow = passkeyFlow,
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.passkey)),
+          userId = Some(testUserId),
+        )
+        val passkeyResult = ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, true, passkeyOnly = true))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.promptPasskey.succeedsWith(passkeyResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 1, otpTimes == 0)
+      },
+      test("asks for an OTP, not a passkey, when a built-in class fixed an OTP for this user") {
+        val env = Env()
+        val record = otpRecord.copy(
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.otp)),
+          userPhone = Some(phone),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 0, otpTimes == 1)
+      },
+      test("asks for an OTP, not a passkey, when the target ACR needs only an OTP") {
+        val env = Env()
+        val acr = Acr("otp-level")
+        val record = otpRecord.copy(targetAcr = Some(acr), userPhone = Some(phone))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map(acr -> NonEmptyList(PassedAuthFactor.otp)))
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, record)
+          promptTimes = env.otpConversationService.promptPasskey.times
+          otpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(promptTimes == 0, otpTimes == 1)
+      },
       test("routes to OTP step from the configured flow when factor is not yet satisfied") {
         val env = Env()
         val recordWithoutCredential = otpRecord.copy(credential = None, userPhone = Some(phone))
@@ -783,6 +968,53 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareOtpTimes == 0,
           preparePasswordTimes == 1,
         )
+      },
+      test("asks the known user for the password step when the class needs a password the flow takes inline") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(
+          authFlow = inlineFlow,
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.password)),
+          userId = Some(testUserId),
+        )
+        val passwordResult = ConversationResult.RenderStep(ConversationStep.Password(0, None, 0, false, false))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.preparePasswordStep.succeedsWith(passwordResult)
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+          finishTimes = env.otpConversationService.finish.times
+        yield assertTrue(passwordTimes == 1, finishTimes == 0)
+      },
+      test("finishes, rather than asking again, once the password was passed in an inline-password flow") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(
+          authFlow = inlineFlow,
+          targetAcr = Some(AcrResolutionService.Sensitive),
+          targetFactors = Some(List(PassedAuthFactor.password)),
+          userId = Some(testUserId),
+          amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.now(), Set(AuthMethodRef.pwd))),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+          finishTimes = env.otpConversationService.finish.times
+        yield assertTrue(passwordTimes == 0, finishTimes == 1)
+      },
+      test("does not ask for a password in an inline-password flow when the class does not need one") {
+        val env = Env()
+        val inlineFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(inlinePassword = true, factors = Nil))
+        val record = otpRecord.copy(authFlow = inlineFlow, targetAcr = None, userId = Some(testUserId))
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.router.advance(authId, record)
+          passwordTimes = env.otpConversationService.preparePasswordStep.times
+        yield assertTrue(passwordTimes == 0)
       },
       test("routes to set-password before passkey enrollment when a password change is required") {
         val env = Env()

@@ -1,4 +1,4 @@
-import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, ResourceEndpointId, SortConfig } from '../types';
+import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, Resource, ResourceEndpointId, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -23,25 +23,15 @@ export function createDefaultAuthFlow(): AuthFlow {
 export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
 
 /**
- * Default registration flow: prove ownership of the phone entry credential with an OTP, then
- * offer a passkey.
+ * Default consent flow: ask once, remember the grant for 90 days (one of the presets the
+ * wizard offers), and require the whole requested scope to be granted at once.
  */
-export function createDefaultRegistrationFlow(): RegistrationFlow {
-  return {
-    credential: 'phone',
-    steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }],
-    roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
-  };
-}
+export const DEFAULT_CONSENT_REMEMBER_DAYS = 90;
 
-/**
- * Default consent flow: ask once, remember the grant until it is revoked, and require the
- * whole requested scope to be granted at once.
- */
 export function createDefaultConsentFlow(): ConsentFlow {
   return {
     allowPartial: false,
-    rememberDurationDays: 180,
+    rememberDurationDays: DEFAULT_CONSENT_REMEMBER_DAYS,
     requiredScopes: [],
     offlineAccessOptional: false,
   };

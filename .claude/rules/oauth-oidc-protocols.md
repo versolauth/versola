@@ -21,6 +21,7 @@ the product promises.
 |---|---|
 | `rfc6749` | OAuth 2.0 |
 | `rfc7009` | Token Revocation |
+| `rfc7030` | Enrollment over Secure Transport (EST), client certificates |
 | `rfc7517`, `rfc7519` | JWK, JWT |
 | `rfc7523` | JWT client authentication |
 | `rfc7636` | PKCE |

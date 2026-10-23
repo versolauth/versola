@@ -11,6 +11,8 @@ const PATHS = {
   dash: 'M6 12h12',
   pick: 'M12 5l7 7-7 7-7-7z',
   info: 'M12 11v6M12 7.5v.5M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0',
+  dots: 'M5 12h.01M12 12h.01M19 12h.01',
+  copy: 'M8 8h12v12H8zM16 8V4H4v12h4',
 } as const;
 
 export type StatusIconName = keyof typeof PATHS;

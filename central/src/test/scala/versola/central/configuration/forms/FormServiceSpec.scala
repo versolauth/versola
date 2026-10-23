@@ -15,19 +15,33 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val service = FormService.Impl(cache, repository, localeService)
 
   def spec = suite("FormService")(
-    test("updateForm delegates to repository upsertForm and refreshes cache") {
+    test("updateForm stores through the repository and leaves the cache to the change notification") {
       val env = new Env()
       val formId = FormId("test")
-      val record = FormRecord(formId, 1, true, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty)
+      val concurrent = FormRecord(FormId("other"), 1, false, "style", None, None, Map.empty, Vector.empty)
 
       for
         _ <- env.repository.upsertForm.succeedsWith(())
-        _ <- env.repository.getAll.succeedsWith(Vector(record))
+        // A notification applied between the store and the end of the call must survive it.
+        _ <- env.cache.set(Vector(concurrent))
         _ <- env.service.updateForm(formId, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty, activate = false)
         cached <- env.cache.get
       yield assertTrue(
         env.repository.upsertForm.calls == List((formId, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty, false)),
-        cached == Vector(record),
+        env.repository.getAll.calls.isEmpty,
+        cached == Vector(concurrent),
+      )
+    },
+    test("updateForm refuses texts whose languages disagree and stores nothing") {
+      val env = new Env()
+      val ragged = Map("en" -> Map("title" -> "Hello", "hint" -> "Code {code}"), "ru" -> Map("title" -> "Привет"))
+
+      for
+        result <- env.service.updateForm(FormId("test"), "style", None, None, ragged, Vector.empty, activate = false).either
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[IllegalArgumentException]),
+        result.left.exists(_.getMessage == "Locale 'ru' has no text for 'hint', which 'en' has"),
+        env.repository.upsertForm.calls.isEmpty,
       )
     },
     test("getSyncForms excludes inactive forms") {
@@ -66,18 +80,19 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for result <- env.service.getAllForms
       yield assertTrue(result == Vector(formA, formB))
     },
-    test("setActiveVersion delegates to repository and refreshes cache") {
+    test("setActiveVersion delegates to the repository without replacing the cache") {
       val env = new Env()
       val formId = FormId("test")
-      val record = FormRecord(formId, 2, true, "style", None, None, Map.empty, Vector.empty)
+      val record = FormRecord(formId, 1, true, "style", None, None, Map.empty, Vector.empty)
 
       for
         _ <- env.repository.setActiveVersion.succeedsWith(())
-        _ <- env.repository.getAll.succeedsWith(Vector(record))
+        _ <- env.cache.set(Vector(record))
         _ <- env.service.setActiveVersion(formId, 2)
         cached <- env.cache.get
       yield assertTrue(
         env.repository.setActiveVersion.calls == List((formId, 2)),
+        env.repository.getAll.calls.isEmpty,
         cached == Vector(record),
       )
     },

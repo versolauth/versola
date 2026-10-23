@@ -1,38 +1,13 @@
 import { render } from 'solid-js/web';
-import { createSignal, Show } from 'solid-js';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (locale: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button type="button" class="locale-trigger" onClick={() => setOpen(!open())} onBlur={() => setTimeout(() => setOpen(false), 120)}>
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((locale) => (
-            <button type="button" class={`locale-option${locale === props.current ? ' locale-option-active' : ''}`} onMouseDown={() => { props.onChange(locale); setOpen(false); }}>
-              {locale}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { Show } from 'solid-js';
+import { PageBrand } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
 
 type ServiceUnavailableStep = { type: 'service-unavailable'; redirectUri?: string };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: ServiceUnavailableStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
-  previewId?: string;
 }
 
 declare global {
@@ -40,20 +15,13 @@ declare global {
 }
 
 function ServiceUnavailableForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (locale: string) => {
-    setCurrentLocale(locale);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => ({ ...props.config.t, ...(allT[currentLocale()] ?? {}) });
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector"><LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} /></div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
       <div class="service-unavailable-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10" />
@@ -67,6 +35,7 @@ function ServiceUnavailableForm(props: { config: FormConfig }) {
         {(redirectUri) => <a href={redirectUri()} class="btn btn-primary service-unavailable-return">{t().return_button}</a>}
       </Show>
     </div>
+    </>
   );
 }
 

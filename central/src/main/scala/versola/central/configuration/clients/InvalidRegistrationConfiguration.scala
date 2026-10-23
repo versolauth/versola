@@ -2,14 +2,14 @@ package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
-/** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
-  * for example when registration is enabled without an auth flow or for a
-  * login+password flow, which has no credential the user can prove ownership of.
+/** Raised when a client's settings cannot be satisfied or contradict each other, for example an
+  * access token lifetime beyond the allowed maximum or an `mtlsAuth` the tenant cannot terminate.
   */
 case class InvalidRegistrationConfiguration(clientId: ClientId, reason: String)
 
@@ -55,6 +55,21 @@ object InvalidRegistrationConfiguration:
           "consentFlow cannot be removed from a client that asks for consent (a partner client); " +
             "delete the client and register it again to make it a first-party one",
         )
+
+  /** Only a partner app (one that asks users for consent) has an appearance of its own on top of its theme: a
+    * first-party client looks like the product it belongs to. Clearing overrides (an empty set) is always
+    * allowed, so a client that has some from before can be brought in line. */
+  def validateThemeOverridesForPartner(
+      clientId: ClientId,
+      themeOverrides: Option[ThemeOverrides],
+      asksForConsent: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    Option.when(!asksForConsent && themeOverrides.exists(!_.isEmpty)):
+      InvalidRegistrationConfiguration(
+        clientId,
+        "themeOverrides can only be set on a client that asks for consent (a partner client); " +
+          "set a consentFlow first, or leave themeOverrides out",
+      )
 
   def validateAccessTokenTtl(
       clientId: ClientId,
@@ -356,42 +371,6 @@ object InvalidRegistrationConfiguration:
           s"dpopMinRsaKeySize must be at least ${Dpop.KeyPolicy.MinRsaKeySize} bits (RFC 7518 §3.3)",
         ),
       )
-
-  /** Registration is only reachable from a credential card that asks for a phone or an
-    * email, since account creation requires proving ownership of the entry credential.
-    */
-  def validate(
-      clientId: ClientId,
-      authFlow: Option[AuthFlow],
-      registrationFlow: Option[RegistrationFlow],
-  ): Option[InvalidRegistrationConfiguration] =
-    registrationFlow.flatMap: flow =>
-      def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, reason))
-      authFlow match
-        case None =>
-          invalid("registration requires an authentication flow")
-        case Some(auth) if auth.primary.credentials.contains(PrimaryCredential.login) =>
-          invalid("registration is not available for login+password flows")
-        case Some(auth) if auth.primary.credentials.sizeIs != 1 =>
-          invalid("registration requires exactly one primary credential, either phone or email")
-        case Some(auth) if auth.primary.credentials.headOption.map(_.toString) != Some(flow.credential.toString) =>
-          invalid("registration credential must match the client's primary credential")
-        case Some(auth) if auth.primary.inlinePassword =>
-          invalid("registration is not available when the credential card asks for a password inline")
-        case Some(_) if flow.roleIds.isEmpty =>
-          invalid("registration requires at least one assigned role")
-        case Some(_) if flow.steps.isEmpty =>
-          invalid("registration requires at least one step")
-        case Some(_) if !flow.steps.headOption.contains(RegistrationStep.Otp()) =>
-          invalid("registration must start with OTP verification")
-        case Some(_) if flow.steps.distinct.size != flow.steps.size =>
-          invalid("registration steps must be distinct")
-        case Some(_)
-            if flow.steps.contains(RegistrationStep.SetPassword()) &&
-              flow.steps.contains(RegistrationStep.PasskeyEnroll()) =>
-          invalid("registration allows only one of set-password or passkey enrollment")
-        case Some(_) =>
-          None
 
   // ── #353: the tenant's security profile ────────────────────────────────────────────────
   //

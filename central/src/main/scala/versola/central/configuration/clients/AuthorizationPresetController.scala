@@ -1,21 +1,19 @@
 package versola.central.configuration.clients
 
+import versola.central.authorizeBasic
 import versola.central.configuration.*
-import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.json.*
 
 object AuthorizationPresetController extends Controller:
-  type Env = Tracing & AuthorizationPresetService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & AuthorizationPresetService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     getPresetsEndpoint,
     savePresetsEndpoint,
-    syncPresetsEndpoint,
   )
 
   val getPresetsEndpoint =
@@ -55,29 +53,4 @@ object AuthorizationPresetController extends Controller:
         case Left(error: PresetValidationError.DuplicatePresetId.type) =>
           Response.text(error.getMessage).status(Status.BadRequest)
         case Left(error) => Response.badRequest
-    }
-
-  val syncPresetsEndpoint =
-    Method.GET / "configuration" / "auth-request-presets" / "sync" -> handler { (req: Request) =>
-      for
-        service <- ZIO.service[AuthorizationPresetService]
-        edgeId <- authorizeInternal(req)
-        presets <- service.getPresetsForSync(edgeId)
-        response = GetAuthorizationPresetsSyncResponse(presets.map { preset =>
-          AuthorizationPresetSyncResponse(
-            id = preset.id,
-            clientId = preset.clientId,
-            description = preset.description,
-            redirectUri = preset.redirectUri,
-            postLoginRedirectUri = preset.postLoginRedirectUri,
-            postLogoutRedirectUri = preset.postLogoutRedirectUri,
-            scope = preset.scope,
-            responseType = preset.responseType,
-            uiLocales = preset.uiLocales,
-            customParameters = preset.customParameters,
-            cookieDomain = preset.cookieDomain,
-            cookiePath = preset.cookiePath,
-          )
-        })
-      yield Response.json(response.toJson)
     }

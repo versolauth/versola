@@ -11,7 +11,7 @@ import java.security.MessageDigest
 
 object ServiceController extends Controller:
   type Env = Tracing & OAuthClientService & ResourceService & PermissionService & DpopPolicyService &
-    EdgeConfig & EnvName
+    OverloadPolicyService & EdgeConfig & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(syncEndpoint)
 
@@ -25,7 +25,8 @@ object ServiceController extends Controller:
             _ <- ZIO.serviceWithZIO[OAuthClientService](_.refreshNow) <&>
               ZIO.serviceWithZIO[ResourceService](_.refreshNow) <&>
               ZIO.serviceWithZIO[PermissionService](_.refreshNow) <&>
-              ZIO.serviceWithZIO[DpopPolicyService](_.refreshNow)
+              ZIO.serviceWithZIO[DpopPolicyService](_.refreshNow) <&>
+              ZIO.serviceWithZIO[OverloadPolicyService](_.refreshNow)
           yield Response.ok
     }
 

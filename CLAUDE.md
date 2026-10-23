@@ -44,8 +44,9 @@ reporting the change as finished.
    (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change). The
    product documentation lives in `versolauth/versola-website`: a change to an admin console
    screen needs retaken screenshots, a change to behaviour a standard defines needs its `rfc/`
-   page updated or created. The PR has a **Docs** line (a link, `none: <reason>` or
-   `follow-up: <issue>`); see `.claude/rules/documentation.md`.
+   page updated or created. The `versola-website` pull request is opened together with the code
+   change, never deferred to a follow-up issue. The PR has a **Docs** line (a link to it, or
+   `none: <reason>`); see `.claude/rules/documentation.md`.
 4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
    say so.
 
@@ -143,3 +144,12 @@ The same applies to a nested class or object, an `object`'s members, and compani
 write `Outer.Inner`, not a bare `Inner` imported from `Outer`. Import the outer type, not the
 nested one. On a genuine name clash, prefer an import rename (`import a.Foo as AFoo`) over a
 full path.
+
+# Scala Construction Rules
+
+When constructing a case class, or calling any method, with three or more parameters, or with two
+or more parameters of the same type, pass every argument by name, in declaration order. Positional
+arguments are fine only for one- or two-parameter constructors of distinct types, and for tuples.
+
+- Wrong: `ChallengeSettingsRecord(tenantId, phoneRegions, emailRegistration, defaultRoles, ...)`
+- Right: `ChallengeSettingsRecord(tenantId = tenantId, phoneRegions = phoneRegions, emailRegistration = ..., ...)`

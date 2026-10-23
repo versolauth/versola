@@ -1,6 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
+import versola.util.http.OverloadPolicy
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
@@ -9,7 +10,8 @@ trait EdgeService:
 
   def find(id: EdgeId): UIO[Option[EdgeRecord]]
 
-  def registerEdge(id: EdgeId): Task[RsaKeyPair]
+  /** Registers an edge in `groupId`, which it never leaves. The group has to exist ([[EdgeGroupService.find]]). */
+  def registerEdge(id: EdgeId, groupId: EdgeGroupId): Task[RsaKeyPair]
 
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]
 
@@ -17,9 +19,16 @@ trait EdgeService:
 
   def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
 
+  /** Stores the policy after checking it ([[OverloadPolicy.validate]]); an empty policy is stored as none. Fails with
+    * [[InvalidOverloadPolicy]] when it does not validate. */
+  def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit]
+
   def deleteEdge(id: EdgeId): Task[Unit]
 
   def sync(): Task[Unit]
+
+/** An overload policy that fails validation; `message` names the field and is meant for the operator. */
+final case class InvalidOverloadPolicy(message: String) extends RuntimeException(message)
 
 object EdgeService:
   def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
@@ -42,10 +51,10 @@ object EdgeService:
     override def find(id: EdgeId): UIO[Option[EdgeRecord]] =
       cache.get.map(_.find(_.id == id))
 
-    override def registerEdge(id: EdgeId): Task[RsaKeyPair] =
+    override def registerEdge(id: EdgeId, groupId: EdgeGroupId): Task[RsaKeyPair] =
       for
         keyPair <- securityService.generateRsaKeyPair
-        _ <- edgeRepository.createEdge(id, keyPair.toPublicJwk, EdgeRecord.DefaultRequireDpopNonce)
+        _ <- edgeRepository.createEdge(id, keyPair.toPublicJwk, EdgeRecord.DefaultRequireDpopNonce, groupId)
       yield keyPair
 
     override def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair] =
@@ -59,6 +68,10 @@ object EdgeService:
 
     override def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit] =
       edgeRepository.setRequireDpopNonce(id, requireDpopNonce)
+
+    override def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit] =
+      ZIO.fromEither(policy.validate).mapError(InvalidOverloadPolicy(_)) *>
+        edgeRepository.setOverloadPolicy(id, Option.when(policy != OverloadPolicy.empty)(policy))
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)

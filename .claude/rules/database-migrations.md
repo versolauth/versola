@@ -19,7 +19,7 @@ Name: `V<next number in that range>__snake_case_description.sql`. One schema per
 
 - Never edit, rename, reorder or delete a migration that may have been applied outside your
   machine. Flyway checksums it, and an edited one leaves no way forward except recreating the
-  schema (`deploy.md` 9.1; this happened in September 2026). Change the schema with a **new**
+  schema (`deploy.md` 6.1; this happened in September 2026). Change the schema with a **new**
   migration file.
 - The October 2026 squash (`ALTER TABLE` folded into the `CREATE TABLE` migrations) was a one-off,
   deliberate, breaking operation. Do not squash, fold or renumber migrations unless asked to.

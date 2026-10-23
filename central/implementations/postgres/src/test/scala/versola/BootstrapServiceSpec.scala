@@ -16,8 +16,11 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
@@ -54,7 +57,6 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set.empty,
       theme = "default",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -76,6 +78,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       edgeClientCertificate = None,
       template = None,
       createdAt = Instant.EPOCH,
+      themeOverrides = None,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
@@ -86,6 +89,64 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
+      val settings = BootstrapService.defaultChallengeSettings(
+        versola.central.configuration.tenants.TenantId("default"),
+        versola.central.CentralConfig.PasskeyConfig("localhost", List("http://localhost")),
+      )
+      assertTrue(settings.acrVocabulary == Some(Map("otp" -> List("otp"), "passkey" -> List("passkey"))))
+    },
+    test("names each seeded locale in its own language, as the login forms' language selector shows it") {
+      assertTrue(
+        BootstrapService.defaultLocales.map(locale => locale.code -> locale.name).toMap ==
+          Map("en" -> "English", "ru" -> "Русский"),
+      )
+    },
+    test("seeds default as a visual theme on the versola base with no CSS when it is absent") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector.empty)
+        _ <- themes.create.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        created = themes.create.calls
+        updates = themes.update.times
+      yield assertTrue(
+        created == List(ThemeRecord("default", "", None, Some(ThemeTokens(base = "versola", overrides = None, variables = None)))),
+        updates == 0,
+      )
+    },
+    test("converts a stylesheet default (tokens NULL) to the visual theme, keeping its tenant") {
+      val themes = stub[ThemeRepository]
+      for
+        _ <- themes.getAll.succeedsWith(Vector(ThemeRecord("default", ":root{--brand:red}", None, tokens = None)))
+        _ <- themes.update.succeedsWith(())
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        updated = themes.update.calls
+        creates = themes.create.times
+      yield assertTrue(
+        updated == List(ThemeRecord("default", "", None, Some(ThemeTokens(base = "versola", overrides = None, variables = None)))),
+        creates == 0,
+      )
+    },
+    test("leaves a token default alone: the administrator may have changed its base or overrides") {
+      val themes = stub[ThemeRepository]
+      val custom = ThemeRecord(
+        "default",
+        "a{}",
+        None,
+        Some(ThemeTokens(
+          base = "versola",
+          overrides = Some(ThemeOverrides.empty.copy(shape = Some(versola.util.theme.Shape.sharp))),
+          variables = None,
+        )),
+      )
+      for
+        _ <- themes.getAll.succeedsWith(Vector(custom))
+        _ <- BootstrapService.seedDefaultTheme(themes)
+        creates = themes.create.times
+        updates = themes.update.times
+      yield assertTrue(creates == 0, updates == 0)
+    },
     // The client and challenge-settings caches load before bootstrap seeds central-admin, and
     // the seed's notifications are lost: without this reload edge's first sync misses it.
     test("refreshCachesAfterBootstrap reloads the client and challenge-settings caches") {
@@ -203,6 +264,23 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         description == Map("en" -> "Long-lived access", "ru" -> "Длительный доступ"),
       )
     },
+    test("the consent previews describe the standard scopes exactly as bootstrap seeds them") {
+      val matches =
+        for
+          form <- FormPreviews.all if form.formId == "consent"
+          scenario <- form.scenarios
+          scope <- scenario.step.asObject.flatMap(_.get("scopes")).flatMap(_.asArray).toList.flatMap(_.toList)
+        yield
+          val token = scope.asObject.flatMap(_.get("scope")).flatMap(_.asString).map(ScopeToken(_))
+          val localizations = scope.asObject
+            .flatMap(_.get("descriptionLocalizations"))
+            .flatMap(_.asObject)
+            .toList
+            .flatMap(_.fields.collect { case (language, Json.Str(text)) => language -> text })
+            .toMap
+          token.flatMap(BootstrapService.scopeDescriptions.get).contains(localizations)
+      assertTrue(matches.nonEmpty, matches.forall(identity))
+    },
     test("service:operate covers exactly the service endpoints") {
       assertTrue(
         BootstrapService.serviceEndpointIds == Set(
@@ -220,10 +298,11 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           endpointId("DELETE", "/settings/passkeys"),
           endpointId("POST", "/settings/passkeys/register/start"),
           endpointId("POST", "/settings/passkeys/register/finish"),
+          endpointId("PATCH", "/settings/password"),
         ),
       )
     },
-    test("account endpoints inject trusted caller context and no step-up policy yet") {
+    test("account endpoints inject trusted caller context") {
       val expectedQueryInjects = Vector(
         InjectRule(InjectTarget.query, "userId", "token.sub"),
         InjectRule(InjectTarget.query, "clientId", "token.client_id"),
@@ -238,9 +317,49 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           endpoint.inject == BootstrapService.accountCallerInjects(endpoint.method, endpoint.path),
         BootstrapService.accountEndpointRecords.exists(_.inject == expectedQueryInjects),
         BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
-        BootstrapService.accountEndpointRecords.forall(_.stepUpCondition.isEmpty),
-        BootstrapService.accountEndpointRecords.forall(_.stepUpAcr.isEmpty),
-        BootstrapService.accountEndpointRecords.forall(_.maxAge.isEmpty),
+      )
+    },
+    test("removing a passkey, starting to add one and signing a session out ask for a fresh sensitive sign-in") {
+      val asking = BootstrapService.accountEndpointRecords.filter(_.stepUpAcr.isDefined)
+      assertTrue(
+        asking.map(endpoint => endpoint.method -> endpoint.path).toSet == Set(
+          "DELETE" -> "/settings/sessions",
+          "DELETE" -> "/settings/passkeys",
+          "POST" -> "/settings/passkeys/register/start",
+        ),
+        asking.forall(_.stepUpCondition.contains("true")),
+        asking.forall(_.stepUpAcr.contains("sensitive")),
+        asking.forall(_.maxAge.contains(300)),
+      )
+    },
+    test("a resource that already exists keeps the step-up it has, so an upgrade changes nothing for it") {
+      val seeded = BootstrapService.accountEndpointRecords
+      val running = seeded.map(_.copy(stepUpCondition = None, stepUpAcr = None, maxAge = None))
+      val tuned = seeded.map(endpoint =>
+        endpoint.copy(stepUpCondition = Some("request.body.amount > 1"), stepUpAcr = Some("mfa"), maxAge = Some(60)),
+      )
+      assertTrue(
+        BootstrapService.mergeAccountEndpoints(seeded, running.map(endpoint => endpoint.id -> endpoint).toMap) == running,
+        BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned,
+      )
+    },
+    test("an endpoint a running resource does not have yet arrives with the seeded step-up") {
+      val seeded = BootstrapService.accountEndpointRecords
+      val withoutDelete = seeded.filterNot(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/passkeys")
+      val merged = BootstrapService.mergeAccountEndpoints(seeded, withoutDelete.map(endpoint => endpoint.id -> endpoint).toMap)
+      assertTrue(merged == seeded)
+    },
+    test("reading the page, renaming a passkey, finishing an enrollment and changing the password ask for nothing more") {
+      val quiet = BootstrapService.accountEndpointRecords.filter(_.stepUpAcr.isEmpty)
+      assertTrue(
+        quiet.map(endpoint => endpoint.method -> endpoint.path).toSet == Set(
+          "GET" -> "/settings",
+          "PATCH" -> "/settings/passkeys",
+          "POST" -> "/settings/passkeys/register/finish",
+          "PATCH" -> "/settings/password",
+        ),
+        quiet.forall(_.stepUpCondition.isEmpty),
+        quiet.forall(_.maxAge.isEmpty),
       )
     },
     test("session revocation is denied for the caller's own session") {

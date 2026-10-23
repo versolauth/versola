@@ -14,7 +14,7 @@ export async function loadAdminApp(
 /** The border color an invalid field takes, i.e. --danger in the default
   * (light) theme. Shared so a palette change is a one-line edit rather than a
   * hunt through every form's validation test. */
-export const INVALID_FIELD_BORDER = 'rgb(220, 38, 38)';
+export const INVALID_FIELD_BORDER = 'rgb(192, 52, 29)';
 
 /** --accent in the default (light) theme — see INVALID_FIELD_BORDER. */
 export const ACCENT_COLOR = 'rgb(21, 94, 117)';
@@ -49,4 +49,25 @@ export async function findClientWrite(requests: RequestLog[], method: 'POST' | '
 
 export function clientWrites(requests: RequestLog[], method: 'POST' | 'PUT'): RequestLog[] {
   return requests.filter(request => request.method === method && CLIENT_WRITE_PATH.test(request.pathname));
+}
+
+/** The side panel whose title is `heading`, as its host element: its slotted content (the record
+  * cards, the editor) are DOM children of the host, not of the `role="dialog"` inside its shadow
+  * root, so a locator chained from the host reaches them while one chained from the dialog
+  * does not. `sidePanelDialog` is the dialog itself, for its ARIA state and its box. */
+export function sidePanel(page: Page, heading: string) {
+  const pattern = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return page.locator('versola-side-panel').filter({ has: page.locator('#panel-title', { hasText: pattern }) });
+}
+
+export function sidePanelDialog(page: Page, heading: string) {
+  return sidePanel(page, heading).getByRole('dialog');
+}
+
+/** A sheet fills the viewport. The page's own scrollbar (15px where scrollbars are classic, as on
+ *  the Linux CI browser) stays visible beside it, so the width is the viewport minus at most that. */
+export async function expectSheetWidth(page: Page, width: number | undefined) {
+  const viewport = await page.evaluate(() => window.innerWidth);
+  expect(width).toBeGreaterThanOrEqual(viewport - 15);
+  expect(width).toBeLessThanOrEqual(viewport);
 }

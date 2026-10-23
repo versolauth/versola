@@ -62,7 +62,7 @@ services:
   # time, not passed again here, so this only needs the same network
   # namespace those services already run in to reach it.
   migrate:
-    image: ghcr.io/versolauth/versola-tools:${VERSION}
+    image: ${REGISTRY}/versola-tools:${VERSION}
     # No `platform:` pin, same reasoning as central/auth/edge below.
     network_mode: host
     command: ["migrate"]
@@ -89,7 +89,7 @@ services:
       - ./postgres-ca:/etc/versola/postgres-ca:ro
 
   central:
-    image: ghcr.io/versolauth/versola-central:${VERSION}
+    image: ${REGISTRY}/versola-central:${VERSION}
     # No `platform:` pin here or on auth/edge below -- these images are
     # published as multi-arch manifest lists now, so Docker resolves them
     # natively on an arm64 VPS (Graviton/Ampere) instead of being forced
@@ -105,6 +105,20 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+      # #554: the edge surface, on central's own mutual-TLS listener. network_mode: host, so this
+      # IS the VPS's port; it is bound to loopback, where the edge on this host reaches it. Nothing
+      # else is published by default: a remote edge reaches it only through the public name that
+      # `versola configure vps --central-mtls-domain` makes versola-cli's proxy forward to
+      # 127.0.0.1:8093 (develop.md, "The edge surface on central"). The handshake demands a
+      # certificate from the edge intermediate (edge-ca.crt, written by `mtls-init`) and
+      # authorizeEdge a name for the edge the token names.
+      MPORT: 8093
+      MBIND_HOST: "127.0.0.1"
+      # Central's APORT (not auth's, 8082: another container): the enrollment listener, which serves POST /edge/enroll and nothing else, so an edge that has no
+      # certificate yet can get its first one with a one-time token. Plain HTTP on loopback
+      # (BIND_HOST below); the TLS for `central.<domain>` is terminated by versola-cli's proxy in
+      # front of it, and only when that name is configured.
+      APORT: 8094
       # With `network_mode: host`, VersolaApp's own bind address IS the
       # VPS's bind, directly -- there's no Compose port-publish step to
       # restrict exposure the way docker-local's "127.0.0.1:PORT:PORT"
@@ -129,10 +143,13 @@ services:
       - ./central.conf:/app/config/env.conf:ro
       - ./postgres-ca:/etc/versola/postgres-ca:ro
       - versola-central-diagnostics-vps:/diagnostics
+      # Also edge-ca.{crt,key}: central signs edge identities with the edge intermediate.
       - versola-central-ca-vps:/app/ca:ro
+      # #554: central's listener certificate and the edge intermediate that vouches for edge certificates.
+      - versola-mtls-vps:/app/mtls:ro
 
   auth:
-    image: ghcr.io/versolauth/versola-auth:${VERSION}
+    image: ${REGISTRY}/versola-auth:${VERSION}
     container_name: versola-auth
     restart: unless-stopped
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
@@ -156,7 +173,8 @@ services:
       # RFC 8705 §5's listener: served only if auth.conf carries a `mutual-tls` block, which
       # `configure` writes -- see deploy.md "Certificates for mutual TLS". It binds
       # BIND_HOST like everything else here, i.e. the VPS's loopback, which is where edge (also
-      # network_mode: host) reaches it as https://127.0.0.1:8083.
+      # network_mode: host) reaches it as https://127.0.0.1:8083. A public name for remote edges
+      # and external mTLS clients is versola-cli's proxy forwarding to that loopback port.
       MPORT: 8083
       CONFIG_PATH: /app/config/env.conf
       # Same reasoning as central's BIND_HOST above. auth's actual public
@@ -175,7 +193,7 @@ services:
       - versola-mtls-vps:/app/mtls:ro
 
   edge:
-    image: ghcr.io/versolauth/versola-edge:${VERSION}
+    image: ${REGISTRY}/versola-edge:${VERSION}
     container_name: versola-edge
     restart: unless-stopped
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
@@ -222,9 +240,13 @@ services:
       DOCKER_STEPCA_INIT_ADDRESS: "127.0.0.1:9000"
     volumes:
       - versola-step-ca-vps:/home/step
-    # After the image's own init (which has written ca.json), add the JWK provisioner central
-    # signs client certificates through -- once, with a key only central is given (see
-    # `mtls-init`), valid for at most 14 days a certificate -- then run the CA as the image would.
+      - ./step-ca-intermediates.sh:/usr/local/bin/step-ca-intermediates.sh:ro
+    # After the image's own init (which has written ca.json and the root with the `client`
+    # intermediate), add the `server` and `edge` intermediates under the same root and the JWK
+    # provisioner central signs client certificates through -- once, with a key only central is
+    # given (see `mtls-init`), valid for at most 14 days a certificate -- then run the CA as the
+    # image would. The CA itself keeps signing with the client intermediate; the other two are
+    # only ever used offline by `mtls-init`.
     command:
       - /bin/sh
       - -ec
@@ -247,6 +269,7 @@ services:
           step ca provisioner add central --type JWK --public-key=/home/step/certs/central-provisioner.pub.json \
             --ca-config=/home/step/config/ca.json --x509-template=/home/step/templates/client.tpl --x509-max-dur=336h --x509-default-dur=336h
         fi
+        sh /usr/local/bin/step-ca-intermediates.sh
         exec /usr/local/bin/step-ca --password-file /home/step/secrets/password /home/step/config/ca.json
     healthcheck:
       test: ["CMD-SHELL", "step ca health --ca-url https://127.0.0.1:9000 --root /home/step/certs/root_ca.crt"]
@@ -254,11 +277,18 @@ services:
       timeout: 5s
       retries: 30
 
-  # Signs auth's listener certificate once (offline, with the CA's intermediate key -- no provisioner
-  # password involved) into `versola-mtls-vps`, which auth mounts as /app/mtls and edge pins from.
-  # A restart finds the files and leaves them alone: re-issuing would change the leaf edge pins.
-  # To rotate it, see develop.md ("Pin rotation"). `ca.crt` holds root and intermediate, because
-  # zio-http presents only a client's leaf and auth must be able to complete the chain itself.
+  # Issues and renews the mutual-TLS leaves into `versola-mtls-vps`, which the services mount as
+  # /app/mtls: auth's and central's listener certificates (server intermediate, 90 days) and the
+  # first local edge's identity (edge intermediate, 30 days). It runs on every `up` and finds the
+  # files it already wrote valid: a leaf is only replaced when it is missing, a third of its life
+  # or less is left, it does not verify against its intermediate (certificates of the single-CA
+  # layout are re-issued that way) or it lacks a configured public name. Edge pins the two listener
+  # leaves, so those are replaced in two steps through MTLS_INIT_PHASE=prepare and =commit, which
+  # `versola certs renew` and `rollout` drive with `docker compose run --rm -e MTLS_INIT_PHASE=...
+  # mtls-init`; `report` prints every certificate's expiry. The script is in the bundle
+  # (mtls-init.sh) and its header is the full contract; develop.md ("Pin rotation") has the
+  # procedure. The public names are opt-in and written by `configure` from versola-tools' own
+  # environment; empty means none.
   mtls-init:
     image: smallstep/step-ca:0.28.4
     container_name: versola-mtls-init
@@ -268,10 +298,16 @@ services:
       step-ca:
         condition: service_healthy
     network_mode: host
+    environment:
+      MTLS_DOMAIN: "@MTLS_DOMAIN@"
+      CENTRAL_MTLS_DOMAIN: "@CENTRAL_MTLS_DOMAIN@"
+      # Days the leaves live (365 when empty; 0 = unlimited, 100 years).
+      MTLS_CERT_DAYS: "@MTLS_CERT_DAYS@"
     volumes:
       - versola-step-ca-vps:/home/step:ro
       - versola-mtls-vps:/mtls
       - versola-central-ca-vps:/central-ca
+      - ./mtls-init.sh:/usr/local/bin/mtls-init.sh:ro
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
@@ -280,21 +316,7 @@ services:
         cp /home/step/secrets/central-provisioner.json /central-ca/provisioner.json
         cp /home/step/certs/root_ca.crt /central-ca/root_ca.crt
         chmod 600 /central-ca/provisioner.json
-        if [ -f /mtls/server.crt ] && [ -f /mtls/server.key ] && [ -f /mtls/ca.crt ]; then
-          echo "mtls-init: certificates already present, leaving them"; exit 0
-        fi
-        step certificate create localhost /mtls/server.crt /mtls/server.pem \
-          --ca /home/step/certs/intermediate_ca.crt --ca-key /home/step/secrets/intermediate_ca_key \
-          --ca-password-file /home/step/secrets/password \
-          --san auth --san localhost --san 127.0.0.1 \
-          --kty RSA --size 2048 --not-after 17520h --insecure --no-password --force
-        # Netty reads PKCS#8 only; step writes PKCS#1.
-        step crypto key format --pkcs8 --pem --insecure --no-password /mtls/server.pem > /mtls/server.key
-        rm /mtls/server.pem
-        cat /home/step/certs/root_ca.crt /home/step/certs/intermediate_ca.crt > /mtls/ca.crt
-        chmod 644 /mtls/server.crt /mtls/ca.crt
-        chmod 600 /mtls/server.key
-        echo "mtls-init: issued auth's listener certificate"
+        exec sh /usr/local/bin/mtls-init.sh
 
 # Same external-volume reasoning as compose.fragment.yml.template -- see
 # the comment there. Named "-vps", not shared with that file's own
@@ -310,8 +332,8 @@ volumes:
   versola-central-diagnostics-vps:
   versola-auth-diagnostics-vps:
   versola-edge-diagnostics-vps:
-  # step-ca's state, auth's
-  # listener certificate (mtls-init writes it; auth and edge mount it), and central's access to the CA.
+  # step-ca's state, the listener and identity certificates (mtls-init writes them; the services
+  # mount them), and central's access to the CA.
   versola-step-ca-vps:
   versola-central-ca-vps:
   versola-mtls-vps:

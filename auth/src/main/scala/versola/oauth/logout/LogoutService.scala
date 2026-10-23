@@ -3,7 +3,7 @@ package versola.oauth.logout
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.CoreConfig
 import zio.*
@@ -24,11 +24,23 @@ trait LogoutService:
     * browser to redirect here, so unlike [[logout]] this produces no front-channel URIs. */
   def invalidateAllSessions(userId: UserId): Task[Unit]
 
+  /** Ends one of the user's sessions (admin-panel action) the way [[logout]] would, relying
+    * parties included. `false` when the session is not the user's or no longer live: knowing
+    * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
+  def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+
+  /** Forgets one of the user's user agents (admin-panel "Forget device"): its live session ends the
+    * way [[invalidateSession]] ends it, relying parties included, then the user agent, any earlier
+    * session of it and their refresh tokens go. `false` when the user agent is not the user's. */
+  def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean]
+
 object LogoutService:
   case class LogoutResult(
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
+      /** The first client of the session, as the confirmation page takes it: the one whose theme dresses the page. */
+      clientId: Option[ClientId],
   )
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
@@ -54,7 +66,7 @@ object LogoutService:
           // No session means there is no client to validate the redirect against; drop it
           // rather than passing it through unvalidated, which would be an open redirect.
           case None =>
-            ZIO.succeed(LogoutResult(Nil, None, state))
+            ZIO.succeed(LogoutResult(Nil, None, state, clientId = None))
           case Some(session) =>
             for
               sessionParticipants <- sessionClients(session.record.clients.map(_.clientId))
@@ -63,7 +75,7 @@ object LogoutService:
                 case None => ZIO.none
                 case Some(uri) => ZIO.succeed(uri).whenZIO(allowedRedirect(sessionParticipants, uri))
               _ <- sendBackChannelLogouts(sessionParticipants, session.record)
-            yield LogoutResult(logoutUris, redirect, state)
+            yield LogoutResult(logoutUris, redirect, state, session.record.clients.headOption.map(_.clientId))
       yield result
 
     /** Ending every session a user has is one event per endpoint rather than one per session:
@@ -72,6 +84,18 @@ object LogoutService:
       * clients costs one or two deliveries instead of ten — and the RP records one revocation
       * instead of five.
       */
+    override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+      sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
+        case false => ZIO.succeed(false)
+        case true => logout(Left(publicId), None, None).as(true)
+
+    override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
+      sessionService.listDevicesByUser(userId).map(_.find(_.userAgent.exists(_.id == userAgentId))).flatMap:
+        case None => ZIO.succeed(false)
+        case Some(device) =>
+          ZIO.foreachDiscard(device.session)(session => logout(Left(session.publicId), None, None)) *>
+            sessionService.forgetUserAgent(userId, userAgentId)
+
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)

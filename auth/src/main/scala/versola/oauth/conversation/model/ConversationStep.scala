@@ -17,6 +17,9 @@ object ConversationStep:
       passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
       passkeyFailed: Boolean = false,        // set when a submitted assertion fails verification
       loginFailed: Boolean = false,          // set when login+password submission fails authentication
+      /** The card asks for nothing but a passkey of the user the conversation already identifies: a
+        * step-up whose ACR needs `passkey`. The form starts the assertion by itself. */
+      passkeyOnly: Boolean = false,
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(

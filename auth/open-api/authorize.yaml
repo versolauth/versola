@@ -117,7 +117,9 @@ components:
       required: false
       description: |
         `code` for the plain authorization code flow, `code id_token` to additionally receive an
-        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used.
+        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used. A client of
+        a `fapi2` tenant may use `code` only; `code id_token` is answered with
+        `unsupported_response_type`.
       schema:
         type: string
         enum: [code, code id_token]
@@ -221,8 +223,11 @@ components:
       description: |
         Space-delimited Authentication Context Class Reference values, in order of preference.
         Present but empty is rejected. A voluntary request (OpenID Connect Core §3.1.2.1): values
-        the client's tenant does not define are ignored, and when none is left the request carries
-        no ACR requirement. For a user the server already knows (an existing session, or an
+        neither the client's tenant nor the server defines are ignored, and when none is left the
+        request carries no ACR requirement. The server defines `sensitive` itself: the strongest
+        factor the user has (a passkey, else a password, else a one-time code, limited to what the
+        client's flow can ask for), asked for afresh each time rather than satisfied by an earlier
+        session. A tenant that defines `sensitive` in its own vocabulary overrides it. For a user the server already knows (an existing session, or an
         `id_token_hint`), a value the tenant defines but that cannot be met is refused with
         `unmet_authentication_requirements`. For a fresh login with neither there is no user to
         check achievability against, so the request proceeds with normal authentication and the
@@ -239,6 +244,11 @@ components:
         Space-delimited BCP 47 language tags, in order of preference. The best match among the
         configured locales is used; when none is configured the default locale applies, and the
         request is not refused.
+
+        The language the user picks in a login form is sent with each submit as `ui_locale`, kept
+        for the rest of the conversation, and carried by the redirect to the next step. Precedence:
+        what the user picked, then these `ui_locales`, then `Accept-Language`, then the default
+        locale.
       schema:
         type: string
       example: ru en

@@ -4,6 +4,7 @@ import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.json.{JsonCodec, jsonNoExtraFields}
 import zio.schema.*
@@ -38,7 +39,6 @@ case class CreateWebClientRequest(
     refreshTokenTtl: Option[Int],
     theme: String = "default",
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow] = None,
     otpTemplateId: String = "default",
     frontChannelLogoutUri: Option[String] = None,
     frontChannelLogoutSessionRequired: Boolean = false,
@@ -61,6 +61,8 @@ case class CreateWebClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
+    themeOverrides: Option[ThemeOverrides],
+    estEnrollment: Boolean = false,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -74,7 +76,6 @@ case class CreateWebClientRequest(
       refreshTokenTtl,
       theme,
       authFlow,
-      registrationFlow,
       otpTemplateId,
       frontChannelLogoutUri,
       frontChannelLogoutSessionRequired,
@@ -99,6 +100,8 @@ case class CreateWebClientRequest(
       applicationType = Some(ApplicationType.web),
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
+      themeOverrides,
+      estEnrollment = estEnrollment,
     )
 
 /** An app installed on a device, which holds a DPoP key of its own and no credential. Either
@@ -119,7 +122,6 @@ case class CreateNativeClientRequest(
     refreshTokenTtl: Option[Int],
     theme: String = "default",
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow] = None,
     otpTemplateId: String = "default",
     frontChannelLogoutUri: Option[String] = None,
     frontChannelLogoutSessionRequired: Boolean = false,
@@ -136,6 +138,7 @@ case class CreateNativeClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -149,7 +152,6 @@ case class CreateNativeClientRequest(
       refreshTokenTtl,
       theme,
       authFlow,
-      registrationFlow,
       otpTemplateId,
       frontChannelLogoutUri,
       frontChannelLogoutSessionRequired,
@@ -177,6 +179,7 @@ case class CreateNativeClientRequest(
       applicationType = Some(ApplicationType.native),
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
+      themeOverrides,
     )
 
 /** Code calling an API on its own behalf, with no user present: no redirect URIs, sign-in flow,
@@ -197,6 +200,7 @@ case class CreateServiceClientRequest(
     certificateBoundAccessTokens: Boolean = false,
     jwks: Option[JsonWebKeySet] = None,
     generateJwks: Option[ClientAssertion.Algorithm] = None,
+    estEnrollment: Boolean = false,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -210,7 +214,6 @@ case class CreateServiceClientRequest(
       refreshTokenTtl = None,
       theme = "default",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -235,6 +238,8 @@ case class CreateServiceClientRequest(
       applicationType = Some(ApplicationType.web),
       issueEdgeClientCertificate = false,
       enrollEdgeClientCertificate = false,
+      themeOverrides = None,
+      estEnrollment = estEnrollment,
     )
 
 // An update names the client and what changes. The client's kind, its `authMethod` and what a
@@ -250,7 +255,6 @@ case class UpdateWebClientRequest(
     refreshTokenTtl: Option[Long],
     theme: Option[String],
     authFlow: Option[Patch[AuthFlow]],
-    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
@@ -269,6 +273,7 @@ case class UpdateWebClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -281,7 +286,6 @@ case class UpdateWebClientRequest(
       refreshTokenTtl,
       theme,
       authFlow,
-      registrationFlow,
       otpTemplateId,
       frontChannelLogoutUri,
       frontChannelLogoutSessionRequired,
@@ -302,6 +306,7 @@ case class UpdateWebClientRequest(
       edgeSigningKey,
       edgeClientCertificate,
       applicationType = None,
+      themeOverrides = themeOverrides,
     )
 
 object UpdateWebClientRequest:
@@ -314,7 +319,6 @@ object UpdateWebClientRequest:
       refreshTokenTtl = None,
       theme = None,
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = None,
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = None,
@@ -333,6 +337,7 @@ object UpdateWebClientRequest:
       requirePushedAuthorizationRequests = None,
       edgeSigningKey = None,
       edgeClientCertificate = None,
+      themeOverrides = None,
     )
 
 @jsonNoExtraFields
@@ -345,7 +350,6 @@ case class UpdateNativeClientRequest(
     refreshTokenTtl: Option[Long],
     theme: Option[String],
     authFlow: Option[Patch[AuthFlow]],
-    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
@@ -358,6 +362,7 @@ case class UpdateNativeClientRequest(
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -370,7 +375,6 @@ case class UpdateNativeClientRequest(
       refreshTokenTtl,
       theme,
       authFlow,
-      registrationFlow,
       otpTemplateId,
       frontChannelLogoutUri,
       frontChannelLogoutSessionRequired,
@@ -391,6 +395,7 @@ case class UpdateNativeClientRequest(
       edgeSigningKey = None,
       edgeClientCertificate,
       applicationType = None,
+      themeOverrides = themeOverrides,
     )
 
 object UpdateNativeClientRequest:
@@ -403,7 +408,6 @@ object UpdateNativeClientRequest:
       refreshTokenTtl = None,
       theme = None,
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = None,
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = None,
@@ -416,6 +420,7 @@ object UpdateNativeClientRequest:
       dpopSigningAlgs = None,
       dpopMinRsaKeySize = None,
       edgeClientCertificate = None,
+      themeOverrides = None,
     )
 
 @jsonNoExtraFields
@@ -443,7 +448,6 @@ case class UpdateServiceClientRequest(
       refreshTokenTtl = None,
       theme = None,
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = None,
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = None,
@@ -464,6 +468,7 @@ case class UpdateServiceClientRequest(
       edgeSigningKey = None,
       edgeClientCertificate = None,
       applicationType = None,
+      themeOverrides = None,
     )
 
 object UpdateServiceClientRequest:

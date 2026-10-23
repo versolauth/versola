@@ -1,10 +1,11 @@
 # Deploying Versola to Kubernetes
 
-Two charts live here:
+Three charts live here:
 
 | Chart | What it deploys |
 |---|---|
 | [`versola/`](versola) | `auth`, `central`, `edge` and the admin console — the system itself |
+| [`versola-edge/`](versola-edge) | one `edge` that runs outside that cluster, enrolled through central ([section 10](#10-a-remote-edge)) |
 | [`loadgen/`](loadgen) | the load emulator: coordinator, driver fleet and `mockapi` — never the system under test |
 
 > **Scope.** This is not how the shared production host runs today. That is a Docker Compose
@@ -224,57 +225,94 @@ three `*.generated-secrets.env` files, mapping variable names to key names by th
 ## 5. Applying migrations
 
 The services **validate** their schema at boot and fail to start when migrations are missing.
-They do not apply them: `RUN_MIGRATIONS` is hardcoded to `"false"` in the Deployment template,
-and the migration Job that will replace it is
-[#209](https://github.com/versolauth/versola/issues/209).
+They do not apply them: `RUN_MIGRATIONS` is `"false"` in the Deployment template. The chart's
+migration Job does (`migrations.*` in `values.yaml`): on every `helm install` and `helm upgrade` it
+runs `versola-tools migrate` once, before the new pods start. If it fails, the release fails and the
+Deployments are left as they were.
 
-Nor can you override it through `services.<name>.extraEnv`. That renders *after* the hardcoded
-entry, so the container ends up with two `env` entries of the same name, and Helm 4's
-server-side apply rejects that outright:
+Setting `RUN_MIGRATIONS` through `services.<name>.extraEnv` does not work: that renders after the
+hardcoded entry, so the container gets two `env` entries of the same name, and Helm 4's server-side
+apply rejects `duplicate entries for key [name="RUN_MIGRATIONS"]`.
 
+### What the Job reads
+
+Nothing the Deployments do not already read, and less of it:
+
+- **One container per enabled service** (`migrate-auth`, `migrate-central`, `migrate-edge`; a
+  disabled service is not migrated), running side by side. The three schemas are independent.
+  The Job fails if any container does.
+- Each container mounts **only its own service's** `config.existingSecret` as `<service>.conf`, and
+  gets **only that service's `POSTGRES_PASSWORD`** from `secrets.existingSecret`. The three configs
+  all say `${POSTGRES_PASSWORD}` with a different value each, which is why there is no single
+  container. The tool reads `postgres.url`, `user`, `password` and `ssl-root-cert` and tolerates every
+  other unresolved placeholder, so token, signing and client secrets never reach the Job.
+- A service's `extraVolumes` / `extraVolumeMounts` are mounted in its container too, so a
+  `postgres.ssl-root-cert` path resolves exactly as it does in the Deployment.
+
+Both Secrets must exist **before** `helm install`. A hook runs ahead of every other resource of the
+release, so a Secret created by the same release, or by an operator that has not synced it yet,
+is not there for it and the Job waits until `activeDeadlineSeconds`. The connection must reach
+Postgres itself, not a transaction-pooling PgBouncer in front of it.
+
+### Why a rolling update is safe
+
+The order is *migrate, then roll the pods*, and it holds up for two reasons that live in the code:
+
+- The old pods keep serving on the migrated schema. Migrations are written to be compatible with the
+  previous release (`.claude/rules/database-migrations.md`: add, never drop or rename in the same
+  release), and a service ignores a schema that is *ahead* of its build.
+- If the Job did not run at all (the tool does not support Helm hooks, someone deleted it), the new
+  pods stop at boot with the name of the missing migration instead of serving errors from a table that
+  is not there.
+
+`helm rollback` does not undo a migration, and does not run one. The previous version starts on the
+newer schema for the same reason the old pods above do. A migration that cannot be survived by the
+previous release has to be said so in its release notes; restoring the pre-upgrade `pg_dump` is the
+only way back from it.
+
+### Settings
+
+| Value | Default | |
+|---|---|---|
+| `migrations.enabled` | `true` | Turn off only if something else migrates (below). |
+| `migrations.hook` | `true` | A `pre-install,pre-upgrade` Helm hook. `false`: an ordinary Job. |
+| `migrations.activeDeadlineSeconds` | `270` | Keep it **below** the `--timeout` of `helm upgrade` (5m unless set), or Helm gives up while the Job keeps running. Raise both for a long migration. |
+| `migrations.lockTimeoutMs` | `5000` | A statement waiting longer for a lock gives up and the service's migration is retried, instead of queueing every query behind it while the old pods serve. `0` waits forever. |
+| `migrations.lockRetries` / `connectRetries` | `3` / `3` | |
+| `migrations.dryRun` | `false` | Reports the pending migrations and applies nothing. |
+| `migrations.backoffLimit` | `1` | Job retries after a pod dies for its own reason, such as a node drain. |
+| `migrations.ttlSecondsAfterFinished` | `86400` | How long a finished Job keeps its logs. |
+
+A failed hook Job stays for its logs (`kubectl logs job/<release>-versola-migrate --all-containers`);
+the next attempt replaces it. A succeeded one is removed.
+
+### Without Helm hooks (Argo CD, Flux, plain manifests)
+
+Set `migrations.hook=false`. The chart then renders an ordinary Job whose name carries a hash of what
+it runs (image, arguments, environment, mounts), because a Job's pod template cannot be changed in
+place. Ordering becomes the tool's job; put its annotations in `migrations.annotations`.
+
+- **Argo CD:** `argocd.argoproj.io/hook: PreSync` and
+  `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation`. Argo CD ignores every `helm.sh/hook`
+  as soon as one `argocd.argoproj.io/hook` exists, runs PreSync before the other resources of the
+  Application, and cannot tell an install from an upgrade, so the Secrets must live outside this
+  Application (or in an earlier sync wave) and the Job runs on every sync, which a migration that has
+  nothing left to apply tolerates. Without a hook the pods start first and crash-loop until the Job
+  has run.
+- **Flux:** the HelmRelease runs the Helm hooks itself, so the default works; set
+  `spec.upgrade.timeout` above `migrations.activeDeadlineSeconds`.
+- **Plain manifests:** `helm template` and apply the Job first, wait for it, then the rest.
+
+### By hand
+
+With `migrations.enabled=false`, or for a one-off (`--dry-run`, a single service), run the same Job
+yourself. It needs the same two things per service: the env.conf mounted as `<service>.conf` under
+`/opt/versola-tools/config`, and `POSTGRES_PASSWORD` in the environment.
+
+```bash
+helm template versola k8s/versola -f values.yaml --set migrations.dryRun=true \
+  -s templates/migrate-job.yaml | kubectl apply -f -
 ```
-.spec.template.spec.containers[name="auth"].env: duplicate entries for key [name="RUN_MIGRATIONS"]
-```
-
-Apply migrations with `versola-tools` instead, as a one-shot Job. It reads the *same*
-`auth.conf`/`central.conf`/`edge.conf` the services will start from, so what it applies cannot
-drift from what they expect to find:
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: versola-migrate
-  namespace: versola
-spec:
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: ghcr.io/versolauth/versola-tools:<appVersion>
-          args: ["migrate"]            # add "--dry-run" to report without applying
-          envFrom:
-            - secretRef:
-                name: versola-migrate-env
-          volumeMounts:
-            - name: config
-              mountPath: /opt/versola-tools/config
-              readOnly: true
-      volumes:
-        - name: config
-          secret:
-            secretName: versola-migrate-config
-```
-
-Two Secrets of its own, because it needs the configs under their own names and the values keyed
-by *variable* name rather than by the chart's key naming:
-
-- `versola-migrate-config` — keys `auth.conf`, `central.conf`, `edge.conf`.
-- `versola-migrate-env` — the union of the three `*.generated-secrets.env` files. The tool calls
-  `ConfigFactory.parseFile(...).resolve()`, which resolves the whole document, so *every*
-  placeholder in all three files must be satisfied — not only the Postgres block it reads.
 
 It creates each schema if absent, then migrates each service independently. `--dry-run` reports
 what would be applied, including against a database with no history at all, without touching
@@ -304,11 +342,11 @@ the three — a Helm install schedules them at once. A service in that state is 
 
 How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
 
-- With `dynamic` (min 0) the service becomes ready by itself once central binds its port, and
+- With `dynamic` (min 0, the default) the service becomes ready by itself once central binds its port, and
   `restartCount` stays 0.
-- With the default `fixed` pool it does **not**. The first request to central opens all the pool's
+- With `HTTP_CLIENT_POOL_KIND=fixed` it does **not**. The first request to central opens all the pool's
   connections, and when central refuses them the pool keeps one failed connection per slot (128 by
-  default). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
+  default size). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
   its budget even though central is already listening. The service exits with code 1 after the two
   minutes and relies on the restart policy (`restartPolicy: Always` in Kubernetes,
   `restart: unless-stopped` in the compose templates); the restarted process builds a fresh pool
@@ -316,7 +354,10 @@ How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
 
 The wait is two minutes, and only for a central that cannot be *reached*. A central that answers
 and rejects the request — wrong URL, wrong sync key — still fails startup within seconds rather
-than spending the whole budget on something waiting cannot fix.
+than spending the whole budget on something waiting cannot fix. Once the service has synced at
+least once, a restart that finds central unreachable after the wait starts from the configuration
+snapshot kept in its own database and becomes Ready on it, retrying central in the background
+(`config_snapshot_age_seconds`, see deploy.md, #566); it does not restart.
 
 ### Availability: spread, disruption budgets, priority, autoscaling
 
@@ -334,7 +375,7 @@ service under `services.<name>` (or `global` for the spread).
 
 **Do not scale these services on memory, and be careful with CPU.** The JVMs run a fixed heap
 (`-Xms512m -Xmx512m`), so memory use is flat in load and says nothing about demand. CPU is a weak signal
-too: RSA signing and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
+too: token signing (ES256 by default, RSA on older deployments) and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
 under load CPU saturates at what those admit instead of rising with demand, and a utilisation target can
 sit below its threshold while requests queue. The default metric is CPU utilisation of the request
 (`targetCPUUtilizationPercentage: 70`, which needs `resources.requests.cpu`); `autoscaling.metrics`
@@ -346,11 +387,11 @@ Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
 
 ### Outbound connections: `HTTP_CLIENT_POOL_*`
 
-auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default.
+auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default. `dynamic` is the default kind because `fixed` opens all of a target's connections on first use (128 mTLS handshakes to auth); set `HTTP_CLIENT_POOL_KIND=fixed` to get the previous behaviour. `docker/versola-tools/compose.fragment.yml.template` in [#791](https://github.com/versolauth/versola/pull/791) sets `dynamic` explicitly for edge and becomes redundant with this default.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HTTP_CLIENT_POOL_KIND` | `fixed` or `dynamic` | `fixed` |
+| `HTTP_CLIENT_POOL_KIND` | `dynamic` or `fixed` (an unknown value means `dynamic`) | `dynamic` |
 | `HTTP_CLIENT_POOL_SIZE` | connections per target; for `dynamic` the maximum | `128` (zio-http's own default is 10) |
 | `HTTP_CLIENT_POOL_MIN` | `dynamic` only: connections kept open when idle (not above the maximum) | `0` |
 | `HTTP_CLIENT_POOL_TTL` | `dynamic` only: how long the pool must be unused before it shrinks to the minimum, a duration such as `30s` or `2m` | `30s` |
@@ -486,16 +527,47 @@ for the three certificate relationships described in
 cert-manager (and, optionally, trust-manager); it installs neither. Opt out with
 `pki.enabled: false`.
 
-Out of the box you get: auth's mutual-TLS listener on `8083` (container and Service port), the
-Versola Client CA (a `ClusterIssuer`, its Secret in cert-manager's namespace so trust-manager can
-read it), auth's listener certificate, a trust-manager `Bundle` that auth mounts as its trust
-anchors, Reloader annotations on auth and edge, and a service account for central that may create
-cert-manager `CertificateRequest`s in the release namespace — nothing else. Central uses it to
-issue and renew edge-fronted clients' certificates itself: register the client with
-`issueEdgeClientCertificate: true` and an `mtlsAuth`, and it asks the issuer named by
+Out of the box you get: auth's mutual-TLS listener on `8083` (container and Service port), a CA
+hierarchy (below), auth's and central's listener certificates, trust-manager `Bundle`s that auth and
+central mount as their trust anchors, Reloader annotations on auth, central and edge, and a service
+account for central that may create cert-manager `CertificateRequest`s in the release namespace —
+nothing else. Central uses it to issue and renew edge-fronted clients' certificates itself: register
+the client with `issueEdgeClientCertificate: true` and an `mtlsAuth`, and it asks the issuer named by
 `CLIENT_CERT_ISSUER_NAME` (set by the chart; `scripts/gen-env.scala`'s `k8s` target writes the
 `client-certificates` block that reads it) for a 14-day certificate, renewed at 4 days left.
 `scripts/gen-env.scala` also writes the `mutual-tls` and `native` blocks with the paths below.
+
+**One root, three CAs, one per role.** `pki` bootstraps a root (`<release>-versola-root-ca`) and below
+it three intermediate CAs, each a `ClusterIssuer`: `server` signs the listener certificates of auth and
+central, `edge` signs edge identities (`urn:versola:edge:<id>` and `urn:versola:edge-group:<group>`),
+`client` signs client certificates. A certificate is then good only where its role says, because what
+a listener trusts is the *intermediate* — never the root, which would admit every role everywhere:
+
+| Listener | Trusts | ConfigMap (trust-manager `Bundle`) |
+|---|---|---|
+| auth's handshake | client CA + edge CA (an edge presents its identity to auth too) | `<release>-versola-client-ca` |
+| auth's check of an edge's name | edge CA alone: a certificate may carry `urn:versola:edge:*` only if it chains to it | `<release>-versola-edge-ca` |
+| central's handshake | edge CA alone, so a client certificate fails the handshake, not just an application check | `<release>-versola-edge-ca` |
+
+Central signs the certificates it issues to edges (`POST /edge/enroll`, `/edge/certificate/renew`) with the
+`edge` issuer, not the client one: the chart sets `EDGE_CERT_ISSUER_NAME` (and `_KIND`, `_GROUP` for an
+operator's issuer) next to `CLIENT_CERT_ISSUER_NAME`, for central's `edge-certificates { cert-manager { } }`
+block, which has the shape of `client-certificates`. Central's Role may create `CertificateRequest`s against any
+issuer in the namespace, so it needs no change; an approver policy of your own must allow the edge issuer too.
+Where that block is absent central uses the client issuer, whose certificates the listener's handshake refuses.
+
+Edges pin the *leaf* of auth's and central's listener certificates, as before. Without trust-manager
+(`pki.trustBundle.enabled: false`) the chart mounts each leaf Secret's `ca.crt` instead, which is the
+root: everything still connects, but nothing is split. Chains were checked against a cert-manager
+and trust-manager on kind: the edge identity verifies against the edge bundle and the client bundle, the
+server leaf against neither, and an intermediate's Secret holds that one certificate in `tls.crt`.
+
+**Upgrading from a chart with the single `<release>-versola-client-ca` root.** The client CA keeps its
+name, its key and its subject (`Versola Client CA`), now as an intermediate under a new root, so the
+client certificates it signed still chain to it and need no reissue. Auth's trust bundle now holds that
+intermediate and the edge CA instead of the old root; pods restart through Reloader. The *edge identity*
+and the listener leaves are reissued from the new `edge` and `server` CAs on the first sync (the
+certificates' issuer changed), so edges that pin a leaf need the new pin, as at any leaf rotation.
 
 `pki.clients` and `pki.certSync` are for certificates issued *outside* central (a cert-manager
 `Certificate` per client, copied into central by `cert-sync`), and are off by default.
@@ -513,26 +585,56 @@ pki:
   reloader: true             # Stakater Reloader restarts auth/edge on renewal
 ```
 
-What that renders: a self-signed root and a CA `ClusterIssuer` (the "Versola Client CA" -- or point
-`pki.issuerRef` at an issuer you already run), a leaf `Certificate` for auth's listener
-(`<release>-versola-auth-mtls`, PKCS#8), the trust-manager `Bundle`, and central's service account,
-`Role` and `RoleBinding`.
+What that renders: a self-signed root, the three CA `ClusterIssuer`s (or point `pki.issuerRef` at an
+issuer you already run, for all roles, or `pki.issuerRefs.{server,edge,client}` for one — a role with an
+issuer of your own bootstraps no CA, and `trustBundle.sources` / `edgeSources` must then name its CA), a
+leaf `Certificate` each for auth's and central's listener (`<release>-versola-auth-mtls`, PKCS#8) with
+the public hosts of [section 9a](#9a-public-names-limits-and-network-policies) among their names, the
+identity certificate of this release's own edge (both URIs), the two `Bundle`s, and central's service
+account, `Role` and `RoleBinding`. Leaves and intermediates are cert-manager's to renew: leaves
+`duration: 2160h`, `renewBefore: 720h`.
 
 The chart generates no `env.conf`, so point yours at the files it mounts:
 
 | Service | Mounted at | Use as |
 |---|---|---|
 | `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
-| `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the trust-manager bundle if enabled, else the issuing CA) |
+| `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (client + edge CA bundle; without trust-manager the issuing root) |
+| `auth` | `/app/mtls/edge-trust/ca.crt` | `mutual-tls.edge-trusted-certificates` (the edge CA alone) |
+| `auth` | `/app/mtls/client-trust/ca.crt` | `est.ca-certificates` (EST `cacerts`; the client CA alone, **never the root**: the `<release>-client-only-ca` trust-manager bundle, or `pki.est.caSecret`; absent both, no mount) |
 | `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
+| `central` | `/app/central-mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` (central's listener for the edge surface) |
+| `central` | `/app/central-mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the edge CA alone; without trust-manager the issuing root) |
+| `edge` | `/app/central-mtls/client/tls.crt`, `tls.key` | `central.mutual-tls.certificate`, `.private-key` (the in-cluster edge's identity, from the edge CA, with both URIs) |
+| `edge` | `/app/central-mtls/server-pin/tls.crt` | `central.mutual-tls.trusted-certificates = ["/app/central-mtls/server-pin/tls.crt"]` (a leaf pin on central's listener certificate) |
 
-Both auth and edge read these once at startup, so a renewal needs a restart: set
+EST's `cacerts` hands this file to a bank, so it is the client CA alone and **never the root**, which signs the edge and server roles too. With trust-manager (`pki.trustBundle.enabled`) it is the bundle `<release>-client-only-ca` (the client CA and `pki.trustBundle.sources`). Without it the chart's `ca.crt` files are the root, so they are not used for this: give the client CA certificate as a Secret in the release namespace and name it in `pki.est.caSecret` (`name`, `key`, default `ca.crt`); the bootstrapped client CA's own Secret lives in `pki.trustNamespace` and cannot be mounted. With neither, nothing is mounted, and `pki.est.enabled: true` makes rendering fail with that reason, rather than auth failing at startup. `.github/scripts/check-chart-est-ca.sh` renders each mode and asserts the mounted source is not the root.
+
+With `pki.issuerRef` set and no per-role issuers, edge identities and client certificates come from the **same CA**, so the edge CA is then the client CA and EST `cacerts` hands it out: a bank is told to trust the CA that also issues edge identities. Give the edge role its own issuer (`pki.issuerRefs.edge`) before enabling EST for partners.
+
+Auth, central and edge read these once at startup, so a renewal needs a restart: set
 `pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A
 renewal restarts auth and edge together, so for zero-downtime rotation of auth's listener
 certificate use the two-pin procedure (publish the next leaf on every edge before auth switches)
-instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add the incoming CA's
-Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
-clients, then remove the outgoing source.
+instead of relying on automatic renewal. Reloader is what the chart gives for hot replacement until
+the services reload certificates themselves; each Deployment also keeps its `preStop` sleep
+(`preStopSleepSeconds`) for connection draining, and a `PodDisruptionBudget` while it runs more than
+one replica (section 6). **CA rotation** with `trustBundle`: add the incoming CA's Secret (in
+trust-manager's trust namespace) to `sources` (or `edgeSources`) next to the bootstrapped one, reissue
+what that CA signed, then remove the outgoing source.
+
+**The edge surface on central (#554).** Central serves what an edge reads (`/edge/*`) on its own
+mutual-TLS listener, `services.central.mutualTlsPort` (`8093`, MPORT), and nowhere else; edge's
+`central.url` is `https://<release>-versola-central:8093`. Every call carries two proofs: the
+handshake's certificate chains to the issuing CA, and carries the URI name
+`urn:versola:edge:<id>` -- `pki.edgeCentral.edgeId`, which must equal the `id` in edge's
+`env.conf` -- for the same edge the signed token names. cert-manager issues both certificates
+(`pki.centralServer`, `pki.edgeCentral`) and renews them; nothing is registered in central when it
+does, so a renewal needs only the restart Reloader gives edge and central. The chart's Service is
+a ClusterIP by default, which is all an edge in the same cluster needs: it reaches central's and
+auth's mutual-TLS ports by Service name (or loopback), never by a public domain. Edges outside the
+cluster, partner edges' clients and external mutual-TLS clients need public names; see
+[section 9a](#9a-public-names-limits-and-network-policies).
 
 A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs
 the same listener, and edge uses it by itself: with `versola-internal-url` plaintext (the chart's `http://versola-auth:8080`)
@@ -548,14 +650,124 @@ renews only the certificates it issued.
 
 ---
 
-## 10. Known rough edges
+## 9a. Public names, limits and network policies
+
+Nothing here is reachable from outside the cluster by default, and none of it is needed for an edge
+that runs next to central and auth. Turn a name on only for the case that needs it:
+
+| Name | Set | For |
+|---|---|---|
+| `id.<domain>` | `ingress.hosts` (section 7) | browsers and OAuth clients; ordinary TLS at the Ingress |
+| `id-mtls.<domain>` | `exposure.mtls.auth.host` | a **remote** edge (or any edge outside the cluster) calling auth, a partner edge's `tls_client_auth` client, external FAPI clients |
+| `central-mtls.<domain>` | `exposure.mtls.central.host` | a **remote first-party** edge reading its configuration from central |
+| `central.<domain>` | `exposure.central.host` | a new edge enrolling: it has no certificate yet, so this one is plain TLS |
+
+A **partner** edge needs no name for central at all: it never reaches central, and the `central`
+listener refuses its certificate. At most it uses `id.<domain>`, and `id-mtls.<domain>` for a client that
+authenticates with a certificate.
+
+```yaml
+exposure:
+  mtls:
+    type: ingressPassthrough        # or gatewayTLSRoute, loadBalancer
+    className: nginx                # ingress-nginx started with --enable-ssl-passthrough
+    limits:
+      enforcedBy: "NLB security group sg-0abc allows 198.51.100.0/24; per-source connection cap on the NLB"
+    auth:    {host: id-mtls.example.com}
+    central: {host: central-mtls.example.com}
+  central:
+    host: central.example.com
+    className: nginx
+    annotations: {cert-manager.io/cluster-issuer: letsencrypt}
+    tls: [{hosts: [central.example.com], secretName: versola-central-tls}]
+    limits: {connectionsPerIP: 10, requestsPerSecondPerIP: 5}
+```
+
+**The mutual-TLS hosts pass the TLS handshake through; they are never terminated.** The pod demands
+the client certificate in that handshake. `ingressPassthrough` renders an Ingress per host with
+ingress-nginx's `ssl-passthrough` (and, since the controller routes by SNI, a name per host);
+`gatewayTLSRoute` a Gateway API `TLSRoute` on a listener in `Passthrough` mode; `loadBalancer` a
+LoadBalancer Service per host. The public name is added to the matching listener certificate, so it
+is in the names a client checks and a remote edge pins.
+
+**Where a limit can and cannot be applied.** The chart refuses a public host unless a limit is
+configured (`values.schema.json`), but it cannot apply every kind:
+
+- A passthrough is TCP carrying a handshake the proxy does not read. ingress-nginx's
+  `limit-connections`, `limit-rps` and `whitelist-source-range` annotations act in nginx's HTTP stage,
+  which that traffic never reaches, so **they do not apply to `ingressPassthrough` and the chart does not
+  render them** — doing so would claim a limit nothing enforces. For `ingressPassthrough` and
+  `gatewayTLSRoute` the limit lives in front of the cluster: per-source connection and rate limits on
+  the load balancer, a cloud firewall or security group, or the Gateway implementation's own policy
+  resource. Write what you enforce and where into `exposure.mtls.limits.enforcedBy`; the chart cannot
+  verify it, it is you saying the limit exists. (Also: behind a TCP load balancer without PROXY protocol
+  the controller sees the balancer's address, not the client's.)
+- The one limit the chart applies itself is a LoadBalancer Service's `loadBalancerSourceRanges`
+  (`exposure.mtls.limits.sourceRanges`, `type: loadBalancer` only). With another type it is refused,
+  since nothing would enforce it.
+- `central.<domain>` is HTTP behind a terminating Ingress, so on ingress-nginx `connectionsPerIP`
+  (`limit-connections`) and `requestsPerSecondPerIP` (`limit-rps`) apply and are rendered. Another
+  controller ignores those annotations; use `enforcedBy`. `type: gatewayAPI` has no per-IP knob here and
+  needs `enforcedBy`. Attempt limits per IP and per token belong to central itself (design F5), not the chart.
+- A limit by certificate subject (per `client_id`, per `edge_id`) is applied only after authentication,
+  by the services; no layer in front can see it.
+
+**The enrollment host serves one route.** `central.<domain>` leads to central's enrollment listener
+(`services.central.enrollmentPort`, `APORT`, `8094`), which is bound — and the Service port added — only
+while `exposure.central.host` is set. The Ingress carries the single path `/edge/enroll`, `Exact`, as
+well; the rest of central is not reachable through the host.
+
+**`NetworkPolicy`** (`networkPolicy.enabled`, off by default: it needs a CNI that enforces it, and
+`networkPolicy.ingressControllerSelector` must match your controller — the render refuses to guess).
+Auth and central then accept traffic from the release's own pods, from the controller on the ports a
+route leads to (auth's HTTP port when `ingress.enabled`, the published mutual-TLS port, the enrollment
+port), from anyone on a LoadBalancer's mutual-TLS port (the balancer or firewall limits who), on the
+diagnostics port from `metricsFrom` (empty: any pod), and from `extraIngress`. Egress is untouched.
+
+## 10. A remote edge
+
+[`versola-edge/`](versola-edge) is a minimal chart for **one edge outside this cluster** — another
+region, another cloud, an operator's own site. Everything about the rest of the system is reached by
+public name, so install the main chart's `exposure` first (section 9a).
+
+1. In central, create the edge (`POST /configuration/edges`, with a `groupId`) and an enrollment token
+   (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
+   hour and works once. Put it in a Secret: `kubectl create secret generic edge-enrollment --from-literal=token=...`.
+2. Copy the leaf certificate of central's listener (the Secret `<release>-versola-central-mtls`, `tls.crt`)
+   to `central.pins`; do the same for auth's if the edge calls it (`auth.pins`). Pins are a *set*: put the
+   next leaf beside the current one before the listener switches, so a rotation does not cut the edge off.
+3. Generate the edge's `env.conf` (`scripts/gen-env.scala`) into a Secret and its secret vars into
+   `secrets.existingSecret`, as for the main chart, and add one line to the `env.conf`:
+   `include file("/app/remote-edge/central.conf")`.
+
+```bash
+helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
+  --set central.mtlsUrl=https://central-mtls.example.com \
+  --set central.enrollment.url=https://central.example.com \
+  --set central.enrollment.existingSecret=edge-enrollment \
+  --set-file 'central.pins[0]=central-leaf.pem' \
+  --set config.existingSecret=edge-config \
+  --set secrets.existingSecret=edge-secrets
+```
+
+What it renders: a StatefulSet (one replica), a Service, an optional Ingress, a ConfigMap with
+`central.conf` (the `central { url, mutual-tls { trusted-certificates }, enrollment { url, token-file } }`
+and `identity { directory }` blocks of the v1 contract, plus the pins as files) and, if you pass `central.enrollment.token`
+instead of `existingSecret`, the token Secret. The edge generates its key locally, enrolls once, keeps the key and
+certificate chain on a PVC (`persistence`, on by default) and renews at a third of the certificate's life
+left. **Without the PVC** the identity is gone with the pod: the edge enrolls again at every restart, which
+needs a new token each time, so turn persistence off only for a throwaway. One replica, because a token enrolls
+one identity; a second edge in the same place is a second release with its own edge id.
+
+---
+
+## 11. Known rough edges
 
 All of these have open issues; none of them has a fix in the chart yet.
 
 | | |
 |---|---|
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
-| [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
 Observability is external by design. The Grafana dashboard is checked in under `dashboards/grafana/` at the repository root, outside both charts, and is not installed by either. Nothing here deploys Prometheus, and neither chart creates
 `ServiceMonitor` or `PodMonitor` objects — both `loadgen` and `versola` carry `prometheus.io/scrape`

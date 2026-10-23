@@ -41,7 +41,14 @@ object JwksApiSpec extends CentralApiSpec:
   private def settings(tenantId: String, signingKeyId: Option[String]): Json.Obj =
     Json.Obj(
       "tenantId" -> Json.Str(tenantId),
-      "allowedPrefixes" -> Json.Arr(),
+      "phoneRegions" -> Json.Arr(),
+      // Registration stays closed: central then looks up no role, and the tenant has none.
+      "emailRegistration" -> Json.Obj(
+        "mode" -> Json.Str("closed"),
+        "domains" -> Json.Arr(),
+        "blockSubaddress" -> Json.Bool(false),
+      ),
+      "defaultRoles" -> Json.Arr(Json.Str("user")),
       "submissionLimits" -> Json.Obj(
         "otpRequest" -> Json.Arr(),
         "otpSubmit" -> Json.Arr(),

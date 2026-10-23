@@ -6,7 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -53,11 +53,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -67,6 +71,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- tenantRepository.getAll.succeedsWith(Vector.empty)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
+        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
         verifyResult <- verify(response, edgeService)
@@ -90,11 +96,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         tenantRepository = stub[TenantRepository]
+        groupService = stub[EdgeGroupService]
+        identityService = stub[EdgeIdentityService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeGroupService](groupService) ++
+                ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -103,6 +113,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- tenantRepository.getAll.succeedsWith(tenants)
+        _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
+        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         // `token` stubs `find` for `authorizeInternal`; a case that wants a particular record
         // back from it sets its own afterwards, so its setup runs second.
         raw <- token(edgeService)
@@ -138,6 +150,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+
+  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -188,7 +202,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, service) =>
         for body <- response.body.asJson[versola.central.configuration.edges.ServiceKeyResponse]
         yield assertTrue(
-          service.registerEdge.calls == List(edgeId),
+          service.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId)),
           body.keyId == testKeyPair.keyId,
         ),
     ),
@@ -219,7 +233,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
     ),
     internalTestCase(
-      description = "edges registry serves every edge's public keys and assigned tenants to auth",
+      description = "edges registry serves every edge's id and assigned tenants to auth",
       token = authSyncToken,
       expectedStatus = Status.Ok,
       setup = service =>
@@ -234,7 +248,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
         TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
         // Assigned to neither edge below, and must not leak into either one's tenantIds --
-        // this is the set `EdgeAssertionService` checks a token's tenant against.
+        // this is the set `EdgeCertificateTrust` checks a token's tenant against.
         TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
       ),
       verify = response =>
@@ -243,19 +257,13 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
         yield assertTrue(
           body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
-          body.edges.head.publicKey == publicJwk,
-          // Both halves of a rotation, so auth keeps accepting assertions signed with the key
-          // being rotated out until it is removed.
-          body.edges.head.oldPublicKey.isEmpty,
-          body.edges(1).oldPublicKey.contains(publicJwk),
-          // What lets auth refuse an assertion from a real, correctly signed edge that is
+          // What lets auth refuse a call from a real edge, with a valid certificate, that is
           // simply not the one this token's tenant is behind.
           body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
           body.edges(1).tenantIds == List(TenantId("tenant-c")),
         ),
     ),
-    // An edge has no business reading its peers' identities: the keys it would need to forge
-    // one are exactly what this would hand it.
+    // An edge has no business reading its peers' identities.
     internalTestCase(
       description = "edges registry refuses an edge, authenticated or not",
       token = edgeSyncToken,
@@ -289,23 +297,42 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
     ),
-    internalTestCase(
-      description = "an edge syncing its DPoP policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(requireDpopNonce = false))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeDpopSyncResponse]
-        yield assertTrue(!body.requireDpopNonce),
+    controllerTestCase(
+      description = "setting a valid overload policy returns 204 and records it for the named edge",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls == List((edgeId, overloadPolicy)))),
     ),
-    // auth has no proxied calls to check proofs on, and an edge id is how this route knows
-    // whose policy to answer with -- a caller that is not an edge has no answer here.
-    internalTestCase(
-      description = "DPoP policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
+    controllerTestCase(
+      description = "an overload policy the service refuses is answered 400 with what is wrong, not 204",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.failsWith(
+          InvalidOverloadPolicy("inbound.maxInFlight must be between 1 and 100000"),
+        ),
+      verify = (response, _) =>
+        for body <- response.body.asJson[OverloadPolicyError]
+        yield assertTrue(body.error.contains("inbound.maxInFlight")),
+    ),
+    controllerTestCase(
+      description = "setting the overload policy of an unregistered edge returns 404 and writes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", "edge-missing"),
+        body = Body.fromString(overloadPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
     ),
   )

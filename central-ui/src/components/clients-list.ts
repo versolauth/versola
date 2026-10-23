@@ -1,9 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
+import { badgeStyles, buttonStyles, cardStyles, formStyles, recordStyles } from '../styles/components';
 import {accessSectionTitle} from '../utils/client-presets';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, FormPreview, FormPreviewScenario, FormRecord, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -11,8 +11,11 @@ import {
   fetchAllClients,
   fetchClientPresets,
   fetchChallengeSettings,
+  fetchFormPreviews,
+  fetchForms,
   fetchLocales,
   fetchOtpTemplates,
+  fetchThemePresets,
   fetchThemes,
   getPermissions,
   getResources,
@@ -34,15 +37,35 @@ import {
   profilePosture,
 } from '../utils/client-presets';
 import type { ClientEditSection } from './client-form';
+import { pickConsentScenario } from '../utils/consent-preview';
 import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
 import './content-header';
+import './danger-card';
+import './data-table';
+import './empty-state';
 import './error-card';
+import './filter-bar';
 import './loading-cards';
 import './preset-form';
+import './record-card';
+import './record-header';
+import type { DataTableColumn, RowMenuItem } from './data-table';
 
 /** What the create banner says instead of offering a secret, for a client whose secret is
  *  not the credential it authenticates with. `null` for one whose secret is. */
+/** What the client changes in its theme, in a line: `brand #112233, sharp corners`; "Same as the theme" when nothing. */
+function themeOverridesSummary(overrides: ThemeOverrides | null | undefined): string {
+  const parts = [
+    overrides?.brand && `brand ${overrides.brand}`,
+    overrides?.surface && `${overrides.surface} page`,
+    overrides?.background && `${overrides.background} background`,
+    overrides?.shape && `${overrides.shape} corners`,
+    overrides?.mode && `${overrides.mode} scheme`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Same as the theme';
+}
+
 function secretlessText(credential: ClientCredentialKind | undefined): string | null {
   switch (credential) {
     case 'public':
@@ -78,6 +101,9 @@ export class VersolaClientsList extends LitElement {
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
+  @state() private availableThemePresets: ThemePreset[] = [];
+  @state() private consentPreviewForm: FormRecord | null = null;
+  @state() private consentPreviewScenario: FormPreviewScenario | null = null;
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
@@ -88,7 +114,6 @@ export class VersolaClientsList extends LitElement {
   @state() private viewingClientId: string | null = null;
   @state() private editSection: ClientEditSection | null = null;
   @state() private typeFilter: 'all' | ClientKind = 'all';
-  @state() private openMenuId: string | null = null;
   @state() private isPreparingForm = false;
   // `secret` is null whenever the created client does not authenticate with one - a native
   // client is issued none, and a client that registered an mTLS credential or a key set
@@ -133,20 +158,6 @@ export class VersolaClientsList extends LitElement {
     }
   }
 
-  connectedCallback() {
-    super.connectedCallback();
-    document.addEventListener('click', this.closeMenu);
-  }
-
-  disconnectedCallback() {
-    document.removeEventListener('click', this.closeMenu);
-    super.disconnectedCallback();
-  }
-
-  private closeMenu = () => {
-    if (this.openMenuId) this.openMenuId = null;
-  };
-
   private async loadData() {
     if (!this.tenantId) {
       this.clients = [];
@@ -185,18 +196,11 @@ export class VersolaClientsList extends LitElement {
     buttonStyles,
     cardStyles,
     formStyles,
+    recordStyles,
     css`
       :host {
         display: block;
       }
-
-      .client-id {
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        color: var(--accent);
-        word-break: break-all;
-      }
-
 
       .icon-action {
         background: none;
@@ -259,7 +263,7 @@ export class VersolaClientsList extends LitElement {
 
       .tag {
         padding: 0.25rem 0.5rem;
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         color: var(--accent);
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
@@ -274,7 +278,7 @@ export class VersolaClientsList extends LitElement {
 
       .auth-flow-settings {
         margin-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding-top: var(--spacing-lg);
       }
 
@@ -328,7 +332,7 @@ export class VersolaClientsList extends LitElement {
       .logout-claim-key {
         padding: 0.1rem 0.3rem;
         border-radius: var(--radius-sm);
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -354,8 +358,8 @@ export class VersolaClientsList extends LitElement {
       .flow-step {
         min-width: 0;
         overflow-wrap: anywhere;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
       }
@@ -398,8 +402,8 @@ export class VersolaClientsList extends LitElement {
 
       .secret-banner {
         margin-bottom: var(--spacing-lg);
-        border-color: rgba(63, 185, 80, 0.35);
-        background: linear-gradient(180deg, rgba(63, 185, 80, 0.08), rgba(63, 185, 80, 0.04));
+        border-color: var(--success-border);
+        background: var(--success-subtle);
       }
 
       .secret-banner-header {
@@ -425,8 +429,8 @@ export class VersolaClientsList extends LitElement {
       .secret-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-family: var(--font-mono);
@@ -444,13 +448,13 @@ export class VersolaClientsList extends LitElement {
 
       .copy-feedback {
         font-size: 0.8125rem;
-        color: var(--success, #3fb950);
+        color: var(--success);
       }
 
       .btn-ghost {
         background: transparent;
         color: var(--text-secondary);
-        border-color: var(--border-dark);
+        border-color: var(--border-input);
       }
 
       .btn-ghost:not(:disabled):hover {
@@ -458,21 +462,10 @@ export class VersolaClientsList extends LitElement {
         border-color: var(--text-secondary);
       }
 
-      .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: var(--text-secondary);
-      }
-
-      .empty-state-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-      }
-
       /* Authorization Presets */
       .presets-section {
         margin-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding-top: var(--spacing-lg);
       }
 
@@ -521,7 +514,7 @@ export class VersolaClientsList extends LitElement {
         text-align: center;
         color: var(--text-secondary);
         font-size: 0.875rem;
-        background: var(--bg-dark);
+        background: var(--bg-page);
         border-radius: var(--radius-md);
       }
 
@@ -531,8 +524,8 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card {
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
         overflow: hidden;
@@ -553,7 +546,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card-header:hover {
-        background: rgba(var(--accent-tint), 0.05);
+        background: var(--accent-subtle);
       }
 
       .preset-info {
@@ -581,7 +574,7 @@ export class VersolaClientsList extends LitElement {
 
       .preset-body {
         padding: 0 var(--spacing-md) var(--spacing-md);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .preset-details {
@@ -615,7 +608,7 @@ export class VersolaClientsList extends LitElement {
 
       .preset-divider {
         grid-column: 1 / -1;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         margin: var(--spacing-xs) 0;
       }
 
@@ -645,220 +638,19 @@ export class VersolaClientsList extends LitElement {
         max-width: 28rem;
         min-width: 0;
       }
-      .filter {
-        display: inline-flex;
-        flex-wrap: wrap;
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-md);
-        overflow: hidden;
-        background: var(--bg-dark-card);
-        max-width: 100%;
-      }
-      .filter-option {
-        min-height: 2.25rem;
-        padding: 0 0.875rem;
-        border: 0;
-        border-right: 1px solid var(--border-dark);
-        background: none;
-        color: var(--text-secondary);
-        font: inherit;
-        font-size: 0.8125rem;
-        cursor: pointer;
-      }
-      .filter-option:last-child {
-        border-right: 0;
-      }
-      .filter-option.on {
-        background: rgba(var(--accent-tint), 0.12);
-        color: var(--accent);
-        font-weight: 600;
-      }
-      .filter-count {
-        margin-left: 0.375rem;
-        color: var(--text-secondary);
-        font-weight: 400;
-      }
-      .table-card {
-        padding: 0;
-        overflow: visible;
-      }
-      .client-table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      .client-table th {
-        text-align: left;
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: var(--text-secondary);
-        padding: 0.75rem var(--spacing-md);
-        border-bottom: 1px solid var(--border-dark);
-      }
-      .client-table td {
-        padding: 0.875rem var(--spacing-md);
-        border-bottom: 1px solid var(--border-dark);
-        vertical-align: middle;
-        font-size: 0.875rem;
-        color: var(--text-primary);
-      }
-      .client-table tbody tr:last-child td {
-        border-bottom: 0;
-      }
-      .client-table tbody tr:hover td {
-        background: var(--surface-inset);
-      }
-      .row-link {
-        display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
-        background: none;
-        border: 0;
-        padding: 0;
-        font: inherit;
-        text-align: left;
-        cursor: pointer;
-        color: inherit;
-        min-height: 1.5rem;
-      }
-      .row-link:hover .client-name-text {
-        color: var(--accent);
-        text-decoration: underline;
-      }
-      .client-name-text {
-        font-weight: 600;
-        font-size: 0.9375rem;
-      }
-      .type-label {
-        display: inline-flex;
-        gap: 0.5rem;
-        align-items: center;
-      }
-      .type-label .icon {
-        color: var(--text-secondary);
-      }
-      .cell-cred {
-        color: var(--text-secondary);
-      }
-      .chips {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-      .cell-actions {
-        width: 3rem;
-        position: relative;
-        text-align: right;
-      }
-      .menu-button {
-        color: var(--text-primary);
-        border: 1px solid var(--border-dark);
-        min-width: 2rem;
-        min-height: 2rem;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: var(--radius-md);
-      }
-      .menu {
-        position: absolute;
-        right: var(--spacing-md);
-        top: 2.75rem;
-        z-index: 5;
-        min-width: 11rem;
-        display: flex;
-        flex-direction: column;
-        padding: 0.25rem;
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-md);
-        background: var(--bg-dark-card);
-        box-shadow: var(--surface-overlay-shadow);
-        text-align: left;
-      }
-      .menu button {
-        min-height: 2rem;
-        padding: 0 0.75rem;
-        border: 0;
-        border-radius: var(--radius-sm);
-        background: none;
-        color: var(--text-primary);
-        font: inherit;
-        font-size: 0.875rem;
-        text-align: left;
-        cursor: pointer;
-      }
-      .menu button:hover {
-        background: var(--surface-inset);
-      }
-      .menu button.danger {
-        color: var(--danger);
-      }
-      .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.375rem;
-        padding: 0.25rem 0.625rem;
-        border-radius: 999px;
-        border: 1px solid var(--border-dark);
-        font-size: 0.75rem;
-        color: var(--text-primary);
-        white-space: nowrap;
-      }
-      .chip.ok {
-        border-color: var(--success);
-      }
-      .chip.ok .icon {
-        color: var(--success);
-      }
-      .chip.warn {
-        border-color: var(--warning);
-      }
 
       /* ── client page ── */
-      .crumbs {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-        font-size: 0.8125rem;
-        color: var(--text-secondary);
-        margin-bottom: var(--spacing-md);
-      }
-      .crumb-link {
-        background: none;
-        border: 0;
-        padding: 0.25rem 0;
-        min-height: 1.5rem;
-        font: inherit;
-        color: var(--accent);
-        cursor: pointer;
-      }
-      .view-head {
-        margin-bottom: var(--spacing-lg);
-      }
-      .view-title {
-        margin: 0 0 var(--spacing-sm);
-        font-size: 2rem;
-        font-weight: 700;
-        color: var(--text-primary);
-        overflow-wrap: anywhere;
-      }
-      .view-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--spacing-sm);
-        align-items: center;
-      }
       .banner {
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-inner);
         padding: var(--spacing-md) var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
-        background: var(--bg-dark-card);
+        background: var(--surface);
         color: var(--text-primary);
       }
       .banner.ok {
         border-color: var(--success);
-        background: rgba(63, 185, 80, 0.08);
+        background: var(--success-subtle);
       }
       .banner-title {
         display: flex;
@@ -889,56 +681,9 @@ export class VersolaClientsList extends LitElement {
         font-size: 0.8125rem;
         color: var(--text-secondary);
       }
-      .view-section {
-        padding: 0;
-        margin-bottom: var(--spacing-md);
-      }
-      .view-section-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: var(--spacing-md);
-        padding: var(--spacing-md) var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
-      }
-      .view-section-head h2 {
-        margin: 0;
-        font-size: 1rem;
-        font-weight: 700;
-        color: var(--text-primary);
-      }
-      .view-sub {
-        font-size: 0.8125rem;
-        color: var(--text-secondary);
-        margin-top: 0.125rem;
-      }
-      .view-row {
-        display: grid;
-        grid-template-columns: 12rem minmax(0, 1fr) auto;
-        gap: 0.25rem var(--spacing-lg);
-        padding: 0.75rem var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
-        align-items: baseline;
-        font-size: 0.875rem;
-      }
-      .view-row:last-child,
-      .view-section > :last-child {
-        border-bottom: 0;
-      }
-      .view-label {
-        color: var(--text-secondary);
-      }
-      .view-value {
-        color: var(--text-primary);
-        overflow-wrap: anywhere;
-      }
-      .view-fixed {
-        display: inline-flex;
-        gap: 0.375rem;
-        align-items: center;
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-        white-space: nowrap;
+      /* --info is the accent hue, so a link in a banner is told apart by its underline. */
+      .banner a {
+        text-decoration: underline;
       }
       .view-flow {
         padding: var(--spacing-md) var(--spacing-lg);
@@ -952,78 +697,14 @@ export class VersolaClientsList extends LitElement {
         align-items: center;
         flex-wrap: wrap;
       }
+      .presets-card {
+        padding: 0;
+        margin-bottom: var(--spacing-md);
+      }
       .presets-card .presets-section {
         margin: 0;
         border: 0;
         padding: var(--spacing-md) var(--spacing-lg);
-      }
-      .btn-delete {
-        color: var(--danger-strong);
-        border-color: var(--danger);
-      }
-      .danger-zone {
-        border-color: var(--danger);
-      }
-      .danger-zone h2 {
-        color: var(--danger);
-      }
-
-      @media (max-width: 720px) {
-        .client-table thead {
-          position: absolute;
-          left: -9999px;
-        }
-        .client-table,
-        .client-table tbody,
-        .client-table tr,
-        .client-table td {
-          display: block;
-        }
-        .client-table tr {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) auto;
-          gap: 0.375rem var(--spacing-md);
-          padding: var(--spacing-md);
-          border-bottom: 1px solid var(--border-dark);
-        }
-        .client-table tbody tr:last-child {
-          border-bottom: 0;
-        }
-        .client-table td {
-          padding: 0;
-          border: 0;
-        }
-        .client-table tbody tr:hover td {
-          background: none;
-        }
-        .cell-client {
-          grid-column: 1;
-        }
-        .cell-actions {
-          grid-row: 1;
-          grid-column: 2;
-          width: auto;
-        }
-        .cell-type,
-        .cell-cred,
-        .cell-sec {
-          grid-column: 1 / -1;
-        }
-        .menu {
-          right: 0;
-          top: 2.25rem;
-        }
-        .view-row {
-          grid-template-columns: 1fr;
-        }
-        .filter {
-          display: flex;
-          width: 100%;
-        }
-        .filter-option {
-          flex: 1 1 auto;
-          border-bottom: 1px solid var(--border-dark);
-        }
       }
     `,
   ];
@@ -1037,14 +718,9 @@ export class VersolaClientsList extends LitElement {
         || getLocalizedDescription(client.clientName).toLowerCase().includes(query)));
   }
 
-  private kindCount(kind: 'all' | ClientKind): number {
-    return kind === 'all' ? this.clients.length : this.clients.filter(client => clientKindOf(client) === kind).length;
-  }
-
   private async openView(client: OAuthClient) {
     this.viewingClientId = client.id;
     this.editSection = null;
-    this.openMenuId = null;
     await this.loadPresetsForClient(client.id);
     window.scrollTo({ top: 0 });
   }
@@ -1061,7 +737,6 @@ export class VersolaClientsList extends LitElement {
 
   private async copyClientId(client: OAuthClient) {
     await copyToClipboard(client.id);
-    this.openMenuId = null;
   }
 
   private togglePresetExpand(presetId: string) {
@@ -1110,11 +785,17 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
+    const [scopes, permissions, resources, themes, themePresets, forms, previews, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
+      // A central that has no built-in themes answers with an error: the client's own appearance is then not offered.
+      fetchThemePresets().catch(() => [] as ThemePreset[]),
+      // The appearance block draws the consent form. An older central, or an operator who may not read forms, has no
+      // such preview: the block says so and the rest of the form is unaffected.
+      fetchForms().catch(() => [] as FormRecord[]),
+      fetchFormPreviews().catch(() => [] as FormPreview[]),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
       getRoles(tenantId),
@@ -1126,6 +807,9 @@ export class VersolaClientsList extends LitElement {
       this.availablePermissions = permissions;
       this.availableResources = resources;
       this.availableThemes = themes;
+      this.availableThemePresets = themePresets;
+      this.consentPreviewForm = forms.find(f => f.id === 'consent' && f.active && f.jsCompiled) ?? null;
+      this.consentPreviewScenario = pickConsentScenario(previews.find(p => p.formId === 'consent')?.scenarios ?? []);
       this.availableOtpTemplates = otpTemplates;
       this.availableRoles = roles;
       this.availableLocales = locales;
@@ -1381,11 +1065,7 @@ export class VersolaClientsList extends LitElement {
         <content-header
           title="OAuth Clients"
         ></content-header>
-        <div class="card empty-state">
-          <div class="empty-state-icon">⏳</div>
-          <h3>Loading form options…</h3>
-          <p>Fetching scopes and permissions for the selected tenant.</p>
-        </div>
+        <versola-empty-state heading="Loading form options…" text="Fetching scopes and permissions for the selected tenant."></versola-empty-state>
       `;
     }
 
@@ -1439,6 +1119,9 @@ export class VersolaClientsList extends LitElement {
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
           .availableThemes=${this.availableThemes}
+          .availableThemePresets=${this.availableThemePresets}
+          .consentPreviewForm=${this.consentPreviewForm}
+          .consentPreviewScenario=${this.consentPreviewScenario}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
           .locales=${this.availableLocales}
@@ -1495,20 +1178,16 @@ export class VersolaClientsList extends LitElement {
       ` : this.errorMessage ? html`
         <versola-error-card heading="Could not load OAuth clients" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.clients.length === 0 ? html`
-        <div class="card">
-          <div class="empty-state">
-            <h3>No OAuth clients yet</h3>
-            <p>Create your first OAuth client to get started</p>
-            ${this.canManage ? html`
-            <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId} style="margin-top: 1rem;">
+        <versola-empty-state heading="No OAuth clients yet" text="Create your first OAuth client to get started">
+          ${this.canManage ? html`
+            <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId}>
               + Create Client
             </button>` : ''}
-          </div>
-        </div>
+        </versola-empty-state>
       ` : html`
         ${this.renderListToolbar()}
         ${this.filteredClients.length === 0 ? html`
-          <div class="card"><div class="empty-state"><h3>No clients match</h3></div></div>
+          <versola-empty-state heading="No clients match"></versola-empty-state>
         ` : this.renderClientTable()}
       `}
     `;
@@ -1569,93 +1248,55 @@ export class VersolaClientsList extends LitElement {
         <input class="form-input search-input" type="search" aria-label="Search clients" .value=${this.searchQuery}
           @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value}
           placeholder="Search by name or client ID" />
-        <div class="filter" role="group" aria-label="Filter by type">
-          ${filters.map(filter => html`
-            <button type="button" class="filter-option ${this.typeFilter === filter.id ? 'on' : ''}"
-              aria-pressed=${this.typeFilter === filter.id}
-              @click=${() => this.typeFilter = filter.id}>
-              ${filter.label}<span class="filter-count">${this.kindCount(filter.id)}</span>
-            </button>
-          `)}
-        </div>
+        <versola-filter-bar label="Filter by type"
+          .options=${filters.map(filter => ({ id: filter.id, label: filter.label }))}
+          .value=${this.typeFilter}
+          @change=${(e: CustomEvent<{ id: string }>) => this.typeFilter = e.detail.id as 'all' | ClientKind}
+        ></versola-filter-bar>
       </div>
     `;
   }
 
   private renderClientTable() {
+    const columns: DataTableColumn<OAuthClient>[] = [
+      { id: 'client', label: 'Client', cell: client => html`
+        <button type="button" class="row-link" @click=${() => this.openView(client)} aria-label=${`Open client ${getLocalizedDescription(client.clientName)} ${client.id}`}>
+          <span class="row-title">${getLocalizedDescription(client.clientName)}</span>
+          <span class="row-id">${client.id}</span>
+        </button>` },
+      { id: 'type', label: 'Type', cell: client => html`<span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span>` },
+      { id: 'credential', label: 'Authenticates with', class: 'muted', cell: client => credentialLabel(client) },
+      { id: 'security', label: 'Security', cell: client => html`
+        <div class="chips">${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
+    ];
+    const menuItems = (client: OAuthClient): RowMenuItem[] => [
+      { label: 'Open', onSelect: () => void this.openView(client) },
+      { label: 'Copy client ID', onSelect: () => void this.copyClientId(client) },
+      ...(this.canManage ? [{ label: 'Delete client', danger: true, ariaLabel: `Delete client ${client.id}`, onSelect: () => void this.handleDeleteClick(client) }] : []),
+    ];
     return html`
-      <div class="card table-card">
-        <table class="client-table">
-          <thead>
-            <tr>
-              <th scope="col">Client</th>
-              <th scope="col">Type</th>
-              <th scope="col">Authenticates with</th>
-              <th scope="col">Security</th>
-              <th scope="col"><span class="sr-only">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${this.filteredClients.map(client => html`
-              <tr>
-                <td class="cell-client">
-                  <button type="button" class="row-link" @click=${() => this.openView(client)}
-                    aria-label=${`Open client ${client.id}`}>
-                    <span class="client-name-text">${getLocalizedDescription(client.clientName)}</span>
-                    <span class="client-id">${client.id}</span>
-                  </button>
-                </td>
-                <td class="cell-type"><span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span></td>
-                <td class="cell-cred">${credentialLabel(client)}</td>
-                <td class="cell-sec"><div class="chips">${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div></td>
-                <td class="cell-actions" @click=${(e: Event) => e.stopPropagation()}>
-                  <button type="button" class="icon-action menu-button" aria-label=${`Actions for ${client.id}`}
-                    aria-haspopup="menu" aria-expanded=${this.openMenuId === client.id}
-                    @click=${(e: Event) => { e.stopPropagation(); this.openMenuId = this.openMenuId === client.id ? null : client.id; }}>
-                    ${this.icon('dots')}
-                  </button>
-                  ${this.openMenuId === client.id ? html`
-                    <div class="menu" role="menu">
-                      <button type="button" role="menuitem" @click=${() => this.openView(client)}>Open</button>
-                      <button type="button" role="menuitem" @click=${() => this.copyClientId(client)}>Copy client ID</button>
-                      ${this.canManage ? html`
-                        <button type="button" role="menuitem" class="danger" @click=${() => { this.openMenuId = null; void this.handleDeleteClick(client); }}
-                          aria-label=${`Delete client ${client.id}`}>Delete client</button>` : ''}
-                    </div>` : ''}
-                </td>
-              </tr>
-            `)}
-          </tbody>
-        </table>
-      </div>
+      <versola-data-table
+        .columns=${columns}
+        .rows=${this.filteredClients}
+        .rowKey=${(client: OAuthClient) => client.id}
+        .menuItems=${menuItems}
+        .menuLabel=${(client: OAuthClient) => `Actions for ${client.id}`}
+      ></versola-data-table>
     `;
   }
 
   private viewRow(label: string, value: unknown, fixed = '') {
-    return html`
-      <div class="view-row">
-        <div class="view-label">${label}</div>
-        <div class="view-value">${value}</div>
-        ${fixed ? html`<div class="view-fixed">${this.icon('lock')}${fixed}</div>` : html`<div></div>`}
-      </div>
-    `;
+    return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
   private viewSection(title: string, subtitle: string, section: ClientEditSection | null, client: OAuthClient, body: unknown, fixedLabel = 'Fixed') {
     return html`
-      <section class="card view-section" aria-label=${title}>
-        <div class="view-section-head">
-          <div>
-            <h2>${title}</h2>
-            ${subtitle ? html`<div class="view-sub">${subtitle}</div>` : ''}
-          </div>
-          ${section && this.canManage ? html`
-            <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSection(client, section)}
-              ?disabled=${this.isPreparingForm} aria-label=${`Edit ${title.toLowerCase()}`}>Edit</button>
-          ` : !section && fixedLabel ? html`<span class="view-fixed">${this.icon('lock')}${fixedLabel}</span>` : ''}
-        </div>
-        ${body}
-      </section>
+      <versola-record-card .heading=${title} .subheading=${subtitle}
+        ?editable=${!!section && this.canManage} ?editDisabled=${this.isPreparingForm}
+        .fixedLabel=${section ? '' : fixedLabel}
+        .body=${body}
+        @edit=${() => { if (section) this.openSection(client, section); }}
+      ></versola-record-card>
     `;
   }
 
@@ -1713,27 +1354,23 @@ export class VersolaClientsList extends LitElement {
         </div>
       ` : ''}
 
-      <nav class="crumbs" aria-label="Breadcrumb">
-        <button type="button" class="crumb-link" @click=${() => this.closeView()}>Clients</button>
-        <span aria-hidden="true">›</span>
-        <span>${getLocalizedDescription(client.clientName)}</span>
-      </nav>
-      <div class="view-head">
-        <h1 class="view-title">${getLocalizedDescription(client.clientName)}</h1>
-        <div class="view-meta">
-          <span class="client-id">${client.id}</span>
-          <button type="button" class="icon-action" aria-label="Copy client ID" title="Copy client ID" @click=${() => this.copyClientId(client)}>${this.icon('copy')}</button>
+      <versola-record-header
+        .crumbs=${[{ label: 'Clients', onSelect: () => this.closeView() }, { label: getLocalizedDescription(client.clientName) }]}
+        .heading=${getLocalizedDescription(client.clientName)}
+        .recordId=${client.id}
+        idLabel="client ID"
+        .meta=${html`
           <span class="chip">${descriptor ? this.kindIcon(kind) : ''}${descriptor?.name ?? 'Client'}</span>
           ${this.partnerChip(client)}
           ${this.securityChip(client)}
           ${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}
           ${client.createdAt ? html`<span class="muted created">${this.createdAgo(client.createdAt)}</span>` : ''}
-        </div>
-      </div>
+        `}
+      ></versola-record-header>
 
       ${conformance.conformant ? html`
         <div class="banner ok" role="status">
-          <div class="banner-title">${this.icon('shield')}Meets FAPI 2.0 · ${posture.length} of ${posture.length} checks</div>
+          <div class="banner-title">${this.icon('shield')}Meets FAPI 2.0</div>
           <ul>${posture.map(check => html`<li>${this.icon('check')}${check.text}</li>`)}</ul>
         </div>
       ` : html`
@@ -1754,12 +1391,9 @@ export class VersolaClientsList extends LitElement {
         ${this.viewRow('Authorization requests', par, why(locks.par))}
         ${this.viewRow('Request signing (JAR)', html`<span class="muted">${jar}</span>`, why(locks.jar))}
         ${deviations && this.canManage ? html`
-          <div class="view-row">
-            <div class="view-label"></div>
-            <div class="view-value deviation">Some of these differ from what this type requires.
-              <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSection(client, 'type')}>Review</button></div>
-            <div></div>
-          </div>` : ''}
+          <versola-record-row .value=${html`<div class="deviation">Some of these differ from what this type requires.
+              <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openSection(client, 'type')}>Review</button></div>`}
+          ></versola-record-row>` : ''}
       `)}
 
       ${this.viewSection('General', '', 'general', client, html`
@@ -1795,41 +1429,29 @@ export class VersolaClientsList extends LitElement {
 
       ${client.authMethod === 'client_secret' && this.canManageSecrets ? this.viewSection('Client secret', '', null, client, html`
         ${this.viewRow('Secret', 'Set. It is shown once, when it is created or rotated.')}
-        <div class="view-row">
-          <div class="view-label"></div>
-          <div class="view-value">
-            ${client.hasPreviousSecret
+        <versola-record-row .value=${client.hasPreviousSecret
               ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleDeletePreviousSecret(new CustomEvent('x', { detail: { clientId: client.id, clientName: getLocalizedDescription(client.clientName) } }))}>Delete old secret</button>`
               : html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRotateSecret(new CustomEvent('x', { detail: { clientId: client.id, clientName: getLocalizedDescription(client.clientName) } }))}>Rotate secret</button>`}
-          </div>
-          <div></div>
-        </div>
+        ></versola-record-row>
       `, '') : ''}
 
-      ${signsUsersIn ? this.viewSection('Registration and consent', '', 'registration', client, html`
-        ${this.viewRow('Self-registration', client.registrationFlow ? 'On' : 'Off')}
-        ${this.viewRow('Consent screen', client.consentFlow ? 'On (partner, cannot be turned off)' : 'Off')}
+      ${signsUsersIn ? this.viewSection('Ownership', '', 'registration', client, html`
+        ${this.viewRow('Ownership', client.consentFlow ? 'Partner app (users are asked for consent, cannot be turned off)' : 'First party app (no consent prompt)')}
       `) : ''}
 
       ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`
         ${this.viewRow('Forms theme', client.theme ?? 'default')}
+        ${client.consentFlow ? this.viewRow('Appearance for this app', themeOverridesSummary(client.themeOverrides)) : ''}
         ${this.viewRow('Logout', logoutUris.length
           ? html`<div class="uri-list">${logoutUris.map(uri => html`<div class="uri-item">${uri}</div>`)}</div>` : 'None')}
       `) : ''}
 
-      ${signsUsersIn ? html`<section class="card view-section presets-card" aria-label="Authorization presets">${this.renderAuthorizationPresets(client)}</section>` : ''}
+      ${signsUsersIn ? html`<section class="card presets-card" aria-label="Authorization presets">${this.renderAuthorizationPresets(client)}</section>` : ''}
 
       ${this.canManage ? html`
-        <section class="card view-section danger-zone" aria-label="Delete client">
-          <div class="view-section-head">
-            <div>
-              <h2>Delete client</h2>
-              <div class="view-sub">Sessions end and tokens stop working. This can't be undone.</div>
-            </div>
-            <button type="button" class="btn btn-secondary btn-sm btn-delete" aria-label=${`Delete client ${client.id}`}
-              @click=${() => this.handleDeleteClick(client)}>Delete client</button>
-          </div>
-        </section>` : ''}
+        <versola-danger-card heading="Delete client" text="Sessions end and tokens stop working. This can't be undone."
+          actionLabel="Delete client" .actionAriaLabel=${`Delete client ${client.id}`}
+          @action=${() => this.handleDeleteClick(client)}></versola-danger-card>` : ''}
     `;
   }
 

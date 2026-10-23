@@ -33,6 +33,7 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
+import java.security.cert.X509Certificate
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
 import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
 import java.time.Instant
@@ -1029,6 +1030,85 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Unauthorized,
         challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
         challenge.exists(_.contains("""acr_values="passkey-level mfa-level"""")),
+      )
+    },
+    test("points a cookie session at the login of its preset that asks for the acr and max_age missing") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        location = response.headers.get("Location")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        location.contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the endpoint's acr even when only the age is too old, so the new sign-in keeps it") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))))
+        fresh <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond))
+        stale <- env.signToken(acr = Some("sensitive"), authTime = Some(now.getEpochSecond - 600))
+        service = env.buildService(client, security)
+        wrongAcr <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(fresh)),
+        )
+        tooOld <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(
+        wrongAcr.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive"),
+        tooOld.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the age alone when the endpoint requires no acr") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(maxAge = Some(300))))
+        stale <- env.signToken(authTime = Some(now.getEpochSecond - 600))
+        response <- env.buildService(client, security).proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(response.headers.get("Location").contains(s"/login/${presetId}?max_age=300"))
+    },
+    test("gives a bearer caller the challenge only, with no login URL to follow") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"))
+        request = Request.get(URL.empty / "users").addHeader(Header.Custom("Authorization", s"Bearer $token"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.headers.get("WWW-Authenticate").exists(_.contains("""acr_values="sensitive"""")),
+        response.headers.get("Location").isEmpty,
       )
     },
     test("returns 401 with max_age challenge when auth_time is older than endpoint maxAge") {
@@ -2959,6 +3039,129 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    // The one place edge sees a caller's certificate: the handshake of its own mutual-TLS listener.
+    suite("a token presented over edge's mutual-TLS listener")(
+      {
+        val callerCertificate = TestCertificates.generate(subject = "CN=bank,O=Bank,C=KZ").certificate
+        val otherCertificate = TestCertificates.generate(subject = "CN=attacker,O=Bank,C=KZ").certificate
+        val callerThumbprint = TokenBinding.thumbprint(callerCertificate)
+
+        def over(certificate: X509Certificate, token: AccessToken) =
+          Request.get(URL.empty / "users")
+            .addHeader(Header.Authorization.Bearer(token))
+            .copy(remoteCertificate = Some(certificate))
+
+        val withUserInfo = usersEndpoint(
+          inject = Vector(InjectRule(InjectTarget.header, "x-user-email", "user.email")),
+          fetchUserInfo = true,
+        )
+
+        Chunk(
+          test("accepts a certificate-bound token when the caller presented the certificate it is bound to") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+          },
+          test("refuses it when the caller presented another certificate") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(otherCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("refuses the same token on the plain listener, where there is no certificate to compare") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("tells ssoClient the userinfo call is for a token whose holder edge verified, not for this edge's client") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
+              _ <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(withUserInfo))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+            yield assertTrue(
+              response.status == Status.Ok,
+              env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.CallerCertificate),
+            )
+          },
+          test("does not let the certificate stand in for a key proof of a key-bound token") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfJkt = Some(dpopJkt))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("refuses a token bound to both a key and the certificate presented") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfJkt = Some(dpopJkt), cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("leaves a token with no cnf claim to bearer semantics") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken()
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+          },
+        )
+      }*,
+    ),
     // Turning the feature off must not turn the binding off with it.
     test("refuses a DPoP request when this edge has no dpop block configured") {
       val env = new Env

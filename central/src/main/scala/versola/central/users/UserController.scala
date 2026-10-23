@@ -1,10 +1,11 @@
 package versola.central.users
 
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -18,10 +19,14 @@ object UserController extends Controller:
     findUsersEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
+    getUserDevicesEndpoint,
+    forgetUserAgentEndpoint,
     getUserRefreshTokensEndpoint,
+    revokeRefreshTokensEndpoint,
     createUserEndpoint,
     registeredUserEndpoint,
     patchUserEndpoint,
+    deleteUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
     invalidateSessionEndpoint,
@@ -73,6 +78,35 @@ object UserController extends Controller:
         id <- request.queryZIO[UserId]("id")
         sessions <- service.getSessions(id)
       yield Response.json(sessions.toJson)
+    }
+
+  /** Every remembered device, signed in (`session`) or signed out (`session: null`). Separate from
+    * [[getUserSessionsEndpoint]], whose items are always live sessions. */
+  val getUserDevicesEndpoint =
+    Method.GET / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        devices <- service.getDevices(id)
+      yield Response.json(devices.toJson)
+    }
+
+  /** Forgets a device: its user agent, its session and the refresh tokens bound to it. 404 when the
+    * user agent is not the user's. */
+  val forgetUserAgentEndpoint =
+    Method.DELETE / "users" / "user-agents" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        userId <- request.queryZIO[UserId]("id")
+        userAgentId <- request.queryZIO[String]("userAgentId")
+        _ <- Observability.setUserId(userId.toString)
+        forgotten <- service.forgetUserAgent(userId, userAgentId)
+        response <-
+          if forgotten then ZIO.succeed(Response.status(Status.NoContent))
+          else Observability.setError("user_agent_not_found").as(Response.status(Status.NotFound))
+      yield response
     }
 
   /** Independent of getUserSessionsEndpoint: a refresh token's expiry is fixed at issuance and
@@ -128,6 +162,23 @@ object UserController extends Controller:
           case error: Throwable => ZIO.fail(error)
     }
 
+  /** Synchronous, unlike the other writes: auth is purged before the index row goes, and a
+    * failure there leaves the user in place rather than half deleted. The request log line
+    * carries the id (and nothing else about the user), which is the audit trail. */
+  val deleteUserEndpoint =
+    Method.DELETE / "users" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        _ <- Observability.setUserId(id.toString)
+        _ <- service.delete(id)
+      yield Response.status(Status.NoContent))
+        .catchAll:
+          case UserNotFound => Observability.setError("user_not_found").as(Response.status(Status.NotFound))
+          case error: Throwable => ZIO.fail(error)
+    }
+
   val patchUserClaimsEndpoint =
     Method.PATCH / "users" / "claims" -> handler { (request: Request) =>
       for
@@ -148,13 +199,43 @@ object UserController extends Controller:
       yield Response.status(Status.Accepted)
     }
 
+  /** `userId` alone ends every session, as it always did; `id` with `sessionId` ends that
+    * one session (a user agent signed out from the console), 404 when it is not the user's. */
   val invalidateSessionEndpoint =
     Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        userId <- request.queryZIO[UserId]("userId")
-        _ <- service.invalidateSession(userId)
+        sessionId <- request.queryZIO[Option[String]]("sessionId")
+        response <- sessionId match
+          case None =>
+            for
+              userId <- request.queryZIO[UserId]("userId")
+              _ <- service.invalidateSession(userId)
+            yield Response.status(Status.NoContent)
+          case Some(sessionId) =>
+            for
+              userId <- request.queryZIO[UserId]("id")
+              _ <- Observability.setUserId(userId.toString)
+              ended <- service.endSession(userId, sessionId)
+              response <-
+                if ended then ZIO.succeed(Response.status(Status.NoContent))
+                else Observability.setError("session_not_found").as(Response.status(Status.NotFound))
+            yield response
+      yield response
+    }
+
+  /** Revokes the offline access one client holds for the user: its refresh tokens stop
+    * redeeming, the user's sessions stay. Idempotent, like the all-sessions delete. */
+  val revokeRefreshTokensEndpoint =
+    Method.DELETE / "users" / "refresh-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        userId <- request.queryZIO[UserId]("id")
+        clientId <- request.queryZIO[ClientId]("clientId")
+        _ <- Observability.setUserId(userId.toString)
+        _ <- service.revokeRefreshTokens(userId, clientId)
       yield Response.status(Status.NoContent)
     }
 

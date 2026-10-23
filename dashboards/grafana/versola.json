@@ -2876,137 +2876,7 @@
       }
     },
     {
-      "type": "timeseries",
-      "title": "Edge assertions (DPoP): accepted and rejected",
-      "description": "Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(dpop_edge_assertion_exemptions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
-          "legendFormat": "accepted (bound token honoured on edge's word)"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
-          "legendFormat": "rejected"
-        }
-      ],
       "id": 53,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 92
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Edge assertions rejected, share",
-      "description": "Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "dashed"
-            }
-          },
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0.01
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
-          "legendFormat": "rejected / (rejected + accepted)"
-        }
-      ],
-      "id": 54,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 100
-      }
-    },
-    {
-      "id": 55,
       "type": "row",
       "title": "auth — Password hashing (Argon2id)",
       "collapsed": false,
@@ -3015,7 +2885,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 100
       }
     },
     {
@@ -3062,12 +2932,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 56,
+      "id": 54,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 109
+        "y": 101
       }
     },
     {
@@ -3131,12 +3001,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 57,
+      "id": 55,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 109
+        "y": 101
       }
     },
     {
@@ -3192,12 +3062,12 @@
           "legendFormat": "hashing"
         }
       ],
-      "id": 58,
+      "id": 56,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 117
+        "y": 109
       }
     },
     {
@@ -3244,16 +3114,16 @@
           "legendFormat": "hashes"
         }
       ],
-      "id": 59,
+      "id": 57,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 117
+        "y": 109
       }
     },
     {
-      "id": 60,
+      "id": 58,
       "type": "row",
       "title": "auth — Calls to other services",
       "collapsed": true,
@@ -3301,12 +3171,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 61,
+          "id": 59,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 126
+            "y": 118
           }
         },
         {
@@ -3353,12 +3223,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 62,
+          "id": 60,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 126
+            "y": 118
           }
         },
         {
@@ -3404,12 +3274,64 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 63,
+          "id": 61,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 134
+            "y": 126
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Configuration served from the snapshot — age",
+          "description": "Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod, cache) (config_snapshot_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} {{cache}}"
+            }
+          ],
+          "id": 62,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 126
           }
         }
       ],
@@ -3417,11 +3339,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 125
+        "y": 117
       }
     },
     {
-      "id": 64,
+      "id": 63,
       "type": "row",
       "title": "auth — Saturation",
       "collapsed": false,
@@ -3430,7 +3352,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 118
       }
     },
     {
@@ -3477,12 +3399,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 65,
+      "id": 64,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 127
+        "y": 119
       }
     },
     {
@@ -3546,12 +3468,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 66,
+      "id": 65,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 127
+        "y": 119
       }
     },
     {
@@ -3598,12 +3520,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 67,
+      "id": 66,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 127
+        "y": 119
       }
     },
     {
@@ -3667,16 +3589,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 68,
+      "id": 67,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 127
+        "y": 119
       }
     },
     {
-      "id": 69,
+      "id": 68,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3734,12 +3656,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 70,
+          "id": 69,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 136
+            "y": 128
           }
         },
         {
@@ -3785,12 +3707,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 71,
+          "id": 70,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 136
+            "y": 128
           }
         }
       ],
@@ -3798,11 +3720,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 135
+        "y": 127
       }
     },
     {
-      "id": 72,
+      "id": 71,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3811,7 +3733,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 136
+        "y": 128
       }
     },
     {
@@ -3861,12 +3783,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 73,
+      "id": 72,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 137
+        "y": 129
       }
     },
     {
@@ -3916,12 +3838,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 74,
+      "id": 73,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 137
+        "y": 129
       }
     },
     {
@@ -4012,12 +3934,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 75,
+      "id": 74,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 145
+        "y": 137
       }
     },
     {
@@ -4063,12 +3985,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 76,
+      "id": 75,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 145
+        "y": 137
       }
     },
     {
@@ -4118,12 +4040,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 77,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 145
       }
     },
     {
@@ -4169,16 +4091,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 78,
+      "id": 77,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 153
+        "y": 145
       }
     },
     {
-      "id": 79,
+      "id": 78,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4187,7 +4109,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 161
+        "y": 153
       }
     },
     {
@@ -4237,12 +4159,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 80,
+      "id": 79,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 162
+        "y": 154
       }
     },
     {
@@ -4288,12 +4210,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 81,
+      "id": 80,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 162
+        "y": 154
       }
     },
     {
@@ -4343,12 +4265,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 82,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 170
+        "y": 162
       }
     },
     {
@@ -4398,16 +4320,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 83,
+      "id": 82,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 170
+        "y": 162
       }
     },
     {
-      "id": 84,
+      "id": 83,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4416,7 +4338,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 178
+        "y": 170
       }
     },
     {
@@ -4464,12 +4386,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 85,
+      "id": 84,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 179
+        "y": 171
       }
     },
     {
@@ -4515,12 +4437,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 86,
+      "id": 85,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 179
+        "y": 171
       }
     },
     {
@@ -4584,16 +4506,16 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 87,
+      "id": 86,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 187
+        "y": 179
       }
     },
     {
-      "id": 88,
+      "id": 87,
       "type": "row",
       "title": "central — Calls to other services",
       "collapsed": true,
@@ -4641,12 +4563,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 89,
+          "id": 88,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 196
+            "y": 188
           }
         },
         {
@@ -4693,12 +4615,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 90,
+          "id": 89,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 196
+            "y": 188
           }
         },
         {
@@ -4744,12 +4666,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 91,
+          "id": 90,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 204
+            "y": 196
           }
         }
       ],
@@ -4757,11 +4679,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 195
+        "y": 187
       }
     },
     {
-      "id": 92,
+      "id": 91,
       "type": "row",
       "title": "central — Saturation",
       "collapsed": false,
@@ -4770,7 +4692,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 196
+        "y": 188
       }
     },
     {
@@ -4817,12 +4739,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 93,
+      "id": 92,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 197
+        "y": 189
       }
     },
     {
@@ -4886,12 +4808,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 94,
+      "id": 93,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 197
+        "y": 189
       }
     },
     {
@@ -4938,12 +4860,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 95,
+      "id": 94,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 197
+        "y": 189
       }
     },
     {
@@ -5007,16 +4929,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 96,
+      "id": 95,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 197
+        "y": 189
       }
     },
     {
-      "id": 97,
+      "id": 96,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -5074,12 +4996,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 98,
+          "id": 97,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 206
+            "y": 198
           }
         },
         {
@@ -5125,12 +5047,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 99,
+          "id": 98,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 206
+            "y": 198
           }
         }
       ],
@@ -5138,11 +5060,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 205
+        "y": 197
       }
     },
     {
-      "id": 100,
+      "id": 99,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -5151,7 +5073,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 206
+        "y": 198
       }
     },
     {
@@ -5201,12 +5123,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 101,
+      "id": 100,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 207
+        "y": 199
       }
     },
     {
@@ -5256,12 +5178,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 102,
+      "id": 101,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 207
+        "y": 199
       }
     },
     {
@@ -5352,12 +5274,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 103,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 215
+        "y": 207
       }
     },
     {
@@ -5403,12 +5325,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 104,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 215
+        "y": 207
       }
     },
     {
@@ -5458,12 +5380,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 105,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 223
+        "y": 215
       }
     },
     {
@@ -5513,12 +5435,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 106,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 223
+        "y": 215
       }
     },
     {
@@ -5587,12 +5509,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 107,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 231
+        "y": 223
       }
     },
     {
@@ -5699,12 +5621,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 108,
+      "id": 107,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 231
+        "y": 223
       }
     },
     {
@@ -5751,16 +5673,16 @@
           "legendFormat": "{{auth_call}}"
         }
       ],
-      "id": 109,
+      "id": 108,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 239
+        "y": 231
       }
     },
     {
-      "id": 110,
+      "id": 109,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5769,7 +5691,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 247
+        "y": 239
       }
     },
     {
@@ -5819,12 +5741,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 111,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 248
+        "y": 240
       }
     },
     {
@@ -5874,12 +5796,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 112,
+      "id": 111,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 248
+        "y": 240
       }
     },
     {
@@ -5970,12 +5892,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 113,
+      "id": 112,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 256
+        "y": 248
       }
     },
     {
@@ -6021,12 +5943,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 114,
+      "id": 113,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 256
+        "y": 248
       }
     },
     {
@@ -6076,12 +5998,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 115,
+      "id": 114,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 264
+        "y": 256
       }
     },
     {
@@ -6127,16 +6049,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 116,
+      "id": 115,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 264
+        "y": 256
       }
     },
     {
-      "id": 117,
+      "id": 116,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -6145,7 +6067,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 272
+        "y": 264
       }
     },
     {
@@ -6195,12 +6117,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 118,
+      "id": 117,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 273
+        "y": 265
       }
     },
     {
@@ -6250,12 +6172,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 119,
+      "id": 118,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 273
+        "y": 265
       }
     },
     {
@@ -6346,12 +6268,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 120,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 281
+        "y": 273
       }
     },
     {
@@ -6397,12 +6319,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 121,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 281
+        "y": 273
       }
     },
     {
@@ -6452,12 +6374,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 122,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 289
+        "y": 281
       }
     },
     {
@@ -6503,16 +6425,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 123,
+      "id": 122,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 289
+        "y": 281
       }
     },
     {
-      "id": 124,
+      "id": 123,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6521,7 +6443,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 297
+        "y": 289
       }
     },
     {
@@ -6567,12 +6489,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 125,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 298
+        "y": 290
       }
     },
     {
@@ -6635,12 +6557,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 126,
+      "id": 125,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 298
+        "y": 290
       }
     },
     {
@@ -6702,12 +6624,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 127,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 306
+        "y": 298
       }
     },
     {
@@ -6762,16 +6684,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 128,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 306
+        "y": 298
       }
     },
     {
-      "id": 129,
+      "id": 128,
       "type": "row",
       "title": "edge — Calls to other services",
       "collapsed": true,
@@ -6819,12 +6741,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 130,
+          "id": 129,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 315
+            "y": 307
           }
         },
         {
@@ -6871,12 +6793,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 131,
+          "id": 130,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 315
+            "y": 307
           }
         },
         {
@@ -6922,12 +6844,64 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 132,
+          "id": 131,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 323
+            "y": 315
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Configuration served from the snapshot — age",
+          "description": "Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod, cache) (config_snapshot_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} {{cache}}"
+            }
+          ],
+          "id": 132,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 315
           }
         }
       ],
@@ -6935,7 +6909,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 314
+        "y": 306
       }
     },
     {
@@ -6948,7 +6922,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 315
+        "y": 307
       }
     },
     {
@@ -7000,7 +6974,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7069,7 +7043,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7121,7 +7095,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7190,7 +7164,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7257,7 +7231,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 325
+            "y": 317
           }
         },
         {
@@ -7308,7 +7282,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 325
+            "y": 317
           }
         }
       ],
@@ -7316,7 +7290,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 324
+        "y": 316
       }
     }
   ]

@@ -12,8 +12,13 @@ that contains the change goes out. Read `.claude/docs-style-guide.md` in that re
 write a page.
 
 A change is not done until its docs impact is handled or explicitly ruled out. The PR description
-carries a **Docs** line with one of: a link to the `versola-website` PR, `none: <reason>` (for example
-"internal refactor, no behaviour change"), or `follow-up: <issue link>`. A bare "none" is not accepted.
+carries a **Docs** line with one of: a link to the `versola-website` PR, or `none: <reason>` (for
+example "internal refactor, no behaviour change"). A bare "none" is not accepted.
+
+Do not open a follow-up issue for documentation, and do not leave the docs for later: the docs PR is
+opened in the same session as the code PR, as a draft if it has to wait for the release, and its link
+is the Docs line. If the website repository cannot be reached, say so and stop; an issue is not a
+substitute for the PR.
 
 ## What triggers a docs change
 
@@ -44,8 +49,11 @@ The console is documented with screenshots; a stale one is a bug.
   Each screenshot is a pair: dark `name.png` and light `name-light.png`, 1440x900. Keep the file
   names; pages and both language twins reference them. A new screen adds a new pair and a
   `Screenshot` entry in the EN page and its RU twin.
-- Take them from a locally staged stack with realistic data (`develop.md`), never from a shared or
-  production environment. Use `example.com`-style data; no real hostnames, emails or secrets.
+- Generate them with `npm run docs:screenshots` in `central-ui` (the manifest
+  `tests/docs-screenshots.manifest.ts`, see `central-ui/design-system/README.md` "Docs screenshots")
+  and copy them with `npm run docs:screenshots:sync -- <website-checkout>`; never take them by hand
+  or from a shared or production environment. Use `example.com`-style data; no real hostnames,
+  emails or secrets.
 - If a screen is removed, delete its files and references (the site build checks links, not images,
   so grep for the file name).
 - Alt text and captions describe what the screenshot proves; update them with the picture.

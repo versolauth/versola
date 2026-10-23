@@ -20,10 +20,11 @@ import zio.{Task, ZIO}
   *     whether central can sign with it, for choosing a tenant's signing key.
   *   - `PUT /configuration/jwks` — admin endpoint to update a JWK (matched by `kid`).
   *   - `DELETE /configuration/jwks` — admin endpoint to remove a JWK by `kid` query param.
-  *   - `GET /configuration/jwks/sync` — internal endpoint used by auth/edge. Public halves
-  *     only: edge verifies, and must never be sent key material it cannot need.
+  *   - `GET /configuration/jwks/sync` — internal endpoint auth reads. Public halves only;
+  *     edge reads the same document on `/edge/sync/jwks` (`EdgeSyncController`).
   *   - `GET /configuration/jwks/signing-keys/sync` — internal endpoint auth alone reads,
-  *     carrying the encrypted private halves it signs with.
+  *     carrying the encrypted private halves it signs with. An edge token is refused on
+  *     every `/configuration` route (#554), so edge is never sent key material it cannot need.
   */
 object JwksController extends Controller:
   type Env = Tracing & JwksService & CentralConfig & EdgeService & ResourceService

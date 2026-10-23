@@ -1,4 +1,14 @@
-import type { PasskeyInfo, SessionClientEntry, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import type {
+  PasskeyInfo,
+  SessionClientEntry,
+  User,
+  UserRefreshToken,
+  UserAgent,
+  UserDevice,
+  UserRoleAssignment,
+  UserSearchField,
+  UserSession,
+} from '../types';
 import { centralResourcePath, resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
@@ -11,6 +21,8 @@ type UserSearchRecordDto = {
 type UserSearchResponseDto = { users: UserSearchRecordDto[] };
 type CreateUserResponseDto = { id: string };
 type UserRolesResponseDto = { roles: string[] };
+
+export const IDENTIFIER_TAKEN_MESSAGE = 'One of the identifiers is already taken by another user.';
 
 export const DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS = 12;
 
@@ -66,7 +78,7 @@ export async function createUser(user: Omit<User, 'id'>): Promise<User> {
   });
 
   if (response.status === 409) {
-    throw new Error('User with this email, phone or login already exists');
+    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
   }
 
   if (!response.ok) {
@@ -96,6 +108,10 @@ export async function updateUser(previous: User, next: User): Promise<void> {
     credentials: 'include',
     body: JSON.stringify(body),
   });
+
+  if (response.status === 409) {
+    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -158,33 +174,147 @@ export async function updateUserRoles(
 }
 
 type UserSessionDto = {
+  publicId: string;
   clients: SessionClientEntry[];
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
   createdAt?: string;
+  expiresAt?: string;
+  idleExpiresAt?: string;
+  userAgent?: UserAgent;
 };
 
-export async function fetchUserSessions(userId: string): Promise<UserSession[]> {
-  const url = proxyUrl('/users/sessions');
-  url.searchParams.set('id', userId);
+type UserDeviceDto = {
+  userAgent?: UserAgent;
+  session?: UserSessionDto | null;
+  endedSessionIds?: string[];
+};
 
-  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body.trim() || `Failed to load sessions (${response.status})`);
-  }
-
-  const data = (await response.json()) as UserSessionDto[];
-  return data.map(dto => ({
+function toUserSession(dto: UserSessionDto): UserSession {
+  return {
+    publicId: dto.publicId,
     clients: dto.clients,
     platform: dto.platform,
     os: dto.os,
     browser: dto.browser,
     version: dto.version,
     createdAt: dto.createdAt,
+    expiresAt: dto.expiresAt,
+    idleExpiresAt: dto.idleExpiresAt,
+    userAgent: dto.userAgent,
+  };
+}
+
+/** The user's remembered devices as auth stores them: each user agent with the session under it,
+ *  `session: null` once signed out. Signed-out devices are listed here and not in the session list. */
+export async function fetchUserDevices(userId: string): Promise<UserDevice[]> {
+  const url = proxyUrl('/users/user-agents');
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load devices (${response.status})`);
+  }
+
+  const data = (await response.json()) as UserDeviceDto[];
+  return data.map(dto => ({
+    userAgent: dto.userAgent,
+    session: dto.session ? toUserSession(dto.session) : null,
+    endedSessionIds: dto.endedSessionIds ?? [],
   }));
+}
+
+/** The offline access clients hold for the user. Independent of the sessions: a refresh
+ *  token outlives the session it was issued under, so it is read from here, not from the session list. */
+export async function fetchUserRefreshTokens(userId: string): Promise<UserRefreshToken[]> {
+  const url = proxyUrl('/users/refresh-tokens');
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load refresh tokens (${response.status})`);
+  }
+
+  return (await response.json()) as UserRefreshToken[];
+}
+
+/** Hard delete: auth purges the account (sessions, refresh tokens, passkeys, passwords, roles,
+ *  throttling, pending conversations) before the index row goes. 404 means the id is unknown. */
+export async function deleteUser(userId: string): Promise<void> {
+  const url = proxyUrl('/users');
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to delete user (${response.status})`);
+  }
+}
+
+/** Revokes the offline access one client holds for the user: its refresh tokens stop
+ *  redeeming, the user stays signed in. Idempotent. */
+export async function revokeUserRefreshTokens(userId: string, clientId: string): Promise<void> {
+  const url = proxyUrl('/users/refresh-tokens');
+  url.searchParams.set('id', userId);
+  url.searchParams.set('clientId', clientId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to revoke offline access (${response.status})`);
+  }
+}
+
+/** Signs one user agent out: ends that session (`publicId` from the session list), relying
+ *  parties told; the user's other sessions stay. 404 means it is not the user's session. */
+export async function endUserSession(userId: string, sessionId: string): Promise<void> {
+  const url = proxyUrl('/users/sessions');
+  url.searchParams.set('id', userId);
+  url.searchParams.set('sessionId', sessionId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to end session (${response.status})`);
+  }
+}
+
+/** Forgets a device: its user agent, its session and the refresh tokens bound to that session.
+ *  404 means the user agent is not the user's. */
+export async function forgetUserAgent(userId: string, userAgentId: string): Promise<void> {
+  const url = proxyUrl('/users/user-agents');
+  url.searchParams.set('id', userId);
+  url.searchParams.set('userAgentId', userAgentId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to forget the device (${response.status})`);
+  }
 }
 
 export async function invalidateUserSession(userId: string): Promise<void> {

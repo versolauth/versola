@@ -37,8 +37,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   given Tag[Dependencies] = scala.compiletime.deferred
 
+  // Before anything can ask the JCA for an algorithm; accp-required refuses the start here.
+  private val cryptoProvider = versola.util.CryptoProvider.installFromEnv()
+
   override type Environment =
-    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client & OutboundGuard
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
     OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
@@ -50,8 +53,46 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
+  /** The main surface as it is served: [[routes]], resolved against the built dependencies.
+    *
+    * An effect over `Dependencies` for the same reason [[mutualTlsServerConfig]] is: what a
+    * service mounts can be configuration rather than code -- edge serves its internal surface
+    * only in first-party mode (`InternalSurface`, #555) -- and configuration is known only
+    * once `dependencies` has built and parsed it. Defaults to [[routes]] unchanged.
+    */
+  def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    ZIO.succeed(routes)
+
   /** Optional second application surface, typically reachable only by internal proxies. */
   def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
+
+  /** The tier of each route of the application server for [[InboundAdmission]], by method and route pattern; `None` (the
+    * default) puts no admission control in front of the service. Settings come from `HTTP_ADMISSION_*`, see
+    * [[InboundAdmissionSettings]].
+    */
+  protected def admissionTiers: Option[(Method, String) => Tier] = None
+
+  /** The overload policy this service currently holds for itself (from central, for the edge), read about once a second and
+    * applied to the inbound admission and the outbound guard when it changes. `None` (the default): the settings of the
+    * process (`HTTP_ADMISSION_*`, `HTTP_CLIENT_GUARD_*`) stay as they are. A source that yields `None` or a policy that does
+    * not validate leaves the last applied settings in place.
+    */
+  protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
+
+  /** Whether `HTTP_ACCESS_LOG*` (and later a policy from central) may thin out this service's `receive-http` lines.
+    * `false`: every request is logged whatever the setting; auth does this, its lines are few and it is where an
+    * investigation of a login ends up.
+    */
+  protected def accessLogConfigurable: Boolean = true
+
+  /** The peers (`host:port`) of this deployment's own services, whose successful `send-http` lines are DEBUG (see
+    * [[Observability.internalPeers]]). Every other peer, a message provider above all, is external and logged at INFO.
+    */
+  protected def internalPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
+
+  /** The peers (`host:port`) the outbound guard never limits, refuses or breaks: the services this process cannot work
+    * without and whose configuration it waits for at start-up (central). */
+  protected def guardExemptPeers: URIO[Dependencies, Set[String]] = ZIO.succeed(Set.empty)
 
   /** Optional third application surface, terminating TLS itself and demanding a client
     * certificate on the handshake -- RFC 8705 §5's `mtls_endpoint_aliases`.
@@ -97,6 +138,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // not by connecting to auth's port directly from outside.
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
+
+  /** Where the mutual-TLS listener binds, `MBIND_HOST`; [[bindHost]] unless set. Separate because the
+    * listener is the one surface a deployment may need reachable from outside the host or
+    * cluster (central's edge surface, #554) while everything else on this process stays internal:
+    * its handshake demands a client certificate, which the other listeners do not.
+    */
+  def mutualTlsBindHost: String =
+    Option(java.lang.System.getenv("MBIND_HOST")).getOrElse(bindHost)
 
   /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
     * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
@@ -170,12 +219,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
+      _ <- ZIO.unless(accessLogConfigurable)(Observability.updateAccessLog(AccessLogSettings.default))
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
       envName <- ZIO.service[EnvName]
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
+      _ <- zio.metrics.Metric.gauge("crypto_provider_native").set(if cryptoProvider.native then 1.0 else 0.0)
       client <- ZIO.service[Client]
 
       // Before `dependencies.build`, deliberately. Building them is what waits on everything
@@ -214,6 +265,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       _ <- scope.addFinalizer(fibers.interrupt.unit)
 
       appDependencies <- dependencies.build
+      mainRoutes <- mountedRoutes.provideEnvironment(appDependencies)
+
+      guard <- ZIO.service[OutboundGuard]
+      _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
+      _ <- internalPeers.provideEnvironment(appDependencies).flatMap(Observability.setInternalPeers)
+      baseOutbound <- guard.current
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
         for
@@ -280,10 +337,23 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         for
           _ <- ZIO.logInfo("Starting application server")
 
+          admission <- ZIO.foreach(admissionTiers): tiers =>
+            for
+              admission <- InboundAdmission.make(InboundAdmissionSettings.fromEnv)
+              _ <- ZIO.logInfo(s"inbound admission: ${admission.current}")
+              _ <- admission.sample.forkIn(scope)
+              _ <- ZIO.foreachDiscard(overloadPolicy)(source =>
+                OverloadPolicyApplier
+                  .run(source.provideEnvironment(appDependencies), admission, guard, admission.current, baseOutbound)
+                  .forkIn(scope),
+              )
+            yield (admission, tiers)
           port <- Server.install {
-            Observability.handleErrors(routes) @@
+            val served = Observability.handleErrors(mainRoutes) @@
               Observability.middleware @@
               SecurityHeaders.middleware
+            // outermost: a refused request costs no span and no log line
+            admission.fold(served)((adm, tiers) => served @@ adm.middleware(tiers))
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
           // Warmup.run's fiber can still be running past its own budget -- that is the point,
@@ -339,7 +409,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * `gracefulShutdownTimeout` guards only the shutdown *hook*, and the JVM would not exit anyway
     * because the diagnostics server forked above holds non-daemon Netty threads. The container
     * would then never exit, `restart: unless-stopped` would never fire, and /readiness would stay
-    * false forever (see deploy.md 9.5).
+    * false forever (see deploy.md 6.5).
     *
     * So: a plain daemon JVM thread that halts once the deadline passes. Not a forked fiber - the
     * shutdown being guarded is precisely what interrupts fibers, so a fiber watchdog would be
@@ -413,6 +483,7 @@ object VersolaApp:
         formats <- ZIO.service[LogFormats]
         env <- ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env")))
         config = ConsoleLoggerConfig.default.copy(
+          filter = LogFilter.LogLevelByNameConfig(Observability.minLogLevel),
           format =
             List(
               label("timestamp", timestamp.fixed(32)),
@@ -428,6 +499,7 @@ object VersolaApp:
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),
               logAnnotation(Observability.error),
+              logAnnotation(Observability.antifraud),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )

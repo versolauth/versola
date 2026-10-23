@@ -21,11 +21,12 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
       val expiresAt = now.plusSeconds(ttl.toSeconds)
       xa.connectMeasured("create-login") {
         sql"""
-          INSERT INTO pending_logins (state, code_verifier, preset_id, expires_at)
-          VALUES (${data.state}, ${data.codeVerifier}, ${data.presetId}, $expiresAt)
+          INSERT INTO pending_logins (state, code_verifier, preset_id, return_to, expires_at)
+          VALUES (${data.state}, ${data.codeVerifier}, ${data.presetId}, ${data.returnTo}, $expiresAt)
           ON CONFLICT (state) DO UPDATE SET
             code_verifier = EXCLUDED.code_verifier,
             preset_id = EXCLUDED.preset_id,
+            return_to = EXCLUDED.return_to,
             expires_at = EXCLUDED.expires_at
         """.update.run()
       }.unit
@@ -35,7 +36,7 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
     Clock.instant.flatMap { now =>
       xa.connectMeasured("find-login-by-state") {
         sql"""
-          SELECT code_verifier, preset_id, state
+          SELECT code_verifier, preset_id, state, return_to
           FROM pending_logins
           WHERE state = $state AND expires_at > $now
         """

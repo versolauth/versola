@@ -1,6 +1,7 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, RegistrationFlow}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow}
+import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.util.Patch
 import zio.json.*
@@ -17,7 +18,65 @@ object dtoSpec extends ZIOSpecDefault:
         """"permissions":{"add":[],"remove":[]}"""
     s"""{$required$field}""".fromJson[UpdateClientRequest]
 
+  private def createPermission(id: String): Either[String, CreatePermissionRequest] =
+    s"""{"tenantId":"t","permission":"$id","description":{},"endpointIds":[]}""".fromJson[CreatePermissionRequest]
+
   def spec = suite("DTO JSON Codecs")(
+    suite("permission ID rule")(
+      test("colon-separated IDs, with hyphens and underscores, are accepted") {
+        assertTrue(
+          createPermission("users:read").map(_.permission) == Right(Permission("users:read")),
+          createPermission("billing:invoice:read_all").isRight,
+          createPermission("auth-settings:manage").isRight,
+          createPermission("admin").isRight,
+        )
+      },
+      test("create refuses an ID with a dot, naming the rule") {
+        val result = createPermission("orders.read_all")
+        assertTrue(result.isLeft, result.left.exists(_.contains("separated by ':'")))
+      },
+      test("create refuses an ID outside the alphabet") {
+        assertTrue(
+          createPermission("Users:read").isLeft,
+          createPermission("users:1read").isLeft,
+          createPermission("-users:read").isLeft,
+          createPermission("users:").isLeft,
+          createPermission(":read").isLeft,
+          createPermission("users::read").isLeft,
+          createPermission("").isLeft,
+        )
+      },
+      test("update refuses an ID with a dot and accepts a colon one") {
+        def update(id: String) =
+          s"""{"tenantId":"t","permission":"$id","description":{"add":{},"delete":[]},"endpointIds":null}""".fromJson[UpdatePermissionRequest]
+        assertTrue(update("legacy.read").isLeft, update("legacy:read").map(_.permission) == Right(Permission("legacy:read")))
+      },
+      test("a role refuses a dotted permission reference on create and on patch") {
+        def create(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{},"permissions":["$id"]}""".fromJson[CreateRoleRequest]
+        def patch(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{"add":{},"delete":[]},"permissions":{"add":["$id"],"remove":[]}}"""
+            .fromJson[UpdateRoleRequest]
+        def remove(id: String) =
+          s"""{"tenantId":"t","id":"r","description":{"add":{},"delete":[]},"permissions":{"add":[],"remove":["$id"]}}"""
+            .fromJson[UpdateRoleRequest]
+        assertTrue(
+          create("users.read").isLeft,
+          create("users:read").isRight,
+          patch("users.read").isLeft,
+          patch("users:read").isRight,
+          remove("users.read").isLeft,
+        )
+      },
+      test("a client refuses a dotted permission reference in a patch") {
+        def patch(id: String) =
+          decodeUpdate("").flatMap(_ =>
+            ("""{"clientId":"web-app","redirectUris":{"add":[],"remove":[]},"scope":{"add":[],"remove":[]},""" +
+              s""""permissions":{"add":["$id"],"remove":[]}}""").fromJson[UpdateClientRequest],
+          )
+        assertTrue(patch("orders.read").isLeft, patch("orders:read").isRight)
+      },
+    ),
     suite("UpdateClientRequest nullable fields distinguish absent from null")(
       test("an absent auth flow means no change, an explicit null clears it") {
         val absent = decodeUpdate("")
@@ -27,16 +86,6 @@ object dtoSpec extends ZIOSpecDefault:
           absent.map(_.authFlow) == Right(None),
           cleared.map(_.authFlow) == Right(Some(Patch.Deleted)),
           set.map(_.authFlow) == Right(Some(Patch.Modified(AuthFlow.default))),
-        )
-      },
-      test("an absent registration flow means no change, an explicit null clears it") {
-        val absent = decodeUpdate("")
-        val cleared = decodeUpdate(""","registrationFlow":null""")
-        val set = decodeUpdate(s""","registrationFlow":${RegistrationFlow.default.toJson}""")
-        assertTrue(
-          absent.map(_.registrationFlow) == Right(None),
-          cleared.map(_.registrationFlow) == Right(Some(Patch.Deleted)),
-          set.map(_.registrationFlow) == Right(Some(Patch.Modified(RegistrationFlow.default))),
         )
       },
       test("a finite consent duration is decoded from seconds") {

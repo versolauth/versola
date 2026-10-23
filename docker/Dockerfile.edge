@@ -14,14 +14,27 @@
 # See Dockerfile.auth's comment on the diagnostics-tools stage below: jcmd is
 # absent from a `-jre` image entirely, and this draws it (and jdk.attach) out
 # of a full JDK's jmods once, independently pinned from the runtime image.
-FROM eclipse-temurin:25-jdk@sha256:8c0a84ea11c8f6ed52600fc19f1040121f2a162998e9f50a5faebbbad9172dcc AS diagnostics-tools
+# Amazon Corretto Crypto Provider (Apache-2.0; native library from AWS-LC). Fetched by checksum rather than
+# taken from the sbt classpath: the x86_64 and aarch64 jars hold their native library under the same resource
+# name, so only the one for the image's CPU can be on the classpath, and the staged application is shared by
+# both architectures. CryptoProvider loads it from /app/accp/accp.jar; `accp-required` below makes the service
+# refuse to start when it cannot (see CryptoProvider for why a silent fallback is worse than a failed start).
+# Bump version and both checksums together, from the .sha256 files next to the jars on Maven Central.
+ARG TARGETARCH
+FROM scratch AS accp-amd64
+ADD --chmod=0644 --checksum=sha256:94e92977ee52af1f50cf6744684c214f300e668ee6e1793be1802b209543dc9f https://repo1.maven.org/maven2/software/amazon/cryptools/AmazonCorrettoCryptoProvider/2.5.0/AmazonCorrettoCryptoProvider-2.5.0-linux-x86_64.jar /accp.jar
+FROM scratch AS accp-arm64
+ADD --chmod=0644 --checksum=sha256:e03899f5cc33de706b5059a62107b5a3262dd2816d4295d998f0fb843db0c80d https://repo1.maven.org/maven2/software/amazon/cryptools/AmazonCorrettoCryptoProvider/2.5.0/AmazonCorrettoCryptoProvider-2.5.0-linux-aarch_64.jar /accp.jar
+FROM accp-${TARGETARCH} AS accp
+
+FROM eclipse-temurin:25-jdk@sha256:2d5d5e9b533342a565907c84f47a2ec298c40cde7b13a3ca85d4950fa456a641 AS diagnostics-tools
 RUN "$JAVA_HOME/bin/jlink" \
       --module-path "$JAVA_HOME/jmods" \
       --add-modules jdk.jcmd,jdk.attach \
       --strip-debug --no-man-pages --no-header-files --compress=2 \
       --output /opt/diagnostics-jdk
 
-FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636
+FROM eclipse-temurin:25-jre@sha256:dbb43d81099eec91e0800226ed2296d03146ee7857165b95112372ad0d67e87f
 
 # See Dockerfile.auth: not merged into $JAVA_HOME, which has no jdk.jcmd of
 # its own to re-link against.
@@ -29,6 +42,11 @@ COPY --from=diagnostics-tools /opt/diagnostics-jdk /opt/diagnostics-jdk
 ENV PATH="/opt/diagnostics-jdk/bin:${PATH}"
 
 WORKDIR /app
+
+COPY --from=accp /accp.jar /app/accp/accp.jar
+# Licence texts the jar itself does not carry (Apache-2.0, ISC, MIT, BSD, and the OpenSSL/SSLeay attribution terms).
+COPY docker/accp-NOTICES.txt /app/accp/NOTICES.txt
+ENV VERSOLA_CRYPTO_PROVIDER=accp-required
 
 # Staged application (see ci-cd.yml) -- carved back out of .dockerignore's
 # blanket `target/` exclusion for exactly this path.

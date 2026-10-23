@@ -1,8 +1,12 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
+import { bannerStyles, buttonStyles } from '../styles/components';
+import { statusIcon } from './status-icon';
 import type { NavItem, VersolaNavigation } from './navigation';
 import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
+import { watchSystemTheme } from '../utils/theme';
+import { EMPTY_RECORD_ROUTE, type RecordRoute } from '../utils/record-route';
 
 import './navigation';
 // Imported directly (not just transitively via navigation) because the splash
@@ -20,9 +24,11 @@ import './tenants-list';
 import './edges-list';
 import './users-list';
 import './forms-list';
-import './locales-list';
-import './challenges-list';
-import './well-known';
+import './themes-list';
+import './security-settings';
+import './otp-templates-list';
+import './authorization-details-list';
+import './keys-metadata';
 import './system-settings';
 
 // The account settings page is auth's self-service surface (served by edge at
@@ -74,13 +80,17 @@ export class VersolaAdmin extends LitElement {
   // centralResourcePath in central-api.ts.
   @property({ type: String, attribute: 'console-mode' }) consoleMode: 'prefix' | 'direct' = 'prefix';
   @state() private currentView: NavItem = 'clients';
+  /** What an old bookmark was renamed to; shown once above the page it landed on. */
+  @state() private legacyNotice: string | null = null;
   /** Mobile drawer state; ignored by the layout above the 768px breakpoint. */
   @state() private navOpen = false;
   @query('.main-content') private mainContent?: HTMLElement;
   @query('versola-navigation') private navigationEl?: VersolaNavigation;
   @state() private currentTenantId: string | null = null;
   @state() private clientToExpandOnLoad: string | null = null;
-  @state() private edgeToExpandOnLoad: string | null = null;
+  /** The record a section has open (`id`), the group it edits, whether it is creating one, and
+    * whether the panel is shown as a page: mirrored in the URL so a reload restores the panel. */
+  @state() private recordRoute: RecordRoute = EMPTY_RECORD_ROUTE;
 
   // Permission state resolved from /permissions/me
   @state() private adminPermissions: Set<string> = new Set();
@@ -125,6 +135,9 @@ export class VersolaAdmin extends LitElement {
     this.loadLocationState();
   };
 
+  /** Stops following the OS colour scheme (see watchSystemTheme). */
+  private unwatchSystemTheme: () => void = () => {};
+
   connectedCallback() {
     super.connectedCallback();
     this.applyApiConfig();
@@ -133,12 +146,14 @@ export class VersolaAdmin extends LitElement {
     window.addEventListener('popstate', this.handlePopState);
     window.addEventListener('keydown', this.handleKeyDown);
     this.observeBreakpoint(true);
+    this.unwatchSystemTheme = watchSystemTheme();
   }
 
   disconnectedCallback() {
     window.removeEventListener('popstate', this.handlePopState);
     window.removeEventListener('keydown', this.handleKeyDown);
     this.observeBreakpoint(false);
+    this.unwatchSystemTheme();
     super.disconnectedCallback();
   }
 
@@ -166,7 +181,7 @@ export class VersolaAdmin extends LitElement {
       void this.loadPermissions();
     }
 
-    if (changed.has('currentView') || changed.has('currentTenantId')) {
+    if (changed.has('currentView') || changed.has('currentTenantId') || changed.has('recordRoute')) {
       this.persistLocationState();
     }
   }
@@ -174,11 +189,13 @@ export class VersolaAdmin extends LitElement {
   static styles = [
     resetStyles,
     theme,
+    bannerStyles,
+    buttonStyles,
     css`
       :host {
         display: block;
         min-height: 100vh;
-        background: var(--bg-dark);
+        background: var(--bg-page);
         color: var(--text-primary);
       }
 
@@ -215,8 +232,16 @@ export class VersolaAdmin extends LitElement {
       .main-content {
         flex: 1 1 auto;
         padding: 2rem;
+        padding-right: calc(2rem + var(--panel-inset, 0rem));
+        transition: padding-right 0.15s ease;
         max-width: 1400px;
         min-width: 0; /* let children shrink instead of overflowing */
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .main-content {
+          transition: none;
+        }
       }
 
       /* Focus is moved here programmatically when the drawer closes (see
@@ -269,8 +294,8 @@ export class VersolaAdmin extends LitElement {
           display: block;
           position: fixed;
           inset: 0;
-          z-index: 150; /* under the drawer, over the content */
-          background: rgba(0, 0, 0, 0.5);
+          z-index: var(--z-backdrop);
+          background: var(--backdrop);
         }
       }
     `,
@@ -303,7 +328,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -313,15 +338,16 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:read');
       case 'users':
         return p.has('users:read');
       case 'forms':
+      case 'themes':
         return p.has('forms:read');
-      case 'locales':
-        return p.has('locales:read');
       default:
         return false;
     }
@@ -335,7 +361,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:manage');
       case 'edges':
         return p.has('edges:manage');
-      case 'well-known':
+      case 'keys':
         return p.has('jwks:manage');
       case 'clients':
       case 'scopes':
@@ -345,15 +371,16 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:manage');
       case 'resources':
         return p.has('resources:manage');
-      case 'challenges':
+      case 'security':
+      case 'otp-templates':
+      case 'authorization-details':
       case 'system-settings':
         return p.has('security:manage');
       case 'users':
         return p.has('users:manage');
       case 'forms':
+      case 'themes':
         return p.has('forms:manage');
-      case 'locales':
-        return p.has('locales:manage');
       default:
         return false;
     }
@@ -365,7 +392,9 @@ export class VersolaAdmin extends LitElement {
   }
 
   private handleNavChange(e: CustomEvent) {
+    this.legacyNotice = null;
     this.currentView = e.detail.item;
+    this.recordRoute = EMPTY_RECORD_ROUTE;
     // Picking a destination on mobile should reveal it, not leave the drawer
     // covering the screen. No-op on desktop, where the drawer is never open.
     this.closeNav();
@@ -435,9 +464,31 @@ export class VersolaAdmin extends LitElement {
     });
   }
 
+  /** Views the console had before G2: a bookmark to one lands on its successor, with a note. */
+  private static readonly RENAMED_VIEWS: Readonly<Record<string, { view: NavItem; notice: string }>> = {
+    challenges: { view: 'security', notice: 'Challenges & Security is now Security.' },
+    'well-known': { view: 'keys', notice: 'Well Known is now Keys & metadata.' },
+    locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
+  };
+
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'forms', 'themes']);
+
+  /** The views whose records belong to the selected tenant: switching it closes the open record.
+    * A global view keeps its record (the selector also fires on load, picking the first tenant). */
+  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'roles', 'security', 'otp-templates', 'authorization-details', 'themes']);
+
   private handleTenantChange(e: CustomEvent) {
+    if (e.detail.tenantId !== this.currentTenantId && VersolaAdmin.TENANT_SCOPED_VIEWS.has(this.currentView)) {
+      this.recordRoute = EMPTY_RECORD_ROUTE;
+    }
     this.currentTenantId = e.detail.tenantId;
   }
+
+  /** A section opened, edited, created or closed a record: the URL follows. A field the event
+    * leaves out keeps its value, so a section can set `edit` without repeating `id`. */
+  private handleRecordRoute = (e: CustomEvent<Partial<RecordRoute>>) => {
+    this.recordRoute = { ...this.recordRoute, ...e.detail };
+  };
 
   private applyApiConfig() {
     // Always pass both — passing loginUrl even when null lets configureCentralApi
@@ -455,15 +506,26 @@ export class VersolaAdmin extends LitElement {
     const urlView = params.get('view');
     const urlTenantId = params.get('tenant');
     const expandClient = params.get('expandClient');
-    const expandEdge = params.get('expandEdge');
+    // The old deep link to an edge; `id` is what every section reads now.
+    const recordId = params.get('id') ?? params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'well-known' || urlView === 'system-settings') {
-      this.currentView = urlView;
+    const renamed = urlView ? VersolaAdmin.RENAMED_VIEWS[urlView] : undefined;
+    if (renamed) {
+      this.currentView = renamed.view;
+      this.legacyNotice = renamed.notice;
+    } else if (urlView && VersolaAdmin.VIEWS.has(urlView as NavItem)) {
+      this.currentView = urlView as NavItem;
     }
 
     this.currentTenantId = urlTenantId || localStorage.getItem('selectedTenantId');
     this.clientToExpandOnLoad = expandClient;
-    this.edgeToExpandOnLoad = expandEdge;
+    // A settings record (Security, Keys & metadata) has no `id`, so `edit` stands on its own there.
+    this.recordRoute = {
+      id: recordId,
+      edit: params.get('edit'),
+      create: params.get('new') === '1',
+      layout: params.get('layout') === 'page' ? 'page' : null,
+    };
   }
 
   private persistLocationState() {
@@ -479,23 +541,28 @@ export class VersolaAdmin extends LitElement {
     url.searchParams.delete('expandClient');
     url.searchParams.delete('expandEdge');
 
+    const route = this.recordRoute;
+    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout]] as const) {
+      if (value) url.searchParams.set(key, value);
+      else url.searchParams.delete(key);
+    }
+
     window.history.replaceState({}, '', url);
   }
 
-  private handleNavigateToClient = (e: CustomEvent) => {
-    const { tenantId, clientId } = e.detail;
-    if (tenantId) {
-      this.currentTenantId = tenantId;
-      localStorage.setItem('selectedTenantId', tenantId);
-    }
-    this.clientToExpandOnLoad = clientId;
-    this.currentView = 'clients';
-  };
-
   private handleNavigateToEdge = (e: CustomEvent) => {
     const { edgeId } = e.detail;
-    this.edgeToExpandOnLoad = edgeId;
+    this.recordRoute = { ...EMPTY_RECORD_ROUTE, id: edgeId };
     this.currentView = 'edges';
+  };
+
+  /** A section sends the operator to another view (a role's banner to the sign-in settings), to
+    * one record of it when `id` is given (a default role, a signing key, a tenant). */
+  private handleNavigateView = (e: CustomEvent<{ view: NavItem; id?: string }>) => {
+    this.recordRoute = { ...EMPTY_RECORD_ROUTE, id: e.detail.id ?? null };
+    // Clients still opens a record by its expand-on-load id; a client named by another section opens that way.
+    if (e.detail.view === 'clients') this.clientToExpandOnLoad = e.detail.id ?? null;
+    this.currentView = e.detail.view;
   };
 
   /** Renders the "no permission for this view" state.
@@ -528,29 +595,34 @@ export class VersolaAdmin extends LitElement {
       case 'clients':
         return html`<versola-clients-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('clients')} .canManageSecrets=${this.canManageSecrets} .expandClientId=${this.clientToExpandOnLoad} @navigate-to-edge=${this.handleNavigateToEdge}></versola-clients-list>`;
       case 'scopes':
-        return html`<versola-scopes-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('scopes')}></versola-scopes-list>`;
+        return html`<versola-scopes-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('scopes')} .route=${this.recordRoute}></versola-scopes-list>`;
       case 'permissions':
-        return html`<versola-permissions-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('permissions')}></versola-permissions-list>`;
+        return html`<versola-permissions-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('permissions')} .route=${this.recordRoute}></versola-permissions-list>`;
       case 'resources':
-        return html`<versola-resources-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('resources')}></versola-resources-list>`;
+        return html`<versola-resources-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('resources')} .route=${this.recordRoute}></versola-resources-list>`;
       case 'roles':
-        return html`<versola-roles-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('roles')}></versola-roles-list>`;
+        return html`<versola-roles-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('roles')} .route=${this.recordRoute}></versola-roles-list>`;
       case 'tenants':
-        return html`<versola-tenants-list .selectedTenantId=${this.currentTenantId} .canManage=${this.canManage('tenants')} @tenant-change=${this.handleTenantChange}></versola-tenants-list>`;
+        return html`<versola-tenants-list .selectedTenantId=${this.currentTenantId} .canManage=${this.canManage('tenants')} .route=${this.recordRoute} @tenant-change=${this.handleTenantChange}></versola-tenants-list>`;
       case 'edges':
-        return html`<versola-edges-list .expandEdgeId=${this.edgeToExpandOnLoad} .canManage=${this.canManage('edges')} @navigate-to-client=${this.handleNavigateToClient}></versola-edges-list>`;
+        return html`<versola-edges-list .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
       case 'users':
-        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd}></versola-users-list>`;
+        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .route=${this.recordRoute}></versola-users-list>`;
       case 'forms':
-        return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
-      case 'locales':
-        return html`<versola-locales-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('locales')}></versola-locales-list>`;
-      case 'challenges':
-        return html`<versola-challenges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('challenges')}></versola-challenges-list>`;
-      case 'well-known':
-        return html`<versola-well-known .canManage=${this.canManage('well-known')}></versola-well-known>`;
+        return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')} .route=${this.recordRoute}></versola-forms-list>`;
+      case 'themes':
+        return html`<versola-themes-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('themes')} .route=${this.recordRoute}></versola-themes-list>`;
+      case 'security':
+        return html`<versola-security-settings .tenantId=${this.currentTenantId} .canManage=${this.canManage('security')} .route=${this.recordRoute}></versola-security-settings>`;
+      case 'otp-templates':
+        return html`<versola-otp-templates-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('otp-templates')} .route=${this.recordRoute}></versola-otp-templates-list>`;
+      case 'authorization-details':
+        return html`<versola-authorization-details-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('authorization-details')} .route=${this.recordRoute}></versola-authorization-details-list>`;
+      case 'keys':
+        return html`<versola-keys-metadata .canManage=${this.canManage('keys')} .route=${this.recordRoute}></versola-keys-metadata>`;
       case 'system-settings':
-        return html`<versola-system-settings .canManage=${this.canManage('system-settings')}></versola-system-settings>`;
+        return html`<versola-system-settings .canManage=${this.canManage('system-settings')} .route=${this.recordRoute}
+          .canReadLocales=${this.adminPermissions.has('locales:read')} .canManageLocales=${this.adminPermissions.has('locales:manage')}></versola-system-settings>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }
@@ -569,7 +641,8 @@ export class VersolaAdmin extends LitElement {
     }
 
     return html`
-      <div class="app-layout" @open-nav=${this.handleOpenNav} @close-nav=${this.handleCloseNav}>
+      <div class="app-layout" @open-nav=${this.handleOpenNav} @close-nav=${this.handleCloseNav}
+        @record-route=${this.handleRecordRoute} @navigate-view=${this.handleNavigateView}>
         <div
           class="nav-backdrop ${this.navOpen ? 'visible' : ''}"
           @click=${this.closeNav}
@@ -588,6 +661,11 @@ export class VersolaAdmin extends LitElement {
         ></versola-navigation>
 
         <main class="main-content" tabindex="-1">
+          ${this.legacyNotice ? html`
+            <div class="banner info" role="status">
+              <div class="banner-text"><div class="banner-title">${statusIcon('info')}${this.legacyNotice}</div></div>
+              <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.legacyNotice = null; }}>Dismiss</button>
+            </div>` : ''}
           ${this.renderView()}
         </main>
       </div>
