@@ -894,14 +894,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.ip.contains("9.9.9.9"))
       },
-      test("takes the first value for multi-value headers") {
+      test("takes the rightmost value for X-Forwarded-For, not one the client wrote on the left") {
         val env = Env()
         env.configuration.getIpHeader.returnsWith(ZIO.succeed("X-Forwarded-For"))
         val request = Request.get(URL.root.addQueryParams(validParams)).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1")
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
-        yield assertTrue(result.ip.contains("7.7.7.7"))
+        yield assertTrue(result.ip.contains("10.0.0.1"), !result.ip.contains("7.7.7.7"))
       },
       test("is None when the configured header is absent from the request") {
         val env = Env()
