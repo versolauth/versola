@@ -414,6 +414,7 @@ object AntifraudListsSpec extends UnitSpecBase:
             source = "manual",
             shadow = false,
           ),
+          operator,
         )
       yield assertTrue(
         enforcing.left.exists(_.isInstanceOf[InvalidListEntry]),
@@ -450,7 +451,21 @@ object AntifraudListsSpec extends UnitSpecBase:
         deleteGlobal <- lists.delete(operatorGlobal.id, admin).either
         deleteOwn <- lists.delete(own.id, admin)
         audit <- lists.audit(None, admin, 10).either
+        previewGlobal <- lists.preview(
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.device_id,
+            value = "x",
+            tenantId = None,
+            expiresAt = None,
+            reason = None,
+            source = "manual",
+            shadow = false,
+          ),
+          admin,
+        ).either
       yield assertTrue(
+        previewGlobal.left.exists(_.isInstanceOf[ListForbidden]),
         global.left.exists(_.isInstanceOf[ListForbidden]),
         foreign.left.exists(_.isInstanceOf[ListForbidden]),
         deleteGlobal.left.exists(_.isInstanceOf[ListForbidden]),

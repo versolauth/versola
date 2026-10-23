@@ -26,7 +26,14 @@ final class CentralApi(
     /** Set for the calls made to central's mutual-TLS listener, where the edge surface is served:
       * what the connection presents, if anything. */
     edgeSurface: Option[Option[ClientSSLConfig]] = None,
+    /** Sent with every call: what edge adds from a verified token, which a test that calls central directly plays itself. */
+    extraHeaders: List[(String, String)] = Nil,
 ):
+
+  /** The same API as seen by an admin whom edge has identified (`X-Admin-Subject`, `X-Admin-Tenant`, see
+    * `AntifraudListController`); `tenant` is `default` for an operator. */
+  def asAdmin(subject: String, tenant: String): CentralApi =
+    CentralApi(client, config, credentials, bearer, edgeSurface, List("X-Admin-Subject" -> subject, "X-Admin-Tenant" -> tenant))
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -118,7 +125,8 @@ final class CentralApi(
       )
       withType = body.fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
       withBasic = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
-      authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
+      withBearer = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
+      authorized = extraHeaders.foldLeft(withBearer)((r, h) => r.addHeader(h._1, h._2))
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))
       // Without a certificate the connection still has to trust central's own, or it would fail on that
       // instead of on the missing certificate this exists to show.

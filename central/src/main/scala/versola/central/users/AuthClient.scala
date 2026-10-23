@@ -5,7 +5,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
-import zio.http.{Body, Client, Header, MediaType, Method, Request, Response, Status, URL}
+import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
@@ -86,9 +86,22 @@ trait AuthClient:
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
 
+  /** Calls auth's antifraud lists API (`/antifraud/lists` and below) and returns its answer as it is: auth validates
+    * the entry and decides what the actor may do, so a 400, 403 or 404 is the answer to pass on, not a failure of
+    * the call. Any other failure is one. */
+  def forwardAntifraudLists(
+      method: Method,
+      path: List[String],
+      query: QueryParams,
+      body: Option[Json],
+  ): Task[AuthClient.Forwarded]
+
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
+
+  /** What auth answered a forwarded call. */
+  case class Forwarded(status: Status, contentType: Option[Header.ContentType], body: String)
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
@@ -371,6 +384,20 @@ object AuthClient:
           body = Body.from(SetPasswordPayload(userId, password)),
         ),
       )
+
+    override def forwardAntifraudLists(
+        method: Method,
+        path: List[String],
+        query: QueryParams,
+        body: Option[Json],
+    ): Task[Forwarded] =
+      val url = path.foldLeft(config.auth.url / "antifraud" / "lists")(_ / _).setQueryParams(query)
+      execute(Request(method = method, url = url, body = body.fold(Body.empty)(json => Body.fromString(json.toJson)))): response =>
+        if response.status.isSuccess || passedOn.contains(response.status) then
+          response.body.asString.map(Forwarded(response.status, response.header(Header.ContentType), _))
+        else failResponse(response)
+
+    private val passedOn = Set[Status](Status.BadRequest, Status.Forbidden, Status.NotFound)
 
     override def deleteUser(userId: UserId): Task[Unit] =
       send(

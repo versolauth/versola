@@ -2,6 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
+import versola.central.antifraud.AntifraudListController
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -182,6 +183,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       OtpChallengeController.routes,
       SystemSettingsController.routes,
       UserController.routes,
+      AntifraudListController.routes,
       JwksController.routes,
       ServerMetadataController.routes,
       ServiceController.routes,

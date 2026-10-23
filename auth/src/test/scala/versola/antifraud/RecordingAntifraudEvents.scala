@@ -31,6 +31,9 @@ final class RecordingAntifraudEvents(
 
   override def record(event: AntifraudEvent): UIO[Unit] = zio.ZIO.unit
 
+  override def subjectHash(credential: Either[Email, Phone]): zio.Task[String] =
+    zio.ZIO.succeed("hash:" + credential.fold(identity[String], identity[String]))
+
   private val asked = scala.collection.mutable.ListBuffer.empty[Boolean]
   private val released = new java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -66,7 +69,15 @@ final class RecordingAntifraudEvents(
       outcome: AntifraudOutcome,
       decision: Option[Decision],
   ): UIO[Unit] =
-    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, decision))) *> afterRequested
+    zio.ZIO.succeed(synchronized(told += Step(
+      AntifraudAction.otp_request,
+      authId,
+      clientId,
+      userAgent,
+      credential,
+      outcome,
+      decision,
+    ))) *> afterRequested
 
   override def otpChecked(
       authId: AuthId,

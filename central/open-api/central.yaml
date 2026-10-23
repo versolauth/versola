@@ -112,6 +112,8 @@ tags:
     description: Global, non-tenant-scoped settings such as the password policy.
   - name: Edges
     description: Registered edge deployments and their signing keys.
+  - name: Antifraud lists
+    description: Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -2434,6 +2436,174 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ─────────────────────────────── Antifraud lists ───────────────────────────────
+  /antifraud/lists:
+    parameters:
+      - $ref: '#/components/parameters/AdminSubjectHeader'
+      - $ref: '#/components/parameters/AdminTenantHeader'
+    get:
+      tags: [Antifraud lists]
+      summary: List entries
+      description: |
+        Entries of the lists, newest first. An operator sees every entry (narrow with `tenantId` or `global`); an admin of
+        another tenant sees that tenant's entries only, whatever they ask for.
+      operationId: listAntifraudListEntries
+      parameters:
+        - name: listType
+          in: query
+          schema: { $ref: '#/components/schemas/AntifraudListType' }
+        - name: valueType
+          in: query
+          schema: { $ref: '#/components/schemas/AntifraudValueType' }
+        - name: tenantId
+          in: query
+          description: Only this tenant's entries. Excludes `global`.
+          schema: { $ref: '#/components/schemas/TenantId' }
+        - name: global
+          in: query
+          description: "`true` for the global entries only. Excludes `tenantId`."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          description: 1 to 500. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: The entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AntifraudListEntry' }
+        '400':
+          description: A parameter is not valid, or `tenantId` and `global` were both given.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/NoAdminIdentity'
+    post:
+      tags: [Antifraud lists]
+      summary: Add an entry
+      description: |
+        Adds an entry, or refreshes the expiry, reason and source of the one for the same list, kind of value, value and
+        tenant (the response is then that entry, with its own `id`). This instance of auth applies it at once, the others
+        within `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
+
+        Only an operator may add a global entry (no `tenantId`) or another tenant's. Auth refuses (`400`, with the
+        reason as text) a value that does not fit its kind; an `allow` for anything but an exact subject; an entry that
+        names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
+        an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
+        24 hours of events: add it as `shadow` first.
+      operationId: createAntifraudListEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudListEntryRequest' }
+      responses:
+        '201':
+          description: The entry as stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudListEntry' }
+        '400':
+          description: The body is not valid, or auth refused the entry (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: No admin identity, or the admin may not change entries of that tenant.
+    delete:
+      tags: [Antifraud lists]
+      summary: Remove an entry
+      operationId: deleteAntifraudListEntry
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Removed and recorded in the audit.
+        '400':
+          description: "`id` is missing or not a UUID."
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: No admin identity, or the entry is not one the admin may change.
+        '404':
+          description: There is no such entry.
+
+  /antifraud/lists/preview:
+    parameters:
+      - $ref: '#/components/parameters/AdminSubjectHeader'
+      - $ref: '#/components/parameters/AdminTenantHeader'
+    post:
+      tags: [Antifraud lists]
+      summary: Preview what an entry would match
+      description: |
+        How many of the last 24 hours of events the entry would have matched, with the same validation as adding it and
+        nothing stored. `matched` is `null` for a kind of value the event log has no column for (an address, a network,
+        an ASN, a device, a JA4 hash, a mail domain): the share guard cannot judge those, so give them an expiry and add
+        them as `shadow` first. The count is over every tenant's events, so only an admin who may add the entry may preview it.
+      operationId: previewAntifraudListEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudListEntryRequest' }
+      responses:
+        '200':
+          description: The counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched: { type: [integer, 'null'] }
+                  total: { type: integer }
+                required: [total]
+        '400':
+          description: The body is not valid, or auth refused the entry.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: No admin identity, or the admin may not add that entry.
+
+  /antifraud/lists/audit:
+    parameters:
+      - $ref: '#/components/parameters/AdminSubjectHeader'
+      - $ref: '#/components/parameters/AdminTenantHeader'
+    get:
+      tags: [Antifraud lists]
+      summary: Changes of the lists
+      description: Who added, removed or let expire which entry, latest first. Operators only.
+      operationId: listAntifraudListAudit
+      parameters:
+        - name: entryId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          description: 1 to 500. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 500 }
+      responses:
+        '200':
+          description: The records.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AntifraudListAudit' }
+        '400':
+          description: A parameter is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: No admin identity, or the admin is not an operator.
+
   # ─────────────────────────────── Service ───────────────────────────────
   /service/users/outbox/flush:
     post:
@@ -2501,8 +2671,26 @@ components:
   responses:
     Unauthorized:
       description: The credentials are missing, malformed or not accepted.
+    NoAdminIdentity:
+      description: The request names no admin (`X-Admin-Subject` and `X-Admin-Tenant`, which edge sets from the verified token).
 
   parameters:
+    AdminSubjectHeader:
+      name: X-Admin-Subject
+      in: header
+      required: true
+      description: |
+        The admin's subject, set by edge from the verified access token (the antifraud endpoints are registered with an
+        inject rule that overwrites what the caller sent). It names the actor in the audit. A request without it is `403`.
+      schema: { type: string }
+    AdminTenantHeader:
+      name: X-Admin-Tenant
+      in: header
+      required: true
+      description: |
+        The tenant of the admin's token, set by edge. `default`, the tenant that carries central's own roles, makes the
+        admin an operator (global entries, other tenants' entries, the audit); any other tenant limits them to its own entries.
+      schema: { type: string }
     TenantIdQuery:
       name: tenantId
       in: query
@@ -6087,3 +6275,76 @@ components:
           type: string
           description: The base64url-encoded PKCS#8 private key. Returned only once.
       required: [keyId, privateKey]
+    AntifraudListType:
+      type: string
+      enum: [deny, allow, watch, fake]
+      description: |
+        `deny` blocks; `fake` answers as if the step succeeded and does nothing (a real person on it is told a code was
+        sent and gets none: confirmed fraud only); `watch` adds to the score; `allow` takes score off, for an exact
+        subject only, and never overrides a deny of the same specificity.
+    AntifraudValueType:
+      type: string
+      enum: [phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain]
+    AntifraudListEntryRequest:
+      type: object
+      description: Give `value`, or for a `phone_hash` entry `phone` instead.
+      properties:
+        listType: { $ref: '#/components/schemas/AntifraudListType' }
+        valueType: { $ref: '#/components/schemas/AntifraudValueType' }
+        value:
+          type: string
+          description: |
+            What is matched, up to 256 characters: the keyed hash (`phone_hash`), digits of a number without the `+`
+            (`prefix`, at most 4), an address, a network `address/length`, an AS number, a device id, the lower-case hex
+            SHA-256 of a user agent, a JA4 fingerprint or a domain name.
+        phone:
+          type: string
+          description: |
+            A phone number, for `valueType: phone_hash` only. Auth hashes it the way the event log stores a destination
+            and keeps the hash, never the number. Rotating `security.antifraud-subject-secret` stops such entries from matching.
+        tenantId:
+          allOf: [{ $ref: '#/components/schemas/TenantId' }]
+          description: "The tenant the entry applies to. Omitted: every tenant (operators only)."
+        expiresAt: { type: string, format: date-time }
+        reason: { type: string }
+        source:
+          type: string
+          description: Who or what put it on the list. Defaults to `manual`; anything else needs `expiresAt`.
+        shadow:
+          type: boolean
+          description: Matched and counted, enforces nothing (the fired rule is `shadow_list:<value type>`). Defaults to `false`.
+      required: [listType, valueType]
+    AntifraudListEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        listType: { $ref: '#/components/schemas/AntifraudListType' }
+        valueType: { $ref: '#/components/schemas/AntifraudValueType' }
+        value: { type: string }
+        tenantId: { $ref: '#/components/schemas/TenantId' }
+        expiresAt: { type: string, format: date-time }
+        reason: { type: string }
+        source: { type: string }
+        shadow: { type: boolean }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        hitCount:
+          type: integer
+          description: Kept in memory by each instance and written every 30 seconds, so it lags.
+        lastHitAt: { type: string, format: date-time }
+      required: [id, listType, valueType, value, source, shadow, createdBy, createdAt, hitCount]
+    AntifraudListAudit:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        action: { type: string, enum: [create, delete, expire] }
+        actor: { type: string }
+        entryId: { type: string, format: uuid }
+        listType: { $ref: '#/components/schemas/AntifraudListType' }
+        valueType: { $ref: '#/components/schemas/AntifraudValueType' }
+        value: { type: string }
+        tenantId: { $ref: '#/components/schemas/TenantId' }
+        expiresAt: { type: string, format: date-time }
+        reason: { type: string }
+      required: [id, at, action, actor, entryId, listType, valueType, value]

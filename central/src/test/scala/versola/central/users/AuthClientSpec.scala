@@ -279,6 +279,33 @@ object AuthClientSpec extends ZIOSpecDefault:
 
   // ── Response decoding ───────────────────────────────────────────────────────
   private val decodingSuite = suite("response decoding")(
+    test("forwardAntifraudLists passes on auth's 400, 403 and 404 with their bodies, and the path, query and body it was given") {
+      def answer(status: Status) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("why").status(status))).toRoutes
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("[]"))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ok <- client.forwardAntifraudLists(Method.POST, List("preview"), QueryParams("a" -> "b"), Some(Json.Obj("x" -> Json.Num(1))))
+        request <- seen.get.map(_.get)
+        sentBody <- request.body.asString
+        results <- ZIO.foreach(List(Status.BadRequest, Status.Forbidden, Status.NotFound)): status =>
+          TestClient.addRoutes(answer(status)) *>
+            client.forwardAntifraudLists(Method.GET, Nil, QueryParams.empty, None)
+        _ <- TestClient.addRoutes(answer(Status.InternalServerError))
+        broken <- client.forwardAntifraudLists(Method.GET, Nil, QueryParams.empty, None).either
+      yield assertTrue(
+        ok.status == Status.Ok,
+        request.method == Method.POST,
+        request.url.path.segments == Chunk("antifraud", "lists", "preview"),
+        request.url.queryParams.queryParam("a").contains("b"),
+        sentBody == """{"x":1}""",
+        results.map(_.status) == List(Status.BadRequest, Status.Forbidden, Status.NotFound),
+        results.forall(_.body == "why"),
+        broken.isLeft,
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("resetPassword returns None when server responds 204") {
       for
         _ <- TestClient.addRoutes(

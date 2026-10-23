@@ -64,8 +64,9 @@ trait AntifraudLists:
     * pick it up within the refresh interval. */
   def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry]
 
-  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). */
-  def preview(entry: NewListEntry): Task[ListPreview]
+  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). Counts events of every tenant, so
+    * only an actor who may create the entry may ask. */
+  def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview]
 
   def delete(id: UUID, actor: ListActor): Task[Boolean]
 
@@ -257,8 +258,9 @@ object AntifraudLists:
           .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != "manual"))
       yield value
 
-    override def preview(entry: NewListEntry): Task[ListPreview] =
+    override def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview] =
       for
+        _ <- forbid(actor, entry.tenantId)
         now <- Clock.instant
         value <- validate(entry, now)
         result <- repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600))
