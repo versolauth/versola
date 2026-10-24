@@ -414,6 +414,7 @@ object AntifraudListsSpec extends UnitSpecBase:
             source = "manual",
             shadow = false,
           ),
+          operator,
         )
       yield assertTrue(
         enforcing.left.exists(_.isInstanceOf[InvalidListEntry]),
@@ -422,6 +423,19 @@ object AntifraudListsSpec extends UnitSpecBase:
         tooFew.isRight,
         unknown.isRight,
         previewed == ListPreview(matched = None, total = 1000),
+      )
+    },
+    test("a page outside 1 to 500 entries, or before the first, is refused") {
+      val (lists, _) = make(FakeRepository())
+      for
+        ok <- lists.list(AntifraudListFilter.all, operator, 500, 0).either
+        zero <- lists.list(AntifraudListFilter.all, operator, 0, 0).either
+        huge <- lists.list(AntifraudListFilter.all, operator, 501, 0).either
+        negative <- lists.list(AntifraudListFilter.all, operator, 10, -1).either
+        auditHuge <- lists.audit(None, operator, 501).either
+      yield assertTrue(
+        ok.isRight,
+        List(zero, huge, negative, auditHuge).forall(_.left.exists(_.isInstanceOf[InvalidListEntry])),
       )
     },
     test("only an operator changes a global entry or another tenant's; a tenant's admin lists their own") {
@@ -450,7 +464,21 @@ object AntifraudListsSpec extends UnitSpecBase:
         deleteGlobal <- lists.delete(operatorGlobal.id, admin).either
         deleteOwn <- lists.delete(own.id, admin)
         audit <- lists.audit(None, admin, 10).either
+        previewGlobal <- lists.preview(
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.device_id,
+            value = "x",
+            tenantId = None,
+            expiresAt = None,
+            reason = None,
+            source = "manual",
+            shadow = false,
+          ),
+          admin,
+        ).either
       yield assertTrue(
+        previewGlobal.left.exists(_.isInstanceOf[ListForbidden]),
         global.left.exists(_.isInstanceOf[ListForbidden]),
         foreign.left.exists(_.isInstanceOf[ListForbidden]),
         deleteGlobal.left.exists(_.isInstanceOf[ListForbidden]),

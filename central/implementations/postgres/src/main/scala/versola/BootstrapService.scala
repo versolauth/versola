@@ -454,6 +454,23 @@ object BootstrapService:
       ),
     ),
     (
+      Permission("antifraud:read"),
+      localized("View antifraud lists", "Просмотр списков антифрода"),
+      Set(
+        endpointId("GET", "/antifraud/lists"),
+        endpointId("GET", "/antifraud/lists/audit"),
+      ),
+    ),
+    (
+      Permission("antifraud:manage"),
+      localized("Manage antifraud lists", "Управление списками антифрода"),
+      Set(
+        endpointId("POST", "/antifraud/lists"),
+        endpointId("POST", "/antifraud/lists/preview"),
+        endpointId("DELETE", "/antifraud/lists"),
+      ),
+    ),
+    (
       Permission("resources:read"),
       localized("View protected resources", "Просмотр защищенных ресурсов"),
       Set(
@@ -580,6 +597,8 @@ object BootstrapService:
           "access:read",
           "security:read",
           "resources:read",
+          "antifraud:read",
+          "antifraud:manage",
         ).map(Permission(_)) :+ accountPermission,
       ),
       (
@@ -600,7 +619,7 @@ object BootstrapService:
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(_ != "users:read") :+ accountPermission,
+        readOnly.filter(p => p != "users:read" && p != "antifraud:read") :+ accountPermission,
       ),
     )
 
@@ -963,7 +982,25 @@ object BootstrapService:
     "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
+    "GET" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists",
+    "DELETE" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists/preview",
+    "GET" -> "/antifraud/lists/audit",
   )
+
+  /** What central's antifraud endpoints are told of the admin, from the token edge has verified (not from the caller:
+    * edge overwrites a parameter or field of the same name). Central cannot tell who an admin is otherwise, and the lists'
+    * audit and who may change a global entry depend on it (`AntifraudListController`). As for the account endpoints
+    * ([[accountCallerInjects]]): query parameters for a `GET`, body fields for the rest. */
+  private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
+    if path.startsWith("/antifraud/") then
+      val target = if method == "GET" then InjectTarget.query else InjectTarget.body
+      Vector(
+        InjectRule(target, "adminSubject", "token.sub"),
+        InjectRule(target, "adminTenant", "token.tenant_id"),
+      )
+    else Vector.empty
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
@@ -1567,7 +1604,7 @@ object BootstrapService:
             method = method,
             fetchUserInfo = false,
             allowExpression = None,
-            inject = Vector.empty,
+            inject = centralInjects(method, path),
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,

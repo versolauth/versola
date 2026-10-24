@@ -258,6 +258,27 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         nonProd.size == prod.size + 2,
       )
     },
+    test("central's antifraud endpoints are registered in production, and told who the admin is from the verified token") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
+      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
+      assertTrue(
+        antifraud.size == 5,
+        injected(
+          "GET",
+          "/antifraud/lists",
+        ) == Vector((InjectTarget.query, "adminSubject", "token.sub"), (InjectTarget.query, "adminTenant", "token.tenant_id")),
+        injected("GET", "/antifraud/lists/audit").forall(_._1 == InjectTarget.query),
+        injected(
+          "POST",
+          "/antifraud/lists",
+        ) == Vector((InjectTarget.body, "adminSubject", "token.sub"), (InjectTarget.body, "adminTenant", "token.tenant_id")),
+        injected("POST", "/antifraud/lists/preview").forall(_._1 == InjectTarget.body),
+        injected("DELETE", "/antifraud/lists").forall(_._1 == InjectTarget.body),
+        antifraud.forall((method, path) => injected(method, path).size == 2),
+        injected("GET", "/users").isEmpty,
+      )
+    },
     test("offline_access is described without the word refresh, which users do not know") {
       val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
       assertTrue(

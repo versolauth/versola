@@ -1516,6 +1516,29 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         parsed.exists(_.fields.exists((k, v) => k == "name" && v == Json.Str("Alice"))),
       )
     },
+    test("a query inject replaces a parameter of the same name the client sent") {
+      val env = new Env
+      val endpoint = usersEndpoint(inject = Vector(InjectRule(InjectTarget.query, "adminSubject", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .updateURL(_.addQueryParams(QueryParams("adminSubject" -> "attacker", "other" -> "kept")))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        subjects = upstream.map(_.url.queryParams.queryParams("adminSubject")).getOrElse(Chunk.empty)
+      yield assertTrue(
+        response.status == Status.Ok,
+        subjects == Chunk("user-1"),
+        upstream.exists(_.url.queryParams.queryParam("other").contains("kept")),
+      )
+    },
     test("returns 403 when JSON body does not satisfy allow expression") {
       val env = new Env
       val endpoint = createUserEndpoint(allow = Some("request.body.action == 'create'"))

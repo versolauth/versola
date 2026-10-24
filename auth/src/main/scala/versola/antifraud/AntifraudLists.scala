@@ -64,8 +64,9 @@ trait AntifraudLists:
     * pick it up within the refresh interval. */
   def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry]
 
-  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). */
-  def preview(entry: NewListEntry): Task[ListPreview]
+  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). Counts events of every tenant, so
+    * only an actor who may create the entry may ask. */
+  def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview]
 
   def delete(id: UUID, actor: ListActor): Task[Boolean]
 
@@ -84,6 +85,9 @@ final class ListForbidden(message: String) extends RuntimeException(message)
 object AntifraudLists:
 
   private val PurgeBatch = 1000
+
+  /** The most entries or audit records one call returns. */
+  val MaxLimit = 500
 
   /** An unchanged table is reloaded after this long anyway. */
   private val FullReloadSeconds = 60L
@@ -257,8 +261,9 @@ object AntifraudLists:
           .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != "manual"))
       yield value
 
-    override def preview(entry: NewListEntry): Task[ListPreview] =
+    override def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview] =
       for
+        _ <- forbid(actor, entry.tenantId)
         now <- Clock.instant
         value <- validate(entry, now)
         result <- repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600))
@@ -305,10 +310,14 @@ object AntifraudLists:
           forbid(actor, found.tenantId) *> Clock.instant.flatMap(repository.delete(id, actor.name, _)) <* refresh
 
     override def list(filter: AntifraudListFilter, actor: ListActor, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
-      repository.list(if actor.isOperator then filter else filter.copy(tenantId = Some(actor.tenantId)), limit, offset)
+      page(limit, offset) *>
+        repository.list(if actor.isOperator then filter else filter.copy(tenantId = Some(actor.tenantId)), limit, offset)
 
     override def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]] =
-      ZIO.fail(ListForbidden("only an operator reads the audit")).unless(actor.isOperator) *> repository.audit(entryId, limit)
+      ZIO.fail(ListForbidden("only an operator reads the audit")).unless(actor.isOperator) *> page(limit, 0) *> repository.audit(entryId, limit)
+
+    private def page(limit: Int, offset: Int): IO[InvalidListEntry, Unit] =
+      ZIO.fail(InvalidListEntry(s"limit is 1 to $MaxLimit, offset is 0 or more")).unless(limit >= 1 && limit <= MaxLimit && offset >= 0).unit
 
     /** Rebuilds the snapshot when the table has changed (one tiny query says so), and in any case once a minute, for a
       * change made by hand in SQL. A failure keeps the snapshot there is. */
