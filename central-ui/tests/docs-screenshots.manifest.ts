@@ -851,6 +851,22 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/edge-access-log-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: { ...edgesState, edges: [{ ...edges[0], accessLogPolicy: { mode: 'sampled', successSampleRate: 0.1 } }] },
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Access log' })).toContainText('Sampled (set here)');
+    },
+  },
+  {
+    name: 'console/edge-access-log-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit access log', exact: true }).click();
+      await expect(sidePanel(page, 'Edit access log').getByRole('button', { name: 'Save access log' })).toBeVisible();
+    },
+  },
+  {
     name: 'console/edge-form', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Edge' }).click();

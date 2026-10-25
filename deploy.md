@@ -301,6 +301,20 @@ versola up
 the three schemas are recreated; other applications' schemas stay.) Anything written between the
 dump and the rollback is lost.
 
+#### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
+
+`HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
+in a compose file or a Helm `env` block is ignored. See [Access log](#access-log).
+
+- **auth and central** always log every request, and have no setting for it.
+- **The edge** starts at `off` (failures and slow requests only; 500 ms, 0.05 when sampled) and is configured per edge in
+  central: the admin console (an edge's page, "Access log") or `PUT /configuration/edges/access-log?edgeId=...`. It reaches
+  the edge on its next configuration sync.
+- An edge that had `HTTP_ACCESS_LOG=full` or `sampled` returns to `off` until a policy is set for it. Set one after
+  upgrading if you want the lines back.
+- Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
+  `LOG_LEVEL` is unchanged.
+
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
