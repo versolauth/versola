@@ -8,6 +8,7 @@ import type {
   BackendProperty,
   Edge,
   OverloadPolicy,
+  AccessLogPolicy,
   Locale,
   FormPreview,
   FormRecord,
@@ -109,7 +110,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1386,6 +1387,7 @@ export async function fetchEdges(): Promise<Edge[]> {
     // edge did before the setting existed.
     requireDpopNonce: edge.requireDpopNonce ?? true,
     ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
+    ...(edge.accessLogPolicy ? { accessLogPolicy: edge.accessLogPolicy } : {}),
   })));
 }
 
@@ -1400,6 +1402,15 @@ export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean
 /** Replaces the edge's overload policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
 export async function setEdgeOverloadPolicy(edgeId: string, policy: OverloadPolicy): Promise<void> {
   await requestVoid('/configuration/edges/overload', {
+    method: 'PUT',
+    query: { edgeId },
+    body: policy,
+  });
+}
+
+/** Replaces the edge's access-log policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
+export async function setEdgeAccessLogPolicy(edgeId: string, policy: AccessLogPolicy): Promise<void> {
+  await requestVoid('/configuration/edges/access-log', {
     method: 'PUT',
     query: { edgeId },
     body: policy,

@@ -67,7 +67,7 @@ type ResourceEndpointDto = {
 export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -386,6 +386,10 @@ export type MockConfigState = {
   overloadRejection?: string;
   /** Holds `PUT /configuration/edges/overload` for this long, to look at the saving state. */
   overloadDelayMs?: number;
+  /** Makes `PUT /configuration/edges/access-log` answer 400 with this message. */
+  accessLogRejection?: string;
+  /** Holds `PUT /configuration/edges/access-log` for this long, to look at the saving state. */
+  accessLogDelayMs?: number;
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
@@ -502,6 +506,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     edges: clone(overrides.edges ?? defaultState.edges),
     overloadRejection: overrides.overloadRejection,
     overloadDelayMs: overrides.overloadDelayMs,
+    accessLogRejection: overrides.accessLogRejection,
+    accessLogDelayMs: overrides.accessLogDelayMs,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
@@ -1291,6 +1297,25 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       const policy = body as Record<string, unknown>;
       if (Object.keys(policy).length === 0) delete edge.overloadPolicy;
       else edge.overloadPolicy = policy;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/edges/access-log' && method === 'PUT') {
+      const edgeId = url.searchParams.get('edgeId');
+      const edge = state.edges.find(e => e.id === edgeId);
+      if (!edge) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      if (state.accessLogDelayMs) await new Promise(resolve => setTimeout(resolve, state.accessLogDelayMs));
+      if (state.accessLogRejection) {
+        await route.fulfill(json({ error: state.accessLogRejection }, 400));
+        return;
+      }
+      const policy = body as Record<string, unknown>;
+      if (Object.keys(policy).length === 0) delete edge.accessLogPolicy;
+      else edge.accessLogPolicy = policy;
       await route.fulfill({ status: 204, body: '' });
       return;
     }

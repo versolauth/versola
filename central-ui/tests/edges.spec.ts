@@ -305,3 +305,112 @@ test.describe('overload protection', () => {
     await expect(card.getByRole('button')).toHaveCount(0);
   });
 });
+
+test.describe('access log', () => {
+  const policy = { mode: 'sampled', successSampleRate: 0.1 };
+  const editPath = '/?view=edges&id=edge-alpha&edit=access-log';
+  const alpha = { ...alphaEdge, accessLogPolicy: policy };
+  const put = (request: { method: string; pathname: string }) => request.method === 'PUT' && request.pathname === '/configuration/edges/access-log';
+
+  test('the edge panel says what is set here and what the edge defaults to', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, accessLogPolicy: policy }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await expect(card).toContainText('Default (off)');
+    await expect(card).toContainText('Nothing: the edge uses its defaults');
+    await expect(card).toContainText('Auth and central always log every request');
+    await expect(card.getByRole('button', { name: 'Reset to defaults' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Access log' });
+    await expect(custom).toContainText('Sampled (set here)');
+    await expect(custom).toContainText('successSampleRate 0.1');
+  });
+
+  test('every field names what an empty value means, and each mode says what it does', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await expect(dialog.getByLabel('Slow threshold')).toHaveAttribute('placeholder', '500');
+    await expect(dialog.getByLabel('Sample rate')).toHaveAttribute('placeholder', '0.05');
+    await expect(dialog.getByText('Empty: 500 ms')).toBeVisible();
+    await expect(dialog.getByText('Empty: 0.05')).toBeVisible();
+    await expect(dialog.getByText('Only requests that failed (status 400 or above, or an error) and slow ones are logged.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Full', exact: true }).click();
+    await expect(dialog.getByText('Every request gets a log line.')).toBeVisible();
+  });
+
+  test('saves only the fields that were set', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Full', exact: true }).click();
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+
+    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/access-log');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({ mode: 'full', slowMillis: 250 });
+    await expect(panel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toContainText('Full (set here)');
+    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByLabel('Sample rate').fill('1.5');
+    await expect(dialog.getByText('successSampleRate must be between 0.0 and 1.0')).toBeVisible();
+    await expect(dialog.getByLabel('Sample rate')).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByLabel('Slow threshold').fill('-1');
+    await expect(dialog.getByText('slowMillis must be between 0 and 600000')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByLabel('Slow threshold')).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+  });
+
+  test('shows what central refuses and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], accessLogRejection: 'mode must be full, sampled or off' } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'mode must be full, sampled or off' })).toBeVisible();
+    await expect(dialog.getByLabel('Sample rate')).toHaveValue('0.1');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], accessLogDelayMs: 600 } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Save access log' }).dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByLabel('Sample rate')).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    expect(api.requests.filter(put)).toHaveLength(1);
+  });
+
+  test('Reset to defaults sends {} after a confirmation', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await card.getByRole('button', { name: 'Reset to defaults' }).click();
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/access-log')).body).toEqual({});
+    await expect(card).toContainText('Nothing: the edge uses its defaults');
+    await expect(panel(page, 'edge-alpha').getByText('returned to the defaults')).toBeVisible();
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit access log');
+      await dialog.getByLabel('Sample rate').fill('2');
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await expect(card).toContainText('Sampled (set here)');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
+});

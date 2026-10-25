@@ -231,6 +231,8 @@ deployment, so every field is optional, empty means "inherit", and the built-in 
 environment variable are written under the field; rare fields sit under a native `<details>` "Advanced";
 a mode is a segmented control (`segmentedStyles`) with one line on the chosen value; the footer's
 `Reset to deployment defaults` (left) sends `{}` after a confirmation.
+Edges' *Access log* (`access-log-policy-editor.ts`, `utils/access-log-policy.ts`) is the same pattern with no environment
+base: empty means the edge's built-in default, written under the field, and the footer's `Reset to defaults` sends `{}`.
 
 **Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
 kind chip, status chips, created) → a status banner when the page can say something about the
