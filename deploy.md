@@ -617,6 +617,33 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
   starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
 
+- **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
+  minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
+  never creates one. **Off by default** (`antifraud.detectors.enabled`, `false`), and each detector has its own
+  `enabled`. The block is read whole: set every key of it (and of `prefix-anomaly` and `fake-verify`), or none.
+  Defaults: `interval` 1 minute, `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
+  10 s, `max-proposals` 20 per detector and run, `candidates` 200 (ranges looked at closely, busiest first), `open-for`
+  12 hours (an undecided proposal then expires), `cooldown` 24 hours (a value approved or rejected is not proposed
+  again for that long), `ttl` 24 hours (what an entry made from a proposal lives), `retention` 90 days, `batch-size`
+  1000.
+  `prefix-anomaly` proposes a range (tenant plus the first `stats-prefix-length` digits) for `fake` when in the last
+  `window` (15 minutes) it was asked for at least `min-requests` (50) codes, `spike-factor` (5) times what the
+  `baseline` (24 hours before the window) gives for a window of that length (at least `baseline-floor`, 5), at least
+  `min-sent` (20) were sent and its conversion (verified over sent) is at most `max-conversion` (0.2) and, if the
+  baseline sent `min-baseline-sent` (50), at most `conversion-drop` (0.5) times the baseline's. `fake-verify` proposes
+  a range for `deny` when in its `window` (30 minutes) at least `min-fake-verifies` (5) codes were entered after a fake
+  send and at most `max-verified` (0) real ones were verified. A range with no tenant is never proposed. Nothing
+  proposes a value that is already open, was decided on lately, or is covered by an unexpired list entry of any type
+  (a shorter prefix covers a longer one). Sequential numbers are not detected: the log keeps a number as a keyed hash
+  and its first six digits, which cannot tell consecutive numbers from others.
+  One instance runs a detector at a time (an advisory lock; the others skip it), each statement under
+  `antifraud.detectors.statement-timeout` and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
+  with `DEFAULT 0` (the previous release's rollup does not name it); it counts `fake_verify` events. Proposals are
+  counted in `antifraud_proposals_created_total{kind}`; **alert on** `antifraud_detector_failed_total{kind}` and
+  `antifraud_proposal_housekeeping_failed_total` increasing: a failing detector is only a warning in the log. There
+  is no way yet to approve a proposal: that, and creating the entry (`AntifraudProposal.toNewListEntry`), is a
+  follow-up.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

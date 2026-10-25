@@ -3,13 +3,16 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.antifraud.{
   Antifraud,
+  AntifraudDetectors,
   AntifraudEventRepository,
   AntifraudEvents,
   AntifraudListController,
   AntifraudListRepository,
   AntifraudLists,
+  AntifraudProposalRepository,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
+  PostgresAntifraudProposalRepository,
   PostgresVelocityRepository,
   VelocityCounters,
   VelocityRepository,
@@ -121,6 +124,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       VelocityCounters &
       AntifraudListRepository &
       AntifraudLists &
+      AntifraudProposalRepository &
+      AntifraudDetectors &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
@@ -236,6 +241,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresAntifraudEventRepository.live >++>
       PostgresVelocityRepository.live >++>
       PostgresAntifraudListRepository.live >++>
+      PostgresAntifraudProposalRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -261,6 +267,19 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         _.load(
           Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]).withDefault(AntifraudLists.Settings.default))
             .withDefault(AntifraudLists.Settings.default),
+        ),
+      )
+
+  /** `antifraud.detectors`, optional like the rest of the block. */
+  private val antifraudDetectorSettings: ZLayer[ConfigProvider, Config.Error, AntifraudDetectors.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(
+          Config.Nested(
+            "antifraud",
+            Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]).withDefault(AntifraudDetectors.Settings.default),
+          )
+            .withDefault(AntifraudDetectors.Settings.default),
         ),
       )
 
@@ -335,6 +354,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity))): Antifraud,
       ) >++>
       AntifraudEvents.live >++>
+      antifraudDetectorSettings >++>
+      AntifraudDetectors.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
