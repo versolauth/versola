@@ -1067,6 +1067,36 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
+### Rate limits (shadow)
+
+The edge has a rate limiter on the proxy path. Today it is **shadow only and has no configuration**: nothing in central
+or the console sets a policy yet (the central side comes after #827), so a deployed edge runs with no policy, the limiter
+is disabled, and a proxied request pays one volatile read. Nothing is refused, no response changes, and no setting is
+needed. The design is in #744 (and #310 for the original ask); this section says only what exists.
+
+What exists in the code:
+
+- **Two checkpoints on the proxy path**, both fed by the verified token and the matched route, never by what the caller
+  sent: R2, after the JWT is verified and before the revocation check and the DPoP proof is recorded (client, subject,
+  session `sid`, key `jkt`); R3, after the endpoint and the caller's permissions are resolved and before the `/userinfo`
+  call and the upstream (resource and registered endpoint template, global and per subject). A request refused by
+  permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is.
+  There is no R1 yet (before the token is read, keyed on the source address): it needs a trustworthy address, see #614.
+- **A policy source** on the edge (`RateLimitPolicySource`) that the limiter follows once a second, the way the overload
+  policy is followed. The default source has no policy. A later central sync client only has to feed it.
+- **Shadow means**: the request is checked, `would_limit` is counted when a policy would have refused it, and the
+  response is unchanged. A policy set to `enforce` is applied as `shadow` and the edge says so in its log, until
+  enforcement (`429` with `Retry-After`) is wired in.
+
+**Metrics** (a key is never a label; the policy name is a closed set, at most 64 names of `[a-z][a-z0-9_-]*`):
+`edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` (always 0 while shadow only) and
+`would_limit`; `edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}` (new keys past the
+per-policy cap of 100,000 share one overflow bucket, so a rise means a flood of distinct keys). With no policy none of
+them is written.
+
+Not there yet: R1, any central storage, API or console for policies, `enforce`, the per-replica share of a limit, and
+the `429` response.
+
 ### Access log
 
 Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are
