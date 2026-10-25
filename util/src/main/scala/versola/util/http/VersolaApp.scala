@@ -85,6 +85,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   protected def accessLogConfigurable: Boolean = true
 
+  /** What `HTTP_ACCESS_LOG` unset means for this service. `full` keeps every `receive-http` line; the edge, whose successful
+    * request lines are most of its log volume and say little a metric does not, starts at `off` (failures and slow requests
+    * only). The environment variable overrides it. */
+  protected def accessLogDefaultMode: AccessLogMode = AccessLogMode.Full
+
   /** The peers (`host:port`) of this deployment's own services, whose successful `send-http` lines are DEBUG (see
     * [[Observability.internalPeers]]). Every other peer, a message provider above all, is external and logged at INFO.
     */
@@ -219,7 +224,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
-      _ <- ZIO.unless(accessLogConfigurable)(Observability.updateAccessLog(AccessLogSettings.default))
+      _ <-
+        if accessLogConfigurable then Observability.applyAccessLogDefault(accessLogDefaultMode)
+        else Observability.updateAccessLog(AccessLogSettings.default)
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
