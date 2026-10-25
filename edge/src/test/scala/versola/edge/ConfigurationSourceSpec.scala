@@ -51,6 +51,7 @@ object ConfigurationSourceSpec extends ZIOSpecDefault:
         source.get[DpopPolicySyncClient].isInstanceOf[DpopPolicySyncClient.Impl],
         source.get[JwksSyncClient].isInstanceOf[JwksSyncClient.Impl],
         source.get[OverloadPolicySyncClient].isInstanceOf[OverloadPolicySyncClient.Impl],
+        source.get[AccessLogPolicySyncClient].isInstanceOf[AccessLogPolicySyncClient.Impl],
       )
     },
     test("partner is refused as not implemented, the same way the configuration is") {
