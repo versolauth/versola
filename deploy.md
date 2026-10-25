@@ -1006,6 +1006,17 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 1.7-2.1k steps/s with a p99 of 10 s and recovered slowly; `enforce` with a fixed `maxInFlight` of 512 held 4.0-4.5k with a p99 of 1.3 s;
 `enforce` with the learned limit (16 to 1536) held 4.6-4.7k with a p99 near 120 ms and recovered at once.
 
+**Headroom.** While the signals are healthy (call times within `adaptive.tolerance` of their long-run level and the executor lag
+under `lagTargetMillis`) the learned limit is never below 1.5 times the in-flight peak the pod has recently carried, an
+envelope that forgets over about a minute (time constant 60 one-second windows). Without it the limit sat only a little
+above normal concurrency and ordinary second-to-second variation crossed it. The envelope takes in a window's peak only when
+that window was healthy and the peak is under two thirds of the limit, so a pile-up during a stall, or a peak pinned at the
+limit, never lifts it: the headroom restores a limit that was cut, it does not probe upward (that stays the slow
+`sqrt(limit) x smoothing` step). A degraded window is decreased as before and may take the limit below the headroom, so a
+stall still pulls it to `adaptive.minLimit` within about ten seconds from 256 (six from 90). Call times beyond the tolerance
+must also persist for two consecutive windows before they decrease the limit, so one GC pause does not halve it; the executor
+lag acts at once. The factor 1.5, the minute and the two windows are not settings: there is no field for them in the policy.
+
 **Defaults** (what an edge uses for a field nobody set):
 
 | Inbound field | Default | Environment base |
@@ -1060,7 +1071,7 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 
 | Symptom | Change |
 |---|---|
-| Refusals in `enforce` while the pod is idle (CPU low) | raise `adaptive.minLimit`, or `maxLimit` if `http_admission_limit` sits at it |
+| Refusals in `enforce` while the pod is idle (CPU low) | raise `adaptive.minLimit`, or `maxLimit` if `http_admission_limit` sits at it; the limit already keeps 1.5 times the recent in-flight peak while healthy (see Headroom), so refusals that remain with a healthy pod point at a `minLimit` below the normal peak |
 | Latency climbs before the edge refuses anything | lower `adaptive.tolerance` (nearer 1) or `lagTargetMillis` |
 | The limit swings up and down | lower `adaptive.smoothing` |
 | New logins refused while proxied calls are fine | this is the intended order; raise `startShare` only if logins matter more than calls |

@@ -37,8 +37,20 @@ object AdaptiveSettings:
   */
 final case class RttWindow(meanRtt: Double, completed: Int)
 
-/** What the limiter has learned: the limit, and the long-run level of each class's call time. */
-final case class AdaptiveState(limit: Double, longRtt: Vector[Double], windows: Int)
+/** What the limiter has learned.
+  *
+  * @param limit
+  *   the limit in force
+  * @param longRtt
+  *   the long-run level of each class's call time
+  * @param windows
+  *   how many windows have been seen
+  * @param envelope
+  *   the in-flight peak the pod has recently carried while healthy, decaying over about a minute (see [[AdaptiveLimit.step]])
+  * @param rttSlow
+  *   whether the previous window's call times were beyond the tolerance (one slow window alone does not shrink the limit)
+  */
+final case class AdaptiveState(limit: Double, longRtt: Vector[Double], windows: Int, envelope: Double, rttSlow: Boolean)
 
 /** A concurrency limit that follows the service instead of a number someone guessed.
   *
@@ -55,6 +67,9 @@ final case class AdaptiveState(limit: Double, longRtt: Vector[Double], windows: 
   *   - **A second signal, the executor lag.** A pod that stalls completes nothing, so there is no call time to see. The lag
   *     of a timer on the executor is that stall seen directly; above its target the gradient follows it.
   *
+  * and bounded from below by what the pod has just shown it can carry (see [[HeadroomFactor]]), so that the ordinary
+  * second-to-second variation of the in-flight count does not cross the limit.
+  *
   * Pure: [[step]] takes the state and a window and returns the next state, so it is tested without a clock or a service.
   */
 object AdaptiveLimit:
@@ -66,15 +81,44 @@ object AdaptiveLimit:
 
   private val DecreaseSmoothing: Double = 0.5
 
+  /** The envelope forgets at the rate 1/this per window (a one-second window): its time constant is a minute. */
+  val EnvelopeWindows: Int = 60
+
+  /** While a window is healthy the limit is at least this many times the envelope. Not configurable: a limit under 1.5 times
+    * the concurrency the pod carried a moment ago refused requests of a healthy pod, over 1.5 is room that was never used.
+    */
+  val HeadroomFactor: Double = 1.5
+
+  /** The least the limit may be on a healthy window: [[HeadroomFactor]] times the envelope, never above `maxLimit`. */
+  def headroom(settings: AdaptiveSettings, state: AdaptiveState): Double =
+    (HeadroomFactor * state.envelope).min(settings.maxLimit)
+
   /** Starts at `start` (what the operator set as the limit before adaptation), inside the bounds, and learns from there. */
   def initial(settings: AdaptiveSettings, classes: Int, start: Int): AdaptiveState =
-    AdaptiveState(start.max(settings.minLimit).min(settings.maxLimit).toDouble, Vector.fill(classes)(0.0), 0)
+    AdaptiveState(
+      limit = start.max(settings.minLimit).min(settings.maxLimit).toDouble,
+      longRtt = Vector.fill(classes)(0.0),
+      windows = 0,
+      envelope = 0.0,
+      rttSlow = false,
+    )
 
   /** A new state keeps what was learned if it is still inside the bounds, and is clamped to them if not. */
   def rebound(state: AdaptiveState, settings: AdaptiveSettings): AdaptiveState =
     state.copy(limit = state.limit.max(settings.minLimit).min(settings.maxLimit))
 
   /** One window.
+    *
+    * Two rules on top of the gradient:
+    *
+    *   - **Headroom.** `envelope = max(peak, envelope * (1 - 1/EnvelopeWindows))`, where `peak` counts only if the window was
+    *     healthy (a pile-up during a stall is a queue, not what the pod carries) and `peak * HeadroomFactor < limit` (a peak
+    *     pinned at the limit is the limit's own doing; folding it in would let the limit lift itself by 1.5 every second).
+    *     A healthy window then never ends with a limit under `HeadroomFactor * envelope`. The floor only restores a limit
+    *     that was once in force, growth beyond it is still the slow probe. A degraded window is not lifted: the decrease may
+    *     take the limit below the floor, so a stall still shrinks it quickly.
+    *   - **A slow window must repeat.** Call times beyond the tolerance for one window (a GC pause) hold the limit; the
+    *     second window in a row decreases it. Not so for the executor lag, which acts at once: it is the stall itself.
     *
     * @param peakInFlight
     *   the most calls in flight at once in the window; a limit that was never reached says nothing about the pod, so it is
@@ -109,10 +153,15 @@ object AdaptiveLimit:
     val lagGradient =
       if lag > settings.lagTarget then (settings.lagTarget.toNanos.toDouble / lag.toNanos.toDouble).max(0.5).min(1.0) else 1.0
 
-    val gradient = rttGradient.min(lagGradient)
+    val rttSlow = rttGradient < 1.0
+    val healthy = !rttSlow && lagGradient >= 1.0
+    // the first slow window alone is held, not acted on; a lag has no such grace
+    val confirmedRtt = if state.rttSlow then rttGradient else 1.0
+    val gradient = confirmedRtt.min(lagGradient)
     val appLimited = peakInFlight < state.limit / 2
-    val limit =
-      if gradient >= 1.0 && appLimited then state.limit
+    val unchanged = (gradient >= 1.0 && appLimited) || (rttSlow && !state.rttSlow && lagGradient >= 1.0)
+    val adapted =
+      if unchanged then state.limit
       else
         // `queue`: the room to probe upward by, which grows with the limit but slowly (Gradient2's square root).
         val estimate = state.limit * gradient + math.sqrt(state.limit).max(1)
@@ -120,4 +169,15 @@ object AdaptiveLimit:
         // least half of each estimate), and an improvement at `smoothing`. A window here is a second, not a handful of calls.
         val rate = if estimate < state.limit then settings.smoothing.max(DecreaseSmoothing) else settings.smoothing
         state.limit * (1 - rate) + estimate * rate
-    state.copy(limit = limit.max(settings.minLimit).min(settings.maxLimit), longRtt = longs, windows = seen)
+
+    val decayed = state.envelope * (1 - 1.0 / EnvelopeWindows)
+    val envelope =
+      if healthy && peakInFlight * HeadroomFactor < state.limit then decayed.max(peakInFlight.toDouble) else decayed
+    val raised = if healthy then adapted.max(headroom(settings, state.copy(envelope = envelope))) else adapted
+    state.copy(
+      limit = raised.max(settings.minLimit).min(settings.maxLimit),
+      longRtt = longs,
+      windows = seen,
+      envelope = envelope,
+      rttSlow = rttSlow,
+    )
