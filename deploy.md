@@ -1073,28 +1073,40 @@ Every service writes one `receive-http` line per inbound request and one `send-h
 the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
 profile under load, almost all of it for successful requests.
 
-- `HTTP_ACCESS_LOG=full` (default of auth and central): every request, as before.
-- `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
-  against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
-  `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
-  (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
-  trace id is sampled at random.
-- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
-- The default when `HTTP_ACCESS_LOG` is unset depends on the service: the **edge starts at `off`** (its successful request lines are most of its log and the `http_server_*` metrics have them; failures and slow requests are still logged), auth and central at `full`. Set `HTTP_ACCESS_LOG=full` or `sampled` on an edge to log more.
-- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
+- **auth and central have no access-log setting.** They always log every request (`full`), and there is no environment
+  variable or console field to change that: their lines are few, and they are where an investigation of a login or an
+  admin change ends up. A successful outbound call is `DEBUG` below 500 ms, as described further down.
+- **The edge** is the only service whose access log is set, and it is set **in central, per edge**: in the admin console
+  (an edge's page, section "Access log") or with `PUT /configuration/edges/access-log?edgeId=...` (the body is described
+  in `central/open-api/central.yaml`; `{}` removes the policy). There is no environment variable for it, and no value in
+  the edge's own configuration. A fresh edge, or one that has never reached central, uses the built-in defaults:
+  `mode` `off`, `slowMillis` 500, `successSampleRate` 0.05. A policy field that is absent means that default.
+- `mode` `full`: every request.
+- `mode` `sampled`: a request is always logged when its status is 400 or above, when an error was recorded against it,
+  or when it took `slowMillis` or longer. Other requests are logged for `successSampleRate` (one in 20 by default) of
+  traces. The choice is a hash of the trace id, so every hop of a trace (edge, auth, central) keeps or drops its lines
+  together, and a sampled trace is complete. A request that has no trace id is sampled at random.
+- `mode` `off` (the edge's default, because its successful request lines are most of its log and the `http_server_*`
+  metrics have them): only requests that failed (400 and above, or an error) and slow ones.
+- The policy reaches a running edge on its next configuration sync (at most the refresh interval, 5 minutes by default).
+  The edge keeps the last policy it received while central is unreachable. Central refuses an invalid policy with `400`;
+  an edge ignores one it cannot validate (a central newer or older than the edge) and keeps what it had. Removing the
+  policy returns the edge to the defaults above. It is independent of the overload policy, which is stored and served
+  the same way but keeps an environment base because the outbound guard has to protect the process before the first sync.
+- `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value
+  left in a compose file or a Helm `env` block is ignored, and an edge that relied on one is back to `off` until a policy
+  is set for it. `LOG_LEVEL` is separate and stays an environment setting.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
 error ratios and latency do not change; only a search for one successful request in the log can come up empty.
 
 `send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
-upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+upstreams) are `DEBUG` when the call was faster than the slow threshold (`slowMillis`, 500 ms unless an edge's policy sets it), so they are not written at the default
 `LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
 `debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
-is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+is external: its success is `INFO` whatever the access-log mode is, because that line is the record that a message was
 handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
-
-Invalid values fall back to the defaults.
 
 ### Configuration reference
 
@@ -1105,11 +1117,10 @@ Invalid values fall back to the defaults.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
-| `HTTP_ACCESS_LOG` | `off` on edge, `full` on central (auth always logs everything) | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
-| `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
-| `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
+
+The access log has no variables: auth and central always log every request, and an edge's is set in central (see [Access log](#access-log)).
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
 OpenBao, not in environment variables.
