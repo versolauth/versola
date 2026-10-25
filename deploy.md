@@ -1073,13 +1073,14 @@ Every service writes one `receive-http` line per inbound request and one `send-h
 the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
 profile under load, almost all of it for successful requests.
 
-- `HTTP_ACCESS_LOG=full` (default): every request, as before.
+- `HTTP_ACCESS_LOG=full` (default of auth and central): every request, as before.
 - `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
   against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
   `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
   (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
   trace id is sampled at random.
 - `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
+- The default when `HTTP_ACCESS_LOG` is unset depends on the service: the **edge starts at `off`** (its successful request lines are most of its log and the `http_server_*` metrics have them; failures and slow requests are still logged), auth and central at `full`. Set `HTTP_ACCESS_LOG=full` or `sampled` on an edge to log more.
 - auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
@@ -1104,7 +1105,7 @@ Invalid values fall back to the defaults.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
-| `HTTP_ACCESS_LOG` | `full` | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
+| `HTTP_ACCESS_LOG` | `off` on edge, `full` on central (auth always logs everything) | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
 | `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
 | `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
