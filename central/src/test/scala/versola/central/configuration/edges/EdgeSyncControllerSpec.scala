@@ -39,7 +39,7 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, InboundPolicy, Observability, OverloadPolicy}
 import versola.util.{Base64, JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -322,10 +322,12 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("full"))
+
   private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
   private val syncResources =
-    List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "auth-request-presets", "server-metadata")
+    List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "access-log", "auth-request-presets", "server-metadata")
 
   private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString
@@ -456,6 +458,24 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for body <- decodeBody[EdgeOverloadSyncResponse](response)
           yield assertTrue(body.overloadPolicy.isEmpty),
+      ),
+      testCase(
+        description = "access-log: the calling edge's own policy",
+        request = Request.get(sync("access-log")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord.copy(accessLogPolicy = Some(accessLogPolicy)))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeAccessLogSyncResponse](response)
+          yield assertTrue(body.accessLogPolicy.contains(accessLogPolicy)),
+      ),
+      testCase(
+        description = "access-log: an edge with no policy set is served null",
+        request = Request.get(sync("access-log")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord)),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeAccessLogSyncResponse](response)
+          yield assertTrue(body.accessLogPolicy.isEmpty),
       ),
       testCase(
         description = "jwks: the public document",

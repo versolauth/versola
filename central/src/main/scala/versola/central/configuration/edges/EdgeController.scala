@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Controller, OverloadPolicy, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
@@ -26,6 +26,7 @@ object EdgeController extends Controller:
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
     setEdgeOverloadEndpoint,
+    setEdgeAccessLogEndpoint,
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
@@ -46,6 +47,7 @@ object EdgeController extends Controller:
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
               overloadPolicy = edge.overloadPolicy,
+              accessLogPolicy = edge.accessLogPolicy,
               groupId = edge.groupId,
               identityChainEndsAt = chainEnds.get(edge.id),
             ),
@@ -188,6 +190,27 @@ object EdgeController extends Controller:
       yield response
     }
 
+  /** Sets which requests the named edge writes a log line for (see [[AccessLogPolicy]]); an empty policy returns it to its
+    * deployment's own values. Refused with `400` and the first thing wrong when the policy does not validate, for the same
+    * reason as [[setEdgeOverloadEndpoint]]. Independent of the overload policy.
+    */
+  val setEdgeAccessLogEndpoint =
+    Method.PUT / "configuration" / "edges" / "access-log" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[EdgeService]
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        policy <- request.bodyAs[AccessLogPolicy]
+        edge <- service.find(edgeId)
+        response <-
+          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.setAccessLogPolicy(edgeId, policy).as(Response.status(Status.NoContent)).catchSome:
+              case InvalidAccessLogPolicy(message) =>
+                ZIO.succeed(Response.json(AccessLogPolicyError(message).toJson).status(Status.BadRequest))
+      yield response
+    }
+
   /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
     * certificate that names an edge (`urn:versola:edge:<id>`) belongs to one central still
     * knows: the certificate's own validity cannot be shortened from here, so deleting an edge
@@ -236,6 +259,7 @@ case class EdgeResponse(
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
+    accessLogPolicy: Option[AccessLogPolicy] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
     identityChainEndsAt: Option[Instant] = None,
@@ -251,6 +275,14 @@ case class EdgeDpopSyncResponse(
 
 case class EdgeOverloadSyncResponse(
     overloadPolicy: Option[OverloadPolicy],
+) derives Schema, JsonCodec
+
+case class EdgeAccessLogSyncResponse(
+    accessLogPolicy: Option[AccessLogPolicy],
+) derives Schema, JsonCodec
+
+case class AccessLogPolicyError(
+    error: String,
 ) derives Schema, JsonCodec
 
 case class OverloadPolicyError(

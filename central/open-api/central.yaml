@@ -18,7 +18,7 @@ info:
       and `POST /users/registrations`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`), `POST /edge/clients/edge-certificate/sign`
+      `auth-request-presets`, `server-metadata`, `overload`, `access-log`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener),
       the surface an edge reads with the key it was registered with. It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
@@ -2395,6 +2395,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OverloadPolicyError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
+  /configuration/edges/access-log:
+    put:
+      tags: [Edges]
+      summary: Set which requests an edge writes a log line for
+      description: |
+        The access-log policy of one edge: whether it writes a `receive-http` line for every request, for a sample of the
+        successful ones, or only for failures and slow requests. The body replaces the stored policy as a whole; an empty
+        object `{}` removes it and returns the edge to the values of its own deployment. Independent of the edge's overload
+        policy.
+
+        Every field is optional and means "what the edge starts with" when absent, so a policy is a patch over the
+        deployment: the values of the edge's own environment (`HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS`,
+        `HTTP_ACCESS_LOG_SAMPLE_RATE`) when set, the edge's defaults otherwise (`off`, 500 ms, 0.05). The edge picks the change up
+        on its next configuration sync and, while central is unreachable, keeps the last policy it received (the sync runs
+        every configuration refresh interval, 5 minutes by default).
+
+        A request that failed (status 400 or above, or an error was recorded) is logged in every mode. `auth` and `central`
+        have no such setting: they always log every request.
+        A value outside the documented range answers `400` with the first problem found.
+      operationId: setEdgeAccessLogPolicy
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessLogPolicy'
+      responses:
+        '204':
+          description: Policy recorded.
+        '400':
+          description: The policy does not validate; the body names the first field that is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessLogPolicyError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -5885,6 +5927,9 @@ components:
         overloadPolicy:
           $ref: '#/components/schemas/OverloadPolicy'
           description: The edge's overload policy; absent when none is set.
+        accessLogPolicy:
+          $ref: '#/components/schemas/AccessLogPolicy'
+          description: The edge's access-log policy; absent when none is set.
         groupId:
           type: string
           description: The group of edges this edge belongs to.
@@ -6058,6 +6103,35 @@ components:
               minimum: 0
               maximum: 1000
               description: Retries per second always allowed, whatever the ratio. Default 5.
+    AccessLogPolicy:
+      type: object
+      description: |
+        A patch over the access-log settings an edge starts with; every field is optional.
+      properties:
+        mode:
+          type: string
+          enum: [full, sampled, off]
+          description: |
+            `full` logs every request. `sampled` logs failures, slow requests and a share of the rest
+            (`successSampleRate`, chosen per trace so every hop of a trace agrees). `off` logs failures and slow requests only.
+            The edge's default is `off`.
+        slowMillis:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 600000
+          description: A request at least this slow is always logged. Default 500.
+        successSampleRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
+    AccessLogPolicyError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     OverloadPolicyError:
       type: object
       properties:

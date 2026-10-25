@@ -1,7 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
-import versola.util.http.OverloadPolicy
+import versola.util.http.{AccessLogPolicy, OverloadPolicy}
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
@@ -23,12 +23,19 @@ trait EdgeService:
     * [[InvalidOverloadPolicy]] when it does not validate. */
   def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit]
 
+  /** Stores the policy after checking it ([[AccessLogPolicy.validate]]); an empty policy is stored as none. Fails with
+    * [[InvalidAccessLogPolicy]] when it does not validate. */
+  def setAccessLogPolicy(id: EdgeId, policy: AccessLogPolicy): Task[Unit]
+
   def deleteEdge(id: EdgeId): Task[Unit]
 
   def sync(): Task[Unit]
 
 /** An overload policy that fails validation; `message` names the field and is meant for the operator. */
 final case class InvalidOverloadPolicy(message: String) extends RuntimeException(message)
+
+/** An access-log policy that fails validation; `message` names the field and is meant for the operator. */
+final case class InvalidAccessLogPolicy(message: String) extends RuntimeException(message)
 
 object EdgeService:
   def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
@@ -72,6 +79,10 @@ object EdgeService:
     override def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit] =
       ZIO.fromEither(policy.validate).mapError(InvalidOverloadPolicy(_)) *>
         edgeRepository.setOverloadPolicy(id, Option.when(policy != OverloadPolicy.empty)(policy))
+
+    override def setAccessLogPolicy(id: EdgeId, policy: AccessLogPolicy): Task[Unit] =
+      ZIO.fromEither(policy.validate).mapError(InvalidAccessLogPolicy(_)) *>
+        edgeRepository.setAccessLogPolicy(id, Option.when(policy != AccessLogPolicy.empty)(policy))
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)

@@ -3,7 +3,7 @@ package versola.central.configuration.edges
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
-import versola.util.http.{AdaptivePolicy, BreakerPolicy, InboundPolicy, OutboundPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, AdaptivePolicy, BreakerPolicy, InboundPolicy, OutboundPolicy, OverloadPolicy}
 import zio.json.ast.Json
 import zio.test.*
 import zio.{Scope, ZIO}
@@ -114,6 +114,32 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           other.exists(_.overloadPolicy.isEmpty),
           all.find(_.id == edgeId).flatMap(_.overloadPolicy) == Some(policy),
           cleared.exists(_.overloadPolicy.isEmpty),
+        )
+      },
+      test(
+        "a new edge has no access-log policy, setAccessLogPolicy stores one for the named edge only, independent of the overload policy, and None clears it",
+      ) {
+        val policy = AccessLogPolicy(mode = Some("sampled"), slowMillis = Some(250), successSampleRate = Some(0.2))
+        val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64))))
+        for
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          fresh <- env.repository.find(edgeId)
+          _ <- env.repository.setOverloadPolicy(edgeId, Some(overload))
+          _ <- env.repository.setAccessLogPolicy(edgeId, Some(policy))
+          set <- env.repository.find(edgeId)
+          other <- env.repository.find(edge2Id)
+          all <- env.repository.getAll
+          _ <- env.repository.setAccessLogPolicy(edgeId, None)
+          cleared <- env.repository.find(edgeId)
+        yield assertTrue(
+          fresh.exists(_.accessLogPolicy.isEmpty),
+          set.flatMap(_.accessLogPolicy) == Some(policy),
+          set.flatMap(_.overloadPolicy) == Some(overload),
+          other.exists(_.accessLogPolicy.isEmpty),
+          all.find(_.id == edgeId).flatMap(_.accessLogPolicy) == Some(policy),
+          cleared.exists(_.accessLogPolicy.isEmpty),
+          cleared.flatMap(_.overloadPolicy) == Some(overload),
         )
       },
       test("setRequireDpopNonce changes only the named edge") {

@@ -6,7 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, InboundPolicy, Observability, OverloadPolicy}
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -150,6 +150,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
 
   private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
@@ -334,5 +336,43 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "setting a valid access-log policy returns 204 and records it for the named edge",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "access-log").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(accessLogPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setAccessLogPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setAccessLogPolicy.calls == List((edgeId, accessLogPolicy)))),
+    ),
+    controllerTestCase(
+      description = "an access-log policy the service refuses is answered 400 with what is wrong, not 204",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "access-log").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(accessLogPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.find.succeedsWith(Some(edgeRecord)) *> service.setAccessLogPolicy.failsWith(
+          InvalidAccessLogPolicy("successSampleRate must be between 0.0 and 1.0"),
+        ),
+      verify = (response, _) =>
+        for body <- response.body.asJson[AccessLogPolicyError]
+        yield assertTrue(body.error.contains("successSampleRate")),
+    ),
+    controllerTestCase(
+      description = "setting the access-log policy of an unregistered edge returns 404 and writes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "access-log").addQueryParam("edgeId", "edge-missing"),
+        body = Body.fromString(accessLogPolicy.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.find.succeedsWith(None) *> service.setAccessLogPolicy.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setAccessLogPolicy.calls.isEmpty)),
     ),
   )

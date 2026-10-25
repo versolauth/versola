@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.{InboundPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy}
 import versola.util.{ReloadingCache, RsaKeyPair}
 import zio.json.ast.Json
 import zio.test.*
@@ -114,6 +114,33 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidOverloadPolicy] && e.getMessage.contains("inbound.maxInFlight"))
           case _ => false,
         env.repository.setOverloadPolicy.calls.isEmpty,
+      )
+    },
+    test("setAccessLogPolicy records a valid policy against the named edge") {
+      val env = Env()
+      val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+      for
+        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
+        _ <- env.service.setAccessLogPolicy(edgeId, policy)
+      yield assertTrue(env.repository.setAccessLogPolicy.calls == List((edgeId, Some(policy))))
+    },
+    test("an empty access-log policy is stored as none, returning the edge to its deployment's values") {
+      val env = Env()
+      for
+        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
+        _ <- env.service.setAccessLogPolicy(edgeId, AccessLogPolicy.empty)
+      yield assertTrue(env.repository.setAccessLogPolicy.calls == List((edgeId, None)))
+    },
+    test("an access-log policy that does not validate is refused with the field named, and nothing is written") {
+      val env = Env()
+      for
+        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
+        result <- env.service.setAccessLogPolicy(edgeId, AccessLogPolicy(successSampleRate = Some(1.5))).exit
+      yield assertTrue(
+        result match
+          case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidAccessLogPolicy] && e.getMessage.contains("successSampleRate"))
+          case _ => false,
+        env.repository.setAccessLogPolicy.calls.isEmpty,
       )
     },
     test("getAllEdges returns edges from cache") {

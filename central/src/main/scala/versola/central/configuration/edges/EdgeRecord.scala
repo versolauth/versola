@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import com.nimbusds.jose.jwk.RSAKey
 import versola.util.JWT
-import versola.util.http.OverloadPolicy
+import versola.util.http.{AccessLogPolicy, OverloadPolicy}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 
@@ -29,6 +29,9 @@ import java.security.interfaces.RSAPublicKey
  *
  * `overloadPolicy` is what the edge does when asked for more than it can do: a patch over the settings the edge starts
  * with, `None` meaning none set (the deployment's own values). See [[OverloadPolicy]].
+ *
+ * `accessLogPolicy` is which of its requests the edge writes a log line for, set the same way and independently: a patch
+ * over `HTTP_ACCESS_LOG*`, `None` meaning none set. See [[AccessLogPolicy]].
  */
 case class EdgeRecord(
     id: EdgeId,
@@ -36,6 +39,7 @@ case class EdgeRecord(
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
+    accessLogPolicy: Option[AccessLogPolicy] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
 ):
