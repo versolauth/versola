@@ -264,18 +264,9 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
       assertTrue(
         antifraud.size == 5,
-        injected(
-          "GET",
-          "/antifraud/lists",
-        ) == Vector((InjectTarget.query, "adminSubject", "token.sub"), (InjectTarget.query, "adminTenant", "token.tenant_id")),
-        injected("GET", "/antifraud/lists/audit").forall(_._1 == InjectTarget.query),
-        injected(
-          "POST",
-          "/antifraud/lists",
-        ) == Vector((InjectTarget.body, "adminSubject", "token.sub"), (InjectTarget.body, "adminTenant", "token.tenant_id")),
-        injected("POST", "/antifraud/lists/preview").forall(_._1 == InjectTarget.body),
-        injected("DELETE", "/antifraud/lists").forall(_._1 == InjectTarget.body),
-        antifraud.forall((method, path) => injected(method, path).size == 2),
+        antifraud.forall((method, path) =>
+          injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        ),
         injected("GET", "/users").isEmpty,
       )
     },

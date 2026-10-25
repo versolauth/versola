@@ -2442,8 +2442,8 @@ paths:
       tags: [Antifraud lists]
       summary: List entries
       description: |
-        Entries of the lists, newest first. An operator sees every entry (narrow with `tenantId` or `global`); an admin of
-        another tenant sees that tenant's entries only, whatever they ask for.
+        Entries of the lists, newest first. Narrow with `tenantId` (one tenant's) or `global` (the entries that apply to
+        every tenant).
       operationId: listAntifraudListEntries
       parameters:
         - name: listType
@@ -2467,8 +2467,7 @@ paths:
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
-        - $ref: '#/components/parameters/AdminSubjectQuery'
-        - $ref: '#/components/parameters/AdminTenantQuery'
+        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The entries.
@@ -2476,11 +2475,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudListEntriesResponse' }
         '400':
-          description: A parameter is not valid, or `tenantId` and `global` were both given.
+          description: A parameter is not valid (including a missing `userId`), or `tenantId` and `global` were both given.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: The request names no admin (`adminSubject` and `adminTenant`, which edge sets from the verified token).
     post:
       tags: [Antifraud lists]
       summary: Add an entry
@@ -2489,8 +2486,7 @@ paths:
         tenant (the response is then that entry, with its own `id`). This instance of auth applies it at once, the others
         within `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
 
-        Only an operator may add a global entry (no `tenantId`) or another tenant's. Auth refuses (`400`, with the
-        reason as text) a value that does not fit its kind; an `allow` for anything but an exact subject; an entry that
+        An entry with no `tenantId` applies to every tenant. Auth refuses (`400`, with the reason as text) a value that does not fit its kind; an `allow` for anything but an exact subject; an entry that
         names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
         an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
         24 hours of events: add it as `shadow` first.
@@ -2516,7 +2512,7 @@ paths:
       tags: [Antifraud lists]
       summary: Remove an entry
       operationId: deleteAntifraudListEntry
-      description: The entry is named in the body, where edge adds the caller of a request that is not a `GET`.
+      description: The entry is named in the body, where edge adds `userId` for a request that is not a `GET`.
       requestBody:
         required: true
         content:
@@ -2525,9 +2521,8 @@ paths:
               type: object
               properties:
                 id: { type: string, format: uuid }
-                adminSubject: { $ref: '#/components/schemas/AdminSubject' }
-                adminTenant: { $ref: '#/components/schemas/AdminTenant' }
-              required: [id, adminSubject, adminTenant]
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [id, userId]
       responses:
         '204':
           description: Removed and recorded in the audit.
@@ -2535,8 +2530,6 @@ paths:
           description: "`id` is missing from the body or not a UUID."
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: No admin identity, or the entry is not one the admin may change.
         '404':
           description: There is no such entry.
 
@@ -2570,14 +2563,12 @@ paths:
           description: The body is not valid, or auth refused the entry.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: No admin identity, or the admin may not add that entry.
 
   /antifraud/lists/audit:
     get:
       tags: [Antifraud lists]
       summary: Changes of the lists
-      description: Who added, removed or let expire which entry, latest first. Operators only.
+      description: Who added, removed or let expire which entry, latest first.
       operationId: listAntifraudListAudit
       parameters:
         - name: entryId
@@ -2587,8 +2578,7 @@ paths:
           in: query
           description: 1 to 500. Defaults to 100.
           schema: { type: integer, minimum: 1, maximum: 500 }
-        - $ref: '#/components/parameters/AdminSubjectQuery'
-        - $ref: '#/components/parameters/AdminTenantQuery'
+        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The records.
@@ -2599,8 +2589,6 @@ paths:
           description: A parameter is not valid.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: No admin identity, or the admin is not an operator.
 
   # ─────────────────────────────── Service ───────────────────────────────
   /service/users/outbox/flush:
@@ -2671,24 +2659,15 @@ components:
       description: The credentials are missing, malformed or not accepted.
 
   parameters:
-    AdminSubjectQuery:
-      name: adminSubject
+    UserIdQuery:
+      name: userId
       in: query
       required: true
       description: |
-        The admin's subject, set by edge from the verified access token (the antifraud endpoints are registered with an
-        inject rule that overwrites what the caller sent). It names the actor in the audit. A request without it is `403`.
-        Requests that are not a `GET` carry it as the body field of the same name.
-      schema: { $ref: '#/components/schemas/AdminSubject' }
-    AdminTenantQuery:
-      name: adminTenant
-      in: query
-      required: true
-      description: |
-        The tenant of the admin's token, set by edge. `default`, the tenant that carries central's own roles, makes the
-        admin an operator (global entries, other tenants' entries, the audit); any other tenant limits them to its own entries.
-        Requests that are not a `GET` carry it as the body field of the same name.
-      schema: { $ref: '#/components/schemas/AdminTenant' }
+        The admin who asks, set by edge from the verified access token (the antifraud endpoints are registered with an
+        inject rule that overwrites what the caller sent); auth records it as who made a change. Requests that are not a
+        `GET` carry it as the body field of the same name. A request without it is `400`.
+      schema: { $ref: '#/components/schemas/UserId' }
     TenantIdQuery:
       name: tenantId
       in: query
@@ -6273,12 +6252,6 @@ components:
           type: string
           description: The base64url-encoded PKCS#8 private key. Returned only once.
       required: [keyId, privateKey]
-    AdminSubject:
-      type: string
-      description: Set by edge from the verified token; see the `adminSubject` query parameter.
-    AdminTenant:
-      type: string
-      description: Set by edge from the verified token; see the `adminTenant` query parameter.
     AntifraudListType:
       type: string
       enum: [deny, allow, watch, fake]
@@ -6317,9 +6290,8 @@ components:
         shadow:
           type: boolean
           description: Matched and counted, enforces nothing (the fired rule is `shadow_list:<value type>`). Defaults to `false`.
-        adminSubject: { $ref: '#/components/schemas/AdminSubject' }
-        adminTenant: { $ref: '#/components/schemas/AdminTenant' }
-      required: [listType, valueType, adminSubject, adminTenant]
+        userId: { $ref: '#/components/schemas/UserId' }
+      required: [listType, valueType, userId]
     AntifraudListEntry:
       type: object
       properties:

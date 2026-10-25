@@ -517,18 +517,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   instance still picks them up within a minute). The endpoints are new central resource endpoints with two permissions,
   `antifraud:read` and `antifraud:manage`: every start registers them on the `central` resource and gives them to `oauth-admin`
   (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
-  else changes for a deployment that is upgraded. Edge tells central who the admin is (inject rules `adminSubject` and `adminTenant`,
-  query parameters of a `GET` and body fields of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`): an admin whose token is of the `default` tenant (the one that carries
-  central's roles) is an **operator** and may change global entries, other tenants' entries, and read the audit; an admin of any other tenant
-  (central grants these permissions in the default tenant only; this is how a tenant's own admin would be limited) is limited to that tenant's entries. A call to central with the resource secret but
-  no such parameters is `403`, so the audit always names a person. A `phone_hash` entry is made from a phone number (`phone`); the
+  else changes for a deployment that is upgraded. Edge tells central who the admin is (an inject rule for `userId`, a query parameter of a `GET` and a body field of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). There is no per-tenant admin: whoever holds the permissions may change every entry, global ones included. A call to central with the resource secret but no `userId` is `400`. A `phone_hash` entry is made from a phone number (`phone`); the
   number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
   `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
   `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
-  `shadow_list:<type>` in the fired rules). Only an operator may change global entries. **`fake` is for confirmed fraud only:**
+  `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
   `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first

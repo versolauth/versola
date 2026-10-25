@@ -105,12 +105,6 @@ case class NewListEntry(
     shadow: Boolean,
 )
 
-/** Who changes the lists. An operator (no tenant) may change any entry, including global ones, which apply to every
-  * tenant; a tenant's admin only the entries of their own tenant. The HTTP endpoint maps the caller to this. */
-case class ListActor(name: String, tenantId: Option[TenantId]):
-  def isOperator: Boolean = tenantId.isEmpty
-  def mayChange(entryTenant: Option[TenantId]): Boolean = isOperator || (entryTenant.isDefined && entryTenant == tenantId)
-
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
   * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
 case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec

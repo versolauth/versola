@@ -1,6 +1,7 @@
 package versola.central.antifraud
 
 import versola.central.configuration.tenants.TenantId
+import versola.central.users.UserId
 import versola.util.{JsonStringSchema, PageLimit, PageOffset}
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
@@ -25,21 +26,9 @@ object AntifraudValueType:
 enum AntifraudListAction derives JsonCodec:
   case create, delete, expire
 
-/** An entry to add, as auth takes it. Give `value`, or for a `phone_hash` entry `phone` instead (auth hashes it). */
-case class NewListEntry(
-    listType: AntifraudListType,
-    valueType: AntifraudValueType,
-    value: Option[String],
-    phone: Option[String],
-    tenantId: Option[TenantId],
-    expiresAt: Option[Instant],
-    reason: Option[String],
-    source: Option[String],
-    shadow: Option[Boolean],
-) derives JsonCodec, Schema
-
-/** A request to add or preview an entry: the entry, and who is calling, which edge adds from the verified token
-  * (see [[AntifraudListController]]). */
+/** A request to add or preview an entry. Give `value`, or for a `phone_hash` entry `phone` instead (auth hashes it).
+  * `userId` is the admin, which edge puts in from the verified token (see [[AntifraudListController]]); it is what auth
+  * records as who added the entry. The same body goes to auth. */
 case class NewListEntryRequest(
     listType: AntifraudListType,
     valueType: AntifraudValueType,
@@ -50,36 +39,10 @@ case class NewListEntryRequest(
     reason: Option[String],
     source: Option[String],
     shadow: Option[Boolean],
-    adminSubject: Option[String],
-    adminTenant: Option[TenantId],
-) derives JsonCodec, Schema:
-  def entry: NewListEntry = NewListEntry(
-    listType = listType,
-    valueType = valueType,
-    value = value,
-    phone = phone,
-    tenantId = tenantId,
-    expiresAt = expiresAt,
-    reason = reason,
-    source = source,
-    shadow = shadow,
-  )
+    userId: UserId,
+) derives JsonCodec, Schema
 
-  def caller: AdminCaller = AdminCaller(subject = adminSubject, tenant = adminTenant)
-
-case class DeleteListEntryRequest(
-    id: UUID,
-    adminSubject: Option[String],
-    adminTenant: Option[TenantId],
-) derives JsonCodec, Schema:
-  def caller: AdminCaller = AdminCaller(subject = adminSubject, tenant = adminTenant)
-
-/** Who edge says is calling: the subject and tenant of the verified token. Either is missing when the request did not
-  * come through edge. */
-case class AdminCaller(subject: Option[String], tenant: Option[TenantId])
-
-/** The caller as auth takes it: an operator has no tenant. */
-case class AntifraudListActor(name: String, tenantId: Option[TenantId]) derives JsonCodec
+case class DeleteListEntryRequest(id: UUID, userId: UserId) derives JsonCodec, Schema
 
 /** What a listing is narrowed to; `global` is the global entries only. */
 case class ListEntriesQuery(

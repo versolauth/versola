@@ -989,17 +989,12 @@ object BootstrapService:
     "GET" -> "/antifraud/lists/audit",
   )
 
-  /** What central's antifraud endpoints are told of the admin, from the token edge has verified (not from the caller:
-    * edge overwrites a parameter or field of the same name). Central cannot tell who an admin is otherwise, and the lists'
-    * audit and who may change a global entry depend on it (`AntifraudListController`). As for the account endpoints
-    * ([[accountCallerInjects]]): query parameters for a `GET`, body fields for the rest. */
+  /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
+    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
+    * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
     if path.startsWith("/antifraud/") then
-      val target = if method == "GET" then InjectTarget.query else InjectTarget.body
-      Vector(
-        InjectRule(target, "adminSubject", "token.sub"),
-        InjectRule(target, "adminTenant", "token.tenant_id"),
-      )
+      Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
     else Vector.empty
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =

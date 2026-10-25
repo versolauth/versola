@@ -2,7 +2,8 @@ package versola.antifraud
 
 import versola.oauth.client.model.TenantId
 import versola.user.authorizeInternal
-import versola.util.http.{BadRequest, Controller, Observability}
+import versola.user.model.UserId
+import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, PageLimit, PageOffset, Phone}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -11,9 +12,10 @@ import zio.json.{EncoderOps, JsonCodec}
 import java.time.Instant
 import java.util.UUID
 
-/** The internal API of [[AntifraudLists]], called by central, which owns the admin API and decides who the caller is
-  * ([[ListActorPayload]]): auth only trusts the internal token. The rules (who may change what, which values are valid)
-  * are the service's; this maps its failures to 400 and 403, a missing entry to 404.
+/** The internal API of [[AntifraudLists]], called by central, which owns the admin API: auth only trusts the internal
+  * token. `userId` is the admin who asked, which edge put in central's request from the verified token; it is what
+  * `created_by` and the audit record. The rules (which values are valid) are the service's; this maps its failures to 400,
+  * a missing entry to 404.
   */
 object AntifraudListController extends Controller:
   type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents
@@ -24,10 +26,10 @@ object AntifraudListController extends Controller:
     Method.POST / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        body <- request.bodyAs[CreateListEntryPayload]
+        body <- request.bodyAs[ListEntryPayload]
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
-          newEntry(body.entry).flatMap(lists.create(_, body.actor.toActor)).map(entry => Response.json(entry.toJson).status(Status.Created))
+          newEntry(body).flatMap(lists.create(_, body.userId.toString)).map(entry => Response.json(entry.toJson).status(Status.Created))
       yield response
     }
 
@@ -35,20 +37,19 @@ object AntifraudListController extends Controller:
     Method.POST / "antifraud" / "lists" / "preview" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        body <- request.bodyAs[CreateListEntryPayload]
+        body <- request.bodyAs[ListEntryPayload]
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
-          newEntry(body.entry).flatMap(lists.preview(_, body.actor.toActor)).map(preview => Response.json(preview.toJson))
+          newEntry(body).flatMap(lists.preview).map(preview => Response.json(preview.toJson))
       yield response
     }
 
-  /** `tenantId` narrows to one tenant, `global=true` to the global entries; a tenant's admin sees their own either way. */
-  /** `tenantId` narrows to one tenant, `global=true` to the global entries; a tenant's admin sees their own either way. */
+  /** `tenantId` narrows to one tenant, `global=true` to the global entries. */
   val listEndpoint =
     Method.GET / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        actor <- actorOf(request)
+        _ <- request.queryZIO[UserId]("userId")
         listType <- request.queryZIO[Option[AntifraudListType]]("listType")
         valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
         tenant <- request.queryZIO[Option[TenantId]]("tenantId")
@@ -63,7 +64,7 @@ object AntifraudListController extends Controller:
         )
         response <- guarded(
           ZIO.fail(InvalidListEntry("tenantId and global exclude each other")).when(global.contains(true) && tenant.isDefined) *>
-            lists.list(filter, actor, limit.getOrElse(PageLimit.Default), offset.getOrElse(PageOffset.First)).map(entries =>
+            lists.list(filter, limit.getOrElse(PageLimit.Default), offset.getOrElse(PageOffset.First)).map(entries =>
               Response.json(entries.toJson),
             ),
         )
@@ -74,11 +75,11 @@ object AntifraudListController extends Controller:
     Method.DELETE / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        actor <- actorOf(request)
+        userId <- request.queryZIO[UserId]("userId")
         id <- request.queryZIO[UUID]("id")
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
-          lists.delete(id, actor).flatMap:
+          lists.delete(id, userId.toString).flatMap:
             case true => ZIO.succeed(Response.status(Status.NoContent))
             case false => Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
       yield response
@@ -89,11 +90,11 @@ object AntifraudListController extends Controller:
     Method.GET / "antifraud" / "lists" / "audit" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        actor <- actorOf(request)
+        _ <- request.queryZIO[UserId]("userId")
         entryId <- request.queryZIO[Option[UUID]]("entryId")
         limit <- request.queryZIO[Option[PageLimit]]("limit")
         lists <- ZIO.service[AntifraudLists]
-        response <- guarded(lists.audit(entryId, actor, limit.getOrElse(PageLimit.Default)).map(records => Response.json(records.toJson)))
+        response <- guarded(lists.audit(entryId, limit.getOrElse(PageLimit.Default)).map(records => Response.json(records.toJson)))
       yield response
     }
 
@@ -101,7 +102,6 @@ object AntifraudListController extends Controller:
     effect.catchSome:
       case e: InvalidListEntry =>
         Observability.setError("invalid_list_entry", Some(e.getMessage)).as(Response.text(e.getMessage).status(Status.BadRequest))
-      case e: ListForbidden => Observability.setError("list_forbidden", Some(e.getMessage)).as(Response.text(e.getMessage).status(Status.Forbidden))
 
   /** A phone is hashed here, as an event's destination is, so that a `phone_hash` entry can be made from the number. */
   private def newEntry(entry: ListEntryPayload): ZIO[AntifraudEvents, Throwable, NewListEntry] =
@@ -124,16 +124,6 @@ object AntifraudListController extends Controller:
       shadow = entry.shadow.getOrElse(false),
     )
 
-  /** Who central says is calling: the admin's name and, unless they are an operator, their tenant. */
-  private def actorOf(request: Request): ZIO[Any, Throwable, ListActor] =
-    for
-      name <- request.queryZIO[String]("actor").filterOrFail(_.nonEmpty)(BadRequest("actor is required"))
-      tenantId <- request.queryZIO[Option[TenantId]]("actorTenantId")
-    yield ListActor(name = name, tenantId = tenantId)
-
-  case class ListActorPayload(name: String, tenantId: Option[TenantId]) derives JsonCodec:
-    def toActor: ListActor = ListActor(name = name, tenantId = tenantId)
-
   /** `value` is what is matched (for a `phone_hash` the hash); `phone` replaces it for a `phone_hash`, as a number. */
   case class ListEntryPayload(
       listType: AntifraudListType,
@@ -145,6 +135,5 @@ object AntifraudListController extends Controller:
       reason: Option[String],
       source: Option[String],
       shadow: Option[Boolean],
+      userId: UserId,
   ) derives JsonCodec
-
-  case class CreateListEntryPayload(entry: ListEntryPayload, actor: ListActorPayload) derives JsonCodec

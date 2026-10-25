@@ -21,6 +21,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestEnvConfig.coreConfig
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
   private val tenant = TenantId("tenant-a")
+  private val userId = "00000000-0000-0000-0000-0000000000f1"
   private val entryId = UUID.fromString("00000000-0000-0000-0000-0000000000e1")
   private val base = URL.empty / "antifraud" / "lists"
 
@@ -70,10 +71,13 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       response <- client.batched(signed)
     yield response
 
-  private def createBody(entry: String, actor: String = """{"name":"alice","tenantId":"tenant-a"}""") =
-    Body.fromString(s"""{"entry":$entry,"actor":$actor}""")
+  /** The entry as central sends it: the entry's fields and `userId`. */
+  private def entryBody(entry: String) = Body.fromString(entry.dropRight(1) + s""","userId":"$userId"}""")
 
   private val prefixEntry = """{"listType":"deny","valueType":"prefix","value":"4915","tenantId":"tenant-a","reason":"sms pumping"}"""
+
+  private def withUser(params: (String, String)*) =
+    base.addQueryParams(QueryParams(("userId" -> userId), params*))
 
   def spec = suite("AntifraudListController")(
     test("a request without a token, or with one signed by another key, is 401 and reaches nothing") {
@@ -89,43 +93,36 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         anonymous <- client.batched(Request.get(base))
-        forged <- call(lists, Request.get(base.addQueryParam("actor", "alice")), wrongKey)
+        forged <- call(lists, Request.get(withUser()), wrongKey)
       yield assertTrue(anonymous.status == Status.Unauthorized, forged.status == Status.Unauthorized, lists.list.calls.isEmpty)
     },
-    test("POST creates the entry as the named actor and answers 201 with it") {
+    test("POST creates the entry as the user central names and answers 201 with it") {
       val lists = stub[AntifraudLists]
       for
         _ <- lists.create.succeedsWith(stored)
-        response <- call(lists, Request.post(base, createBody(prefixEntry)))
+        response <- call(lists, Request.post(base, entryBody(prefixEntry)))
         body <- response.body.asString
         (sent, actor) = lists.create.calls.head
       yield assertTrue(
         response.status == Status.Created,
         body.fromJson[AntifraudListEntry] == Right(stored),
-        actor == ListActor("alice", Some(tenant)),
+        actor == userId,
         sent.valueType == AntifraudValueType.prefix,
         sent.source == "manual",
         !sent.shadow,
       )
-    },
-    test("an operator is an actor without a tenant") {
-      val lists = stub[AntifraudLists]
-      for
-        _ <- lists.create.succeedsWith(stored)
-        _ <- call(lists, Request.post(base, createBody(prefixEntry, actor = """{"name":"root"}""")))
-      yield assertTrue(lists.create.calls.head._2 == ListActor("root", None))
     },
     test("a phone is hashed the way an event's destination is, and stored as the hash") {
       val lists = stub[AntifraudLists]
       val entry = """{"listType":"deny","valueType":"phone_hash","phone":"+77011234567"}"""
       for
         _ <- lists.create.succeedsWith(stored)
-        response <- call(lists, Request.post(base, createBody(entry)))
+        response <- call(lists, Request.post(base, entryBody(entry)))
       yield assertTrue(response.status == Status.Created, lists.create.calls.head._1.value == "hash:+77011234567")
     },
     test("a phone with a value, a phone for another kind of value, an invalid phone or neither are 400") {
       val lists = stub[AntifraudLists]
-      def status(entry: String) = call(lists, Request.post(base, createBody(entry))).map(_.status)
+      def status(entry: String) = call(lists, Request.post(base, entryBody(entry))).map(_.status)
       for
         both <- status("""{"listType":"deny","valueType":"phone_hash","phone":"+77011234567","value":"x"}""")
         wrongKind <- status("""{"listType":"deny","valueType":"prefix","phone":"+77011234567"}""")
@@ -139,62 +136,47 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         lists.create.calls.isEmpty,
       )
     },
-    test("a value the service refuses is 400 with its reason, and an actor it refuses is 403") {
+    test("a value the service refuses is 400 with its reason") {
       val lists = stub[AntifraudLists]
       for
         _ <- lists.create.failsWith(InvalidListEntry("not an IP address"))
-        invalid <- call(lists, Request.post(base, createBody(prefixEntry)))
+        invalid <- call(lists, Request.post(base, entryBody(prefixEntry)))
         reason <- invalid.body.asString
-        _ <- lists.create.failsWith(ListForbidden("only an operator may change a global entry"))
-        forbidden <- call(lists, Request.post(base, createBody(prefixEntry)))
-      yield assertTrue(invalid.status == Status.BadRequest, reason == "not an IP address", forbidden.status == Status.Forbidden)
+      yield assertTrue(invalid.status == Status.BadRequest, reason == "not an IP address")
     },
-    test("a malformed body, an unknown list type, and a missing actor are 400") {
+    test("a malformed body, an unknown list type, and a missing or malformed userId are 400") {
       val lists = stub[AntifraudLists]
       for
         malformed <- call(lists, Request.post(base, Body.fromString("{")))
-        unknown <- call(lists, Request.post(base, createBody("""{"listType":"nope","valueType":"ip","value":"1.1.1.1"}""")))
-        noActor <- call(lists, Request.get(base))
+        unknown <- call(lists, Request.post(base, entryBody("""{"listType":"nope","valueType":"ip","value":"1.1.1.1"}""")))
+        noUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry)))
+        badUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry.dropRight(1) + ""","userId":"nope"}""")))
+        noUser <- call(lists, Request.get(base))
+        badUser <- call(lists, Request.get(base.addQueryParam("userId", "nope")))
+        noUserOnDelete <- call(lists, Request.delete(base.addQueryParam("id", entryId.toString)))
       yield assertTrue(
-        malformed.status == Status.BadRequest,
-        unknown.status == Status.BadRequest,
-        noActor.status == Status.BadRequest,
+        List(malformed, unknown, noUserInBody, badUserInBody, noUser, badUser, noUserOnDelete).map(_.status) == List.fill(7)(Status.BadRequest),
         lists.create.calls.isEmpty,
         lists.list.calls.isEmpty,
+        lists.delete.calls.isEmpty,
       )
     },
-    test("POST preview answers the counts, and a tenant's admin may not preview a global entry") {
+    test("POST preview answers the counts") {
       val lists = stub[AntifraudLists]
       for
         _ <- lists.preview.succeedsWith(ListPreview(matched = Some(3), total = 1000))
-        ok <- call(lists, Request.post(base / "preview", createBody(prefixEntry)))
+        ok <- call(lists, Request.post(base / "preview", entryBody(prefixEntry)))
         body <- ok.body.asString
-        _ <- lists.preview.failsWith(ListForbidden("only an operator may change a global entry"))
-        forbidden <- call(lists, Request.post(base / "preview", createBody(prefixEntry)))
-      yield assertTrue(
-        ok.status == Status.Ok,
-        body.fromJson[ListPreview] == Right(ListPreview(matched = Some(3), total = 1000)),
-        forbidden.status == Status.Forbidden,
-      )
+      yield assertTrue(ok.status == Status.Ok, body.fromJson[ListPreview] == Right(ListPreview(matched = Some(3), total = 1000)))
     },
-    test("GET lists with the filter, the actor and the page") {
+    test("GET lists with the filter and the page") {
       val lists = stub[AntifraudLists]
-      val url = base.addQueryParams(
-        QueryParams(
-          "actor" -> "alice",
-          "actorTenantId" -> "tenant-a",
-          "listType" -> "deny",
-          "valueType" -> "prefix",
-          "tenantId" -> "tenant-a",
-          "limit" -> "10",
-          "offset" -> "20",
-        ),
-      )
+      val url = withUser("listType" -> "deny", "valueType" -> "prefix", "tenantId" -> "tenant-a", "limit" -> "10", "offset" -> "20")
       for
         _ <- lists.list.succeedsWith(List(stored))
         response <- call(lists, Request.get(url))
         body <- response.body.asString
-        (filter, actor, limit, offset) = lists.list.calls.head
+        (filter, limit, offset) = lists.list.calls.head
       yield assertTrue(
         response.status == Status.Ok,
         body.fromJson[List[AntifraudListEntry]] == Right(List(stored)),
@@ -203,16 +185,15 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           valueType = Some(AntifraudValueType.prefix),
           tenantId = Some(Some(tenant)),
         ),
-        actor == ListActor("alice", Some(tenant)),
         limit == 10,
         offset == 20,
       )
     },
     test(
-      "GET lists: global=true asks for the global entries; with a tenant, an unknown value, a bad number or flag, an empty actor or a page out of range it is 400, and the service is not called",
+      "GET lists: global=true asks for the global entries; with a tenant, an unknown value, a bad number or flag, or a page out of range it is 400",
     ) {
       val lists = stub[AntifraudLists]
-      def get(params: (String, String)*) = call(lists, Request.get(base.addQueryParams(QueryParams(("actor" -> "root"), params*))))
+      def get(params: (String, String)*) = call(lists, Request.get(withUser(params*)))
       for
         _ <- lists.list.succeedsWith(Nil)
         global <- get("global" -> "true")
@@ -220,46 +201,40 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         badType <- get("listType" -> "nope")
         notANumber <- get("limit" -> "many")
         notAFlag <- get("global" -> "maybe")
-        noActor <- call(lists, Request.get(base.addQueryParams(QueryParams("actor" -> ""))))
         zero <- get("limit" -> "0")
         huge <- get("limit" -> "501")
         negative <- get("offset" -> "-1")
       yield assertTrue(
         global.status == Status.Ok,
         lists.list.calls.head._1.tenantId == Some(None),
-        lists.list.calls.head._4 == 0,
-        lists.list.calls.head._3 == 100,
+        lists.list.calls.head._3 == 0,
+        lists.list.calls.head._2 == 100,
         both.status == Status.BadRequest,
         badType.status == Status.BadRequest,
         notANumber.status == Status.BadRequest,
         notAFlag.status == Status.BadRequest,
-        noActor.status == Status.BadRequest,
         List(zero, huge, negative).forall(_.status == Status.BadRequest),
         lists.list.calls.size == 1,
       )
     },
-    test("DELETE answers 204, 404 for an entry that is not there, 403 for one the actor may not change, 400 for a bad id") {
+    test("DELETE answers 204 as the named user, 404 for an entry that is not there, 400 for a bad id") {
       val lists = stub[AntifraudLists]
-      def delete(id: String) =
-        call(lists, Request.delete(base.addQueryParams(QueryParams("id" -> id, "actor" -> "alice", "actorTenantId" -> "tenant-a"))))
+      def delete(id: String) = call(lists, Request.delete(withUser("id" -> id)))
       for
         _ <- lists.delete.succeedsWith(true)
         gone <- delete(entryId.toString)
         _ <- lists.delete.succeedsWith(false)
         missing <- delete(entryId.toString)
-        _ <- lists.delete.failsWith(ListForbidden("not an entry of the actor's tenant"))
-        forbidden <- delete(entryId.toString)
         malformed <- delete("nope")
       yield assertTrue(
         gone.status == Status.NoContent,
         missing.status == Status.NotFound,
-        forbidden.status == Status.Forbidden,
         malformed.status == Status.BadRequest,
-        lists.delete.calls.size == 3,
-        lists.delete.calls.head == (entryId, ListActor("alice", Some(tenant))),
+        lists.delete.calls.size == 2,
+        lists.delete.calls.head == (entryId, userId),
       )
     },
-    test("GET audit answers the records for operators and 403 for anyone else") {
+    test("GET audit answers the records") {
       val lists = stub[AntifraudLists]
       val record = AntifraudListAudit(
         id = UUID.fromString("00000000-0000-0000-0000-0000000000a1"),
@@ -276,16 +251,14 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- lists.audit.succeedsWith(List(record))
-        ok <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("actor" -> "root", "entryId" -> entryId.toString, "limit" -> "5"))))
+        ok <-
+          call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> entryId.toString, "limit" -> "5"))))
         body <- ok.body.asString
-        _ <- lists.audit.failsWith(ListForbidden("only an operator reads the audit"))
-        forbidden <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("actor" -> "alice", "actorTenantId" -> "tenant-a"))))
-        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("actor" -> "root", "entryId" -> "nope"))))
+        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> "nope"))))
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[List[AntifraudListAudit]] == Right(List(record)),
-        lists.audit.calls.head == (Some(entryId), ListActor("root", None), 5),
-        forbidden.status == Status.Forbidden,
+        lists.audit.calls.head == (Some(entryId), 5),
         badId.status == Status.BadRequest,
       )
     },

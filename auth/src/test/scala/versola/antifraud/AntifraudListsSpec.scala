@@ -11,7 +11,7 @@ import java.util.UUID
 object AntifraudListsSpec extends UnitSpecBase:
 
   private val tenant = TenantId("tenant-a")
-  private val operator = ListActor("op", None)
+  private val operator = "op"
 
   /** The repository, in memory. */
   private class FakeRepository(var entries: List[AntifraudListEntry] = Nil) extends AntifraudListRepository:
@@ -414,7 +414,6 @@ object AntifraudListsSpec extends UnitSpecBase:
             source = "manual",
             shadow = false,
           ),
-          operator,
         )
       yield assertTrue(
         enforcing.left.exists(_.isInstanceOf[InvalidListEntry]),
@@ -428,62 +427,14 @@ object AntifraudListsSpec extends UnitSpecBase:
     test("a page outside 1 to 500 entries, or before the first, is refused") {
       val (lists, _) = make(FakeRepository())
       for
-        ok <- lists.list(AntifraudListFilter.all, operator, 500, 0).either
-        zero <- lists.list(AntifraudListFilter.all, operator, 0, 0).either
-        huge <- lists.list(AntifraudListFilter.all, operator, 501, 0).either
-        negative <- lists.list(AntifraudListFilter.all, operator, 10, -1).either
-        auditHuge <- lists.audit(None, operator, 501).either
+        ok <- lists.list(AntifraudListFilter.all, 500, 0).either
+        zero <- lists.list(AntifraudListFilter.all, 0, 0).either
+        huge <- lists.list(AntifraudListFilter.all, 501, 0).either
+        negative <- lists.list(AntifraudListFilter.all, 10, -1).either
+        auditHuge <- lists.audit(None, 501).either
       yield assertTrue(
         ok.isRight,
         List(zero, huge, negative, auditHuge).forall(_.left.exists(_.isInstanceOf[InvalidListEntry])),
-      )
-    },
-    test("only an operator changes a global entry or another tenant's; a tenant's admin lists their own") {
-      val repository = FakeRepository()
-      val (lists, _) = make(repository)
-      val admin = ListActor("ta", Some(tenant))
-      def create(actor: ListActor, tenantId: Option[TenantId], value: String) =
-        lists.create(
-          NewListEntry(
-            listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.device_id,
-            value = value,
-            tenantId = tenantId,
-            expiresAt = None,
-            reason = None,
-            source = "manual",
-            shadow = false,
-          ),
-          actor,
-        )
-      for
-        own <- create(admin, Some(tenant), "own")
-        global <- create(admin, None, "global").either
-        foreign <- create(admin, Some(TenantId("tenant-b")), "foreign").either
-        operatorGlobal <- create(operator, None, "global")
-        deleteGlobal <- lists.delete(operatorGlobal.id, admin).either
-        deleteOwn <- lists.delete(own.id, admin)
-        audit <- lists.audit(None, admin, 10).either
-        previewGlobal <- lists.preview(
-          NewListEntry(
-            listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.device_id,
-            value = "x",
-            tenantId = None,
-            expiresAt = None,
-            reason = None,
-            source = "manual",
-            shadow = false,
-          ),
-          admin,
-        ).either
-      yield assertTrue(
-        previewGlobal.left.exists(_.isInstanceOf[ListForbidden]),
-        global.left.exists(_.isInstanceOf[ListForbidden]),
-        foreign.left.exists(_.isInstanceOf[ListForbidden]),
-        deleteGlobal.left.exists(_.isInstanceOf[ListForbidden]),
-        deleteOwn,
-        audit.left.exists(_.isInstanceOf[ListForbidden]),
       )
     },
     test("a first load that fails is retried every second, not at the steady interval, and the lists apply once it works") {

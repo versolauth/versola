@@ -43,7 +43,6 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *  - [[AntifraudLists.preview]] says how many events of the last 24 hours an entry would have matched (for the
   *    values the event log has a column for); `create` refuses an enforcing entry that matches more than
   *    `max-traffic-share` of them.
-  *  - Only an operator may change a global entry or another tenant's ([[ListActor]]).
   *
   * ==Fake==
   * `fake` is invisible to a real person who lands on it (a recycled number, a shared device): they are told the
@@ -62,25 +61,19 @@ trait AntifraudLists:
   /** Adds an entry, or refreshes the one for the same list, value and tenant. Fails with [[InvalidListEntry]]
     * for a value that is not valid for its type. The snapshot of this instance is refreshed at once; the others
     * pick it up within the refresh interval. */
-  def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry]
+  def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry]
 
-  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). Counts events of every tenant, so
-    * only an actor who may create the entry may ask. */
-  def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview]
+  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). */
+  def preview(entry: NewListEntry): Task[ListPreview]
 
-  def delete(id: UUID, actor: ListActor): Task[Boolean]
+  def delete(id: UUID, actor: String): Task[Boolean]
 
-  /** A tenant's admin sees their own tenant's entries only. */
-  def list(filter: AntifraudListFilter, actor: ListActor, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
+  def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
-  /** Operators only. */
-  def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]]
+  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
 
 /** The new entry is not valid: a value that does not fit its type, or one the safety rules refuse. */
 final class InvalidListEntry(message: String) extends RuntimeException(message)
-
-/** The actor may not change or read that part of the lists. */
-final class ListForbidden(message: String) extends RuntimeException(message)
 
 object AntifraudLists:
 
@@ -244,10 +237,6 @@ object AntifraudLists:
           AntifraudRule(name = s"watch_list:$valueType", weight = settings.watchWeight, forces = None, test = watched(valueType)),
         )
 
-    private def forbid(actor: ListActor, tenantId: Option[TenantId]): IO[ListForbidden, Unit] =
-      ZIO.fail(ListForbidden(if tenantId.isEmpty then "only an operator may change a global entry" else "not an entry of the actor's tenant"))
-        .unless(actor.mayChange(tenantId)).unit
-
     /** Checks the value and the safety rules, and returns the canonical value. */
     private def validate(entry: NewListEntry, now: Instant): IO[InvalidListEntry, String] =
       for
@@ -261,17 +250,15 @@ object AntifraudLists:
           .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != "manual"))
       yield value
 
-    override def preview(entry: NewListEntry, actor: ListActor): Task[ListPreview] =
+    override def preview(entry: NewListEntry): Task[ListPreview] =
       for
-        _ <- forbid(actor, entry.tenantId)
         now <- Clock.instant
         value <- validate(entry, now)
         result <- repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600))
       yield result
 
-    override def create(entry: NewListEntry, actor: ListActor): Task[AntifraudListEntry] =
+    override def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry] =
       for
-        _ <- forbid(actor, entry.tenantId)
         now <- Clock.instant
         value <- validate(entry, now)
         _ <- ZIO.when(!entry.shadow && settings.maxTrafficShare > 0):
@@ -292,29 +279,25 @@ object AntifraudLists:
             reason = entry.reason,
             source = entry.source,
             shadow = entry.shadow,
-            createdBy = actor.name,
+            createdBy = actor,
             createdAt = now,
             hitCount = 0,
             lastHitAt = None,
           ),
-          actor.name,
+          actor,
           now,
         )
         _ <- refresh
       yield stored
 
-    override def delete(id: UUID, actor: ListActor): Task[Boolean] =
-      repository.find(id).flatMap:
-        case None => ZIO.succeed(false)
-        case Some(found) =>
-          forbid(actor, found.tenantId) *> Clock.instant.flatMap(repository.delete(id, actor.name, _)) <* refresh
+    override def delete(id: UUID, actor: String): Task[Boolean] =
+      Clock.instant.flatMap(repository.delete(id, actor, _)) <* refresh
 
-    override def list(filter: AntifraudListFilter, actor: ListActor, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
-      page(limit, offset) *>
-        repository.list(if actor.isOperator then filter else filter.copy(tenantId = Some(actor.tenantId)), limit, offset)
+    override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
+      page(limit, offset) *> repository.list(filter, limit, offset)
 
-    override def audit(entryId: Option[UUID], actor: ListActor, limit: Int): Task[List[AntifraudListAudit]] =
-      ZIO.fail(ListForbidden("only an operator reads the audit")).unless(actor.isOperator) *> page(limit, 0) *> repository.audit(entryId, limit)
+    override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
+      page(limit, 0) *> repository.audit(entryId, limit)
 
     private def page(limit: Int, offset: Int): IO[InvalidListEntry, Unit] =
       ZIO.fail(InvalidListEntry(s"limit is 1 to $MaxLimit, offset is 0 or more")).unless(limit >= 1 && limit <= MaxLimit && offset >= 0).unit
