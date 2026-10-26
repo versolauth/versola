@@ -5,7 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
-import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
+import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
 
@@ -22,6 +22,9 @@ import java.time.{Instant, LocalDate, ZoneOffset}
   */
 trait AntifraudEvents:
   def record(event: AntifraudEvent): UIO[Unit]
+
+  /** The keyed hash an event stores for a destination, which a `phone_hash` list entry is matched against. */
+  def subjectHash(credential: Either[Email, Phone]): Task[String]
 
   /** Whether a code may be sent to `phone`: false when the budget of its range is used up or the range is not
     * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
@@ -110,6 +113,8 @@ object AntifraudEvents:
   object noop extends AntifraudEvents:
     override def record(event: AntifraudEvent): UIO[Unit] = ZIO.unit
 
+    override def subjectHash(credential: Either[Email, Phone]): Task[String] = ZIO.succeed(credential.fold(identity[String], identity[String]))
+
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
@@ -164,7 +169,19 @@ object AntifraudEvents:
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
         budget = SmsBudget(settings.smsBudget)
-        events = Impl(queue, settings.queueCapacity, budget, antifraud, velocity, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
+        events = Impl(
+          queue,
+          settings.queueCapacity,
+          budget,
+          antifraud,
+          velocity,
+          SendLatency(),
+          settings,
+          securityService,
+          secureRandom,
+          configService,
+          subjectKey,
+        )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
@@ -299,7 +316,7 @@ object AntifraudEvents:
     ): UIO[Unit] =
       event(authId, clientId, userAgent, credential, AntifraudAction.otp_verify, outcome)
 
-    private def subjectHash(credential: Either[Email, Phone]): Task[String] =
+    override def subjectHash(credential: Either[Email, Phone]): Task[String] =
       val subject = credential.fold(_.toLowerCase, identity[String])
       securityService.mac(Secret(subject.getBytes(StandardCharsets.UTF_8)), subjectKey).map(Base64Url.encode)
 
@@ -316,31 +333,33 @@ object AntifraudEvents:
     ): UIO[Unit] =
       // How the step ended goes on the `receive-http` line of the request too.
       Observability.updateAntifraud(details(action, credential))(_.copy(outcome = Some(outcome.toString))) *>
-      // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
-      (for
-        id <- secureRandom.nextUUIDv7
-        now <- Clock.instant
-        client <- configService.find(clientId)
-        hash <- subjectHash(credential)
-        _ <- record(
-          AntifraudEvent(
-            id = id,
-            at = now,
-            tenantId = client.map(_.tenantId),
-            clientId = clientId,
-            conversationId = authId,
-            action = action,
-            outcome = outcome,
-            channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
-            subjectHash = hash,
-            destPrefix = credential.toOption.map(destPrefix),
-            userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
-            decision = decision.map(_.action.toString),
-            score = decision.map(_.score),
-            rules = decision.fold(List.empty[String])(_.firedRules),
-          ),
+        // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
+        (for
+          id <- secureRandom.nextUUIDv7
+          now <- Clock.instant
+          client <- configService.find(clientId)
+          hash <- subjectHash(credential)
+          _ <- record(
+            AntifraudEvent(
+              id = id,
+              at = now,
+              tenantId = client.map(_.tenantId),
+              clientId = clientId,
+              conversationId = authId,
+              action = action,
+              outcome = outcome,
+              channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
+              subjectHash = hash,
+              destPrefix = credential.toOption.map(destPrefix),
+              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+              decision = decision.map(_.action.toString),
+              score = decision.map(_.score),
+              rules = decision.fold(List.empty[String])(_.firedRules),
+            ),
+          )
+        yield ()).catchAllCause(cause =>
+          AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause),
         )
-      yield ()).catchAllCause(cause => AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause))
 
   /** The leading digits of a phone number, country code included, an event keeps. Statistics group by a shorter
     * one with `left()`; this is the longest they could want. */

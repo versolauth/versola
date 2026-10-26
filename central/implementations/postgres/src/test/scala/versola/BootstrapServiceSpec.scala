@@ -258,6 +258,18 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         nonProd.size == prod.size + 2,
       )
     },
+    test("central's antifraud endpoints are registered in production, and told who the admin is from the verified token") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
+      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
+      assertTrue(
+        antifraud.size == 5,
+        antifraud.forall((method, path) =>
+          injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        ),
+        injected("GET", "/users").isEmpty,
+      )
+    },
     test("offline_access is described without the word refresh, which users do not know") {
       val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
       assertTrue(
