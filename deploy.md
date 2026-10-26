@@ -680,11 +680,16 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
 - **Challenges (a proof of work before a code is sent; no table).** A request the decision engine scores at or above
   `antifraud.decision.challenge-at` (and below `block-at`) is no longer only held for `antifraud.decision.delay`: auth
-  sends no code and answers with the `proof` step, a page whose script finds a number for which SHA-256 of `seed:number`
-  starts with *difficulty* zero bits, and sends it back by itself; the code goes out once it is right. A phone needs
-  about a second at 16 bits and each bit doubles the work, so a request that scores higher is asked for more:
-  `min-difficulty` (16) plus one bit per `score-step` (15) points above `challenge-at`, at most `max-difficulty`
-  (20). The token that carries it is signed (a key derived from `security.antifraud-subject-secret`, or the sessions
+  sends no code and puts a challenge to the client. The credential and OTP-resend forms send their request from
+  script (`Versola-Inline: 1`), and the answer then carries the challenge (`{next, challenge: {kind, token, params}}`) instead of
+  a redirect: the page finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits, posts
+  it to `POST /challenge/proof` and goes on to the code screen, so the person sees only the submit they made. Any other
+  submit (password forms, no JavaScript, no Web Workers, a kind the page cannot solve) lands on the `proof` form, which solves
+  it in the open. Measured in headless Chromium (4 workers, 2.7 M hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms
+  mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid phone take 3 to 5 times that, so the default maximum is 18 bits
+  (about 0.2 s mean, rarely over 1 s). Each bit doubles the work, and a request that scores higher is asked for more:
+  `min-difficulty` (14) plus one bit per `score-step` (15) points above `challenge-at`, at most `max-difficulty`
+  (18). The token that carries it is signed (a key derived from `security.antifraud-subject-secret`, or the sessions
   secret without one), names the tenant, client, conversation and the hash of the destination, and is good for `ttl`
   (2 minutes, after which a new challenge is made); the conversation holds the one it issued, so a solution is used once
   and cannot be taken to another request. `max-attempts` (5) wrong solutions refuse the request (`blocked`). The keys of

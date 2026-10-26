@@ -32,8 +32,8 @@ object PowChallengeVerifier:
     */
   case class Settings(
       enabled: Boolean = true,
-      minDifficulty: Int = 16,
-      maxDifficulty: Int = 20,
+      minDifficulty: Int = 14,
+      maxDifficulty: Int = 18,
       scoreStep: Int = 15,
       ttl: Duration = 2.minutes,
       maxAttempts: Int = 5,

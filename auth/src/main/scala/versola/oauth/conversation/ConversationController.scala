@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, ScopeToken}
-import versola.oauth.conversation.model.Error
+import versola.oauth.conversation.model.{ConversationStep, Error}
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
@@ -162,7 +162,7 @@ object ConversationController extends Controller:
         uiLocale = UiLocales.submitted(request)
         (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
         response <- conversationRenderService.renderSubmit(result, record, uiLocale)
-      yield response)
+      yield if request.headers.get(InlineStep.Header).contains("1") then asInlineStep(result, response) else response)
         .catchAll {
           case Error.ConversationExpired => expiredResponse(request)
           case Error.ServiceUnavailable => serviceUnavailableResponse(request)
@@ -170,6 +170,21 @@ object ConversationController extends Controller:
           case ex: Throwable => ZIO.fail(ex)
         }
     }
+
+  /** The answer to a script's submit: the redirect the browser would have followed, as data (a cross-origin one, to the
+    * client's own redirect URI, could not be followed by `fetch`), with the cookies it sets, and the challenge if there is one. */
+  private def asInlineStep(result: ConversationResult.Render, response: Response): Response =
+    response.header(Header.Location) match
+      case Some(location) if response.status == Status.SeeOther =>
+        val challenge = result match
+          case ConversationResult.RenderStep(proof: ConversationStep.Proof) => Some(InlineChallenge(proof.kind, proof.token, proof.params))
+          case _ => None
+        response
+          .removeHeader(Header.Location)
+          .copy(status = Status.Ok, body = Body.fromString(InlineStep(location.renderedValue, challenge).toJson))
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addHeader(Header.CacheControl.NoStore)
+      case _ => response
 
   /** Validate submission payloads against tenant config using the trusted clientId from the signed
    *  cookie. Runs against the in-memory cache — no DB call required.

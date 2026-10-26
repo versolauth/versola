@@ -16,6 +16,7 @@ import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.internal.stacktracer.SourceLocation
+import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
@@ -157,6 +158,50 @@ object ConversationControllerSpec extends UnitSpecBase:
       ) && assertTrue(submitCalls == List(submission))
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
+  /** A submit a page's script sent (`Versola-Inline: 1`): the redirect comes back as data, with the challenge if there is one. */
+  def inlineSubmitTestCase(description: String, result: ConversationResult.Render, expected: InlineStep)(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        formService <- ConversationRenderService.live
+          .build
+          .provideSome[zio.Scope](
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
+            AuthorizationResponseService.live,
+          )
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes
+              .provideEnvironment(
+                ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ formService ++ tracing,
+              ),
+          ),
+        )
+        _ <- configuration.getPhoneRegions.succeedsWith(List.empty)
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.succeedsWith((result, record))
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "phone",
+            body = Body.fromURLEncodedForm(Form.fromStrings("phone" -> phone, "csrf" -> "")),
+          ).addHeader(conversationCookie).addHeader(InlineStep.Header, "1"),
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.Location).isEmpty,
+        body.fromJson[InlineStep] == Right(expected),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
   def rejectedSubmitTestCase(
       description: String,
       request: Request,
@@ -205,6 +250,27 @@ object ConversationControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("ConversationController")(
+    inlineSubmitTestCase(
+      description = "a script's submit gets the redirect as data instead of a 303",
+      result = conversationResult,
+      expected = InlineStep(next = "/challenge", challenge = None),
+    ),
+    inlineSubmitTestCase(
+      description = "a script's submit that was asked for a proof gets the challenge to answer in the background",
+      result = ConversationResult.RenderStep(
+        ConversationStep.Proof(
+          "pow",
+          "tok.en",
+          16,
+          Map("seed" -> "abc", "difficulty" -> "16"),
+          factorIndex = 0,
+          score = 61,
+          rules = List("r"),
+          attempts = 0,
+        ),
+      ),
+      expected = InlineStep(next = "/challenge", challenge = Some(InlineChallenge("pow", "tok.en", Map("seed" -> "abc", "difficulty" -> "16")))),
+    ),
     successfulSubmitTestCase(
       description = "submit email",
       request = Request.post(

@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
@@ -229,6 +229,64 @@ test.describe('credential', () => {
     expect(submitted[0].path).toBe('/challenge/email');
     expect(submitted[0].fields.get('email')).toBe('ada@example.com');
     expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+  });
+
+  /** Answers `pattern` with `body` as JSON and keeps what was sent to it, which the form harness's own route no longer sees. */
+  const answerWith = async (page: Page, pattern: string, body: object, seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }>) =>
+    page.route(pattern, (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      seen.push({ path: url.pathname, query: url.searchParams, fields: new URLSearchParams(request.postData() ?? ''), header: request.headers()['versola-inline'] });
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    });
+
+  test('email: a proof the server asks for is solved unseen, sent, and the page goes on to where the submit led', async ({ page }) => {
+    const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
+    await answerWith(page, '**/challenge/email*', { next: '/challenge', challenge: { kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '12' } } }, seen);
+    await answerWith(page, '**/challenge/proof*', { next: '/challenge' }, seen);
+    const screens: string[] = [];
+    page.on('framenavigated', (frame) => frame === page.mainFrame() && screens.push(new URL(frame.url()).pathname));
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    // Two POSTs from the credential page itself, then the one navigation to the next step: no screen of its own for the proof.
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/email', '/challenge/proof']);
+    expect(screens.filter((path) => path.includes('proof'))).toEqual([]);
+    const proof = seen[1];
+    expect(proof.query.get('ui_locale')).toBe('en');
+    expect(proof.fields.get('token')).toBe('signed.token');
+    expect(proof.fields.get('csrf')).toBe(CSRF);
+    const digest = createHash('sha256').update(`abc:${proof.fields.get('solution')}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1] >> 4).toBe(0);
+  });
+
+  test('email: a challenge of a kind the page cannot solve is left to the page the answer names', async ({ page }) => {
+    const { t, submitted } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
+    await answerWith(page, '**/challenge/email*', { next: '/challenge', challenge: { kind: 'widget', token: 't', params: {} } }, seen);
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/email']);
+    expect(submitted.map((request) => request.path)).toEqual(['/challenge']);
+  });
+
+  test('email: the submit says it is from script, so that a redirect comes back as data', async ({ page }) => {
+    const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
+    await answerWith(page, '**/challenge/email*', { next: '/challenge' }, seen);
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    expect(seen.map((request) => request.header)).toEqual(['1']);
   });
 
   test('login: asks for a password too and posts both', async ({ page }) => {
