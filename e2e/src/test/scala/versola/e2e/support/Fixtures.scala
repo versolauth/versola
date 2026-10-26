@@ -361,6 +361,7 @@ object Fixtures:
       stepUpCondition: Option[String] = None,
       stepUpAcr: Option[String] = None,
       maxAge: Option[Int] = None,
+      rateLimit: Option[Json] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -375,6 +376,7 @@ object Fixtures:
           stepUpCondition.map(value => "stepUpCondition" -> Json.Str(value)),
           stepUpAcr.map(value => "stepUpAcr" -> Json.Str(value)),
           maxAge.map(value => "maxAge" -> Json.Num(value)),
+          rateLimit.map(value => "rateLimit" -> value),
         ).flatten,
       ),
     )
