@@ -124,20 +124,21 @@ object AddressLimit:
   ): ZIO[Env & Scope, Response, Response] =
     // an entry point, or any call of a certificate: every call counts, so check and charge in one step
     if kind == Kind.Entry || listener == Listener.MutualTls then
-      refuseIfLimited(limiter.check(Checkpoint.Address, keys, now)) *> handler(request)
+      refuseIfLimited(limiter, limiter.check(Checkpoint.Address, keys, now)) *> handler(request)
     else
       // a proxied call on the plain listener: refused if the address has used up its failed attempts, charged only if this one fails
-      refuseIfLimited(limiter.gate(Checkpoint.Address, keys, now)) *>
+      refuseIfLimited(limiter, limiter.gate(Checkpoint.Address, keys, now)) *>
         handler(request).tap: response =>
           ZIO.when(isFailedAttempt(response))(Clock.nanoTime.map(at => limiter.charge(Checkpoint.Address, keys, at)))
 
-  private def refuseIfLimited(decision: RateDecision): IO[Response, Unit] =
+  private def refuseIfLimited(limiter: RateLimiter, decision: RateDecision): IO[Response, Unit] =
     decision match
       case RateDecision.Allowed => ZIO.unit
-      case RateDecision.Limited(policy, retryAfterSeconds) =>
+      case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
         Observability.setError("rate_limited", Some(policy)) *>
           ZIO.fail(
             Response.json(RateLimitedBody(error = "rate_limited", policy = policy).toJson)
               .status(Status.TooManyRequests)
-              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString)),
+              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
+              .addHeaders(Headers(limiter.responseHeaders(limited).map((name, value) => Header.Custom(name, value)))),
           )

@@ -87,6 +87,18 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
       before.byName.keySet -- runtimes.map(_.policy.name)
     .flatMap(gone => ZIO.foreachDiscard(gone)(forget))
 
+  /** The `RateLimit-Policy` and `RateLimit` fields of a refusal (draft-ietf-httpapi-ratelimit-headers, a draft that is still
+    * moving: sent on `429` only, so a change of the draft cannot break a successful response). `q` and `w` are the quota and window
+    * of the policy's tightest rate; `r` is 0 and `t` is the wait in seconds. Never the key, never other policies.
+    */
+  def responseHeaders(limited: RateDecision.Limited): List[(String, String)] =
+    installed.get.byName.get(limited.policy).toList.flatMap: p =>
+      val tightest = p.policy.limits.minBy(window => window.limit.toDouble / window.windowSeconds)
+      List(
+        "RateLimit-Policy" -> s"\"${limited.policy}\";q=${tightest.limit};w=${tightest.windowSeconds}",
+        "RateLimit" -> s"\"${limited.policy}\";r=0;t=${limited.retryAfterSeconds}",
+      )
+
   /** The names of the policies being enforced or shadowed now. */
   def names: List[String] = installed.get.all.map(_.policy.name).toList
 

@@ -3477,6 +3477,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         first.status == Status.Ok,
         second.status == Status.TooManyRequests,
         second.rawHeader("Retry-After").contains("3600"),
+        second.rawHeader("RateLimit-Policy").contains("\"edge-enforce-r2\";q=1;w=3600"),
+        second.rawHeader("RateLimit").contains("\"edge-enforce-r2\";r=0;t=3600"),
+        first.rawHeader("RateLimit").isEmpty,
         // the policy is named; no key, no other policy
         body == """{"error":"rate_limited","policy":"edge-enforce-r2"}""",
         // the refused call reached neither the revocation check nor the upstream

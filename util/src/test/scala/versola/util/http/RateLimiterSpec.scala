@@ -270,6 +270,19 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(a == RateDecision.Allowed, b == RateDecision.Allowed, c == RateDecision.Allowed)
       },
     ),
+    suite("response headers")(
+      test("a refusal names the policy and its tightest rate, with the wait; a missing policy has none") {
+        val p = policy(name = "two", limits = List(RateLimitWindow(100, 60), RateLimitWindow(500, 3600)), burst = 1)
+        for l <- limiter(p)()
+        yield assertTrue(
+          l.responseHeaders(RateDecision.Limited("two", 7)) == List(
+            "RateLimit-Policy" -> "\"two\";q=500;w=3600",
+            "RateLimit" -> "\"two\";r=0;t=7",
+          ),
+          l.responseHeaders(RateDecision.Limited("gone", 7)).isEmpty,
+        )
+      },
+    ),
     suite("gate and charge (R1: failed attempts only)")(
       test("gate charges nothing: any number of gated requests pass, and charge is what drains the bucket") {
         val ip = RateLimitKeys(ip = "203.0.113.7")

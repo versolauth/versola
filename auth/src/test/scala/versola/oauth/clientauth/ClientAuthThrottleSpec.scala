@@ -51,6 +51,8 @@ object ClientAuthThrottleSpec extends ZIOSpecDefault:
           failures.forall(_.status == Status.Unauthorized),
           refused.status == Status.TooManyRequests,
           refused.rawHeader("Retry-After").flatMap(_.toIntOption).exists(_ >= 1),
+          refused.rawHeader("RateLimit-Policy").contains("\"failed-client-auth-per-address\";q=3;w=60"),
+          refused.rawHeader("RateLimit").exists(_.startsWith("\"failed-client-auth-per-address\";r=0;t=")),
           body == """{"error":"rate_limited"}""",
           other.status == Status.Ok,
         )

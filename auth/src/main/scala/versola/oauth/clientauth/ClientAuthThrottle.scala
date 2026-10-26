@@ -149,9 +149,9 @@ object ClientAuthThrottle:
               case Some(ip) =>
                 val keys = RateLimitKeys(ip = ip)
                 Clock.nanoTime.flatMap: now =>
-                  if kind == Kind.Entry then refuseIfLimited(limiter.check(Checkpoint.Address, keys, now)) *> handler(request)
+                  if kind == Kind.Entry then refuseIfLimited(limiter, limiter.check(Checkpoint.Address, keys, now)) *> handler(request)
                   else
-                    refuseIfLimited(limiter.gate(Checkpoint.Address, keys, now)) *>
+                    refuseIfLimited(limiter, limiter.gate(Checkpoint.Address, keys, now)) *>
                       handler(request).tap: response =>
                         // A failed client authentication is what is charged: `401` (RFC 6749 §5.2, which every one of these endpoints
                         // answers it with) or the `invalid_client` the handler recorded (a `400` for a client that did not use Basic).
@@ -159,14 +159,15 @@ object ClientAuthThrottle:
                           .map(context => response.status == Status.Unauthorized || context.get(Observability.error).exists(_.code == InvalidClient))
                           .flatMap(failed => ZIO.when(failed)(Clock.nanoTime.map(at => limiter.charge(Checkpoint.Address, keys, at))))
 
-  private def refuseIfLimited(decision: RateDecision): IO[Response, Unit] =
+  private def refuseIfLimited(limiter: RateLimiter, decision: RateDecision): IO[Response, Unit] =
     decision match
       case RateDecision.Allowed => ZIO.unit
-      case RateDecision.Limited(policy, retryAfterSeconds) =>
+      case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
         Observability.setError("rate_limited", Some(policy)) *>
           ZIO.fail(
             Response.json(RateLimitedBody(error = "rate_limited").toJson)
               .status(Status.TooManyRequests)
               .addHeader(Header.CacheControl.NoStore)
-              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString)),
+              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
+              .addHeaders(Headers(limiter.responseHeaders(limited).map((name, value) => Header.Custom(name, value)))),
           )

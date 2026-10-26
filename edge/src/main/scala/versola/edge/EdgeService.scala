@@ -34,7 +34,7 @@ import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
-import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
+import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
 import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
@@ -391,11 +391,12 @@ object EdgeService:
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
         // The policy is named, never the key or what else is being counted. `Retry-After` is whole seconds, rounded up.
-        case Outcome.RateLimited(policy, retryAfterSeconds) =>
+        case Outcome.RateLimited(policy, retryAfterSeconds, headers) =>
           ZIO.succeed(
             Response.json(RateLimitedBody(error = "rate_limited", policy = policy).toJson)
               .status(Status.TooManyRequests)
-              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString)),
+              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
+              .addHeaders(Headers(headers.map((name, value) => Header.Custom(name, value)))),
           )
         case Outcome.Reauthenticate(uri, clear) =>
           ZIO.succeed(
@@ -661,8 +662,9 @@ object EdgeService:
     private def refuseIfLimited(decision: RateDecision): IO[Outcome, Unit] =
       decision match
         case RateDecision.Allowed => ZIO.unit
-        case RateDecision.Limited(policy, retryAfterSeconds) =>
-          Observability.setError("rate_limited", Some(policy)) *> ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds))
+        case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
+          Observability.setError("rate_limited", Some(policy)) *>
+            ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds, rateLimiter.responseHeaders(limited)))
 
     private def identityKeys(claims: AccessTokenClaims): RateLimitKeys =
       RateLimitKeys(
@@ -1365,7 +1367,7 @@ object EdgeService:
     case InternalServerError
 
     /** A rate limit policy in `enforce` refused the call: `429`, with the wait in whole seconds. */
-    case RateLimited(policy: String, retryAfterSeconds: Int)
+    case RateLimited(policy: String, retryAfterSeconds: Int, headers: List[(String, String)])
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
 
     /** The token is valid but its authentication does not meet what this endpoint

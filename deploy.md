@@ -1187,8 +1187,9 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
   passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
   (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
-  refusal), so a flood cannot become a flood of log lines. The `RateLimit` / `RateLimit-Policy` response headers are not sent
-  (the IETF draft is still moving).
+  refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
+  policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
+  has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
 - **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
   protection refuses whoever is there, by priority, with `503`.
 - **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
