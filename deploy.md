@@ -1081,14 +1081,18 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
-### Rate limits (shadow)
+### Rate limits
 
-The edge has a rate limiter on the proxy path. Today it is **shadow only**: an operator sets the policies per edge in central,
-the edge counts what it would refuse, and nothing is refused and no response changes. An edge with no policy runs with the
-limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask); this
-section says only what exists.
+The edge limits how much each client, user, session or key may send through it. An operator sets the policies per edge in
+central; a policy in `shadow` only counts what it would refuse, a policy in `enforce` refuses. An edge with no policy runs with
+the limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask).
 
-What exists in the code:
+**Start from the recommended set.** `GET /configuration/edges/rate-limits/recommended` (and "Add recommended policies" in the
+console, on the edge page under *Rate limits*) gives three generous policies, all in `shadow`: `per-client` (12,000 a minute,
+bursts of 500), `per-user` (300 a minute and 5,000 an hour, bursts of 60) and `per-user-endpoint` (120 a minute per user and
+endpoint, bursts of 30). They are meant to catch a runaway client or user, not a busy one. Add them, read
+`edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,
+then switch one policy at a time to `enforce`. Switching it back to `shadow` or `off` is the off switch.
 
 - **Policies per edge, in central**: `PUT /configuration/edges/rate-limits?edgeId=` with `{"policies": [...]}` replaces the
   whole set (`[]` removes it; `400` names the first problem; `404` for an unknown edge). Stored in `edges.rate_limit_policies`
@@ -1096,28 +1100,35 @@ What exists in the code:
   schema), listed as `rateLimitPolicies` by `GET /configuration/edges`, and served to the edge by `GET /edge/sync/rate-limits`
   (the calling edge's own row only). Independent of the overload and access-log policies. The edge picks a change up on its
   next configuration sync (the refresh interval, 5 minutes by default), keeps the last set while central is unreachable, and
-  treats `404` from an older central as "none set". There is no console screen yet; use the API.
+  treats `404` from an older central as "none set". A set that fails validation on the edge is not applied and the previous
+  one stays.
 - **Two checkpoints on the proxy path**, both fed by the verified token and the matched route, never by what the caller
   sent: R2, after the JWT is verified and before the revocation check and the DPoP proof is recorded (client, subject,
   session `sid`, key `jkt`); R3, after the endpoint and the caller's permissions are resolved and before the `/userinfo`
   call and the upstream (resource and registered endpoint template, global and per subject). A request refused by
-  permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is.
-  There is no R1 yet (before the token is read, keyed on the source address): it needs a trustworthy address, see #614.
-- **A policy source** on the edge (`RateLimitPolicySource`) that the limiter follows once a second, the way the overload
-  policy is followed. A set that fails validation on the edge is not applied and the previous one stays.
-- **Shadow means**: the request is checked, `would_limit` is counted when a policy would have refused it, and the
-  response is unchanged. A policy set to `enforce` is stored by central as it is and applied by the edge as `shadow`, with a
-  log line saying so, until enforcement (`429` with `Retry-After`) is wired in.
+  permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is. A call refused at R3
+  has already had its DPoP proof recorded (the proof is checked before the route is known, and reordering would let a caller
+  without a valid proof learn whether it is permitted); a call refused at R2 has not, and neither reaches `/userinfo` or the
+  resource. There is no R1 yet (before the token is read, keyed on the source address): it needs a trustworthy address, see #614.
+- **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
+  caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
+  passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
+  (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
+  refusal), so a flood cannot become a flood of log lines. The `RateLimit` / `RateLimit-Policy` response headers are not sent
+  (the IETF draft is still moving).
+- **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
+  protection refuses whoever is there, by priority, with `503`.
 - **The limit is per pod.** With several replicas behind a balancer the edge as a whole allows up to the policy's limit times
   the number of pods; divide the limit by the replicas when you set it. A per-replica share setting is not there yet.
+- **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
+  `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
 
 **Metrics** (a key is never a label; the policy name is a closed set, at most 64 names of `[a-z][a-z0-9_-]*`):
-`edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` (always 0 while shadow only) and
-`would_limit`; `edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}` (new keys past the
-per-policy cap of 100,000 share one overflow bucket, so a rise means a flood of distinct keys). With no policy none of
-them is written.
+`edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
+`edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
 
-Not there yet: R1, a console screen, `enforce`, the per-replica share of a limit, and the `429` response.
+Not there yet: R1 (the source address), the per-replica share of a limit, per-endpoint and per-client policies on the resource and
+the OAuth client, and the `RateLimit` headers.
 
 ### Access log
 

@@ -3211,7 +3211,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     Metric.counter("edge_rate_limit_decisions_total")
       .tagged(Set(MetricLabel("policy", policy), MetricLabel("result", result))).value.map(_.count)
 
-  private val rateLimitSuite = suite("rate limits (shadow)")(
+  private val rateLimitSuite = suite("rate limits")(
     test("with no policy configured the limiter is inactive and the request is served as before") {
       val env = new Env
       for
@@ -3426,6 +3426,118 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         counts(env.rateLimiter, "edge-template") == (2L, 1L),
         env.rateLimiter.stats("edge-template").map(_.trackedKeys) == Some(2),
       )
+    },
+    test("enforce: R2 refuses with 429 and Retry-After before revocation, DPoP, user-info and the upstream, and the other client is unaffected") {
+      val env = new Env
+      val policy = shadowPolicy("edge-enforce-r2", List(RateLimitDimension.Client)).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        revoked <- Ref.make(0)
+        _ <- env.revocationService.isRevoked.returnsZIO((_, _) => revoked.update(_ + 1).as(false))
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        first <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        second <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        body <- second.body.asString
+        _ <- env.rateLimiter.publish
+        limited <- decisions("edge-enforce-r2", "limited")
+        upstreamCalls <- upstream.get
+        revocationChecks <- revoked.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("Retry-After").contains("3600"),
+        // the policy is named; no key, no other policy
+        body == """{"error":"rate_limited","policy":"edge-enforce-r2"}""",
+        // the refused call reached neither the revocation check nor the upstream
+        upstreamCalls == 1,
+        revocationChecks == 1,
+        counts(env.rateLimiter, "edge-enforce-r2") == (1L, 0L),
+        limited == 1.0,
+      )
+    },
+    test("enforce: R3 refuses before the user-info call and the upstream; the same user on another endpoint is served") {
+      val env = new Env
+      val policy = shadowPolicy("edge-enforce-r3", List(RateLimitDimension.Subject), RateLimitScope.Endpoint).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        userInfo <- Ref.make(0)
+        upstream <- Ref.make(0)
+        _ <- env.ssoClient.userInfo.returnsZIO((_, _) => userInfo.update(_ + 1).as(Json.Obj()))
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true), userByIdEndpoint()))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        get = (path: String) =>
+          service.proxy(ResourceId("users-api"), Path.decode(path), Request.get(URL.decode(path).toOption.get).addCookie(sessionCookie(token)))
+        r1 <- get("/users")
+        r2 <- get("/users")
+        other <- get("/users/7")
+        infoCalls <- userInfo.get
+        upstreamCalls <- upstream.get
+      yield assertTrue(
+        r1.status == Status.Ok,
+        r2.status == Status.TooManyRequests,
+        r2.rawHeader("Retry-After").isDefined,
+        other.status == Status.Ok,
+        // two served calls: one user-info call (only the first call's endpoint asks) and two upstream calls
+        infoCalls == 1,
+        upstreamCalls == 2,
+      )
+    },
+    test("enforce: a refusal names the policy that makes the caller wait longest and spends nothing on the others") {
+      val env = new Env
+      val fast = shadowPolicy("edge-enforce-fast", List(RateLimitDimension.Client)).copy(
+        mode = GuardMode.Enforce,
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 10)),
+      )
+      val slow = shadowPolicy("edge-enforce-slow", List(RateLimitDimension.Subject)).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(fast, slow))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        refused <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        refused.status == Status.TooManyRequests,
+        refused.rawHeader("Retry-After").contains("3600"),
+      )
+    },
+    test("a policy in shadow still answers as before, and one switched off is ignored") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(
+            shadowPolicy("edge-mode-shadow", List(RateLimitDimension.Client)),
+            shadowPolicy("edge-mode-off", List(RateLimitDimension.Client)).copy(mode = GuardMode.Off),
+          ),
+        )
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(1 to 3)(_ => service.proxy(ResourceId("users-api"), Path.decode("/users"), request))
+      yield assertTrue(responses.forall(_.status == Status.Ok), env.rateLimiter.names == List("edge-mode-shadow"))
     },
     test("a refresh is not counted separately: the proxied call is") {
       val env = new Env

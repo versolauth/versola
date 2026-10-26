@@ -8,6 +8,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepo
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.http.{
   AccessLogPolicy,
+  GuardMode,
   InboundPolicy,
   Observability,
   OverloadPolicy,
@@ -439,5 +440,13 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.BadRequest,
       setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setRateLimitPolicies.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRateLimitPolicies.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "the recommended rate limit policies are served, all in shadow, and are a set the PUT accepts",
+      request = Request(method = Method.GET, url = URL.root / "configuration" / "edges" / "rate-limits" / "recommended"),
+      expectedStatus = Status.Ok,
+      verify = (response, _) =>
+        for body <- response.body.asJson[RateLimitPolicies]
+        yield assertTrue(body == RateLimitPolicies.recommended, body.validate.isRight, body.policies.forall(_.mode == GuardMode.Shadow)),
     ),
   )

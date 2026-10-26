@@ -2450,9 +2450,10 @@ paths:
         Who may send how much through one edge. The body replaces the stored set of policies as a whole; an empty list
         removes them, and the edge applies no rate limit. Independent of the edge's overload and access-log policies.
 
-        **Today the edge only counts.** A policy in mode `shadow` is checked on the proxy path and the edge counts what it
-        would refuse (`edge_rate_limit_decisions_total{policy,result="would_limit"}`); nothing is refused and no response
-        changes. A policy stored as `enforce` is applied as `shadow` until enforcement is released. The edge picks the set up
+        A policy in mode `shadow` is checked on the proxy path and the edge counts what it would refuse
+        (`edge_rate_limit_decisions_total{policy,result="would_limit"}`); nothing is refused. A policy in mode `enforce`
+        refuses the call with `429 Too Many Requests` and `Retry-After` (whole seconds), before the call is sent to the resource
+        or `/userinfo`. Start from `GET /configuration/edges/rate-limits/recommended` in `shadow`. The edge picks the set up
         on its next configuration sync (every configuration refresh interval, 5 minutes by default) and, while central is
         unreachable, keeps the last set it received.
 
@@ -2481,6 +2482,26 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
+
+  /configuration/edges/rate-limits/recommended:
+    get:
+      tags: [Edges]
+      summary: The recommended starting set of rate limit policies
+      description: |
+        A starting set that is safe to add to any edge: `per-client`, `per-user` and `per-user-endpoint`, all in mode
+        `shadow`, so the edge only counts what it would refuse. Read `edge_rate_limit_decisions_total{result="would_limit"}`
+        for a while, adjust the limits, then switch a policy to `enforce`. The numbers are generous on purpose and are per
+        edge pod. Send the body to `PUT /configuration/edges/rate-limits` (the console's "Add recommended policies" does).
+      operationId: getRecommendedRateLimitPolicies
+      responses:
+        '200':
+          description: The recommended policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitPolicies'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /configuration/edges/rotate-key:
     post:
@@ -6234,7 +6255,7 @@ components:
           type: string
           enum: [off, shadow, enforce]
           default: shadow
-          description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing. `enforce` is applied as `shadow` until enforcement is released.'
+          description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     RateLimitPoliciesError:
       type: object
       properties:

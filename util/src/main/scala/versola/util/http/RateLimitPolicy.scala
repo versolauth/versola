@@ -131,6 +131,40 @@ final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil) derive
 object RateLimitPolicies:
   val empty: RateLimitPolicies = RateLimitPolicies()
 
+  /** The starting set an operator can add to an edge with one click (central serves it, so the console and the API agree).
+    * Every policy is in `shadow`: the edge counts what it would refuse, and the operator reads `would_limit` for a week
+    * before switching one to `enforce`. The numbers are deliberately generous (a runaway client or user, not a busy one) and
+    * are per edge pod:
+    *
+    *   - `per-client`: one OAuth client may not take the edge over (200 calls a second sustained, bursts of 500);
+    *   - `per-user`: one user, short and long window (5 a second sustained, bursts of 60: a page load fires dozens of calls);
+    *   - `per-user-endpoint`: one user on one endpoint (2 a second sustained, bursts of 30), the cheap guard against a loop
+    *     on a single route.
+    */
+  val recommended: RateLimitPolicies = RateLimitPolicies(
+    List(
+      RateLimitPolicy(
+        name = "per-client",
+        by = List(RateLimitDimension.Client),
+        limits = List(RateLimitWindow(limit = 12000, windowSeconds = 60)),
+        burst = 500,
+      ),
+      RateLimitPolicy(
+        name = "per-user",
+        by = List(RateLimitDimension.Subject),
+        limits = List(RateLimitWindow(limit = 300, windowSeconds = 60), RateLimitWindow(limit = 5000, windowSeconds = 3600)),
+        burst = 60,
+      ),
+      RateLimitPolicy(
+        name = "per-user-endpoint",
+        by = List(RateLimitDimension.Subject),
+        scope = RateLimitScope.Endpoint,
+        limits = List(RateLimitWindow(limit = 120, windowSeconds = 60)),
+        burst = 30,
+      ),
+    ),
+  )
+
 object RateLimitPolicy:
   val MaxNameLength = 48
   val MaxWindows = 8

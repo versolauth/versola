@@ -105,4 +105,20 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("recommended set")(
+      test("validates, has unique names and starts every policy in shadow") {
+        val set = RateLimitPolicies.recommended
+        assertTrue(
+          set.validate.isRight,
+          set.policies.map(_.name) == List("per-client", "per-user", "per-user-endpoint"),
+          set.policies.forall(_.mode == GuardMode.Shadow),
+          // R2 for the first two, R3 for the endpoint one
+          set.policies.map(_.checkpoint) == List(Checkpoint.Identity, Checkpoint.Identity, Checkpoint.Route),
+        )
+      },
+      test("survives the wire") {
+        import zio.json.*
+        assertTrue(RateLimitPolicies.recommended.toJson.fromJson[RateLimitPolicies] == Right(RateLimitPolicies.recommended))
+      },
+    ),
   )

@@ -51,7 +51,9 @@ final case class AccessLogSettings(
   def logReceive(status: Int, failed: Boolean, elapsedMillis: Long, traceId: String): Boolean =
     mode match
       case AccessLogMode.Full => true
-      case _ if failed || status >= 400 => true
+      // A `429` is a refusal by a rate limit, counted by its own metric: logged like a success, so a flood of refused calls
+      // cannot become a flood of log lines. Any other 4xx, and every unhandled error, is always logged.
+      case _ if failed || (status >= 400 && status != 429) => true
       case _ if elapsedMillis >= slowMillis => true
       case AccessLogMode.Off => false
       case AccessLogMode.Sampled => AccessLogSettings.sampled(traceId, successSampleRate)

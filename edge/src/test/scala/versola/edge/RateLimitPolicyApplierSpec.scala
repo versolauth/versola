@@ -17,15 +17,16 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
   private val keys = RateLimitKeys(client = "web")
 
   def spec = suite("RateLimitPolicyApplier")(
-    test("a policy set to enforce is applied as shadow: nothing is refused") {
+    test("a policy set to enforce is applied as enforce: the limiter refuses, and names the policy and the wait") {
       for
         limiter <- RateLimiter.make()
         result <- RateLimitPolicyApplier(List(policy("enforced", GuardMode.Enforce)), limiter)
         decisions = (1 to 3).map(_ => limiter.check(Checkpoint.Identity, keys, 0L))
       yield assertTrue(
         result == Right(()),
-        decisions.forall(_ == RateDecision.Allowed),
-        limiter.stats("enforced").map(s => (s.allowed, s.limited, s.wouldLimit)) == Some((1L, 0L, 2L)),
+        decisions.head == RateDecision.Allowed,
+        decisions.tail.forall(_ == RateDecision.Limited("enforced", 3600)),
+        limiter.stats("enforced").map(s => (s.allowed, s.limited, s.wouldLimit)) == Some((1L, 2L, 0L)),
       )
     },
     test("a set that does not validate is not applied and the previous one stays") {

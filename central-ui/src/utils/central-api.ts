@@ -1428,6 +1428,11 @@ export async function setEdgeRateLimitPolicies(edgeId: string, policies: RateLim
   });
 }
 
+/** The recommended starting set of rate limit policies (all in `shadow`), the same for every edge. */
+export async function fetchRecommendedRateLimitPolicies(): Promise<RateLimitPolicies> {
+  return request<RateLimitPolicies>('/configuration/edges/rate-limits/recommended');
+}
+
 export async function registerEdge(id: string): Promise<ServiceKey> {
   const response = await request<ServiceKeyResponseDto>('/configuration/edges', {
     method: 'POST',

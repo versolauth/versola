@@ -425,7 +425,7 @@ test.describe('rate limits', () => {
     await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, rateLimitPolicies: set }] } });
     const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
     await expect(card).toContainText('Nothing: this edge applies no rate limit');
-    await expect(card).toContainText('nothing is refused until enforcement is released');
+    await expect(card).toContainText('Start in shadow (counts only), then enforce');
     await expect(card.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
@@ -438,7 +438,7 @@ test.describe('rate limits', () => {
   test('adds a policy, saves the set as typed and shows it on the card', async ({ page }) => {
     const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
     const dialog = panel(page, 'Edit rate limits');
-    await expect(dialog.getByText('The edge only counts for now')).toBeVisible();
+    await expect(dialog.getByText('Start in shadow, then enforce')).toBeVisible();
     await dialog.getByRole('button', { name: 'Add policy' }).click();
     await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toBeFocused();
     await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('per-endpoint');
@@ -461,18 +461,36 @@ test.describe('rate limits', () => {
     expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
   });
 
-  test('Enforce is not offered, a stored one is shown, and the edge says it is applied as shadow', async ({ page }) => {
-    await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+  test('with no policy the editor offers the recommended set, all in shadow, and adds only what is missing', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
     const dialog = panel(page, 'Edit rate limits');
-    await expect(dialog.getByRole('button', { name: 'Enforce', exact: true })).toHaveCount(0);
+    await expect(dialog.getByText('No policies yet')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(3);
+    await expect(dialog.getByRole('button', { name: 'Shadow', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).first().fill('mine');
+    // a second click adds the two that are not there yet, not a duplicate of the renamed one's name
+    await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(4);
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).nth(1).fill('p2');
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).nth(2).fill('p3');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    const body = (await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body as { policies: Array<{ name: string; mode: string }> };
+    expect(body.policies.map(policy => policy.name)).toEqual(['mine', 'p2', 'p3', 'per-client']);
+    expect(body.policies.every(policy => policy.mode === 'shadow')).toBe(true);
+  });
+
+  test('Enforce is offered, says what it does, and is saved as chosen', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+    const dialog = panel(page, 'Edit rate limits');
     await expect(dialog.getByRole('button', { name: 'Shadow', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await dialog.getByRole('button', { name: 'Off', exact: true }).click();
     await expect(dialog.getByText('The policy is ignored.')).toBeVisible();
-
-    await loadAdminApp(page, { path: editPath, state: { edges: [{ ...alphaEdge, rateLimitPolicies: { policies: [{ ...set.policies[0], mode: 'enforce' }] } }] } });
-    const stored = panel(page, 'Edit rate limits');
-    await expect(stored.getByRole('button', { name: 'Enforce', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(stored.getByText('Applied as shadow until enforcement is released')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Enforce', exact: true }).click();
+    await expect(dialog.getByText('Refuses calls over the limit with 429 and Retry-After')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client', mode: 'enforce' }] });
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Enforce · 100 / 60 s');
   });
 
   test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {

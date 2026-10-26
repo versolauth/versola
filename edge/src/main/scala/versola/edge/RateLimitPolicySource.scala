@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.util.http.{GuardMode, RateLimitPolicy, RateLimiter}
+import versola.util.http.{RateLimitPolicy, RateLimiter}
 import zio.*
 
 /** The rate limit policies this edge should apply now. Nothing in request handling reads it: [[RateLimitPolicyApplier]] polls
@@ -23,21 +23,16 @@ object RateLimitPolicySource:
     ZLayer.succeed(new RateLimitPolicySource:
       override val current: UIO[List[RateLimitPolicy]] = ZIO.succeed(Nil))
 
-/** Keeps a [[RateLimiter]] at the policies a source currently holds.
-  *
-  * **Shadow only.** The edge counts `would_limit` and refuses nothing: a policy set to `enforce` is applied as `shadow` (and
-  * said so once), until enforcement is wired in. A set of policies that fails [[RateLimitPolicy.validateAll]] is not applied
-  * and the previous one stays.
+/** Keeps a [[RateLimiter]] at the policies a source currently holds. A set of policies that fails
+  * [[RateLimitPolicy.validateAll]] is not applied and the previous one stays. `enforce` policies refuse (`429`); `shadow` ones
+  * only count.
   */
 object RateLimitPolicyApplier:
   /** Applies `policies` if they are valid. `Left` carries what was wrong with them. */
   def apply(policies: List[RateLimitPolicy], limiter: RateLimiter): UIO[Either[String, Unit]] =
     RateLimitPolicy.validateAll(policies) match
       case Left(why) => ZIO.succeed(Left(why))
-      case Right(valid) => limiter.update(valid.map(shadowOnly)).as(Right(()))
-
-  private[edge] def shadowOnly(policy: RateLimitPolicy): RateLimitPolicy =
-    if policy.mode == GuardMode.Enforce then policy.copy(mode = GuardMode.Shadow) else policy
+      case Right(valid) => limiter.update(valid).as(Right(()))
 
   /** Polls `source` once a second and applies what it yields when it changed, for the life of the service. A change is logged
     * once, with names and modes (never keys); nothing is logged while the policies stay the same.
@@ -51,11 +46,7 @@ object RateLimitPolicyApplier:
             else
               RateLimitPolicyApplier(policies, limiter).flatMap:
                 case Right(_) =>
-                  applied.set(Some(policies)) *>
-                    ZIO.logInfo(s"rate limit policies applied: ${describe(policies)}") *>
-                    ZIO.when(policies.exists(_.mode == GuardMode.Enforce))(
-                      ZIO.logWarning("rate limit mode enforce is applied as shadow: this edge does not refuse requests yet"),
-                    ).unit
+                  applied.set(Some(policies)) *> ZIO.logInfo(s"rate limit policies applied: ${describe(policies)}")
                 case Left(why) =>
                   // remembered, so a set that stays invalid is reported once and not every second
                   applied.set(Some(policies)) *> ZIO.logWarning(s"rate limit policies not applied: $why")

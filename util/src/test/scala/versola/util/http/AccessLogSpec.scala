@@ -23,6 +23,10 @@ object AccessLogSpec extends ZIOSpecDefault:
         assertTrue(
           (0 until 200).forall(i => none.logReceive(400, failed = false, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(503, failed = false, 1, traceId(i))),
+          // a rate-limit refusal is not a line per refusal: it follows the success rules (slow and sampled lines only)
+          (0 until 200).forall(i => !none.logReceive(429, failed = false, 1, traceId(i))),
+          none.logReceive(429, failed = false, 500, traceId(1)),
+          none.logReceive(429, failed = true, 1, traceId(1)),
           (0 until 200).forall(i => none.logReceive(200, failed = true, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(302, failed = true, 1, traceId(i))),
         )

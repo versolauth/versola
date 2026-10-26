@@ -4,9 +4,9 @@
  * `RateLimitPolicy.validate` and `validateAll` in `util/.../RateLimitPolicy.scala`: central refuses a
  * set that fails them and an edge does not apply one, so the editor says the same thing before the request.
  *
- * The set is replaced as a whole; an empty list removes it and the edge applies no rate limit. The edge
- * only counts for now (`shadow`): a policy stored as `enforce` is applied as `shadow`, so the editor
- * offers `off` and `shadow` and shows `enforce` only on a policy that already has it.
+ * The set is replaced as a whole; an empty list removes it and the edge applies no rate limit. `shadow` counts what
+ * would be refused; `enforce` refuses with `429` and `Retry-After`. `GET .../rate-limits/recommended` is the starting set
+ * (all in `shadow`) that the editor adds with one click.
  */
 
 export type RateLimitDimension = 'client' | 'subject' | 'session' | 'jkt' | 'ip';
@@ -64,7 +64,7 @@ export const MODES: ReadonlyArray<{ id: RateLimitMode; label: string }> = [
 export const MODE_TEXT: Record<RateLimitMode, string> = {
   off: 'The policy is ignored.',
   shadow: 'Counts what would be refused (edge_rate_limit_decisions_total, result would_limit) and refuses nothing.',
-  enforce: 'Applied as shadow until enforcement is released: nothing is refused yet.',
+  enforce: 'Refuses calls over the limit with 429 and Retry-After, before they reach the resource. Read would_limit in shadow first.',
 };
 
 /** A window as typed; an empty string is "not set". */
@@ -90,6 +90,11 @@ export interface RateLimitDraft {
 }
 
 let nextKey = 1;
+
+/** A starting policy from the recommended set as the editor's draft block. */
+export function draftFromPolicy(policy: RateLimitPolicy): PolicyDraft {
+  return draftFromPolicies({ policies: [policy] }).policies[0];
+}
 
 export function newPolicyDraft(): PolicyDraft {
   return { key: nextKey++, name: '', mode: 'shadow', by: ['client'], scope: 'edge-wide', limits: [{ limit: '', windowSeconds: '' }], burst: '', cost: '' };
@@ -199,7 +204,7 @@ export function windowText(window: RateLimitWindow): string {
 }
 
 export function modeText(mode: RateLimitMode | undefined): string {
-  return mode === 'off' ? 'Off' : mode === 'enforce' ? 'Enforce (applied as shadow)' : 'Shadow';
+  return mode === 'off' ? 'Off' : mode === 'enforce' ? 'Enforce' : 'Shadow';
 }
 
 /** `shadow · 100 / 60 s · by client, per endpoint · burst 5` for the record card's row. */
@@ -214,5 +219,5 @@ export function summary(policy: RateLimitPolicy): string {
 
 export function countText(set: RateLimitPolicies | undefined | null): string {
   const n = set?.policies.length ?? 0;
-  return n === 0 ? 'Nothing: this edge applies no rate limit' : n === 1 ? '1 policy' : `${n} policies`;
+  return n === 0 ? 'Nothing: this edge applies no rate limit. Edit to add the recommended policies' : n === 1 ? '1 policy' : `${n} policies`;
 }

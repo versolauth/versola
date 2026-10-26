@@ -28,6 +28,7 @@ object EdgeController extends Controller:
     setEdgeOverloadEndpoint,
     setEdgeAccessLogEndpoint,
     setEdgeRateLimitsEndpoint,
+    recommendedRateLimitsEndpoint,
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
@@ -231,6 +232,14 @@ object EdgeController extends Controller:
               case InvalidRateLimitPolicies(message) =>
                 ZIO.succeed(Response.json(RateLimitPoliciesError(message).toJson).status(Status.BadRequest))
       yield response
+    }
+
+  /** The starting set of rate limit policies (all in `shadow`) that the console offers with one click and an operator can send
+    * to [[setEdgeRateLimitsEndpoint]]; the same on every edge, so it is not read from one.
+    */
+  val recommendedRateLimitsEndpoint =
+    Method.GET / "configuration" / "edges" / "rate-limits" / "recommended" -> handler { (request: Request) =>
+      authorizeBasic(request).as(Response.json(RateLimitPolicies.recommended.toJson))
     }
 
   /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a

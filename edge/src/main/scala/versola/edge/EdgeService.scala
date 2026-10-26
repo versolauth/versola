@@ -32,7 +32,7 @@ import versola.edge.model.{
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
-import versola.util.http.{Checkpoint, Observability, RateLimitKeys, RateLimiter}
+import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -390,6 +390,13 @@ object EdgeService:
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
+        // The policy is named, never the key or what else is being counted. `Retry-After` is whole seconds, rounded up.
+        case Outcome.RateLimited(policy, retryAfterSeconds) =>
+          ZIO.succeed(
+            Response.json(RateLimitedBody(error = "rate_limited", policy = policy).toJson)
+              .status(Status.TooManyRequests)
+              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString)),
+          )
         case Outcome.Reauthenticate(uri, clear) =>
           ZIO.succeed(
             Response.status(Status.Unauthorized)
@@ -620,29 +627,26 @@ object EdgeService:
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
-    /** Rate limit checkpoints R2 and R3. **Shadow only**: the decision is not acted on (the applier holds every policy to
-      * shadow, so there is none to act on); the check counts `would_limit` and the request goes on unchanged. With no policy
-      * at the checkpoint this is one volatile read and builds nothing. Refresh exchanges are not counted: the proxied call is
-      * what is counted.
+    /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
+      * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one
+      * volatile read and builds nothing. A refused call has not yet been revoked-checked, DPoP-recorded (R2), asked of
+      * `/userinfo` or sent upstream (R2 and R3). Refresh exchanges are not counted: the proxied call is what is counted.
       *
       * Every value is from the verified token or the matched route, never from the request as sent. The endpoint is the
       * registered template (the one the metrics use), not the concrete path.
       */
-    private def observeIdentity(claims: AccessTokenClaims): UIO[Unit] =
+    private def observeIdentity(claims: AccessTokenClaims): IO[Outcome, Unit] =
       if !rateLimiter.active(Checkpoint.Identity) then ZIO.unit
-      else
-        Clock.nanoTime.map: now =>
-          rateLimiter.check(Checkpoint.Identity, identityKeys(claims), now)
-          ()
+      else Clock.nanoTime.flatMap(now => refuseIfLimited(rateLimiter.check(Checkpoint.Identity, identityKeys(claims), now)))
 
     private def observeRoute(
         claims: AccessTokenClaims,
         resourceId: ResourceId,
         endpoint: ResourceEndpoint,
-    ): UIO[Unit] =
+    ): IO[Outcome, Unit] =
       if !rateLimiter.active(Checkpoint.Route) then ZIO.unit
       else
-        Clock.nanoTime.map: now =>
+        Clock.nanoTime.flatMap: now =>
           val keys = RateLimitKeys(
             client = claims.clientId.toString,
             subject = claims.subject,
@@ -651,8 +655,14 @@ object EdgeService:
             resource = resourceId.toString,
             endpoint = s"${endpoint.method} /resources/$resourceId${endpoint.path}",
           )
-          rateLimiter.check(Checkpoint.Route, keys, now)
-          ()
+          refuseIfLimited(rateLimiter.check(Checkpoint.Route, keys, now))
+
+    // The code is the closed `rate_limited`; the policy name is operator-chosen (a closed set per edge), not caller input.
+    private def refuseIfLimited(decision: RateDecision): IO[Outcome, Unit] =
+      decision match
+        case RateDecision.Allowed => ZIO.unit
+        case RateDecision.Limited(policy, retryAfterSeconds) =>
+          Observability.setError("rate_limited", Some(policy)) *> ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds))
 
     private def identityKeys(claims: AccessTokenClaims): RateLimitKeys =
       RateLimitKeys(
@@ -1345,11 +1355,17 @@ object EdgeService:
       rotatedCookie: Option[Cookie.Response],
   )
 
+  /** The `429` body: the closed error code and the policy that refused, nothing about the key. */
+  private case class RateLimitedBody(error: String, policy: String) derives JsonCodec
+
   private enum Outcome:
     case Unauthorized
     case Forbidden
     case NotFound
     case InternalServerError
+
+    /** A rate limit policy in `enforce` refused the call: `429`, with the wait in whole seconds. */
+    case RateLimited(policy: String, retryAfterSeconds: Int)
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
 
     /** The token is valid but its authentication does not meet what this endpoint

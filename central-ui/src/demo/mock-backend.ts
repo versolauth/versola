@@ -67,6 +67,15 @@ type ResourceEndpointDto = {
 export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
+/** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
+const RECOMMENDED_RATE_LIMITS = {
+  policies: [
+    { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 12000, windowSeconds: 60 }], burst: 500, cost: 1, mode: 'shadow' },
+    { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, cost: 1, mode: 'shadow' },
+    { name: 'per-user-endpoint', by: ['subject'], scope: 'endpoint', limits: [{ limit: 120, windowSeconds: 60 }], burst: 30, cost: 1, mode: 'shadow' },
+  ],
+};
+
 type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; rateLimitPolicies?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
@@ -1323,6 +1332,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (Object.keys(policy).length === 0) delete edge.accessLogPolicy;
       else edge.accessLogPolicy = policy;
       await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/edges/rate-limits/recommended' && method === 'GET') {
+      await route.fulfill(json(RECOMMENDED_RATE_LIMITS));
       return;
     }
 

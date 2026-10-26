@@ -766,7 +766,7 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('access-log')}></versola-record-card>
 
-      <versola-record-card heading="Rate limits" subheading="Who may send how much through this edge. Counted only for now: nothing is refused until enforcement is released. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
+      <versola-record-card heading="Rate limits" subheading="Who may send how much through this edge. Start in shadow (counts only), then enforce. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
         ${this.row('Policies', rateLimitCountText(edge.rateLimitPolicies))}
         ${(edge.rateLimitPolicies?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
         ${(edge.rateLimitPolicies?.policies.length ?? 0) > 5 ? this.row('', `and ${edge.rateLimitPolicies!.policies.length - 5} more`) : ''}

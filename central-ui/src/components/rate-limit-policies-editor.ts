@@ -1,12 +1,13 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, editorStyles, formStyles, segmentedStyles } from '../styles/components';
 import {
-  DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, SCOPES, newPolicyDraft, validateDraft,
+  DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, SCOPES, draftFromPolicy, newPolicyDraft, validateDraft,
   type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type WindowDraft,
 } from '../utils/rate-limit-policies';
+import { fetchRecommendedRateLimitPolicies } from '../utils/central-api';
 import { statusIcon } from './status-icon';
 
 /**
@@ -14,8 +15,8 @@ import { statusIcon } from './status-icon';
  * windows, and burst and cost under "Advanced"). The draft is owned by the host; this component
  * validates it live with the server's messages and says `draft-change` when anything changes. A
  * field that is still empty is not called wrong until the host says the form was submitted.
- * `enforce` is not offered: the edge only counts for now, so it is shown only on a policy that
- * already carries it.
+ * "Add recommended policies" fetches the starting set (all in shadow) from central and adds the
+ * ones whose name is not already in the draft.
  */
 @customElement('versola-rate-limit-policies-editor')
 export class VersolaRateLimitPoliciesEditor extends LitElement {
@@ -24,6 +25,8 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
   /** Set by the host on a submit: empty fields are errors from then on. */
   @property({ type: Boolean }) submitted = false;
+  @state() private loadingRecommended = false;
+  @state() private recommendedError = '';
 
   static styles = [
     theme,
@@ -171,10 +174,10 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
         color: var(--text-secondary);
       }
 
-      .empty {
-        margin: 0 0 var(--spacing-md);
-        font-size: var(--text-sm);
-        color: var(--text-secondary);
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
       }
 
       fieldset:disabled .seg-btn {
@@ -208,6 +211,21 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     this.change({ policies: [...this.draft.policies, policy] });
     // The host owns the draft: the new block exists once it has re-rendered this element with it.
     setTimeout(() => void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`[id="rl-${policy.key}-name"]`)?.focus()));
+  }
+
+  private async addRecommended() {
+    this.loadingRecommended = true;
+    this.recommendedError = '';
+    try {
+      const recommended = await fetchRecommendedRateLimitPolicies();
+      const have = new Set(this.draft.policies.map(policy => policy.name.trim()));
+      const added = recommended.policies.filter(policy => !have.has(policy.name)).map(draftFromPolicy);
+      this.change({ policies: [...this.draft.policies, ...added] });
+    } catch (error) {
+      this.recommendedError = error instanceof Error ? error.message : 'Could not load the recommended policies';
+    } finally {
+      this.loadingRecommended = false;
+    }
   }
 
   private removePolicy(key: number) {
@@ -250,7 +268,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
   }
 
   private renderMode(policy: PolicyDraft) {
-    const options = MODES.filter(option => option.id !== 'enforce' || policy.mode === 'enforce');
+    const options = MODES;
     const labelId = `rl-${policy.key}-mode-label`;
     return html`
       <div class="block">
@@ -394,14 +412,24 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
       <fieldset ?disabled=${this.disabled}>
         <div class="banner info" role="note">
           <div class="banner-text">
-            <div class="banner-title">${statusIcon('info')}The edge only counts for now</div>
-            <div>A policy in shadow mode is checked on every proxied call and the edge counts what it would refuse; nothing is refused and no response changes. Enforcement is not released yet. The limit is per edge pod: with several pods the edge as a whole allows up to the limit times the number of pods.</div>
+            <div class="banner-title">${statusIcon('info')}Start in shadow, then enforce</div>
+            <div>A policy in shadow mode is checked on every proxied call and the edge counts what it would refuse (<code>edge_rate_limit_decisions_total</code>, result <code>would_limit</code>); nothing is refused. Read it for a while, then switch a policy to enforce: calls over the limit get <code>429</code> with <code>Retry-After</code>. The limit is per edge pod: with several pods the edge as a whole allows up to the limit times the number of pods.</div>
           </div>
         </div>
-        ${policies.length === 0 ? html`<p class="empty">No policies: this edge applies no rate limit.</p>` : nothing}
+        ${policies.length === 0 ? html`
+          <div class="editor-box">
+            <h3>No policies yet</h3>
+            <p class="editor-sub">This edge applies no rate limit. Start from the recommended set: three generous policies, all in shadow, that only count until you enforce them.</p>
+            <button type="button" class="btn btn-primary" ?disabled=${this.loadingRecommended} @click=${() => this.addRecommended()}>${this.loadingRecommended ? 'Loading…' : 'Add recommended policies'}</button>
+            ${this.recommendedError ? html`<div class="error-message" role="alert">${this.recommendedError}</div>` : nothing}
+          </div>` : nothing}
         ${repeat(policies, policy => policy.key, (policy, n) => this.renderPolicy(policy, n, errors))}
         ${errors.set ? html`<div class="error-message" role="alert">${errors.set}</div>` : nothing}
-        <button type="button" class="btn btn-secondary" ?disabled=${policies.length >= MAX_POLICIES} @click=${() => this.addPolicy()}>Add policy</button>
+        <div class="actions">
+          <button type="button" class="btn btn-secondary" ?disabled=${policies.length >= MAX_POLICIES} @click=${() => this.addPolicy()}>Add policy</button>
+          ${policies.length > 0 ? html`<button type="button" class="btn btn-secondary" ?disabled=${this.loadingRecommended} @click=${() => this.addRecommended()}>${this.loadingRecommended ? 'Loading…' : 'Add recommended policies'}</button>` : nothing}
+        </div>
+        ${policies.length > 0 && this.recommendedError ? html`<div class="error-message" role="alert">${this.recommendedError}</div>` : nothing}
       </fieldset>
     `;
   }
