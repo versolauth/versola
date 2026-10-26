@@ -234,7 +234,10 @@ object PostgresHikariDataSource:
     Files.walk(root, 4)
       .iterator()
       .asScala
-      .filter(_.toString.endsWith("postgres/migrations"))
+      // By path components, not a string suffix: on Windows the separator is `\`, and a suffix
+      // check found nothing there -- Flyway then ran with no locations and every repository
+      // spec failed on a missing table.
+      .filter(path => path.getFileName.toString == "migrations" && Option(path.getParent).exists(_.getFileName.toString == "postgres"))
       .map { path =>
         s"filesystem:./${root.relativize(path).toString.replace('\\', '/')}"
       }
