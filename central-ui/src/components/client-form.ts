@@ -49,13 +49,16 @@ import {
   describeJwks,
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
+import { declaredFromDraft, draftFromDeclared, hasErrors as declaredHasErrors, type DeclaredDraft } from '../utils/declared-rate-limit';
+import './declared-rate-limit-editor';
+import type { VersolaDeclaredRateLimitEditor } from './declared-rate-limit-editor';
 import { estStateSummary } from '../utils/est-state';
 import './theme-token-controls';
 import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
 
 /** The groups of settings the client page offers an Edit button for. */
-export type ClientEditSection = 'type' | 'general' | 'access' | 'signin' | 'tokens' | 'keys' | 'registration' | 'branding';
+export type ClientEditSection = 'type' | 'general' | 'access' | 'signin' | 'tokens' | 'ratelimit' | 'keys' | 'registration' | 'branding';
 
 export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   type: 'Type',
@@ -63,6 +66,7 @@ export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   access: 'Scopes and permissions', // replaced per kind by `accessSectionTitle` where a client is shown
   signin: 'Sign-in',
   tokens: 'Tokens',
+  ratelimit: 'Rate limit',
   keys: 'Keys',
   registration: 'Ownership',
   branding: 'Branding and logout',
@@ -124,6 +128,9 @@ export class VersolaClientForm extends LitElement {
     requirePushedAuthorizationRequests: false,
   };
 
+  /** The limit declared on the client; null is none. Edited in the Rate limit section. */
+  @state() private rateLimitDraft: DeclaredDraft | null = null;
+  @state() private rateLimitSubmitted = false;
   @state() private redirectUriInput = '';
   @state() private clientCredentialMode: ClientCredentialMode = 'secret';
   @state() private mtlsSubjectType: MtlsSubjectType = 'subject_dn';
@@ -1664,6 +1671,7 @@ export class VersolaClientForm extends LitElement {
           this.clientCredentialMode = 'secret';
       }
       this.jwksInput = this.client.jwks ? JSON.stringify(this.client.jwks, null, 2) : '';
+      this.rateLimitDraft = draftFromDeclared(this.client.rateLimit);
     } else {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
@@ -1691,6 +1699,12 @@ export class VersolaClientForm extends LitElement {
     }
 
     if (this.isAccessTokenTtlInvalid || this.themeBrandInvalid) {
+      return;
+    }
+
+    if (declaredHasErrors(this.rateLimitDraft, 'client')) {
+      this.rateLimitSubmitted = true;
+      void this.updateComplete.then(() => this.renderRoot.querySelector<VersolaDeclaredRateLimitEditor>('versola-declared-rate-limit-editor')?.focusFirstError());
       return;
     }
 
@@ -1803,6 +1817,7 @@ export class VersolaClientForm extends LitElement {
       createdAt: this.client?.createdAt ?? null,
       // Only an app that asks for consent has an appearance of its own (central refuses overrides otherwise).
       themeOverrides: authFlow && this.formData.consentFlow ? this.formData.themeOverrides ?? null : null,
+      rateLimit: declaredFromDraft(this.rateLimitDraft),
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -3840,6 +3855,13 @@ export class VersolaClientForm extends LitElement {
         return html`${this.renderAuthFlowSection()}${this.renderOtpSettingsSection()}${this.renderRedirectUrisField()}`;
       case 'tokens':
         return html`${this.renderAccessTokenTtlField()}${this.renderRefreshTokenTtlField()}${this.renderDpopPolicy()}`;
+      case 'ratelimit':
+        return html`
+          <div class="form-group">
+            <div class="hint">A limit on the calls that carry an access token issued to this client.</div>
+            <versola-declared-rate-limit-editor owner="client" fieldId="client-rl" .draft=${this.rateLimitDraft} ?submitted=${this.rateLimitSubmitted}
+              @draft-change=${(e: CustomEvent<{ draft: DeclaredDraft | null }>) => { this.rateLimitDraft = e.detail.draft; }}></versola-declared-rate-limit-editor>
+          </div>`;
       case 'keys':
         return html`<div class="form-group">${this.renderJwksField()}</div>`;
       case 'registration':

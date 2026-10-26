@@ -1,5 +1,6 @@
 import { clientKindOf, type ClientKind } from './client-presets';
 import type { ThemeVariableCatalog } from './theme-variables';
+import type { DeclaredRateLimit } from './declared-rate-limit';
 import type {
   AuthFlow,
   AuthMethod,
@@ -80,11 +81,13 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge' | 'rateLimit'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
+  /** Left out when there is no limit: the endpoint is written whole, so absent removes it. */
+  rateLimit?: DeclaredRateLimit;
 };
 export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 export type ResourceEndpointWriteDto = {
@@ -97,6 +100,7 @@ export type ResourceEndpointWriteDto = {
   stepUpCondition?: string | null;
   stepUpAcr?: string | null;
   maxAge?: number | null;
+  rateLimit?: DeclaredRateLimit;
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
@@ -108,6 +112,7 @@ type ResourceEndpointDto = {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  rateLimit?: DeclaredRateLimit | null;
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
@@ -162,6 +167,7 @@ type ClientsResponse = {
     template?: ClientTemplate | null;
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
+    rateLimit?: DeclaredRateLimit | null;
     est?: ClientEstState | null;
   }>;
 };
@@ -635,6 +641,7 @@ function serializeResourceEndpoint(
     stepUpCondition: endpoint.stepUpCondition ?? null,
     stepUpAcr: endpoint.stepUpAcr ?? null,
     maxAge: endpoint.maxAge ?? null,
+    ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
   };
 }
 
@@ -661,6 +668,7 @@ function mapResource(resource: ResourceResponseDto): Resource {
       ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
       ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+      ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
     })),
     hasSecret: resource.internal,
     hasPreviousSecret: resource.secretRotation,
@@ -779,6 +787,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
+        rateLimit: client.rateLimit ?? null,
         est: client.est ?? null,
         tenantId,
       };
@@ -1164,7 +1173,7 @@ const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
 };
 
 const COMMON_UPDATE_FIELDS = [
-  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'rateLimit',
 ] as const;
 
 const SIGN_IN_UPDATE_FIELDS = [
@@ -1317,6 +1326,8 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       themeOverrides: sameJsonValue(nonEmptyOverrides(existing.themeOverrides), nonEmptyOverrides(client.themeOverrides))
         ? undefined
         : (nonEmptyOverrides(client.themeOverrides) ?? {}),
+      // Patch semantics: omitted leaves the stored limit alone, null removes it.
+      rateLimit: sameJsonValue(existing.rateLimit ?? null, client.rateLimit ?? null) ? undefined : (client.rateLimit ?? null),
     }, UPDATE_FIELDS[kind]),
   });
 

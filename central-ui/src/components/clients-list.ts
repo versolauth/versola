@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { declaredSummary } from '../utils/declared-rate-limit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, recordStyles } from '../styles/components';
@@ -1420,6 +1421,11 @@ export class VersolaClientsList extends LitElement {
           : this.viewRow('Refresh token', html`<span class="muted">Not issued</span>`,
               signsUsersIn ? 'Needs offline_access' : 'By type')}
         ${client.dpopBoundAccessTokens ? this.viewRow('DPoP proof keys', (client.dpopSigningAlgs ?? []).length ? (client.dpopSigningAlgs ?? []).join(', ') : 'Any the server accepts') : ''}
+      `)}
+
+      ${this.viewSection('Rate limit', '', 'ratelimit', client, html`
+        ${this.viewRow('Calls with this client’s tokens', client.rateLimit ? declaredSummary(client.rateLimit, 'client') : html`<span class="muted">No limit</span>`,
+          client.rateLimit ? '' : 'Edge policies still apply')}
       `)}
 
       ${hasKeys ? this.viewSection('Keys', 'Public keys the client signs with', 'keys', client, html`

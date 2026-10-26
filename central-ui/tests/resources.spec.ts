@@ -743,6 +743,96 @@ test.describe('endpoints editor', () => {
   });
 });
 
+test.describe('rate limit declared on an endpoint', () => {
+  const limit = { limits: [{ limit: 30, windowSeconds: 60 }], burst: 5, by: 'subject', mode: 'enforce' };
+  const limitedState = {
+    ...shopState,
+    resources: { [shopTenant]: [{ ...ordersApi, secretRotation: false, endpoints: ordersApi.endpoints.map(e => (e.id === 5 ? { ...e, rateLimit: limit } : e)) }, catalogApi] },
+  };
+  const rateLimitPanel = (page: Page) => page.getByRole('region', { name: 'Rate limit' });
+  const refund = (page: Page) => endpointRow(page, 'POST /orders/{orderId}/refund');
+  const open = (page: Page, state: object = limitedState) => loadAdminApp(page, { path: recordPath('orders-api', 'endpoints'), state });
+
+  test('the record says which endpoint carries a limit, and the editor reads it back', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: limitedState });
+    await expect(page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]')).toContainText('Enforce · 30 / 60 s · each user · burst 5');
+    await expect(page.locator('tr[data-endpoint="GET /orders"]')).not.toContainText('limit:');
+
+    await page.goto(recordPath('orders-api', 'endpoints'));
+    await refund(page).click();
+    await expect(page.getByRole('button', { name: 'Enforce' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Count by')).toHaveValue('subject');
+    await expect(page.getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('30');
+    await expect(page.getByLabel('Burst')).toHaveValue('5');
+    // an endpoint without one offers to set it
+    await endpointRow(page, 'GET /orders').click();
+    await expect(rateLimitPanel(page)).toContainText('No limit is declared on this endpoint');
+  });
+
+  test('a limit set here is sent inside the endpoint, in shadow, and the endpoint stays whole', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await rateLimitPanel(page).getByRole('button', { name: 'Set a limit' }).click();
+    await expect(page.getByRole('button', { name: 'Shadow' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('120');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Count by').selectOption('client');
+    await expect(endpointRow(page, 'PUT /orders/{orderId}/address')).toContainText('Edited');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toEqual({
+      resourceId: 'orders-api',
+      audience: { add: [], remove: [] },
+      deleteEndpoints: [],
+      createEndpoints: [{
+        id: 4, method: 'PUT', path: '/orders/{orderId}/address', fetchUserInfo: false, allow: 'has(request.body.postalCode)', inject: [],
+        stepUpCondition: null, stepUpAcr: null, maxAge: null,
+        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], mode: 'shadow', by: 'client' },
+      }],
+    });
+  });
+
+  test('removing the limit writes the endpoint without one', async ({ page }) => {
+    const api = await open(page);
+    await refund(page).click();
+    await rateLimitPanel(page).getByRole('button', { name: 'Remove limit' }).click();
+    await expect(refund(page)).toContainText('Edited');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    const written = (await findRequest(api.requests, 'PUT', '/configuration/resources')).body as { createEndpoints: Array<Record<string, unknown>> };
+    expect(written.createEndpoints).toHaveLength(1);
+    expect(written.createEndpoints[0]).not.toHaveProperty('rateLimit');
+  });
+
+  test('an unsaved edit of another endpoint carries nothing about a limit it does not have', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await page.getByRole('textbox', { name: 'Allow expression' }).fill('has(request.body.city)');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    const written = (await findRequest(api.requests, 'PUT', '/configuration/resources')).body as { createEndpoints: Array<Record<string, unknown>> };
+    expect(written.createEndpoints[0]).not.toHaveProperty('rateLimit');
+  });
+
+  test('refuses an invalid limit before sending, and names the endpoint', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await rateLimitPanel(page).getByRole('button', { name: 'Set a limit' }).click();
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('5');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Burst').fill('9');
+    await expect(page.getByText('burst must not exceed the smallest limit')).toBeVisible();
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    await expect(page.getByText('The rate limit is not valid in PUT /orders/{orderId}/address')).toBeVisible();
+    expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/resources')).toHaveLength(0);
+  });
+
+  test('the editor fits 375 without sideways scroll', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await open(page);
+    await refund(page).click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+});
+
 test.describe('secret', () => {
   const quiet = { ...ordersApi, secretRotation: false };
   const state = { ...shopState, resources: { [shopTenant]: [quiet, catalogApi] } };

@@ -150,6 +150,8 @@ export interface OAuthClient {
   requireSignedRequestObject: boolean;
   /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
   requirePushedAuthorizationRequests: boolean;
+  /** A limit on calls carrying this client's tokens, checked by the edge with its own policies (the smallest wins). Absent: none. */
+  rateLimit?: DeclaredRateLimit | null;
   template?: ClientTemplate | null;
   /** What kind of client central says this is, which an update is sent to the endpoint of. Fixed for
    *  the client's life; absent for a client being built that has not been registered yet. */
@@ -371,6 +373,8 @@ export interface ResourceEndpoint {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  /** A limit on how often this endpoint is called, checked by the edge with its own policies (the smallest wins). Absent: none. */
+  rateLimit?: DeclaredRateLimit;
 }
 
 export interface Resource {
@@ -403,6 +407,8 @@ import type { OverloadPolicy } from '../utils/overload-policy';
 export type { AccessLogPolicy } from '../utils/access-log-policy';
 import type { AccessLogPolicy } from '../utils/access-log-policy';
 export type { RateLimitPolicies, RateLimitPolicy } from '../utils/rate-limit-policies';
+export type { DeclaredRateLimit } from '../utils/declared-rate-limit';
+import type { DeclaredRateLimit } from '../utils/declared-rate-limit';
 import type { RateLimitPolicies } from '../utils/rate-limit-policies';
 import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {

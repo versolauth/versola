@@ -2394,3 +2394,81 @@ test('the wizard select shows a grant duration outside its presets as its own op
   await expect(select).toHaveValue('180');
   await expect(select.locator('option:checked')).toHaveText('180 days');
 });
+
+test.describe('rate limit declared on a client', () => {
+  const limited = { ...alphaClient, rateLimit: { limits: [{ limit: 600, windowSeconds: 60 }], burst: 50, by: 'subject', mode: 'enforce' } };
+
+  test('the client page says there is no limit, or states the one it has', async ({ page }) => {
+    await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient, { ...limited, id: 'limited-web', clientName: { en: 'Limited Web' } }] } } });
+    await openClientPage(page, 'alpha-web');
+    await expect(page.getByRole('region', { name: 'Rate limit' })).toContainText('No limit');
+    await page.goto(clientsPath);
+    await openClientPage(page, 'limited-web');
+    await expect(page.getByRole('region', { name: 'Rate limit' })).toContainText('Enforce · 600 / 60 s · each user · burst 50');
+  });
+
+  test('setting a limit sends only the rate limit, in shadow, and a client cannot be counted by client', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+    await openClientPage(page, 'alpha-web');
+    await openEditSection(page, 'Rate limit');
+    await expect(page.getByRole('heading', { level: 1, name: 'Rate limit', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Set a limit' }).click();
+    await expect(page.getByRole('button', { name: 'Shadow' })).toHaveAttribute('aria-pressed', 'true');
+    // central refuses `client` on a client, so it is not offered
+    await expect(page.getByLabel('Count by').locator('option')).toHaveText(['The client as a whole', 'Each user']);
+
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('600');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Count by').selectOption('subject');
+    await page.getByLabel('Burst').fill('50');
+    await saveEdit(page);
+
+    expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
+      clientId: 'alpha-web',
+      rateLimit: { limits: [{ limit: 600, windowSeconds: 60 }], mode: 'shadow', by: 'subject', burst: 50 },
+    });
+  });
+
+  test('refuses a burst above the smallest limit before sending, naming the field', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+    await openClientPage(page, 'alpha-web');
+    await openEditSection(page, 'Rate limit');
+    await page.getByRole('button', { name: 'Set a limit' }).click();
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('5');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Burst').fill('6');
+    await expect(page.getByText('burst must not exceed the smallest limit')).toBeVisible();
+    await saveEdit(page);
+    await expect(page.getByLabel('Burst')).toBeFocused();
+    expect(clientWrites(api.requests, 'PUT')).toHaveLength(0);
+  });
+
+  test('an empty window is not called wrong until a save is tried, and then is', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+    await openClientPage(page, 'alpha-web');
+    await openEditSection(page, 'Rate limit');
+    await page.getByRole('button', { name: 'Set a limit' }).click();
+    await expect(page.getByText('limit must be between 1')).toHaveCount(0);
+    await saveEdit(page);
+    await expect(page.getByText('limit must be between 1 and 1000000')).toBeVisible();
+    expect(clientWrites(api.requests, 'PUT')).toHaveLength(0);
+  });
+
+  test('removing the limit sends null, and changing nothing sends nothing about it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [limited] } } });
+    await openClientPage(page, 'alpha-web');
+    await openEditSection(page, 'Rate limit');
+    await expect(page.getByRole('button', { name: 'Enforce' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('600');
+    await page.getByRole('button', { name: 'Remove limit' }).click();
+    await expect(page.getByText('No limit is declared on this client')).toBeVisible();
+    await saveEdit(page);
+    expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({ clientId: 'alpha-web', rateLimit: null });
+
+    // another group saved on a client that has a limit leaves the limit out of the request
+    await page.getByRole('region', { name: 'Tokens' }).getByRole('button', { name: 'Edit tokens' }).click();
+    await page.getByLabel('Access Token TTL *').fill('2');
+    await saveEdit(page);
+    expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('rateLimit');
+  });
+});

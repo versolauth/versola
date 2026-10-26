@@ -697,6 +697,17 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/client-edit-ratelimit', kind: 'frame', path: clientsPath,
+    state: withClients({
+      ...webClient,
+      rateLimit: { limits: [{ limit: 600, windowSeconds: 60 }, { limit: 10000, windowSeconds: 3600 }], burst: 50, by: 'subject', mode: 'shadow' },
+    }),
+    before: async page => {
+      await editClient('storefront-web', 'rate limit', 'Rate limit')(page);
+      await expect(page.getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('600');
+    },
+  },
+  {
     name: 'console/client-edit-tokens-mobile', kind: 'frame', path: clientsPath, state: withClients(mobileClient),
     before: async page => {
       await editClient('storefront-mobile', 'tokens', 'Tokens')(page);
@@ -1247,6 +1258,21 @@ const consoleShots: DocsShot[] = [
       await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');
       await page.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
       await expect(page.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
+    },
+  },
+
+  {
+    name: 'console/resource-endpoint-ratelimit', kind: 'crop', path: `${resourcePath}&edit=endpoints`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limit' }),
+    before: async page => {
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('button', { name: 'Set a limit' }).click();
+      await page.getByRole('button', { name: 'Enforce' }).click();
+      await page.getByLabel('Count by').selectOption('subject');
+      await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('30');
+      await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await page.getByLabel('Burst').fill('5');
+      await expect(page.getByLabel('Burst')).toHaveValue('5');
     },
   },
 

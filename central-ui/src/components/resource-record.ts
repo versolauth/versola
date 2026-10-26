@@ -403,6 +403,7 @@ export class VersolaResourceRecord extends LitElement {
         ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
         ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
         ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+        ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
       }));
       // The record lists them in the order the editor had them: the old position, then the new ones.
       const order = new Map(this.resource.endpoints.map((endpoint, index) => [endpoint.id, index]));
