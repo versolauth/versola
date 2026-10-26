@@ -80,39 +80,6 @@ object AntifraudDetectors:
       maxVerified: Int,
   )
 
-  object Settings:
-    val default: Settings = Settings(
-      enabled = false,
-      interval = 1.minute,
-      settle = 2.minutes,
-      statementTimeout = 10.seconds,
-      maxProposals = 20,
-      candidates = 200,
-      openFor = 12.hours,
-      cooldown = 24.hours,
-      ttl = 24.hours,
-      retention = 90.days,
-      batchSize = 1000,
-      prefixAnomaly = PrefixAnomaly(
-        enabled = true,
-        window = 15.minutes,
-        baseline = 24.hours,
-        minRequests = 50,
-        spikeFactor = 5.0,
-        baselineFloor = 5.0,
-        minSent = 20,
-        maxConversion = 0.2,
-        conversionDrop = 0.5,
-        minBaselineSent = 50,
-      ),
-      fakeVerify = FakeVerify(
-        enabled = true,
-        window = 30.minutes,
-        minFakeVerifies = 5,
-        maxVerified = 0,
-      ),
-    )
-
   /** What every detector statement needs of the settings, so the repository does not take the whole of them. */
   case class Run(settle: Duration, statementTimeout: Duration, maxProposals: Int, candidates: Int, cooldown: Duration, ttl: Duration)
 

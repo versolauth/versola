@@ -110,19 +110,6 @@ object AntifraudLists:
       startupTimeout: Duration,
   )
 
-  object Settings:
-    val default: Settings = Settings(
-      enabled = false,
-      refreshInterval = 5.seconds,
-      hitFlushInterval = 30.seconds,
-      watchWeight = 20,
-      allowWeight = 1000,
-      maxTrafficShare = 0.05,
-      shareMinEvents = 100,
-      auditRetention = 365.days,
-      startupTimeout = 30.seconds,
-    )
-
   val live: ZLayer[AntifraudListRepository & Settings & Scope, Nothing, AntifraudLists] =
     ZLayer.fromZIO:
       for

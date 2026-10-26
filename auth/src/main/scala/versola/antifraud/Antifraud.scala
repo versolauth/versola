@@ -2,6 +2,7 @@ package versola.antifraud
 
 import versola.oauth.client.model.{ClientId, TenantId}
 import zio.*
+import zio.config.magnolia.DeriveConfig
 
 /** What the rules get to see about one risky step: who asks, for what, from where. Every field but the action,
   * tenant and client is optional, because not every signal exists on every path (no device id before P1-1, no ASN
@@ -39,6 +40,13 @@ enum DecisionAction:
   case Block
   /** Go on or refuse as configured, and put it in front of a person. */
   case Review
+
+object DecisionAction:
+  /** Read from the config by name, in any case: `failure-action = "challenge"`. */
+  given DeriveConfig[DecisionAction] = DeriveConfig[String].mapOrFail: name =>
+    DecisionAction.values
+      .find(_.toString.equalsIgnoreCase(name))
+      .toRight(Config.Error.InvalidData(message = s"expected one of ${DecisionAction.values.mkString(", ")}, got $name"))
 
 /** @param score      the sum of the weights of the fired rules
   * @param firedRules names of the rules that matched, for the event log and for explaining a decision
@@ -78,14 +86,14 @@ object Antifraud:
     * @param failureAction  the decision when evaluation fails or times out
     */
   case class Settings(
-      enabled: Boolean = false,
-      delayAt: Int = 0,
-      challengeAt: Int = 0,
-      reviewAt: Int = 0,
-      blockAt: Int = 0,
-      delay: Duration = 2.seconds,
-      timeout: Duration = 20.millis,
-      failureAction: DecisionAction = DecisionAction.Challenge,
+      enabled: Boolean,
+      delayAt: Int,
+      challengeAt: Int,
+      reviewAt: Int,
+      blockAt: Int,
+      delay: Duration,
+      timeout: Duration,
+      failureAction: DecisionAction,
   )
 
   /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer

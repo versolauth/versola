@@ -12,7 +12,7 @@ import java.util.UUID
 object VelocityCountersSpec extends UnitSpecBase:
 
   private val t0 = Instant.parse("2026-10-21T10:00:00Z")
-  private val on = VelocityCounters.Settings(enabled = true)
+  private val on = AntifraudTestSettings.velocity.copy(enabled = true)
 
   import VelocityKey.*
   import VelocityWindow.*
@@ -251,7 +251,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(down == (1, 0), up == 1)
     },
     test("an address is counted as its network under a keyed hash: spellings and a /64 are one key, and no address is stored") {
-      val settings = on.copy(shareFrom = 1, thresholds = VelocityRules.Thresholds(ip = VelocityRules.Limit(perDay = 1000)))
+      val settings = on.copy(shareFrom = 1, thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perDay = 1000)))
       def ctx(ip: String) = AntifraudContext(
         tenantId = None,
         clientId = ClientId("c"),
@@ -303,7 +303,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(first == 2, b.count(phone, "p", TenMinutes, t0) == 5)
     },
     test("while off nothing is counted or started") {
-      val counters = VelocityCounters.off
+      val counters = AntifraudTestSettings.velocityOff
       for
         ctx <- counters.recordAndSnapshot(AntifraudContext(
           tenantId = None,

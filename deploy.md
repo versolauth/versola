@@ -474,6 +474,40 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **Antifraud configuration.** Every key of the `antifraud` block of `auth`'s config has its default in the image
+  (`auth/src/main/resources/versola-defaults.conf`, the one place to read them; the Scala settings classes have none), and
+  **all of it is off**: the switches (`decision.enabled`, `velocity.enabled`, `lists.enabled`, `detectors.enabled`) are
+  `false` and every limit and threshold is `0`, which means none. A key is read from the first of these that has it:
+  `env.conf`, the overlay file (`CONFIG_OVERLAY_PATH`), the defaults. On Kubernetes set `services.auth.antifraud` in the
+  chart's values, which renders the overlay (a ConfigMap, kebab-case keys, durations as strings) and restarts `auth` when
+  it changes; elsewhere write the same block in `env.conf`. The keys and what they mean are in the items below.
+
+  *Recommended start against SMS pumping: shadow mode.* The engine counts and scores every OTP request and writes the
+  score and the fired rules to the event log (`af_event.score`, `af_event.rules`), but enforces nothing while no
+  `*-at` threshold is set and `failure-action` is `allow`:
+
+  ```yaml
+  services:
+    auth:
+      antifraud:
+        sms-budget: {sent-per-hour: 300, prefix-length: 6}   # above the busiest range's hourly peak (see below)
+        decision: {enabled: true, failure-action: allow}     # no delay-at/challenge-at/review-at/block-at: shadow
+        velocity:
+          enabled: true
+          thresholds:
+            phone: {per-hour: 3, per-day: 6}
+            prefix: {per-ten-minutes: 60, per-hour: 200}
+            ip: {per-minute: 10, weight: 10}                  # low weight: carrier-grade NAT shares addresses
+        lists: {enabled: true}
+        detectors: {enabled: true}                            # proposes entries, enforces nothing
+  ```
+
+  (`sms-budget` is the one key of the profile that acts at once: it refuses the codes above the limit, so size it from
+  the range statistics first.) Run it for at least a week, look at which rules fire for traffic you know to be good
+  (`af_event`, the proposals of the detectors), and only then turn on enforcement by setting
+  `decision.challenge-at` and `decision.block-at` above the scores of the good traffic (and `failure-action:
+  challenge`). Turn a switch off again to go back; nothing it recorded needs undoing.
+
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
   `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
@@ -1108,6 +1142,7 @@ Invalid values fall back to the defaults.
 | `PORT` / `APORT` / `DPORT` | `8080` / `8082` / `8081` | app / additional internal / diagnostics (`/metrics`, `/liveness`, `/readiness`) port |
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
+| `CONFIG_OVERLAY_PATH` | — | optional HOCON file laid below `CONFIG_PATH` and above the defaults the service ships; the chart sets it on `auth` from `services.auth.antifraud` |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
 | `HTTP_ACCESS_LOG` | `off` on edge, `full` on central (auth always logs everything) | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |

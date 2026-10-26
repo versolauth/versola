@@ -66,10 +66,10 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
-  private val settings = AntifraudLists.Settings.default.copy(enabled = true)
+  private val settings = AntifraudTestSettings.lists.copy(enabled = true)
 
   // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
-  private val engine = Antifraud.Settings(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
+  private val engine = AntifraudTestSettings.decision.copy(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
 
   private def ctx(
       ip: Option[String] = None,
@@ -130,7 +130,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     test("contributes no rule while off, whatever the table holds") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
-      val (off, _) = make(repository, AntifraudLists.Settings.default)
+      val (off, _) = make(repository, AntifraudTestSettings.lists)
       for
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
         offRules <- off.ruleSet.rules

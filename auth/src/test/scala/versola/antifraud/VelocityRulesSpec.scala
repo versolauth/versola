@@ -9,7 +9,7 @@ object VelocityRulesSpec extends UnitSpecBase:
 
   import VelocityRules.Limit
 
-  private def settings(thresholds: VelocityRules.Thresholds) = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
+  private def settings(thresholds: VelocityRules.Thresholds) = AntifraudTestSettings.velocity.copy(enabled = true, thresholds = thresholds)
 
   private val ctx = AntifraudContext(
     tenantId = Some(TenantId("t")),
@@ -26,7 +26,7 @@ object VelocityRulesSpec extends UnitSpecBase:
   )
 
   private def antifraud(s: VelocityCounters.Settings, blockAt: Int = 50) =
-    Antifraud.Impl(Antifraud.Settings(enabled = true, blockAt = blockAt), List(VelocityRules.ruleSet(s)))
+    Antifraud.Impl(AntifraudTestSettings.decision.copy(enabled = true, blockAt = blockAt), List(VelocityRules.ruleSet(s)))
 
   /** Makes `n` requests as a caller that counts every step does, and decides the last one. */
   private def decide(s: VelocityCounters.Settings, n: Int, request: AntifraudContext = ctx, blockAt: Int = 50): UIO[Decision] =
@@ -35,14 +35,14 @@ object VelocityRulesSpec extends UnitSpecBase:
 
   def spec = suite("VelocityRules")(
     test("fires when a limit is exceeded, not when it is reached") {
-      val s = settings(VelocityRules.Thresholds(phone = Limit(perTenMinutes = 3, weight = 50)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perTenMinutes = 3, weight = 50)))
       for
         reached <- decide(s, 3)
         over <- decide(s, 4)
       yield assertTrue(reached == Decision.allow, over == Decision(DecisionAction.Block, 50, List("velocity_phone_10m")))
     },
     test("a limit applies to its key and window only, and 0 is no limit") {
-      val s = settings(VelocityRules.Thresholds(ip = Limit(perMinute = 2, weight = 50), prefix = Limit(perHour = 5, weight = 10)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 50), prefix = AntifraudTestSettings.limit.copy(perHour = 5, weight = 10)))
       for
         ip <- decide(s, 3)
         both <- decide(s, 6)
@@ -55,7 +55,7 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("ranges are counted per tenant, the phone is not") {
-      val s = settings(VelocityRules.Thresholds(prefix = Limit(perHour = 2), phone = Limit(perHour = 2)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(prefix = AntifraudTestSettings.limit.copy(perHour = 2), phone = AntifraudTestSettings.limit.copy(perHour = 2)))
       val counters = VelocityCounters(s)
       for
         _ <- ZIO.foreachDiscard(List("t", "t", "u"))(t => counters.recordAndSnapshot(ctx.copy(tenantId = Some(TenantId(t)))))
@@ -63,12 +63,12 @@ object VelocityRulesSpec extends UnitSpecBase:
       yield assertTrue(last.signals("velocity.prefix.1h") == "2", last.signals("velocity.phone.1h") == "4")
     },
     test("carries the counts in the signals, only of the windows with a limit, and leaves other signals alone") {
-      val s = settings(VelocityRules.Thresholds(ip = Limit(perMinute = 1, perDay = 9)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 1, perDay = 9)))
       VelocityCounters(s).recordAndSnapshot(ctx.copy(signals = Map("x" -> "y"))).map: out =>
         assertTrue(out.signals == Map("x" -> "y", "velocity.ip.1m" -> "1", "velocity.ip.24h" -> "1"))
     },
     test("a snapshot counts the request as if it were recorded, without recording it, so a refused step is not counted") {
-      val s = settings(VelocityRules.Thresholds(phone = Limit(perHour = 2, weight = 50)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 2, weight = 50)))
       val counters = VelocityCounters(s)
       for
         first <- counters.snapshot(ctx)
@@ -85,7 +85,7 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("a known user is let off part of the weight, and only when a velocity rule fired") {
-      val s = settings(VelocityRules.Thresholds(phone = Limit(perHour = 2, weight = 50), trustedDiscount = 40))
+      val s = settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 2, weight = 50), trustedDiscount = 40))
       val counters = VelocityCounters(s)
       val known = ctx.copy(signals = Map("device.known" -> "true"))
       val recent = ctx.copy(signals = Map("session.recent_success" -> "true"))
@@ -104,7 +104,7 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("an address ip is weighted below a device by default, for the many users behind one NAT") {
-      val t = VelocityRules.Thresholds()
+      val t = AntifraudTestSettings.thresholds
       assertTrue(t.ip.weight < t.device.weight, t.asn.weight < t.device.weight, t.ip.weight < t.phone.weight)
     },
     test("names the network of an address: spellings alike, IPv4-mapped is IPv4, IPv6 by its /64, anything else is no key") {
@@ -123,7 +123,7 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("has no rules while the counters are off, whatever the limits") {
-      val s = settings(VelocityRules.Thresholds(ip = Limit(perMinute = 1))).copy(enabled = false)
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 1))).copy(enabled = false)
       VelocityRules.ruleSet(s).rules.map(rules => assertTrue(rules.isEmpty))
     },
   )

@@ -468,6 +468,15 @@ object VersolaApp:
         case "prod" => EnvName.Prod
         case value => EnvName.Test(value)
 
+  /** The env.conf, then the overlay file (the chart's values), then the defaults the service ships in
+    * `versola-defaults.conf`: a key is read from the first that has it. */
+  private[versola] def layered(envConfig: String, overlay: Option[java.io.File]): com.typesafe.config.Config =
+    ConfigFactory
+      .parseString(envConfig)
+      .withFallback(overlay.fold(ConfigFactory.empty())(ConfigFactory.parseFile))
+      .withFallback(ConfigFactory.parseResources("versola-defaults.conf"))
+      .resolve()
+
   private def configProvider: TaskLayer[ConfigProvider] =
     ZLayer.fromZIO:
       for
@@ -480,7 +489,9 @@ object VersolaApp:
               absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString.replace('\\', '/'))
             yield s"""include required(file("$absolutePath"))"""
 
-        cp <- ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(configString).resolve()).map(_.kebabCase)
+        overlayPath <- System.env("CONFIG_OVERLAY_PATH")
+        resolved <- ZIO.attempt(layered(configString, overlayPath.filter(_.nonEmpty).map(java.io.File(_))))
+        cp <- ConfigProvider.fromTypesafeConfigZIO(resolved).map(_.kebabCase)
       yield cp
 
   private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & ConfigProvider, Config.Error, Unit] =

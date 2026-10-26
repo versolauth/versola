@@ -36,11 +36,11 @@ object VelocityRules:
   /** The most requests a key may have in each window; 0 means no limit. A count above the limit fires the rule.
     * @param weight what a fired rule of this key adds to the score */
   case class Limit(
-      perMinute: Int = 0,
-      perTenMinutes: Int = 0,
-      perHour: Int = 0,
-      perDay: Int = 0,
-      weight: Int = 50,
+      perMinute: Int,
+      perTenMinutes: Int,
+      perHour: Int,
+      perDay: Int,
+      weight: Int,
   ):
     def of(window: VelocityWindow): Int = window match
       case VelocityWindow.OneMinute => perMinute
@@ -52,12 +52,12 @@ object VelocityRules:
     *                        of its own, `velocity_known_user`); 0 for none
     */
   case class Thresholds(
-      phone: Limit = Limit(weight = 50),
-      ip: Limit = Limit(weight = 20),
-      device: Limit = Limit(weight = 60),
-      asn: Limit = Limit(weight = 20),
-      prefix: Limit = Limit(weight = 30),
-      trustedDiscount: Int = 40,
+      phone: Limit,
+      ip: Limit,
+      device: Limit,
+      asn: Limit,
+      prefix: Limit,
+      trustedDiscount: Int,
   ):
     def of(keyType: VelocityKey): Limit = keyType match
       case VelocityKey.phone => phone

@@ -253,34 +253,21 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
 
-  /** The `antifraud` block of the config, every key of which is optional; without it the defaults apply. */
+  /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](
-        _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
-      )
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings])))
 
-  /** `antifraud.lists`, optional like the rest of the block. */
+  /** `antifraud.lists` */
   private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](
-        _.load(
-          Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]).withDefault(AntifraudLists.Settings.default))
-            .withDefault(AntifraudLists.Settings.default),
-        ),
-      )
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]))))
 
-  /** `antifraud.detectors`, optional like the rest of the block. */
+  /** `antifraud.detectors` */
   private val antifraudDetectorSettings: ZLayer[ConfigProvider, Config.Error, AntifraudDetectors.Settings] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](
-        _.load(
-          Config.Nested(
-            "antifraud",
-            Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]).withDefault(AntifraudDetectors.Settings.default),
-          )
-            .withDefault(AntifraudDetectors.Settings.default),
-        ),
+        _.load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]))),
       )
 
   /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */

@@ -230,15 +230,15 @@ object VelocityCounters:
     * @param thresholds    the limits the rules apply (see [[VelocityRules]]); none by default
     */
   case class Settings(
-      enabled: Boolean = false,
-      maxKeys: Int = 20000,
-      stripes: Int = 8,
-      flushInterval: Duration = 10.seconds,
-      loadInterval: Duration = 20.seconds,
-      shareFrom: Int = 3,
-      maxFlushRows: Int = 20000,
-      maxLoadKeys: Int = 20000,
-      thresholds: VelocityRules.Thresholds = VelocityRules.Thresholds(),
+      enabled: Boolean,
+      maxKeys: Int,
+      stripes: Int,
+      flushInterval: Duration,
+      loadInterval: Duration,
+      shareFrom: Int,
+      maxFlushRows: Int,
+      maxLoadKeys: Int,
+      thresholds: VelocityRules.Thresholds,
   )
 
   /** Longest key kept; longer ones are cut, so the attacker's choice of length buys no memory. */
@@ -246,8 +246,6 @@ object VelocityCounters:
 
   /** Counters that key an address by its network as it is: for tests, and where nothing is stored. */
   def apply(settings: Settings): VelocityCounters = new VelocityCounters(settings, network => ZIO.succeed(Some(network)))
-
-  val off: VelocityCounters = VelocityCounters(Settings())
 
   private def pack(minute: Long, count: Int): Long = (minute << 32) | (count.toLong & 0xffffffffL)
   private def minuteOf(packed: Long): Long = packed >>> 32
@@ -433,7 +431,7 @@ object VelocityCounters:
               reported <- ZIO.foreach(List.fill(2)(0L))(Ref.make(_))
               _ <- Flusher(counters, repository, settings, instance, failing, reported(0), reported(1)).run
             yield counters
-          else ZIO.succeed(off)
+          else ZIO.succeed(new VelocityCounters(settings, hash))
       yield counters
 
   /** Rows deleted per statement of the upkeep. */

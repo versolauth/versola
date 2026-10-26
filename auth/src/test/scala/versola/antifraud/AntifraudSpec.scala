@@ -15,12 +15,12 @@ object AntifraudSpec extends UnitSpecBase:
   private def set(rs: AntifraudRule*): Antifraud.RuleSet = new Antifraud.RuleSet:
     def rules = ZIO.succeed(rs.toList)
 
-  private val on = Antifraud.Settings(enabled = true, delayAt = 1, challengeAt = 5, reviewAt = 8, blockAt = 10)
+  private val on = AntifraudTestSettings.decision.copy(enabled = true, delayAt = 1, challengeAt = 5, reviewAt = 8, blockAt = 10)
 
   def spec = suite("Antifraud")(
     test("is a no-op and runs no rule while disabled") {
       val boom = rule("boom", 100).copy(test = _ => throw RuntimeException("ran"))
-      Antifraud.Impl(Antifraud.Settings(blockAt = 1), List(set(boom))).evaluate(ctx).map(d => assertTrue(d == Decision.allow))
+      Antifraud.Impl(AntifraudTestSettings.decision.copy(blockAt = 1), List(set(boom))).evaluate(ctx).map(d => assertTrue(d == Decision.allow))
     },
     test("maps the score to the harshest threshold reached and lists the fired rules") {
       val rs = List(set(rule("a", 3), rule("b", 4), rule("c", 9, hit = false)))

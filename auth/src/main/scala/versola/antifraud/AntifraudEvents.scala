@@ -92,22 +92,19 @@ object AntifraudEvents:
     * @param velocity       the velocity counters and the limits of their rules, off by default (see [[VelocityCounters]])
     */
   case class Settings(
-      queueCapacity: Int = 20000,
-      batchSize: Int = 1000,
-      flushInterval: Duration = 1.second,
-      retention: Duration = 14.days,
-      partitionsAhead: Int = 3,
-      smsBudget: SmsBudget.Settings = SmsBudget.Settings(),
-      decision: Antifraud.Settings = Antifraud.Settings(),
-      statsInterval: Duration = 1.minute,
-      statsLookback: Duration = 2.minutes,
-      statsRetention: Duration = 30.days,
-      statsPrefixLength: Int = 4,
-      velocity: VelocityCounters.Settings = VelocityCounters.Settings(),
+      queueCapacity: Int,
+      batchSize: Int,
+      flushInterval: Duration,
+      retention: Duration,
+      partitionsAhead: Int,
+      smsBudget: SmsBudget.Settings,
+      decision: Antifraud.Settings,
+      statsInterval: Duration,
+      statsLookback: Duration,
+      statsRetention: Duration,
+      statsPrefixLength: Int,
+      velocity: VelocityCounters.Settings,
   )
-
-  object Settings:
-    val default: Settings = Settings()
 
   /** Records nothing. For tests of what calls it, and for a deployment that does not want the log. */
   object noop extends AntifraudEvents:

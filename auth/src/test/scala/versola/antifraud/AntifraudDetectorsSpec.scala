@@ -11,7 +11,7 @@ import java.util.UUID
 
 object AntifraudDetectorsSpec extends UnitSpecBase:
 
-  private val on = AntifraudDetectors.Settings.default.copy(enabled = true)
+  private val on = AntifraudTestSettings.detectors.copy(enabled = true)
 
   private def build(repository: Stub[AntifraudProposalRepository], settings: AntifraudDetectors.Settings): ZIO[Scope, Nothing, AntifraudDetectors] =
     AntifraudDetectors.live.build.map(_.get[AntifraudDetectors]).provideSome[Scope](
@@ -48,7 +48,7 @@ object AntifraudDetectorsSpec extends UnitSpecBase:
         val repository = stub[AntifraudProposalRepository]
         ZIO.scoped:
           for
-            _ <- build(repository, AntifraudDetectors.Settings.default)
+            _ <- build(repository, AntifraudTestSettings.detectors)
             _ <- TestClock.adjust(1.hour)
           yield assertTrue(
             repository.detectPrefixAnomalies.calls.isEmpty,

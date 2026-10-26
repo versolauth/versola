@@ -73,11 +73,11 @@ object SmsBudget:
     * @param maxRanges      ranges tracked at once; beyond that new ones are let through untracked
     */
   case class Settings(
-      sentPerHour: Int = 0,
-      minVolume: Int = 0,
-      minConversion: Double = 0.1,
-      prefixLength: Int = 4,
-      maxRanges: Int = 10000,
+      sentPerHour: Int,
+      minVolume: Int,
+      minConversion: Double,
+      prefixLength: Int,
+      maxRanges: Int,
   ):
     def enabled: Boolean = sentPerHour > 0 || minVolume > 0
 
@@ -119,5 +119,3 @@ object SmsBudget:
       (0 until Minutes).foldLeft((0, 0)):
         case ((s, v), slot) =>
           if now - minuteOf(slot) < Minutes && minuteOf(slot) <= now then (s + sent(slot), v + verified(slot)) else (s, v)
-
-  val off: SmsBudget = SmsBudget(Settings())

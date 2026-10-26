@@ -22,8 +22,11 @@ spec:
       {{- $secretAnn := include "versola.secretRestartAnnotations" (dict "root" $ "service" $name) | trim }}
       {{- $scrapeAnn := include "versola.scrapeAnnotations" (dict "root" $ "port" $svc.diagnosticsPort) | trim }}
       {{- $pkiAnn := include "versola.pki.annotations" (dict "root" $ "service" $name) | trim }}
-      {{- if or $secretAnn $scrapeAnn $pkiAnn }}
+      {{- $antifraudAnn := "" }}
+      {{- if and (eq $name "auth") $svc.antifraud }}{{ $antifraudAnn = printf "checksum/antifraud: %s" (toJson $svc.antifraud | sha256sum) }}{{ end }}
+      {{- if or $secretAnn $scrapeAnn $pkiAnn $antifraudAnn }}
       annotations:
+        {{- if $antifraudAnn }}{{ $antifraudAnn | nindent 8 }}{{- end }}
         {{- if $secretAnn }}{{ $secretAnn | nindent 8 }}{{- end }}
         {{- if $pkiAnn }}{{ $pkiAnn | nindent 8 }}{{- end }}
         {{- if $scrapeAnn }}{{ $scrapeAnn | nindent 8 }}{{- end }}
@@ -122,6 +125,11 @@ spec:
               value: "0.0.0.0"
             - name: CONFIG_PATH
               value: /app/config/env.conf
+            {{- if and (eq $name "auth") $svc.antifraud }}
+            # services.auth.antifraud, as a file auth lays under env.conf (templates/auth-overlay-configmap.yaml).
+            - name: CONFIG_OVERLAY_PATH
+              value: /app/config-overlay/antifraud.conf
+            {{- end }}
             # The migration Job + RUN_MIGRATIONS wiring is #209 -- every
             # replica stays a plain server until that lands.
             - name: RUN_MIGRATIONS
@@ -146,6 +154,11 @@ spec:
             {{- if $svc.config.existingSecret }}
             - name: config
               mountPath: /app/config
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $name "auth") $svc.antifraud }}
+            - name: config-overlay
+              mountPath: /app/config-overlay
               readOnly: true
             {{- end }}
             {{- include "versola.pki.volumeMounts" (dict "root" $ "service" $name) | nindent 12 }}
@@ -192,6 +205,11 @@ spec:
             items:
               - key: {{ $svc.config.secretKey }}
                 path: env.conf
+        {{- end }}
+        {{- if and (eq $name "auth") $svc.antifraud }}
+        - name: config-overlay
+          configMap:
+            name: {{ include "versola.fullname" $ }}-auth-overlay
         {{- end }}
         {{- include "versola.pki.volumes" (dict "root" $ "service" $name) | nindent 8 }}
         {{- with $svc.extraVolumes }}
