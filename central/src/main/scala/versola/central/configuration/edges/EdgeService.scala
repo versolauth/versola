@@ -1,7 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
-import versola.util.http.{AccessLogPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
@@ -27,6 +27,10 @@ trait EdgeService:
     * [[InvalidAccessLogPolicy]] when it does not validate. */
   def setAccessLogPolicy(id: EdgeId, policy: AccessLogPolicy): Task[Unit]
 
+  /** Stores the set after checking it ([[RateLimitPolicies.validate]]); an empty set is stored as none. Fails with
+    * [[InvalidRateLimitPolicies]] when it does not validate. */
+  def setRateLimitPolicies(id: EdgeId, policies: RateLimitPolicies): Task[Unit]
+
   def deleteEdge(id: EdgeId): Task[Unit]
 
   def sync(): Task[Unit]
@@ -36,6 +40,9 @@ final case class InvalidOverloadPolicy(message: String) extends RuntimeException
 
 /** An access-log policy that fails validation; `message` names the field and is meant for the operator. */
 final case class InvalidAccessLogPolicy(message: String) extends RuntimeException(message)
+
+/** A set of rate limit policies that fails validation; `message` names the policy and is meant for the operator. */
+final case class InvalidRateLimitPolicies(message: String) extends RuntimeException(message)
 
 object EdgeService:
   def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
@@ -83,6 +90,10 @@ object EdgeService:
     override def setAccessLogPolicy(id: EdgeId, policy: AccessLogPolicy): Task[Unit] =
       ZIO.fromEither(policy.validate).mapError(InvalidAccessLogPolicy(_)) *>
         edgeRepository.setAccessLogPolicy(id, Option.when(policy != AccessLogPolicy.empty)(policy))
+
+    override def setRateLimitPolicies(id: EdgeId, policies: RateLimitPolicies): Task[Unit] =
+      ZIO.fromEither(policies.validate).mapError(InvalidRateLimitPolicies(_)) *>
+        edgeRepository.setRateLimitPolicies(id, Option.when(policies.policies.nonEmpty)(policies))
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)

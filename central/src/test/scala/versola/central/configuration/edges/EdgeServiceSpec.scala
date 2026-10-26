@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy, RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
 import versola.util.{ReloadingCache, RsaKeyPair}
 import zio.json.ast.Json
 import zio.test.*
@@ -142,6 +142,65 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => false,
         env.repository.setAccessLogPolicy.calls.isEmpty,
       )
+    },
+    test("setRateLimitPolicies records a valid set against the named edge") {
+      val env = Env()
+      val policies = RateLimitPolicies(List(RateLimitPolicy(
+        name = "per-client",
+        by = List(RateLimitDimension.Client),
+        limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+        burst = 5,
+      )))
+      for
+        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
+        _ <- env.service.setRateLimitPolicies(edgeId, policies)
+      yield assertTrue(env.repository.setRateLimitPolicies.calls == List((edgeId, Some(policies))))
+    },
+    test("an empty set of rate limit policies is stored as none, so the edge applies no rate limit") {
+      val env = Env()
+      for
+        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
+        _ <- env.service.setRateLimitPolicies(edgeId, RateLimitPolicies.empty)
+      yield assertTrue(env.repository.setRateLimitPolicies.calls == List((edgeId, None)))
+    },
+    test("rate limit policies that do not validate are refused with the policy named, and nothing is written") {
+      val env = Env()
+      val bad = RateLimitPolicies(List(RateLimitPolicy(
+        name = "per-client",
+        by = List(RateLimitDimension.Client),
+        limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+        burst = 5,
+      ).copy(burst = 500)))
+      for
+        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
+        result <- env.service.setRateLimitPolicies(edgeId, bad).exit
+      yield assertTrue(
+        result match
+          case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidRateLimitPolicies] && e.getMessage.contains("per-client"))
+          case _ => false,
+        env.repository.setRateLimitPolicies.calls.isEmpty,
+      )
+    },
+    test("two policies with one name are refused, and nothing is written") {
+      val env = Env()
+      val dup = RateLimitPolicies(List(
+        RateLimitPolicy(
+          name = "per-client",
+          by = List(RateLimitDimension.Client),
+          limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+          burst = 5,
+        ),
+        RateLimitPolicy(
+          name = "per-client",
+          by = List(RateLimitDimension.Client),
+          limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+          burst = 5,
+        ),
+      ))
+      for
+        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
+        result <- env.service.setRateLimitPolicies(edgeId, dup).exit
+      yield assertTrue(result.isFailure, env.repository.setRateLimitPolicies.calls.isEmpty)
     },
     test("getAllEdges returns edges from cache") {
       val edges = Vector(

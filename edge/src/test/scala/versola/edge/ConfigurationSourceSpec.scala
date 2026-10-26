@@ -52,6 +52,7 @@ object ConfigurationSourceSpec extends ZIOSpecDefault:
         source.get[JwksSyncClient].isInstanceOf[JwksSyncClient.Impl],
         source.get[OverloadPolicySyncClient].isInstanceOf[OverloadPolicySyncClient.Impl],
         source.get[AccessLogPolicySyncClient].isInstanceOf[AccessLogPolicySyncClient.Impl],
+        source.get[RateLimitPolicySyncClient].isInstanceOf[RateLimitPolicySyncClient.Impl],
       )
     },
     test("partner is refused as not implemented, the same way the configuration is") {

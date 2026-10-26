@@ -3,7 +3,20 @@ package versola.central.configuration.edges
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
-import versola.util.http.{AccessLogPolicy, AdaptivePolicy, BreakerPolicy, InboundPolicy, OutboundPolicy, OverloadPolicy}
+import versola.util.http.{
+  AccessLogPolicy,
+  AdaptivePolicy,
+  BreakerPolicy,
+  GuardMode,
+  InboundPolicy,
+  OutboundPolicy,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitScope,
+  RateLimitWindow,
+}
 import zio.json.ast.Json
 import zio.test.*
 import zio.{Scope, ZIO}
@@ -140,6 +153,45 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           all.find(_.id == edgeId).flatMap(_.accessLogPolicy) == Some(policy),
           cleared.exists(_.accessLogPolicy.isEmpty),
           cleared.flatMap(_.overloadPolicy) == Some(overload),
+        )
+      },
+      test(
+        "a new edge has no rate limit policies, setRateLimitPolicies stores a set for the named edge only, independent of the other policies, and None clears it",
+      ) {
+        val policies = RateLimitPolicies(List(
+          RateLimitPolicy(
+            name = "per-client",
+            by = List(RateLimitDimension.Client),
+            limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+            burst = 5,
+          ).copy(mode = GuardMode.Enforce),
+          RateLimitPolicy(
+            name = "per-client",
+            by = List(RateLimitDimension.Client),
+            limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+            burst = 5,
+          ).copy(name = "per-endpoint", scope = RateLimitScope.Endpoint, limits = List(RateLimitWindow(10, 1), RateLimitWindow(500, 3600))),
+        ))
+        val log = AccessLogPolicy(mode = Some("sampled"))
+        for
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          fresh <- env.repository.find(edgeId)
+          _ <- env.repository.setAccessLogPolicy(edgeId, Some(log))
+          _ <- env.repository.setRateLimitPolicies(edgeId, Some(policies))
+          set <- env.repository.find(edgeId)
+          other <- env.repository.find(edge2Id)
+          all <- env.repository.getAll
+          _ <- env.repository.setRateLimitPolicies(edgeId, None)
+          cleared <- env.repository.find(edgeId)
+        yield assertTrue(
+          fresh.exists(_.rateLimitPolicies.isEmpty),
+          set.flatMap(_.rateLimitPolicies) == Some(policies),
+          set.flatMap(_.accessLogPolicy) == Some(log),
+          other.exists(_.rateLimitPolicies.isEmpty),
+          all.find(_.id == edgeId).flatMap(_.rateLimitPolicies) == Some(policies),
+          cleared.exists(_.rateLimitPolicies.isEmpty),
+          cleared.flatMap(_.accessLogPolicy) == Some(log),
         )
       },
       test("setRequireDpopNonce changes only the named edge") {

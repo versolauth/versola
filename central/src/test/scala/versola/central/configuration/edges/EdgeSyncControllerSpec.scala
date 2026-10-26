@@ -39,7 +39,16 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.http.{AccessLogPolicy, InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.{
+  AccessLogPolicy,
+  InboundPolicy,
+  Observability,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitWindow,
+}
 import versola.util.{Base64, JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -322,12 +331,31 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
+  private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
+    name = "per-client",
+    by = List(RateLimitDimension.Client),
+    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+    burst = 5,
+  )))
+
   private val accessLogPolicy = AccessLogPolicy(mode = Some("full"))
 
   private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
 
   private val syncResources =
-    List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "access-log", "auth-request-presets", "server-metadata")
+    List(
+      "clients",
+      "resources",
+      "roles",
+      "permissions",
+      "jwks",
+      "dpop",
+      "overload",
+      "access-log",
+      "rate-limits",
+      "auth-request-presets",
+      "server-metadata",
+    )
 
   private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString
@@ -476,6 +504,24 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for body <- decodeBody[EdgeAccessLogSyncResponse](response)
           yield assertTrue(body.accessLogPolicy.isEmpty),
+      ),
+      testCase(
+        description = "rate-limits: the calling edge's own policies",
+        request = Request.get(sync("rate-limits")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord.copy(rateLimitPolicies = Some(rateLimits)))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeRateLimitSyncResponse](response)
+          yield assertTrue(body.rateLimitPolicies.contains(rateLimits)),
+      ),
+      testCase(
+        description = "rate-limits: an edge with none set is served null",
+        request = Request.get(sync("rate-limits")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord)),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeRateLimitSyncResponse](response)
+          yield assertTrue(body.rateLimitPolicies.isEmpty),
       ),
       testCase(
         description = "jwks: the public document",

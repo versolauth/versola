@@ -18,7 +18,7 @@ info:
       and `POST /users/registrations`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`, `access-log`), `POST /edge/clients/edge-certificate/sign`
+      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener),
       the surface an edge reads with the key it was registered with. It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
@@ -2437,6 +2437,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccessLogPolicyError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
+  /configuration/edges/rate-limits:
+    put:
+      tags: [Edges]
+      summary: Set the rate limit policies of an edge
+      description: |
+        Who may send how much through one edge. The body replaces the stored set of policies as a whole; an empty list
+        removes them, and the edge applies no rate limit. Independent of the edge's overload and access-log policies.
+
+        **Today the edge only counts.** A policy in mode `shadow` is checked on the proxy path and the edge counts what it
+        would refuse (`edge_rate_limit_decisions_total{policy,result="would_limit"}`); nothing is refused and no response
+        changes. A policy stored as `enforce` is applied as `shadow` until enforcement is released. The edge picks the set up
+        on its next configuration sync (every configuration refresh interval, 5 minutes by default) and, while central is
+        unreachable, keeps the last set it received.
+
+        A set that does not validate answers `400` with the first problem found: a name is 1 to 48 characters, a lower-case
+        letter and then lower-case letters, digits, `_` or `-`, and unique; at most 64 policies; each policy has 1 to 8
+        windows with distinct `windowSeconds`; `burst` is not above the smallest `limit`, and `cost` is not above `burst`.
+      operationId: setEdgeRateLimitPolicies
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitPolicies'
+      responses:
+        '204':
+          description: Policies recorded.
+        '400':
+          description: The set does not validate; the body names the first policy or field that is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitPoliciesError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -5930,6 +5970,9 @@ components:
         accessLogPolicy:
           $ref: '#/components/schemas/AccessLogPolicy'
           description: The edge's access-log policy; absent when none is set.
+        rateLimitPolicies:
+          $ref: '#/components/schemas/RateLimitPolicies'
+          description: The edge's rate limit policies; absent when none are set.
         groupId:
           type: string
           description: The group of edges this edge belongs to.
@@ -6126,6 +6169,78 @@ components:
           minimum: 0
           maximum: 1
           description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
+    RateLimitPolicies:
+      type: object
+      properties:
+        policies:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/RateLimitPolicy'
+    RateLimitPolicy:
+      type: object
+      required: [name, limits]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z][a-z0-9_-]{0,47}$'
+          description: Stable identifier; appears in metrics and, later, in the response. Unique in the set.
+        by:
+          type: array
+          items:
+            type: string
+            enum: [ip, client, subject, session, jkt]
+          description: |
+            What a bucket is keyed on; empty means one bucket for the whole scope. Every value but `ip` comes from the
+            verified access token, never from what the caller sent. A request that lacks a value (a bearer token has no
+            `jkt`) is not counted by that policy.
+        scope:
+          type: string
+          enum: [edge-wide, resource, endpoint]
+          default: edge-wide
+          description: |
+            `edge-wide` keeps one bucket per key; `resource` and `endpoint` one per key and resource, or per key and
+            registered endpoint template. A policy narrower than the edge is checked after the caller's permissions are
+            resolved; the others are checked right after the access token is verified.
+        limits:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: Every window must pass. Windows of one policy are distinct.
+          items:
+            type: object
+            required: [limit, windowSeconds]
+            properties:
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000000
+              windowSeconds:
+                type: integer
+                minimum: 1
+                maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          default: 1
+          description: How many requests may arrive together. Not above the smallest `limit`. `1` is strict spacing.
+        cost:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: What one request takes from the bucket. Not above `burst`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+          default: shadow
+          description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing. `enforce` is applied as `shadow` until enforcement is released.'
+    RateLimitPoliciesError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     AccessLogPolicyError:
       type: object
       properties:

@@ -122,6 +122,15 @@ final case class RateLimitPolicy(
     else if by.contains(RateLimitDimension.Ip) then Checkpoint.Address
     else Checkpoint.Identity
 
+/** The rate limit policies of one edge, as central stores and serves them: the whole set is replaced at once, so the names
+  * stay unique and the limit of 64 holds. An empty set is stored as none.
+  */
+final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil) derives JsonCodec, Schema:
+  def validate: Either[String, RateLimitPolicies] = RateLimitPolicy.validateAll(policies).map(_ => this)
+
+object RateLimitPolicies:
+  val empty: RateLimitPolicies = RateLimitPolicies()
+
 object RateLimitPolicy:
   val MaxNameLength = 48
   val MaxWindows = 8

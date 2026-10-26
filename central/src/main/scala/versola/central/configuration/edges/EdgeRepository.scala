@@ -1,7 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.util.CacheSource
-import versola.util.http.{AccessLogPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import zio.Task
 import zio.json.ast.Json
 
@@ -23,5 +23,8 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
 
   /** `None` clears the policy: the edge goes back to the access-log settings of its own deployment. */
   def setAccessLogPolicy(id: EdgeId, policy: Option[AccessLogPolicy]): Task[Unit]
+
+  /** `None` clears the policies: the edge applies no rate limit. */
+  def setRateLimitPolicies(id: EdgeId, policies: Option[RateLimitPolicies]): Task[Unit]
 
   def deleteEdge(id: EdgeId): Task[Unit]

@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{AccessLogPolicy, Controller, OverloadPolicy, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Controller, OverloadPolicy, RateLimitPolicies, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
@@ -27,6 +27,7 @@ object EdgeController extends Controller:
     setEdgeDpopEndpoint,
     setEdgeOverloadEndpoint,
     setEdgeAccessLogEndpoint,
+    setEdgeRateLimitsEndpoint,
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
@@ -48,6 +49,7 @@ object EdgeController extends Controller:
               requireDpopNonce = edge.requireDpopNonce,
               overloadPolicy = edge.overloadPolicy,
               accessLogPolicy = edge.accessLogPolicy,
+              rateLimitPolicies = edge.rateLimitPolicies,
               groupId = edge.groupId,
               identityChainEndsAt = chainEnds.get(edge.id),
             ),
@@ -211,6 +213,26 @@ object EdgeController extends Controller:
       yield response
     }
 
+  /** Replaces the rate limit policies of the named edge (see [[RateLimitPolicies]]); an empty list removes them. Refused with
+    * `400` and the first thing wrong when the set does not validate. Independent of the overload and access-log policies.
+    */
+  val setEdgeRateLimitsEndpoint =
+    Method.PUT / "configuration" / "edges" / "rate-limits" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[EdgeService]
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        policies <- request.bodyAs[RateLimitPolicies]
+        edge <- service.find(edgeId)
+        response <-
+          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.setRateLimitPolicies(edgeId, policies).as(Response.status(Status.NoContent)).catchSome:
+              case InvalidRateLimitPolicies(message) =>
+                ZIO.succeed(Response.json(RateLimitPoliciesError(message).toJson).status(Status.BadRequest))
+      yield response
+    }
+
   /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
     * certificate that names an edge (`urn:versola:edge:<id>`) belongs to one central still
     * knows: the certificate's own validity cannot be shortened from here, so deleting an edge
@@ -260,6 +282,7 @@ case class EdgeResponse(
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
     accessLogPolicy: Option[AccessLogPolicy] = None,
+    rateLimitPolicies: Option[RateLimitPolicies] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
     identityChainEndsAt: Option[Instant] = None,
@@ -279,6 +302,14 @@ case class EdgeOverloadSyncResponse(
 
 case class EdgeAccessLogSyncResponse(
     accessLogPolicy: Option[AccessLogPolicy],
+) derives Schema, JsonCodec
+
+case class EdgeRateLimitSyncResponse(
+    rateLimitPolicies: Option[RateLimitPolicies],
+) derives Schema, JsonCodec
+
+case class RateLimitPoliciesError(
+    error: String,
 ) derives Schema, JsonCodec
 
 case class AccessLogPolicyError(

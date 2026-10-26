@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import com.nimbusds.jose.jwk.RSAKey
 import versola.util.JWT
-import versola.util.http.{AccessLogPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 
@@ -32,6 +32,9 @@ import java.security.interfaces.RSAPublicKey
  *
  * `accessLogPolicy` is which of its requests the edge writes a log line for, set the same way and independently: a patch
  * over `HTTP_ACCESS_LOG*`, `None` meaning none set. See [[AccessLogPolicy]].
+ *
+ * `rateLimitPolicies` is who may send how much through the edge, set the same way and independently; `None` means none set
+ * and the edge applies no rate limit. See [[RateLimitPolicies]].
  */
 case class EdgeRecord(
     id: EdgeId,
@@ -40,6 +43,7 @@ case class EdgeRecord(
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
     accessLogPolicy: Option[AccessLogPolicy] = None,
+    rateLimitPolicies: Option[RateLimitPolicies] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
 ):

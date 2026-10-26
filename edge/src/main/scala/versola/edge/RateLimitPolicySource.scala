@@ -11,7 +11,14 @@ trait RateLimitPolicySource:
   def current: UIO[List[RateLimitPolicy]]
 
 object RateLimitPolicySource:
-  /** No policy is configured anywhere yet: the limiter stays disabled and a request pays one volatile read. */
+  /** The policies central holds for this edge, as [[RateLimitPolicyService]] syncs them. */
+  val fromCentral: URLayer[RateLimitPolicyService, RateLimitPolicySource] =
+    ZLayer.fromFunction((service: RateLimitPolicyService) =>
+      new RateLimitPolicySource:
+        override val current: UIO[List[RateLimitPolicy]] = service.current,
+    )
+
+  /** No policy at all (tests, tools): the limiter stays disabled and a request pays one volatile read. */
   val none: ULayer[RateLimitPolicySource] =
     ZLayer.succeed(new RateLimitPolicySource:
       override val current: UIO[List[RateLimitPolicy]] = ZIO.succeed(Nil))

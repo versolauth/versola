@@ -69,4 +69,16 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       for current <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(RateLimitPolicySource.none)
       yield assertTrue(current.isEmpty)
     },
+    test("the central source serves what the policy service holds, and follows it") {
+      for
+        held <- Ref.make(List(policy("from-central", GuardMode.Shadow)))
+        service = new RateLimitPolicyService:
+          override val current: UIO[List[RateLimitPolicy]] = held.get
+          override val refreshNow: Task[Unit] = ZIO.unit
+        source = ZLayer.succeed[RateLimitPolicyService](service) >>> RateLimitPolicySource.fromCentral
+        first <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(source)
+        _ <- held.set(Nil)
+        second <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(source)
+      yield assertTrue(first.map(_.name) == List("from-central"), second.isEmpty)
+    },
   ) @@ TestAspect.silentLogging

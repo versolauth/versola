@@ -6,7 +6,16 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.{AccessLogPolicy, InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.{
+  AccessLogPolicy,
+  InboundPolicy,
+  Observability,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitWindow,
+}
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -150,6 +159,13 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+
+  private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
+    name = "per-client",
+    by = List(RateLimitDimension.Client),
+    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+    burst = 5,
+  )))
 
   private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
 
@@ -374,5 +390,54 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NotFound,
       setup = service => service.find.succeedsWith(None) *> service.setAccessLogPolicy.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setAccessLogPolicy.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "setting valid rate limit policies returns 204 and records them for the named edge",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "rate-limits").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(rateLimits.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setRateLimitPolicies.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setRateLimitPolicies.calls == List((edgeId, rateLimits)))),
+    ),
+    controllerTestCase(
+      description = "rate limit policies the service refuses are answered 400 with what is wrong, not 204",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "rate-limits").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(rateLimits.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.find.succeedsWith(Some(edgeRecord)) *> service.setRateLimitPolicies.failsWith(
+          InvalidRateLimitPolicies("policy per-client: burst must not exceed the smallest limit"),
+        ),
+      verify = (response, _) =>
+        for body <- response.body.asJson[RateLimitPoliciesError]
+        yield assertTrue(body.error.contains("per-client")),
+    ),
+    controllerTestCase(
+      description = "setting the rate limit policies of an unregistered edge returns 404 and writes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "rate-limits").addQueryParam("edgeId", "edge-missing"),
+        body = Body.fromString(rateLimits.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.find.succeedsWith(None) *> service.setRateLimitPolicies.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setRateLimitPolicies.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a body that is not a rate limit policy set (an unknown dimension) is not stored",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "rate-limits").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString("""{"policies":[{"name":"x","by":["ip-address"],"limits":[{"limit":1,"windowSeconds":1}]}]}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setRateLimitPolicies.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setRateLimitPolicies.calls.isEmpty)),
     ),
   )

@@ -3,7 +3,7 @@ package versola.configuration.edges
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind, EdgeId, EdgeRecord, EdgeRepository}
-import versola.util.http.{AccessLogPolicy, OverloadPolicy}
+import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import versola.util.postgres.BasicCodecs
 import zio.json.ast.Json
 import zio.{Task, ZLayer}
@@ -14,6 +14,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
   given DbCodec[OverloadPolicy] = jsonCodec[OverloadPolicy]
   given DbCodec[AccessLogPolicy] = jsonCodec[AccessLogPolicy]
+  given DbCodec[RateLimitPolicies] = jsonCodec[RateLimitPolicies]
   given DbCodec[EdgeGroupId] = DbCodec.StringCodec.biMap(EdgeGroupId(_), identity[String])
   given DbCodec[EdgeGroupKind] =
     DbCodec.StringCodec.biMap(code => EdgeGroupKind.from(code).fold(message => throw IllegalStateException(message), identity), _.code)
@@ -22,7 +23,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.group_id, g.kind
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
       """.query[EdgeRecord].run()
@@ -30,7 +31,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.group_id, g.kind
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
         WHERE e.id = $id
@@ -77,6 +78,15 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
       sql"""
         UPDATE edges
         SET access_log_policy = $policy
+        WHERE id = $id
+      """.update.run()
+    .unit
+
+  override def setRateLimitPolicies(id: EdgeId, policies: Option[RateLimitPolicies]): Task[Unit] =
+    xa.connectMeasured("set-edge-rate-limit-policies"):
+      sql"""
+        UPDATE edges
+        SET rate_limit_policies = $policies
         WHERE id = $id
       """.update.run()
     .unit
