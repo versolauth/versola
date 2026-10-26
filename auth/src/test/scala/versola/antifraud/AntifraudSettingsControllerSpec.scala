@@ -21,7 +21,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenant = TenantId("tenant-a")
   private val userId = "00000000-0000-0000-0000-0000000000f1"
   private val base = URL.empty / "antifraud" / "settings"
-  private val effective = AntifraudTuning.fromSettings(AntifraudTestSettings.events)
+  private val effective = Tuning.off
   private val patch = TuningPatch(
     delayAt = None,
     challengeAt = None,
@@ -42,7 +42,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       signature = JWT.Signature.Symmetric(key),
     )
 
-  private def call(tuning: AntifraudTuning, request: Request, key: SecretKey = config.central.secretKey): ZIO[Client & TestClient & Scope, Throwable, Response] =
+  private def call(tuning: AntifraudTuningStore, request: Request, key: SecretKey = config.central.secretKey): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
@@ -62,7 +62,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("AntifraudSettingsController")(
     test("a request without a token, or with one signed by another key, is 401 and reaches nothing") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
@@ -76,7 +76,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(anonymous.status == Status.Unauthorized, forged.status == Status.Unauthorized, tuning.stored.calls.isEmpty)
     },
     test("GET gives the stored row and what applies") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         _ <- tuning.stored.succeedsWith(Some(patch))
         _ = tuning.effective.returns(_ => effective)
@@ -89,7 +89,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("PUT stores the patch for the scope as the user central names") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         _ <- tuning.put.succeedsWith(())
         _ = tuning.effective.returns(_ => effective)
@@ -102,7 +102,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("a patch the service refuses is 400 with its reason") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         _ <- tuning.put.failsWith(InvalidTuning("blockAt must be between 0 and 100000"))
         response <- call(tuning, Request.put(base, body(patch.toJson)))
@@ -110,7 +110,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(response.status == Status.BadRequest, text == "blockAt must be between 0 and 100000")
     },
     test("DELETE removes the row, and is 404 where there is none") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         _ <- tuning.delete.succeedsWith(true)
         removed <- call(tuning, Request.delete(withUser("tenantId" -> "tenant-a")))
@@ -119,7 +119,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(removed.status == Status.NoContent, missing.status == Status.NotFound, tuning.delete.calls.head == (Some(tenant), userId))
     },
     test("audit takes tenantId or global, not both") {
-      val tuning = stub[AntifraudTuning]
+      val tuning = stub[AntifraudTuningStore]
       for
         _ <- tuning.audit.succeedsWith(Nil)
         both <- call(tuning, Request.get(withUser("tenantId" -> "tenant-a", "global" -> "true").path(base.path / "audit")))

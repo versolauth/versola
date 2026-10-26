@@ -69,7 +69,8 @@ object AntifraudListsSpec extends UnitSpecBase:
   private val settings = AntifraudTestSettings.lists.copy(enabled = true)
 
   // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
-  private val engine = AntifraudTestSettings.decision.copy(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
+  private val engine = AntifraudTestSettings.decision.copy(enabled = true)
+  private val thresholds = AntifraudTestSettings.tuning.copy(delayAt = 1, challengeAt = 50, blockAt = 100)
 
   private def ctx(
       ip: Option[String] = None,
@@ -124,7 +125,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     def rules = ZIO.succeed(List(AntifraudRule("range_closed", 0, Some(DecisionAction.Block), _ => true)))
 
   private def decide(lists: AntifraudLists, others: Antifraud.RuleSet*)(c: AntifraudContext) =
-    AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList).evaluate(c)
+    AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList, thresholds).evaluate(c)
 
   def spec = suite("AntifraudLists")(
     test("contributes no rule while off, whatever the table holds") {

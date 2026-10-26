@@ -7,50 +7,6 @@ import zio.json.*
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 
-/** What an operator changes while an attack is going on: the thresholds the score turns into an action at, the weights
-  * of the rules, which rules only record, the limits on codes sent to a range of numbers, and the timing of a delay
-  * and of a fake send. Not deployment configuration, because a restart is too slow for it and empties the in-memory
-  * counters; it is stored in `af_settings` (see [[AntifraudTuning]]) and changed through the admin API.
-  *
-  * @param delayAt        score from which a step is delayed; 0 disables the threshold (likewise the next three)
-  * @param challengeAt    score from which a step is challenged
-  * @param reviewAt       score from which a step is sent to review
-  * @param blockAt        score from which a step is refused
-  * @param delayMillis    how long a `Delay` holds a request back
-  * @param fakeSendDelayMillis how long a fake send waits; 0 waits as long as the recent real sends took
-  * @param thresholds     the limits (and weights) of the velocity rules
-  * @param smsLimits      the limits on codes sent to a range of numbers
-  * @param ruleWeights    the weight of a rule by its name, in place of the one it has; a rule that forces an action is not
-  *                       weighed
-  * @param shadowRules    rules that are evaluated and listed in the fired rules as `shadow:<name>`, but add no weight
-  *                       and force nothing: a dry run before the rule is made real
-  */
-case class Tuning(
-    delayAt: Int,
-    challengeAt: Int,
-    reviewAt: Int,
-    blockAt: Int,
-    delayMillis: Long,
-    fakeSendDelayMillis: Long,
-    thresholds: VelocityRules.Thresholds,
-    smsLimits: SmsLimits,
-    ruleWeights: Map[String, Int],
-    shadowRules: Set[String],
-) derives JsonCodec:
-  def delay: Duration = Duration.fromMillis(delayMillis)
-
-/** The limit on codes sent to one range of numbers, see [[SmsBudget]]. 0 is no limit. */
-case class SmsLimit(sentPerHour: Int, minVolume: Int, minConversion: Double) derives JsonCodec:
-  def enabled: Boolean = sentPerHour > 0 || minVolume > 0
-
-/** `byPrefix` is keyed by the leading digits of a number, country code included (`"7701"`): the longest key a number
-  * starts with decides, and `default` applies to a number that starts with none. */
-case class SmsLimits(default: SmsLimit, byPrefix: Map[String, SmsLimit]) derives JsonCodec:
-  def of(prefix: String): SmsLimit =
-    byPrefix.keysIterator.filter(prefix.startsWith).maxByOption(_.length).fold(default)(byPrefix)
-
-  def enabled: Boolean = default.enabled || byPrefix.values.exists(_.enabled)
-
 /** The part of a [[Tuning]] a row of `af_settings` sets; what it leaves out is taken from the row below it (the tenant's
   * from the global one, that from the configuration). A map or the thresholds are replaced as a whole. */
 case class TuningPatch(
@@ -79,8 +35,39 @@ case class TuningPatch(
       shadowRules = shadowRules.getOrElse(base.shadowRules),
     )
 
+  /** The whole tuning, if the patch sets every key. */
+  def complete: Option[Tuning] =
+    for
+      a <- delayAt
+      b <- challengeAt
+      c <- reviewAt
+      d <- blockAt
+      e <- delayMillis
+      f <- fakeSendDelayMillis
+      g <- thresholds
+      h <- smsLimits
+      i <- ruleWeights
+      j <- shadowRules
+    yield Tuning(a, b, c, d, e, f, g, h, i, j)
+
   /** The timings belong to the whole deployment: a request is held and a fake send waits where no tenant is known. */
   def setsTimings: Boolean = delayMillis.isDefined || fakeSendDelayMillis.isDefined
+
+object TuningPatch:
+  /** A patch that sets every key to what `tuning` has: how the global row is stored. */
+  def of(tuning: Tuning): TuningPatch =
+    TuningPatch(
+      delayAt = Some(tuning.delayAt),
+      challengeAt = Some(tuning.challengeAt),
+      reviewAt = Some(tuning.reviewAt),
+      blockAt = Some(tuning.blockAt),
+      delayMillis = Some(tuning.delayMillis),
+      fakeSendDelayMillis = Some(tuning.fakeSendDelayMillis),
+      thresholds = Some(tuning.thresholds),
+      smsLimits = Some(tuning.smsLimits),
+      ruleWeights = Some(tuning.ruleWeights),
+      shadowRules = Some(tuning.shadowRules),
+    )
 
 /** One change of `af_settings`, with what the row was and became (`None`: no row), as the JSON of a [[TuningPatch]]. */
 case class AntifraudTuningAudit(
@@ -94,40 +81,36 @@ case class AntifraudTuningAudit(
 /** A change that is not valid: a negative limit, a limit above what can be meant, a prefix that is not digits. */
 final class InvalidTuning(message: String) extends RuntimeException(message)
 
-/** The tuning the rules and the budget read, and the internal API that changes it.
+/** The tuning as stored, and the internal API that changes it.
   *
-  * ==Layers==
-  * Per tenant, the configuration (`antifraud.decision`, `velocity.thresholds` and `sms-budget` of the config, see
-  * [[Tuning.fromSettings]]) is what applies where nothing is stored; the global row of `af_settings` is laid over it,
-  * and the tenant's row over that. Rows are patches: a key a row leaves out is the layer below's.
+  * ==Rows==
+  * `af_settings` has the global row (every key, seeded by migration `V0024`, so there is always one) and one row per tenant
+  * that differs from it. A tenant's row is a patch: a key it leaves out is the global row's. A change of the global row is
+  * a patch too, over what it is now, and the global row cannot be removed. Nothing in the configuration says what a
+  * threshold is: the store is the single source.
   *
   * ==Reading==
   * Every instance holds the result for every tenant that has a row, in memory; a request reads it without touching the
   * database. It is rebuilt when `af_settings_version` changes (checked every `refresh-interval`) and, whatever the version
-  * says, once a minute. A refresh that fails keeps what there is (nothing is lost: the rules go on with the last
-  * tuning, or with the configuration at start). A change made through this instance applies on it at once and on the
-  * others within the interval.
+  * says, once a minute. A refresh that fails keeps the last snapshot that was read. Until the first one has been read
+  * ([[AntifraudTuning.available]] false, which is a start with the database unreadable) a request is decided as
+  * `failure-action` says. A change made through this instance applies on it at once and on the others within the interval.
   */
-trait AntifraudTuning:
-  /** What applies to a request of the tenant (`None`: where no tenant is known). */
-  def effective(tenant: Option[TenantId]): Tuning
-
-  /** Whether any tenant, or none, has a limit on codes sent: false lets the budget be skipped without looking the tenant up. */
-  def smsLimitsEnabled: Boolean
-
+trait AntifraudTuningStore extends AntifraudTuning:
   /** The row of the scope as stored, `None` where there is none. */
   def stored(tenant: Option[TenantId]): Task[Option[TuningPatch]]
 
-  /** Replaces the row of the scope. Fails with [[InvalidTuning]]. */
+  /** Changes the row of the scope: replaces a tenant's, or patches the global one. Fails with [[InvalidTuning]]. */
   def put(tenant: Option[TenantId], patch: TuningPatch, actor: String): Task[Unit]
 
-  /** Removes the row of the scope, which then follows the layer below; false when there was none. */
+  /** Removes a tenant's row, which then follows the global one; false when there was none. The global row cannot be
+    * removed ([[InvalidTuning]]). */
   def delete(tenant: Option[TenantId], actor: String): Task[Boolean]
 
   /** The changes, the latest first; of one scope when `scope` is given (`Some(None)` is the global one). */
   def audit(scope: Option[Option[TenantId]], limit: Int): Task[List[AntifraudTuningAudit]]
 
-object AntifraudTuning:
+object AntifraudTuningStore:
 
   /** The most audit records one call returns. */
   val MaxLimit = 500
@@ -142,28 +125,6 @@ object AntifraudTuning:
   /** @param refreshInterval how often the version of the stored tuning is looked at, so how long a change takes to
     *                        reach another instance */
   case class Settings(refreshInterval: Duration)
-
-  /** What applies where nothing is stored: the keys of the configuration. */
-  def fromSettings(settings: AntifraudEvents.Settings): Tuning =
-    Tuning(
-      delayAt = settings.decision.delayAt,
-      challengeAt = settings.decision.challengeAt,
-      reviewAt = settings.decision.reviewAt,
-      blockAt = settings.decision.blockAt,
-      delayMillis = settings.decision.delay.toMillis,
-      fakeSendDelayMillis = 0L,
-      thresholds = settings.velocity.thresholds,
-      smsLimits = SmsLimits(
-        default = SmsLimit(
-          sentPerHour = settings.smsBudget.sentPerHour,
-          minVolume = settings.smsBudget.minVolume,
-          minConversion = settings.smsBudget.minConversion,
-        ),
-        byPrefix = Map.empty,
-      ),
-      ruleWeights = Map.empty,
-      shadowRules = Set.empty,
-    )
 
   /** Why a patch is not valid, if it is not. `tenant` is whether it is for one tenant. */
   def invalid(patch: TuningPatch, tenant: Boolean): Option[String] =
@@ -205,39 +166,53 @@ object AntifraudTuning:
 
     def of(tenant: Option[TenantId]): Tuning = tenant.flatMap(tenants.get).getOrElse(global)
 
-  def snapshot(base: Tuning, rows: List[(Option[TenantId], TuningPatch)]): Snapshot =
-    val global = rows.collectFirst { case (None, patch) => patch }.fold(base)(_.over(base))
-    Snapshot(global, rows.collect { case (Some(tenant), patch) => tenant -> patch.over(global) }.toMap)
+  /** `None` where there is no complete global row: nothing is known to be the thresholds then. */
+  def snapshot(rows: List[(Option[TenantId], TuningPatch)]): Option[Snapshot] =
+    rows.collectFirst { case (None, patch) => patch }.flatMap(_.complete).map: global =>
+      Snapshot(global, rows.collect { case (Some(tenant), patch) => tenant -> patch.over(global) }.toMap)
 
-  /** Starts the refresh on a fiber of its own, which stops with the scope. */
-  val live: ZLayer[AntifraudSettingsRepository & AntifraudEvents.Settings & Settings & Scope, Nothing, AntifraudTuning] =
+  /** Reads the tuning once, and then on a fiber of its own, which stops with the scope. A start with the database
+    * unreadable goes on, with [[AntifraudTuning.available]] false until a read succeeds. */
+  val live: ZLayer[AntifraudSettingsRepository & Settings & Scope, Nothing, AntifraudTuningStore] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AntifraudSettingsRepository]
-        events <- ZIO.service[AntifraudEvents.Settings]
         settings <- ZIO.service[Settings]
-        tuning = Impl(repository, fromSettings(events))
+        tuning = Impl(repository)
         _ <- tuning.refresh
         _ <- (ZIO.sleep(settings.refreshInterval) *> tuning.refresh).forever.forkScoped
       yield tuning
 
-  class Impl(repository: AntifraudSettingsRepository, base: Tuning) extends AntifraudTuning:
-    private val current = AtomicReference(snapshot(base, Nil))
+  class Impl(repository: AntifraudSettingsRepository) extends AntifraudTuningStore:
+    private val current = AtomicReference(Option.empty[Snapshot])
     private val loadedVersion = AtomicReference(-1L)
     private val loadedAt = AtomicReference(Instant.MIN)
 
-    override def effective(tenant: Option[TenantId]): Tuning = current.get.of(tenant)
+    override def effective(tenant: Option[TenantId]): Tuning = current.get.fold(Tuning.off)(_.of(tenant))
 
-    override def smsLimitsEnabled: Boolean = current.get.smsLimitsEnabled
+    override def smsLimitsEnabled: Boolean = current.get.exists(_.smsLimitsEnabled)
+
+    override def available: Boolean = current.get.isDefined
 
     override def stored(tenant: Option[TenantId]): Task[Option[TuningPatch]] = repository.find(tenant)
 
     override def put(tenant: Option[TenantId], patch: TuningPatch, actor: String): Task[Unit] =
-      ZIO.foreachDiscard(invalid(patch, tenant.isDefined))(message => ZIO.fail(InvalidTuning(message))) *>
-        Clock.instant.flatMap(repository.put(tenant, patch, actor, _)) *> refresh
+      for
+        row <- tenant match
+          case Some(_) => ZIO.succeed(patch)
+          case None =>
+            repository.find(None).map(_.flatMap(_.complete)).flatMap:
+              case Some(global) => ZIO.succeed(TuningPatch.of(patch.over(global)))
+              case None =>
+                ZIO.fromOption(patch.complete).map(TuningPatch.of).orElseFail(InvalidTuning("the global settings are missing: give every key"))
+        _ <- ZIO.foreachDiscard(invalid(row, tenant.isDefined))(message => ZIO.fail(InvalidTuning(message)))
+        _ <- Clock.instant.flatMap(repository.put(tenant, row, actor, _))
+        _ <- refresh
+      yield ()
 
     override def delete(tenant: Option[TenantId], actor: String): Task[Boolean] =
-      Clock.instant.flatMap(repository.delete(tenant, actor, _)).tap(_ => refresh)
+      if tenant.isEmpty then ZIO.fail(InvalidTuning("the global settings cannot be removed"))
+      else Clock.instant.flatMap(repository.delete(tenant, actor, _)).tap(_ => refresh)
 
     override def audit(scope: Option[Option[TenantId]], limit: Int): Task[List[AntifraudTuningAudit]] =
       repository.audit(scope, math.max(1, math.min(limit, MaxLimit)))
@@ -249,8 +224,9 @@ object AntifraudTuning:
         version <- repository.version
         stale = version != loadedVersion.get || now.isAfter(loadedAt.get.plusSeconds(FullReloadSeconds))
         _ <- ZIO.when(stale):
-          repository.loadAll.map: rows =>
-            current.set(snapshot(base, rows))
-            loadedVersion.set(version)
-            loadedAt.set(now)
+          repository.loadAll.flatMap: rows =>
+            ZIO.fromOption(snapshot(rows)).orElseFail(RuntimeException("no complete global antifraud settings")).map: loaded =>
+              current.set(Some(loaded))
+              loadedVersion.set(version)
+              loadedAt.set(now)
       yield ()).catchAllCause(_ => AntifraudMetrics.tuningRefreshFailed)

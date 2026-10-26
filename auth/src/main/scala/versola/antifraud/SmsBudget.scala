@@ -64,31 +64,22 @@ final class SmsBudget(settings: SmsBudget.Settings, limits: Option[TenantId] => 
   def size: Int = windows.size
 
 object SmsBudget:
-  /** A budget whose limits are the ones of the config, for where nothing is tuned. */
-  def apply(settings: Settings): SmsBudget =
-    val limits = SmsLimits(SmsLimit(settings.sentPerHour, settings.minVolume, settings.minConversion), Map.empty)
-    new SmsBudget(settings, _ => limits)
+  /** A budget whose limits are `limits` everywhere, for where nothing is tuned. */
+  def apply(settings: Settings, limits: SmsLimits): SmsBudget = new SmsBudget(settings, _ => limits)
 
   enum Decision:
     case Allowed, Refused, Untracked
 
-  /** What the config says; the limits themselves are tuned per tenant and range (see [[AntifraudTuning]]) and these are
-    * what applies where nothing is stored.
+  /** The size of the budget, which a deployment sets; the limits themselves are tuned per tenant and range (see
+    * [[AntifraudTuning]]).
     *
-    * @param sentPerHour    codes allowed to one range of one tenant per hour; 0 means no limit
-    * @param minVolume      codes sent before the conversion is looked at; 0 means it is not
-    * @param minConversion  verified over sent below which a range with `minVolume` codes sent is closed
     * @param prefixLength   digits of the number, country code included, that make a range
     * @param maxRanges      ranges tracked at once; beyond that new ones are let through untracked
     */
   case class Settings(
-      sentPerHour: Int,
-      minVolume: Int,
-      minConversion: Double,
       prefixLength: Int,
       maxRanges: Int,
-  ):
-    def enabled: Boolean = sentPerHour > 0 || minVolume > 0
+  )
 
   private case class Key(tenantId: String, prefix: String)
 

@@ -12,7 +12,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
   private val tenant = TenantId("tenant-a")
   private val other = TenantId("tenant-b")
   private val at = Instant.parse("2026-10-26T10:00:00Z")
-  private val base = AntifraudTuning.fromSettings(AntifraudTestSettings.events)
+  private val base = Tuning.off
 
   private def patch(
       delayAt: Option[Int] = None,
@@ -52,13 +52,16 @@ object AntifraudTuningSpec extends UnitSpecBase:
 
     override def audit(scope: Option[Option[TenantId]], limit: Int) = ZIO.succeed(Nil)
 
-  private val tuningLayer: UIO[(AntifraudTuning.Impl, Ref[Boolean], InMemory)] =
+  /** The store over a repository that has the seeded global row, read once. */
+  private val tuningLayer: UIO[(AntifraudTuningStore.Impl, Ref[Boolean], InMemory)] =
     for
-      rows <- Ref.make(Map.empty[Option[TenantId], TuningPatch])
+      rows <- Ref.make(Map[Option[TenantId], TuningPatch](None -> TuningPatch.of(Tuning.off)))
       version <- Ref.make(0L)
       failing <- Ref.make(false)
       repository = InMemory(rows, version, failing)
-    yield (AntifraudTuning.Impl(repository, base), failing, repository)
+      tuning = AntifraudTuningStore.Impl(repository)
+      _ <- tuning.refresh
+    yield (tuning, failing, repository)
 
   private val ctx = AntifraudContext(Some(tenant), ClientId("c"), AntifraudAction.otp_request, None, None, None, None, None, None, None, Map.empty)
 
@@ -70,9 +73,49 @@ object AntifraudTuningSpec extends UnitSpecBase:
   private val enabled = AntifraudTestSettings.decision.copy(enabled = true)
 
   def spec = suite("AntifraudTuning")(
-    test("where nothing is stored the config applies") {
+    test("the seeded global row applies to every tenant, and everything is off") {
       for (tuning, _, _) <- tuningLayer
-      yield assertTrue(tuning.effective(None) == base, tuning.effective(Some(tenant)) == base, !tuning.smsLimitsEnabled)
+      yield assertTrue(tuning.available, tuning.effective(None) == base, tuning.effective(Some(tenant)) == base, !tuning.smsLimitsEnabled)
+    },
+    test("before the first read nothing is taken to be the thresholds: a request gets the failure action, and the tuning is off") {
+      for
+        rows <- Ref.make(Map[Option[TenantId], TuningPatch](None -> TuningPatch.of(Tuning.off)))
+        version <- Ref.make(0L)
+        failing <- Ref.make(true)
+        tuning = AntifraudTuningStore.Impl(InMemory(rows, version, failing))
+        _ <- tuning.refresh
+        before = tuning.available
+        engine = Antifraud.Impl(enabled, List(rules(rule("a", 1))), tuning)
+        cold <- engine.evaluate(ctx)
+        _ <- failing.set(false)
+        _ <- tuning.refresh
+        warm <- engine.evaluate(ctx)
+      yield assertTrue(
+        !before,
+        cold == Decision(DecisionAction.Challenge, 0, List("antifraud_tuning_unavailable")),
+        tuning.available,
+        warm == Decision(DecisionAction.Allow, 1, List("a")),
+      )
+    },
+    test("a global row that is not complete is not read: the snapshot there is stays") {
+      for
+        (tuning, _, repository) <- tuningLayer
+        _ <- tuning.put(None, patch(blockAt = Some(70)), "alice")
+        _ <- repository.put(None, patch(blockAt = Some(5)), "hand", at)
+        _ <- tuning.refresh
+      yield assertTrue(tuning.effective(None).blockAt == 70)
+    },
+    test("the global row cannot be removed, and a patch of it is laid over what it is") {
+      for
+        (tuning, _, _) <- tuningLayer
+        _ <- tuning.put(None, patch(blockAt = Some(70)), "alice")
+        _ <- tuning.put(None, patch(delayAt = Some(3)), "alice")
+        removed <- tuning.delete(None, "alice").either
+      yield assertTrue(
+        tuning.effective(None).blockAt == 70,
+        tuning.effective(None).delayAt == 3,
+        removed.left.exists(_.isInstanceOf[InvalidTuning]),
+      )
     },
     test("the global row is laid over the config, a tenant's over that, and a key a row leaves out is the layer below's") {
       for
@@ -98,7 +141,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("another instance picks a change up on its next refresh") {
       for
         (writer, _, repository) <- tuningLayer
-        reader = AntifraudTuning.Impl(repository, base)
+        reader = AntifraudTuningStore.Impl(repository)
         _ <- writer.put(None, patch(blockAt = Some(70)), "alice")
         before = reader.effective(None).blockAt
         _ <- reader.refresh
@@ -114,7 +157,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       yield assertTrue(tuning.effective(None).blockAt == 70)
     },
     test("refuses what cannot be meant") {
-      def refused(p: TuningPatch, tenant: Boolean = false) = AntifraudTuning.invalid(p, tenant).isDefined
+      def refused(p: TuningPatch, tenant: Boolean = false) = AntifraudTuningStore.invalid(p, tenant).isDefined
       assertTrue(
         refused(patch(blockAt = Some(-1))),
         refused(patch(delayMillis = Some(600000))),
@@ -132,7 +175,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
         (tuning, _, _) <- tuningLayer
         result <- tuning.put(None, patch(blockAt = Some(-5)), "alice").either
         stored <- tuning.stored(None)
-      yield assertTrue(result.left.exists(_.isInstanceOf[InvalidTuning]), stored.isEmpty)
+      yield assertTrue(result.left.exists(_.isInstanceOf[InvalidTuning]), stored.flatMap(_.blockAt).contains(0))
     },
     test("the engine takes the thresholds of the request's tenant") {
       for

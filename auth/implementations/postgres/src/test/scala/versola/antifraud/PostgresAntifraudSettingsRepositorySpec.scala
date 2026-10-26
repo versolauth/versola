@@ -7,6 +7,7 @@ import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
 
+import java.nio.file.{Files, Paths}
 import java.time.Instant
 
 object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
@@ -28,14 +29,31 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
       shadowRules = Some(Set("velocity_ip_1m")),
     )
 
+  /** The statement of the migration that seeds the global row, as written there. */
+  private val seed: String =
+    val file = "auth/implementations/postgres/migrations/V0024__antifraud_settings.sql"
+    val path = List(file, s"../../../$file", "migrations/V0024__antifraud_settings.sql").map(Paths.get(_)).find(Files.exists(_)).get
+    "(?s)INSERT INTO af_settings \\(.*?\\);".r.findFirstIn(Files.readString(path)).get
+
+  private def seeded(xa: TransactorZIO): Task[Unit] =
+    xa.connect(summon[DbCon].connection.createStatement().execute(seed)).unit
+
+  /** Empty, with the seeded global row where the next spec of this suite expects the migration to have left it. */
   private val clean: ZIO[TransactorZIO, Throwable, PostgresAntifraudSettingsRepository] =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"DELETE FROM af_settings".update.run())
       _ <- xa.connect(sql"DELETE FROM af_settings_audit".update.run())
+      _ <- seeded(xa)
     yield PostgresAntifraudSettingsRepository(xa)
 
   def spec = suite("PostgresAntifraudSettingsRepository")(
+    test("the global row the migration seeds is Tuning.off") {
+      for
+        repository <- clean
+        global <- repository.find(None)
+      yield assertTrue(global.contains(TuningPatch.of(Tuning.off)), global.flatMap(_.complete).contains(Tuning.off))
+    },
     test("stores the global row and a tenant's apart, and reads them back") {
       for
         repository <- clean
@@ -69,7 +87,7 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
         !missing,
         v1 == v0 + 3,
         audit.map(_.actor) == List("carol", "bob", "alice"),
-        audit.map(r => (r.before.flatMap(_.blockAt), r.after.flatMap(_.blockAt))) == List((Some(80), None), (Some(100), Some(80)), (None, Some(100))),
+        audit.map(r => (r.before.flatMap(_.blockAt), r.after.flatMap(_.blockAt))) == List((Some(80), None), (Some(100), Some(80)), (Some(0), Some(100))),
         audit.forall(_.tenantId.isEmpty),
         ofTenant.isEmpty,
         ofGlobal.size == 1,

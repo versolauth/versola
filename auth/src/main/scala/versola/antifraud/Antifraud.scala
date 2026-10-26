@@ -77,24 +77,13 @@ trait Antifraud:
 object Antifraud:
 
   /** @param enabled        off by default: nothing changes for a deployment that does not turn it on
-    * The thresholds and `delay` are what applies where no [[Tuning]] is stored (see [[AntifraudTuning]]); a deployment
-    * keeps them in its config and changes them through the admin API instead.
+    * The thresholds, weights and delays are not here: they are tuned during an attack (see [[AntifraudTuning]]).
     *
-    * @param delayAt        score from which the step is delayed; 0 disables the threshold
-    * @param challengeAt    score from which the step is challenged; 0 disables
-    * @param reviewAt       score from which the step is sent to review; 0 disables
-    * @param blockAt        score from which the step is refused; 0 disables
-    * @param delay          how long a `Delay` holds the request back
     * @param timeout        the longest an evaluation may take
     * @param failureAction  the decision when evaluation fails or times out
     */
   case class Settings(
       enabled: Boolean,
-      delayAt: Int,
-      challengeAt: Int,
-      reviewAt: Int,
-      blockAt: Int,
-      delay: Duration,
       timeout: Duration,
       failureAction: DecisionAction,
   )
@@ -119,6 +108,8 @@ object Antifraud:
   class Impl(settings: Settings, ruleSets: List[RuleSet], tuning: AntifraudTuning) extends Antifraud:
     override def evaluate(ctx: AntifraudContext): UIO[Decision] =
       if !settings.enabled then ZIO.succeed(Decision.allow)
+      // Nothing says what the thresholds are, and they must not be taken to be 0.
+      else if !tuning.available then ZIO.succeed(Decision(settings.failureAction, 0, List("antifraud_tuning_unavailable")))
       else
         ZIO.foreach(ruleSets)(_.rulesFor(ctx)).map(_.flatten)
           .map(decide(ctx, _))

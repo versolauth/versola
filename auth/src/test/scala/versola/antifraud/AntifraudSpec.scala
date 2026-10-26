@@ -15,20 +15,23 @@ object AntifraudSpec extends UnitSpecBase:
   private def set(rs: AntifraudRule*): Antifraud.RuleSet = new Antifraud.RuleSet:
     def rules = ZIO.succeed(rs.toList)
 
-  private val on = AntifraudTestSettings.decision.copy(enabled = true, delayAt = 1, challengeAt = 5, reviewAt = 8, blockAt = 10)
+  private val on = AntifraudTestSettings.decision.copy(enabled = true)
+  private val thresholds = AntifraudTestSettings.tuning.copy(delayAt = 1, challengeAt = 5, reviewAt = 8, blockAt = 10)
+
+  private def engine(ruleSets: List[Antifraud.RuleSet]) = AntifraudTestSettings.engine(on, ruleSets, thresholds)
 
   def spec = suite("Antifraud")(
     test("is a no-op and runs no rule while disabled") {
       val boom = rule("boom", 100).copy(test = _ => throw RuntimeException("ran"))
-      AntifraudTestSettings.engine(AntifraudTestSettings.decision.copy(blockAt = 1), List(set(boom))).evaluate(ctx).map(d => assertTrue(d == Decision.allow))
+      AntifraudTestSettings.engine(AntifraudTestSettings.decision, List(set(boom)), AntifraudTestSettings.tuning.copy(blockAt = 1)).evaluate(ctx).map(d => assertTrue(d == Decision.allow))
     },
     test("maps the score to the harshest threshold reached and lists the fired rules") {
       val rs = List(set(rule("a", 3), rule("b", 4), rule("c", 9, hit = false)))
       for
-        d <- AntifraudTestSettings.engine(on, rs).evaluate(ctx)
-        low <- AntifraudTestSettings.engine(on, List(set(rule("a", 1)))).evaluate(ctx)
-        none <- AntifraudTestSettings.engine(on, List(set(rule("z", 1, hit = false)))).evaluate(ctx)
-        blocked <- AntifraudTestSettings.engine(on, List(set(rule("a", 6), rule("b", 4)))).evaluate(ctx)
+        d <- engine(rs).evaluate(ctx)
+        low <- engine(List(set(rule("a", 1)))).evaluate(ctx)
+        none <- engine(List(set(rule("z", 1, hit = false)))).evaluate(ctx)
+        blocked <- engine(List(set(rule("a", 6), rule("b", 4)))).evaluate(ctx)
       yield assertTrue(
         d == Decision(DecisionAction.Challenge, 7, List("a", "b")),
         low.action == DecisionAction.Delay,
@@ -38,22 +41,22 @@ object AntifraudSpec extends UnitSpecBase:
     },
     test("a forcing rule wins over a milder score, never over a harsher one") {
       for
-        deny <- AntifraudTestSettings.engine(on, List(set(rule("deny", 0, Some(DecisionAction.Block))))).evaluate(ctx)
-        fake <- AntifraudTestSettings.engine(on, List(set(rule("fake", 0, Some(DecisionAction.Fake)), rule("w", 10)))).evaluate(ctx)
+        deny <- engine(List(set(rule("deny", 0, Some(DecisionAction.Block))))).evaluate(ctx)
+        fake <- engine(List(set(rule("fake", 0, Some(DecisionAction.Fake)), rule("w", 10)))).evaluate(ctx)
       yield assertTrue(deny.action == DecisionAction.Block, fake.action == DecisionAction.Block)
     },
     test("fails open with friction when a rule throws or a rule set fails") {
       val boom = rule("boom", 1).copy(test = _ => throw RuntimeException("x"))
       val failing = new Antifraud.RuleSet { def rules = ZIO.die(RuntimeException("db")) }
       for
-        a <- AntifraudTestSettings.engine(on, List(set(boom))).evaluate(ctx)
-        b <- AntifraudTestSettings.engine(on, List(failing)).evaluate(ctx)
+        a <- engine(List(set(boom))).evaluate(ctx)
+        b <- engine(List(failing)).evaluate(ctx)
       yield assertTrue(a == Decision(DecisionAction.Challenge, 0, List("antifraud_error")), b == a)
     },
     test("fails open with friction on timeout") {
       val slow = new Antifraud.RuleSet { def rules = ZIO.never }
       for
-        f <- AntifraudTestSettings.engine(on, List(slow)).evaluate(ctx).fork
+        f <- engine(List(slow)).evaluate(ctx).fork
         _ <- TestClock.adjust(1.second)
         d <- f.join
       yield assertTrue(d.firedRules == List("antifraud_error"), d.action == DecisionAction.Challenge)

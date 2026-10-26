@@ -498,20 +498,25 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
   through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, `GET /antifraud/settings/audit`, see
   `central/open-api/central.yaml`; permissions `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the
-  in-memory velocity counters. They are: the score thresholds (`delay-at`, `challenge-at`, `review-at`, `block-at`), the
-  limits and weights of the velocity rules, the weight of any rule by name (`ruleWeights`), the rules that only record
-  (`shadowRules`: evaluated and listed in `af_event.rules` as `shadow:<name>`, adding no weight and forcing nothing), the
-  limits on codes sent (`smsLimits`: a default and one per number prefix, the longest prefix a number starts with
-  deciding; the SMS budget below) and the timings of a delay and of a fake send (global only). A row is a patch for a
-  scope: the tenant's row is laid over the global row, which is laid over the config; a key a row leaves out follows the
-  layer below, and deleting a row returns the scope to it. So **the keys of the config for these settings
-  (`decision.*-at`, `velocity.thresholds`, `sms-budget`) are the values that apply where nothing is stored**, and the
-  defaults file is their fallback; they are not exposed by the chart. Every instance rebuilds what it holds when
-  `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in full once a minute; a
-  read that fails keeps what the instance has (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). Every
-  change is audited with the row before and after, and an instance that is down while a change is made reads it when it is
-  back. Per-tenant rows apply to the thresholds, weights, shadow rules, velocity limits and SMS limits; the delay and
-  fake-send timings are global because the request is held where no tenant is known.
+  in-memory velocity counters. The configuration has no key for any of them: they are the score thresholds (`delayAt`,
+  `challengeAt`, `reviewAt`, `blockAt`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of
+  any rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
+  `shadow:<name>`, adding no weight and forcing nothing), the limits on codes sent (`smsLimits`: a default and one per
+  number prefix, the longest prefix a number starts with deciding; the SMS budget below) and the timings of a delay and of
+  a fake send (global only). What the configuration keeps is deployment: the switches, `decision.timeout` and
+  `failure-action`, the sizes (`velocity.*`, `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
+
+  The migration seeds the **global row** with everything off (nothing limited, weighed or delayed), so there is always one,
+  and it is the only source of what applies to a tenant without a row: `PUT` without `tenantId` changes the keys it names
+  of it and leaves the others, and it cannot be deleted. A **tenant's row** is a patch over the global row (a key it leaves
+  out is the global row's; a map or `thresholds` is replaced as a whole), and deleting it returns the tenant to the global
+  row. Every instance holds the result in memory and rebuilds it when `af_settings_version` changes, checked every
+  `antifraud.tuning.refresh-interval` (5 s), and in full once a minute; a change applies on the instance that took it at
+  once. **A read that fails keeps the last settings that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it
+  increasing**). An instance that starts with the database unreadable has none yet, and decides every request as
+  `decision.failure-action` says (rule `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity
+  counters count) until a read succeeds. Every change is audited with the row before and after. Per-tenant rows apply to
+  everything but the timings, which are global because the request is held where no tenant is known.
 
   *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
   `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
@@ -538,8 +543,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
   `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
   rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
-  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic (and `failure-action: challenge` in
-  the config). Delete the row, or put the thresholds back to 0, to go back; nothing it recorded needs undoing.
+  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. Put the thresholds back to 0 to go
+  back; nothing it recorded needs undoing.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than

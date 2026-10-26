@@ -2599,8 +2599,8 @@ paths:
       summary: The settings of a scope
       description: |
         The row stored for the scope (`stored`, absent where there is none) and what applies to it (`effective`). The scope is
-        the tenant given, or the deployment. Per tenant, what applies is the configuration of auth, the global row laid over
-        it, and the tenant's row over that; a row sets only the keys it names.
+        the tenant given, or the deployment. The global row has every key (the migration seeds it with everything off) and is
+        what applies to a tenant that has no row; a tenant's row is a patch over it. Nothing in auth's configuration sets these values.
       operationId: getAntifraudSettings
       parameters:
         - name: tenantId
@@ -2620,10 +2620,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Antifraud settings]
-      summary: Replace the row of a scope
+      summary: Change the row of a scope
       description: |
-        Replaces the row of the scope with `settings`, which sets only the keys it names (the others follow the layer
-        below). It is applied by this instance of auth at once, by the others within `antifraud.tuning.refresh-interval`, with
+        With `tenantId`, replaces the tenant's row with `settings`, a patch over the global row: a key it leaves out is the
+        global row's. Without it, changes the keys `settings` names of the global row and leaves the others. It is applied by this instance of auth at once, by the others within `antifraud.tuning.refresh-interval`, with
         no restart and no loss of the counters. Every change is recorded in the audit with the row before and after.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
@@ -2656,7 +2656,7 @@ paths:
       tags: [Antifraud settings]
       summary: Remove the row of a scope
       operationId: deleteAntifraudSettings
-      description: The scope is named in the body, where edge adds `userId` for a request that is not a `GET`. The scope then follows the layer below.
+      description: The scope is named in the body, where edge adds `userId` for a request that is not a `GET`. A tenant then follows the global row. The global row cannot be removed (`400`).
       requestBody:
         required: true
         content:
@@ -2671,7 +2671,7 @@ paths:
         '204':
           description: Removed and recorded in the audit.
         '400':
-          description: The body is not valid.
+          description: The body is not valid, or no `tenantId` was given (the global row cannot be removed).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -6503,7 +6503,7 @@ components:
       required: [default, byPrefix]
     AntifraudSettingsPatch:
       type: object
-      description: What a row sets; a key it leaves out follows the layer below. A map, or `thresholds`, is replaced as a whole.
+      description: What a row sets; a key it leaves out is the global row's (for a change of the global row, what it has now). A map, or `thresholds`, is replaced as a whole.
       properties:
         delayAt: { type: integer, minimum: 0, description: Score from which a step is delayed; 0 disables (likewise the next three). }
         challengeAt: { type: integer, minimum: 0 }

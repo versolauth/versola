@@ -232,7 +232,6 @@ object VelocityCounters:
     *                      database holds (and what a load reads) to the keys that have any weight
     * @param maxFlushRows  buckets written per flush, at most; the busiest keys first, the rest follows at the next
     * @param maxLoadKeys   keys read per load, the busiest first; the others are left to the per-instance count
-    * @param thresholds    the limits the rules apply (see [[VelocityRules]]); none by default
     */
   case class Settings(
       enabled: Boolean,
@@ -243,15 +242,14 @@ object VelocityCounters:
       shareFrom: Int,
       maxFlushRows: Int,
       maxLoadKeys: Int,
-      thresholds: VelocityRules.Thresholds,
   )
 
   /** Longest key kept; longer ones are cut, so the attacker's choice of length buys no memory. */
   val maxKeyLength = 128
 
   /** Counters that key an address by its network as it is: for tests, and where nothing is stored. */
-  def apply(settings: Settings): VelocityCounters =
-    new VelocityCounters(settings, _ => settings.thresholds, network => ZIO.succeed(Some(network)))
+  def apply(settings: Settings, thresholds: VelocityRules.Thresholds): VelocityCounters =
+    new VelocityCounters(settings, _ => thresholds, network => ZIO.succeed(Some(network)))
 
   private def pack(minute: Long, count: Int): Long = (minute << 32) | (count.toLong & 0xffffffffL)
   private def minuteOf(packed: Long): Long = packed >>> 32
