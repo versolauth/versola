@@ -477,7 +477,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Antifraud configuration.** Every key of the `antifraud` block of `auth`'s config has its default in the image
   (`auth/src/main/resources/versola-defaults.conf`, the one place to read them; the Scala settings classes have none), and
   **all of it is off**: the switches (`decision.enabled`, `velocity.enabled`, `lists.enabled`, `detectors.enabled`) are
-  `false` and every limit and threshold is `0`, which means none. A key is read from the first of these that has it:
+  `false`. A key is read from the first of these that has it:
   `env.conf`, the overlay file (`CONFIG_OVERLAY_PATH`), the defaults.
 
   Only the **deployment-level** keys belong in configuration, and the chart exposes only those, as `services.auth.antifraud`
@@ -495,29 +495,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
         detectors: {enabled: true, statement-timeout: "10 seconds"}
   ```
 
-  The other keys described below (thresholds and weights, `sms-budget`, delays and the rest) are what an operator
-  changes **during an attack**, which a restart would make slow and would cost the counters, so they are not for the
-  chart: they are moving to a store changed through the admin API. Until then they are read from the config as
-  described, with the defaults file as the fallback.
-
-  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no `*-at` threshold set (and
-  `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
-  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Add the limits to `env.conf`:
-
-  ```hocon
-  antifraud {
-    sms-budget { sent-per-hour = 300, prefix-length = 6 }   # acts at once: refuses codes above the limit; size it from the range statistics
-    velocity.thresholds {
-      phone  { per-hour = 3, per-day = 6 }
-      prefix { per-ten-minutes = 60, per-hour = 200 }
-      ip     { per-minute = 10, weight = 10 }               # low weight: carrier-grade NAT shares addresses
-    }
-  }
-  ```
-
-  Run it for at least a week, look at which rules fire for traffic you know to be good (`af_event`, the proposals of the
-  detectors), and only then turn on enforcement by setting `decision.challenge-at` and `decision.block-at` above the
-  scores of the good traffic. Turn a switch off again to go back; nothing it recorded needs undoing.
+  The thresholds and weights, the limits on codes sent and the delays described below are what an operator changes
+  **during an attack**, which a restart would make slow and would cost the in-memory counters, so **they are not
+  configuration keys** and the chart does not expose them: they are tuned settings (`delayAt`, `challengeAt`, `reviewAt`,
+  `blockAt`, the velocity `thresholds` with `trustedDiscount`, `smsLimits`, `ruleWeights`, `shadowRules`, the delay and the
+  fake-send timing), kept apart from the configuration. Until they have a store of their own (the next change adds it,
+  with its admin API) all of them are off: nothing is limited, weighed or delayed, so the decision and the velocity rules
+  count and fire nothing.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
@@ -584,25 +568,26 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
   next run recomputes the last `stats-lookback` (2 minutes). A BRIN index on `af_event (at)` keeps that read to the
   blocks of those minutes.
-  Separately, `antifraud.sms-budget` closes a range (tenant plus the first `prefix-length` digits) for the next hour:
-  `sent-per-hour` (that many codes may be sent to it, no more) and `min-volume` with `min-conversion` (a range with at
-  least that many codes sent of which fewer than that share were verified). Both are **off by default** (`0`).
+  Separately, the SMS budget closes a range (tenant plus the first `antifraud.sms-budget.prefix-length` digits) for the next hour:
+  `sentPerHour` (that many codes may be sent to it, no more) and `minVolume` with `minConversion` (a range with at
+  least that many codes sent of which fewer than that share were verified), the tuned setting `smsLimits`. Both are
+  **off by default** (`0`).
   **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
   range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
   for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
   exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
-  unverified, which closes it. For that reason the conversion breaker (`min-volume`) is never applied to a number
-  whose region allows registration (`phoneRegions[].registration`); `sent-per-hour` is, so keep it well above the
+  unverified, which closes it. For that reason the conversion breaker (`minVolume`) is never applied to a number
+  whose region allows registration (`phoneRegions[].registration`); `sentPerHour` is, so keep it well above the
   real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
   range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
   someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
   candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
   an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
-  matters more than the pumping it protects against, leave `sent-per-hour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
+  matters more than the pumping it protects against, leave `sentPerHour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
   and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  `max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
+  `antifraud.sms-budget.max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
   (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
@@ -614,14 +599,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
   The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
   `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
-  keys first), `max-load-keys` (20000 per query, the busiest first) and
-  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
-  device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
-  window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
-  decision. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
+  keys first) and `max-load-keys` (20000 per query, the busiest first). The limits are the tuned setting `thresholds`:
+  `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
+  prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
+  rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
   subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
   once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
-  context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
+  context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
   *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
   JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
   minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is

@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
   *   - at least `minVolume` were sent and fewer than `minConversion` of them were verified.
   * It opens again by itself as the hour moves on. Both limits are off while they are 0.
   */
-final class SmsBudget(settings: SmsBudget.Settings):
+final class SmsBudget(settings: SmsBudget.Settings, limits: Option[TenantId] => SmsLimits):
   import SmsBudget.*
 
   private val windows = ConcurrentHashMap[Key, Window]()
@@ -35,7 +35,8 @@ final class SmsBudget(settings: SmsBudget.Settings):
     * range the budget has no room to track is let through ([[Decision.Untracked]]): the limit must not become the
     * thing an attacker fills up. */
   def decide(tenantId: Option[TenantId], prefix: String, at: Instant, charge: Boolean, conversionBreaker: Boolean = true): Decision =
-    if !settings.enabled then Decision.Allowed
+    val limit = limits(tenantId).of(prefix)
+    if !limit.enabled then Decision.Allowed
     else
       val k = key(tenantId, prefix)
       val existing = Option(windows.get(k))
@@ -44,7 +45,7 @@ final class SmsBudget(settings: SmsBudget.Settings):
         else if windows.size >= settings.maxRanges then None
         else Some(windows.computeIfAbsent(k, _ => Window()))
       window match
-        case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker)) then Decision.Allowed else Decision.Refused
+        case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker, limit)) then Decision.Allowed else Decision.Refused
         case None if charge => Decision.Untracked
         case None => Decision.Allowed
 
@@ -52,9 +53,9 @@ final class SmsBudget(settings: SmsBudget.Settings):
   def release(tenantId: Option[TenantId], prefix: String, at: Instant): Unit =
     Option(windows.get(key(tenantId, prefix))).foreach(_.giveBack(at))
 
-  private def closed(sent: Int, verified: Int, conversionBreaker: Boolean): Boolean =
-    (settings.sentPerHour > 0 && sent >= settings.sentPerHour) ||
-      (conversionBreaker && settings.minVolume > 0 && sent >= settings.minVolume && verified < sent * settings.minConversion)
+  private def closed(sent: Int, verified: Int, conversionBreaker: Boolean, limit: SmsLimit): Boolean =
+    (limit.sentPerHour > 0 && sent >= limit.sentPerHour) ||
+      (conversionBreaker && limit.minVolume > 0 && sent >= limit.minVolume && verified < sent * limit.minConversion)
 
   /** Forgets ranges that have been quiet for the whole hour. */
   def evict(at: Instant): Unit =
@@ -63,23 +64,22 @@ final class SmsBudget(settings: SmsBudget.Settings):
   def size: Int = windows.size
 
 object SmsBudget:
+  /** A budget whose limits are `limits` everywhere, for where nothing is tuned. */
+  def apply(settings: Settings, limits: SmsLimits): SmsBudget = new SmsBudget(settings, _ => limits)
+
   enum Decision:
     case Allowed, Refused, Untracked
 
-  /** @param sentPerHour    codes allowed to one range of one tenant per hour; 0 means no limit
-    * @param minVolume      codes sent before the conversion is looked at; 0 means it is not
-    * @param minConversion  verified over sent below which a range with `minVolume` codes sent is closed
+  /** The size of the budget, which a deployment sets; the limits themselves are tuned per tenant and range (see
+    * [[AntifraudTuning]]).
+    *
     * @param prefixLength   digits of the number, country code included, that make a range
     * @param maxRanges      ranges tracked at once; beyond that new ones are let through untracked
     */
   case class Settings(
-      sentPerHour: Int,
-      minVolume: Int,
-      minConversion: Double,
       prefixLength: Int,
       maxRanges: Int,
-  ):
-    def enabled: Boolean = sentPerHour > 0 || minVolume > 0
+  )
 
   private case class Key(tenantId: String, prefix: String)
 

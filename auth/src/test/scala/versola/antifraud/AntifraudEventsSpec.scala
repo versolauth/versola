@@ -44,6 +44,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       config: versola.util.CoreConfig = TestEnvConfig.coreConfig,
       antifraud: Antifraud = Antifraud.off,
       velocity: VelocityCounters = AntifraudTestSettings.velocityOff,
+      tuning: Tuning = Tuning.off,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
@@ -56,6 +57,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
       ZLayer.succeed[Antifraud](antifraud),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed[VelocityCounters](velocity),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -204,6 +206,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
             ZLayer.succeed[Antifraud](Antifraud.off),
+            ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
             ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
@@ -260,6 +263,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
@@ -286,6 +290,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
@@ -298,13 +303,13 @@ object AntifraudEventsSpec extends UnitSpecBase:
     suite("the SMS budget")(
       test("charged sends close the range, a check that charges nothing does not count, and another range is still allowed") {
         val e = env
-        val limited = small.copy(smsBudget = AntifraudTestSettings.smsBudget.copy(sentPerHour = 2))
+        val limited = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = SmsLimit(sentPerHour = 2, minVolume = 0, minConversion = 0.1), byPrefix = Map.empty))
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, limited)
+            events <- build(e, small, tuning = limited)
             _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = false))
             first <- events.allowSms(clientId, phone, t0, charge = true)
             second <- events.allowSms(clientId, Phone("+4915100000000"), t0, charge = true)
@@ -318,22 +323,22 @@ object AntifraudEventsSpec extends UnitSpecBase:
       test("the conversion is only looked at where registration is closed for the number; the hourly limit applies everywhere") {
         val germany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = true)
         val closedGermany = germany.copy(registration = false)
-        def run(regions: List[PhoneRegion], settings: SmsBudget.Settings) =
+        def run(regions: List[PhoneRegion], limit: SmsLimit) =
           val e = env
           ZIO.scoped:
             for
               _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
               _ <- e.configService.getPhoneRegions.succeedsWith(regions)
               _ <- e.repository.insertBatch.succeedsWith(())
-              events <- build(e, small.copy(smsBudget = settings))
+              events <- build(e, small, tuning = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = limit, byPrefix = Map.empty)))
               _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = true))
               allowed <- events.allowSms(clientId, phone, t0, charge = false)
             yield allowed
-        val breaker = AntifraudTestSettings.smsBudget.copy(minVolume = 5, minConversion = 0.5)
+        val breaker = SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.5)
         for
           open <- run(List(germany), breaker)
           closed <- run(List(closedGermany), breaker)
-          limitOpen <- run(List(germany), AntifraudTestSettings.smsBudget.copy(sentPerHour = 5))
+          limitOpen <- run(List(germany), SmsLimit(sentPerHour = 5, minVolume = 0, minConversion = 0.1))
         yield assertTrue(open, !closed, !limitOpen)
       },
       test("with no budget configured nothing is looked up") {
@@ -404,18 +409,22 @@ object AntifraudEventsSpec extends UnitSpecBase:
     suite("velocity in the decision")(
       test("an allowed request is counted, and the limit fires on the one over it") {
         val e = env
-        val thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60))
-        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true, thresholds = thresholds)
-        val velocity = VelocityCounters(vsettings)
-        val engine = Antifraud.Impl(
-          AntifraudTestSettings.decision.copy(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
-          List(VelocityRules.ruleSet(vsettings)),
+        val tuned = AntifraudTestSettings.tuning.copy(
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
         )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity, tuning = tuned)
             first <- events.decideOtpRequest(clientId, None, Right(phone))
             second <- events.decideOtpRequest(clientId, None, Right(phone))
             third <- events.decideOtpRequest(clientId, None, Right(phone))

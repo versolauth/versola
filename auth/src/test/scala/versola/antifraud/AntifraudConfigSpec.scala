@@ -20,19 +20,13 @@ object AntifraudConfigSpec extends UnitSpecBase:
   private def events(envConfig: String, overlay: Option[java.io.File] = None) =
     load(envConfig, overlay, Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]))
 
-  private val sms: String =
+  private val deployment: String =
     """antifraud {
-      |  sms-budget { sent-per-hour = 200, prefix-length = 6 }
-      |  decision { enabled = true, block-at = 100, failure-action = "allow" }
-      |  velocity {
-      |    enabled = true
-      |    thresholds {
-      |      phone { per-hour = 3, per-day = 5 }
-      |      prefix { per-ten-minutes = 40, weight = 80 }
-      |    }
-      |  }
+      |  sms-budget { prefix-length = 6, max-ranges = 500 }
+      |  decision { enabled = true, timeout = "50 milliseconds", failure-action = "allow" }
+      |  velocity { enabled = true, max-keys = 1000, stripes = 4, flush-interval = "5 seconds" }
       |  lists { enabled = true, max-traffic-share = 0.1 }
-      |  detectors { enabled = true, interval = "30 seconds", fake-verify { min-fake-verifies = 3 } }
+      |  detectors { enabled = true, interval = "30 seconds", statement-timeout = "3 seconds", fake-verify { min-fake-verifies = 3 } }
       |}""".stripMargin
 
   def spec = suite("Antifraud config")(
@@ -42,46 +36,54 @@ object AntifraudConfigSpec extends UnitSpecBase:
         all.queueCapacity == 20000,
         all.retention == 14.days,
         all.statsPrefixLength == 4,
-        !all.smsBudget.enabled,
+        all.smsBudget == SmsBudget.Settings(prefixLength = 4, maxRanges = 10000),
         !all.decision.enabled,
         all.decision.failureAction == DecisionAction.Challenge,
         all.decision.timeout == 20.millis,
         !all.velocity.enabled,
-        all.velocity.thresholds.phone == AntifraudTestSettings.limit,
-        all.velocity.thresholds.trustedDiscount == 40,
+        all.velocity.maxKeys == 20000,
         !AntifraudTestSettings.lists.enabled,
         AntifraudTestSettings.lists.refreshInterval == 5.seconds,
         !AntifraudTestSettings.detectors.enabled,
+        AntifraudTestSettings.detectors.statementTimeout == 10.seconds,
         AntifraudTestSettings.detectors.prefixAnomaly.spikeFactor == 5.0,
         AntifraudTestSettings.detectors.fakeVerify.minFakeVerifies == 5,
       )
     },
+    test("what is tuned during an attack is not in the configuration") {
+      val keys = VersolaApp.layered("", None).getConfig("antifraud")
+      val tunables = List(
+        "decision.delay-at",
+        "decision.block-at",
+        "decision.delay",
+        "velocity.thresholds",
+        "sms-budget.sent-per-hour",
+        "sms-budget.min-volume",
+        "sms-budget.min-conversion",
+      )
+      assertTrue(tunables.forall(!keys.hasPath(_)))
+    },
     test("the keys of an env.conf win, and the rest stay at their defaults") {
       for
-        parsed <- events(sms)
-        lists <- load(sms, None, Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings])))
-        detectors <- load(sms, None, Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings])))
+        parsed <- events(deployment)
+        lists <- load(deployment, None, Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings])))
+        detectors <- load(deployment, None, Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings])))
       yield assertTrue(
-        parsed.smsBudget.sentPerHour == 200,
-        parsed.smsBudget.prefixLength == 6,
-        parsed.smsBudget.maxRanges == 10000,
-        parsed.smsBudget.enabled,
+        parsed.smsBudget == SmsBudget.Settings(prefixLength = 6, maxRanges = 500),
         parsed.decision.enabled,
-        parsed.decision.blockAt == 100,
-        parsed.decision.delayAt == 0,
+        parsed.decision.timeout == 50.millis,
         parsed.decision.failureAction == DecisionAction.Allow,
         parsed.velocity.enabled,
-        parsed.velocity.thresholds.phone.perHour == 3,
-        parsed.velocity.thresholds.phone.perDay == 5,
-        parsed.velocity.thresholds.phone.weight == 50,
-        parsed.velocity.thresholds.prefix.perTenMinutes == 40,
-        parsed.velocity.thresholds.prefix.weight == 80,
-        parsed.velocity.thresholds.ip.weight == 20,
+        parsed.velocity.maxKeys == 1000,
+        parsed.velocity.stripes == 4,
+        parsed.velocity.flushInterval == 5.seconds,
+        parsed.velocity.loadInterval == 20.seconds,
         lists.enabled,
         lists.maxTrafficShare == 0.1,
         lists.watchWeight == 20,
         detectors.enabled,
         detectors.interval == 30.seconds,
+        detectors.statementTimeout == 3.seconds,
         detectors.fakeVerify.minFakeVerifies == 3,
         detectors.fakeVerify.window == 30.minutes,
       )

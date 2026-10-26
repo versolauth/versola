@@ -10,6 +10,7 @@ import versola.antifraud.{
   AntifraudListRepository,
   AntifraudLists,
   AntifraudProposalRepository,
+  AntifraudTuning,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
@@ -125,6 +126,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudListRepository &
       AntifraudLists &
       AntifraudProposalRepository &
+      AntifraudTuning &
       AntifraudDetectors &
       ConversationRenderService &
       OtpService &
@@ -334,11 +336,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       antifraudSettings >++>
       antifraudListSettings >++>
       AntifraudLists.live >++>
+      // No store of the tunables yet: nothing is limited or weighed (see AntifraudTuning).
+      ZLayer.succeed[AntifraudTuning](AntifraudTuning.off) >++>
       ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
       VelocityCounters.live >++>
       // Each component that adds rules is listed here.
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
-        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity))): Antifraud,
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists, tuning: AntifraudTuning) =>
+        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud,
       ) >++>
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>

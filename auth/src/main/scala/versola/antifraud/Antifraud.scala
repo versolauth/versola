@@ -77,29 +77,21 @@ trait Antifraud:
 object Antifraud:
 
   /** @param enabled        off by default: nothing changes for a deployment that does not turn it on
-    * @param delayAt        score from which the step is delayed; 0 disables the threshold
-    * @param challengeAt    score from which the step is challenged; 0 disables
-    * @param reviewAt       score from which the step is sent to review; 0 disables
-    * @param blockAt        score from which the step is refused; 0 disables
-    * @param delay          how long a `Delay` holds the request back
+    * The thresholds, weights and delays are not here: they are tuned during an attack (see [[AntifraudTuning]]).
+    *
     * @param timeout        the longest an evaluation may take
     * @param failureAction  the decision when evaluation fails or times out
     */
   case class Settings(
       enabled: Boolean,
-      delayAt: Int,
-      challengeAt: Int,
-      reviewAt: Int,
-      blockAt: Int,
-      delay: Duration,
       timeout: Duration,
       failureAction: DecisionAction,
   )
 
   /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer
     * is assembled. */
-  def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings, Antifraud] =
-    ZLayer.fromFunction((settings: AntifraudEvents.Settings) => Impl(settings.decision, ruleSets): Antifraud)
+  def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings & AntifraudTuning, Antifraud] =
+    ZLayer.fromFunction((settings: AntifraudEvents.Settings, tuning: AntifraudTuning) => Impl(settings.decision, ruleSets, tuning): Antifraud)
 
   val off: Antifraud = _ => ZIO.succeed(Decision.allow)
 
@@ -108,11 +100,18 @@ object Antifraud:
   trait RuleSet:
     def rules: UIO[List[AntifraudRule]]
 
-  class Impl(settings: Settings, ruleSets: List[RuleSet]) extends Antifraud:
+    /** The rules for this request; a source whose rules depend on the tenant overrides it. */
+    def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] = rules
+
+  /** `settings` has what a deployment sets (the switch, the timeout, the action on failure); what is tuned during an
+    * attack (the thresholds, the weights, the rules that only record) is `tuning`'s, per tenant. */
+  class Impl(settings: Settings, ruleSets: List[RuleSet], tuning: AntifraudTuning) extends Antifraud:
     override def evaluate(ctx: AntifraudContext): UIO[Decision] =
       if !settings.enabled then ZIO.succeed(Decision.allow)
+      // Nothing says what the thresholds are, and they must not be taken to be 0.
+      else if !tuning.available then ZIO.succeed(Decision(settings.failureAction, 0, List("antifraud_tuning_unavailable")))
       else
-        ZIO.foreach(ruleSets)(_.rules).map(_.flatten)
+        ZIO.foreach(ruleSets)(_.rulesFor(ctx)).map(_.flatten)
           .map(decide(ctx, _))
           .timeoutTo(failed)(identity)(settings.timeout)
           .catchAllCause(_ => ZIO.succeed(failed))
@@ -120,14 +119,16 @@ object Antifraud:
     private def failed: Decision = Decision(settings.failureAction, 0, List("antifraud_error"))
 
     private[antifraud] def decide(ctx: AntifraudContext, rules: List[AntifraudRule]): Decision =
-      val fired = rules.filter(_.test(ctx))
-      val score = fired.map(_.weight).sum
-      val names = fired.map(_.name)
+      val t = tuning.effective(ctx.tenantId)
+      val (shadow, fired) = rules.filter(_.test(ctx)).partition(rule => t.shadowRules.contains(rule.name))
+      // A rule that forces an action decides alone; its weight is not what it does.
+      val score = fired.map(rule => if rule.forces.isDefined then rule.weight else t.ruleWeights.getOrElse(rule.name, rule.weight)).sum
+      val names = fired.map(_.name) ++ shadow.map(rule => s"shadow:${rule.name}")
       val forced = fired.flatMap(_.forces).maxByOption(_.ordinal)
       val byScore =
-        if settings.blockAt > 0 && score >= settings.blockAt then DecisionAction.Block
-        else if settings.reviewAt > 0 && score >= settings.reviewAt then DecisionAction.Review
-        else if settings.challengeAt > 0 && score >= settings.challengeAt then DecisionAction.Challenge
-        else if settings.delayAt > 0 && score >= settings.delayAt then DecisionAction.Delay
+        if t.blockAt > 0 && score >= t.blockAt then DecisionAction.Block
+        else if t.reviewAt > 0 && score >= t.reviewAt then DecisionAction.Review
+        else if t.challengeAt > 0 && score >= t.challengeAt then DecisionAction.Challenge
+        else if t.delayAt > 0 && score >= t.delayAt then DecisionAction.Delay
         else DecisionAction.Allow
       Decision(Seq(Some(byScore), forced).flatten.maxBy(_.ordinal), score, names)
