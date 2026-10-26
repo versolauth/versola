@@ -32,7 +32,7 @@ import versola.edge.model.{
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
-import versola.util.http.Observability
+import versola.util.http.{Checkpoint, Observability, RateLimitKeys, RateLimiter}
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -179,11 +179,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName & RateLimiter,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -201,6 +201,7 @@ object EdgeService:
       permissionService: PermissionService,
       dpopVerifier: DpopVerifier,
       env: EnvName,
+      rateLimiter: RateLimiter,
   ) extends EdgeService:
 
     private val loginTtl = 10.minutes
@@ -576,6 +577,8 @@ object EdgeService:
           )
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
+        // R2: from the verified token, before the revocation check and before the DPoP proof records its state
+        _ <- observeIdentity(typedClaims)
         _ <- checkRevoked(typedClaims)
         binding <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
@@ -587,6 +590,8 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
+        // R3: the route is known and the caller may use it; nothing has been asked of auth or the resource yet
+        _ <- observeRoute(typedClaims, resourceId, endpoint)
         userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -614,6 +619,48 @@ object EdgeService:
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
+
+    /** Rate limit checkpoints R2 and R3. **Shadow only**: the decision is not acted on (the applier holds every policy to
+      * shadow, so there is none to act on); the check counts `would_limit` and the request goes on unchanged. With no policy
+      * at the checkpoint this is one volatile read and builds nothing. Refresh exchanges are not counted: the proxied call is
+      * what is counted.
+      *
+      * Every value is from the verified token or the matched route, never from the request as sent. The endpoint is the
+      * registered template (the one the metrics use), not the concrete path.
+      */
+    private def observeIdentity(claims: AccessTokenClaims): UIO[Unit] =
+      if !rateLimiter.active(Checkpoint.Identity) then ZIO.unit
+      else
+        Clock.nanoTime.map: now =>
+          rateLimiter.check(Checkpoint.Identity, identityKeys(claims), now)
+          ()
+
+    private def observeRoute(
+        claims: AccessTokenClaims,
+        resourceId: ResourceId,
+        endpoint: ResourceEndpoint,
+    ): UIO[Unit] =
+      if !rateLimiter.active(Checkpoint.Route) then ZIO.unit
+      else
+        Clock.nanoTime.map: now =>
+          val keys = RateLimitKeys(
+            client = claims.clientId.toString,
+            subject = claims.subject,
+            session = claims.sid.fold("")(_.toString),
+            jkt = claims.confirmation.flatMap(_.jkt).getOrElse(""),
+            resource = resourceId.toString,
+            endpoint = s"${endpoint.method} /resources/$resourceId${endpoint.path}",
+          )
+          rateLimiter.check(Checkpoint.Route, keys, now)
+          ()
+
+    private def identityKeys(claims: AccessTokenClaims): RateLimitKeys =
+      RateLimitKeys(
+        client = claims.clientId.toString,
+        subject = claims.subject,
+        session = claims.sid.fold("")(_.toString),
+        jkt = claims.confirmation.flatMap(_.jkt).getOrElse(""),
+      )
 
     private enum AuthSource:
       case Cookie(presetId: PresetId)

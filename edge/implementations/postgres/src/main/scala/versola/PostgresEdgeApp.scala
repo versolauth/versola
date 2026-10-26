@@ -16,6 +16,7 @@ import versola.edge.{
   EdgeConfig,
   EdgeController,
   EdgeIdentity,
+  EdgeRateLimiter,
   EdgeService,
   InternalSurface,
   JwksService,
@@ -27,6 +28,7 @@ import versola.edge.{
   PostgresLoginRepository,
   PostgresRevocationNotifications,
   PostgresRevocationRepository,
+  RateLimitPolicySource,
   ResourceService,
   SSOClient,
 }
@@ -159,6 +161,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopPolicyService.live >++>
       OverloadPolicyService.live >++>
       AccessLogPolicyService.live >++>
+      // No central policy yet: the source is empty and the limiter disabled (deploy.md, Rate limits (shadow)).
+      RateLimitPolicySource.none >++>
+      EdgeRateLimiter.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>
       PermissionService.live >++>
