@@ -478,35 +478,46 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (`auth/src/main/resources/versola-defaults.conf`, the one place to read them; the Scala settings classes have none), and
   **all of it is off**: the switches (`decision.enabled`, `velocity.enabled`, `lists.enabled`, `detectors.enabled`) are
   `false` and every limit and threshold is `0`, which means none. A key is read from the first of these that has it:
-  `env.conf`, the overlay file (`CONFIG_OVERLAY_PATH`), the defaults. On Kubernetes set `services.auth.antifraud` in the
-  chart's values, which renders the overlay (a ConfigMap, kebab-case keys, durations as strings) and restarts `auth` when
-  it changes; elsewhere write the same block in `env.conf`. The keys and what they mean are in the items below.
+  `env.conf`, the overlay file (`CONFIG_OVERLAY_PATH`), the defaults.
 
-  *Recommended start against SMS pumping: shadow mode.* The engine counts and scores every OTP request and writes the
-  score and the fired rules to the event log (`af_event.score`, `af_event.rules`), but enforces nothing while no
-  `*-at` threshold is set and `failure-action` is `allow`:
+  Only the **deployment-level** keys belong in configuration, and the chart exposes only those, as `services.auth.antifraud`
+  (an overlay ConfigMap; `auth` restarts when it changes, which also empties its in-memory velocity counters):
+  the switches above, `decision.timeout` and `decision.failure-action`, the sizes of the velocity counters
+  (`velocity.max-keys`, `stripes`, `max-flush-rows`, `max-load-keys`) and `detectors.statement-timeout`.
 
   ```yaml
   services:
     auth:
       antifraud:
-        sms-budget: {sent-per-hour: 300, prefix-length: 6}   # above the busiest range's hourly peak (see below)
-        decision: {enabled: true, failure-action: allow}     # no delay-at/challenge-at/review-at/block-at: shadow
-        velocity:
-          enabled: true
-          thresholds:
-            phone: {per-hour: 3, per-day: 6}
-            prefix: {per-ten-minutes: 60, per-hour: 200}
-            ip: {per-minute: 10, weight: 10}                  # low weight: carrier-grade NAT shares addresses
+        decision: {enabled: true, timeout: "20 milliseconds", failure-action: allow}
+        velocity: {enabled: true, max-keys: 20000, stripes: 8, max-flush-rows: 20000, max-load-keys: 20000}
         lists: {enabled: true}
-        detectors: {enabled: true}                            # proposes entries, enforces nothing
+        detectors: {enabled: true, statement-timeout: "10 seconds"}
   ```
 
-  (`sms-budget` is the one key of the profile that acts at once: it refuses the codes above the limit, so size it from
-  the range statistics first.) Run it for at least a week, look at which rules fire for traffic you know to be good
-  (`af_event`, the proposals of the detectors), and only then turn on enforcement by setting
-  `decision.challenge-at` and `decision.block-at` above the scores of the good traffic (and `failure-action:
-  challenge`). Turn a switch off again to go back; nothing it recorded needs undoing.
+  The other keys described below (thresholds and weights, `sms-budget`, delays and the rest) are what an operator
+  changes **during an attack**, which a restart would make slow and would cost the counters, so they are not for the
+  chart: they are moving to a store changed through the admin API. Until then they are read from the config as
+  described, with the defaults file as the fallback.
+
+  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no `*-at` threshold set (and
+  `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
+  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Add the limits to `env.conf`:
+
+  ```hocon
+  antifraud {
+    sms-budget { sent-per-hour = 300, prefix-length = 6 }   # acts at once: refuses codes above the limit; size it from the range statistics
+    velocity.thresholds {
+      phone  { per-hour = 3, per-day = 6 }
+      prefix { per-ten-minutes = 60, per-hour = 200 }
+      ip     { per-minute = 10, weight = 10 }               # low weight: carrier-grade NAT shares addresses
+    }
+  }
+  ```
+
+  Run it for at least a week, look at which rules fire for traffic you know to be good (`af_event`, the proposals of the
+  detectors), and only then turn on enforcement by setting `decision.challenge-at` and `decision.block-at` above the
+  scores of the good traffic. Turn a switch off again to go back; nothing it recorded needs undoing.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than

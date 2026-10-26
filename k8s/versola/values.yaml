@@ -268,30 +268,21 @@ services:
       # default -- this chart doesn't generate one.
       existingSecret: ""
       secretKey: env.conf
-    # The `antifraud` block of auth's config (deploy.md, "Antifraud"; every key and its default is in
-    # auth/src/main/resources/versola-defaults.conf), written as a file auth reads below the env.conf Secret: a key the
-    # env.conf sets wins. Kebab-case keys, durations as strings ("10 seconds"). Everything is OFF by default, which is
-    # what the switches below say; leave this `{}` to change nothing. Changing it restarts auth.
+    # The deployment-level keys of the `antifraud` block of auth's config (deploy.md, "Antifraud configuration"; every key
+    # and its default is in auth/src/main/resources/versola-defaults.conf), written as a file auth reads below the
+    # env.conf Secret: a key the env.conf sets wins. Kebab-case keys, durations as strings. Everything is OFF by default,
+    # which is what the switches below say; leave this `{}` to change nothing. Changing it restarts auth, which also
+    # empties its in-memory velocity counters.
     #
-    # Shadow mode first for SMS pumping: count and score, enforce nothing (`decision.enabled` with every `*-at` 0 and
-    # `failure-action: allow`), watch `af_event.score` and `rules` for a week, then set `challenge-at` / `block-at` above
-    # the score of the traffic you saw. A recommended profile (limits per range of numbers and per phone; the ip and asn
-    # weights stay low because of carrier-grade NAT):
+    # Thresholds, weights, SMS budgets and timings are not here: they are tuned while an attack is going on, so they
+    # are not deployment configuration (deploy.md).
     #
     #   antifraud:
-    #     sms-budget: {sent-per-hour: 300, prefix-length: 6}    # above the busiest range's hourly peak
-    #     decision: {enabled: true, failure-action: allow}      # shadow: no *-at set
-    #     velocity:
-    #       enabled: true
-    #       thresholds:
-    #         phone: {per-hour: 3, per-day: 6}
-    #         prefix: {per-ten-minutes: 60, per-hour: 200}
-    #         ip: {per-minute: 10, weight: 10}
+    #     decision: {enabled: true, timeout: "20 milliseconds", failure-action: allow}
+    #     velocity: {enabled: true, max-keys: 20000, stripes: 8, max-flush-rows: 20000, max-load-keys: 20000}
     #     lists: {enabled: true}
-    #     detectors: {enabled: true}
-    #   # Enforcing, once the shadow week looks right: decision: {challenge-at: 50, block-at: 100, failure-action: challenge}
+    #     detectors: {enabled: true, statement-timeout: "10 seconds"}
     antifraud:
-      sms-budget: {sent-per-hour: 0, min-volume: 0}
       decision: {enabled: false}
       velocity: {enabled: false}
       lists: {enabled: false}
