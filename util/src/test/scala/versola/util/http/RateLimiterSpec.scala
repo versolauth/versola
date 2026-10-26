@@ -270,6 +270,66 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(a == RateDecision.Allowed, b == RateDecision.Allowed, c == RateDecision.Allowed)
       },
     ),
+    suite("gate and charge (R1: failed attempts only)")(
+      test("gate charges nothing: any number of gated requests pass, and charge is what drains the bucket") {
+        val ip = RateLimitKeys(ip = "203.0.113.7")
+        val p = policy(by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(3, 3)), burst = 3)
+        for
+          l <- limiter(p)()
+          gated = (1 to 10).map(_ => l.gate(Checkpoint.Address, ip, 0L))
+          _ = (1 to 3).foreach(_ => l.charge(Checkpoint.Address, ip, 0L))
+          after = l.gate(Checkpoint.Address, ip, 0L)
+          later = l.gate(Checkpoint.Address, ip, 2 * Second)
+        yield assertTrue(
+          gated.forall(_ == RateDecision.Allowed),
+          after == RateDecision.Limited("p", 1),
+          // one token of the three-per-three-seconds rate is back after a second
+          later == RateDecision.Allowed,
+        )
+      },
+      test("another address is unaffected, and an extra charge on an empty bucket changes nothing") {
+        val a = RateLimitKeys(ip = "198.51.100.1")
+        val b = RateLimitKeys(ip = "198.51.100.2")
+        val p = policy(by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(1, 10)))
+        for
+          l <- limiter(p)()
+          _ = (1 to 50).foreach(_ => l.charge(Checkpoint.Address, a, 0L))
+          blocked = l.gate(Checkpoint.Address, a, 0L)
+          other = l.gate(Checkpoint.Address, b, 0L)
+          // 50 failures did not push the wait beyond what one window means
+          retry = l.gate(Checkpoint.Address, a, 5 * Second)
+        yield assertTrue(blocked == RateDecision.Limited("p", 10), other == RateDecision.Allowed, retry == RateDecision.Limited("p", 5))
+      },
+      test("shadow counts would_limit at the gate and refuses nothing; a policy with no value for the key does not apply") {
+        val p = policy(name = "sh", by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(1, 10)), mode = GuardMode.Shadow)
+        val ip = RateLimitKeys(ip = "192.0.2.9")
+        for
+          l <- limiter(p)()
+          _ = l.charge(Checkpoint.Address, ip, 0L)
+          shadowed = l.gate(Checkpoint.Address, ip, 0L)
+          none = l.gate(Checkpoint.Address, RateLimitKeys(), 0L)
+        yield assertTrue(
+          shadowed == RateDecision.Allowed,
+          none == RateDecision.Allowed,
+          l.stats("sh").map(st => (st.limited, st.wouldLimit)) == Some((0L, 1L)),
+          l.stats("sh").map(_.trackedKeys) == Some(1),
+        )
+      },
+      test("a certificate policy is an address-checkpoint policy keyed on the certificate") {
+        val p = policy(by = List(RateLimitDimension.Certificate), limits = List(RateLimitWindow(1, 60)))
+        for
+          l <- limiter(p)()
+          first = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-a"), 0L)
+          second = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-a"), 0L)
+          other = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-b"), 0L)
+        yield assertTrue(
+          p.checkpoint == Checkpoint.Address,
+          first == RateDecision.Allowed,
+          second == RateDecision.Limited("p", 60),
+          other == RateDecision.Allowed,
+        )
+      },
+    ),
     suite("memory")(
       test("a key that has been quiet long enough is dropped") {
         for

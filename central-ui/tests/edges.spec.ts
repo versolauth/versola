@@ -466,18 +466,34 @@ test.describe('rate limits', () => {
     const dialog = panel(page, 'Edit rate limits');
     await expect(dialog.getByText('No policies yet')).toBeVisible();
     await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
-    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(3);
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(5);
     await expect(dialog.getByRole('button', { name: 'Shadow', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
+    // the first is per-client; renamed, a second click adds only the one that is missing
     await dialog.getByRole('textbox', { name: 'Name', exact: true }).first().fill('mine');
-    // a second click adds the two that are not there yet, not a duplicate of the renamed one's name
     await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
-    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(4);
-    await dialog.getByRole('textbox', { name: 'Name', exact: true }).nth(1).fill('p2');
-    await dialog.getByRole('textbox', { name: 'Name', exact: true }).nth(2).fill('p3');
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(6);
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
     const body = (await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body as { policies: Array<{ name: string; mode: string }> };
-    expect(body.policies.map(policy => policy.name)).toEqual(['mine', 'p2', 'p3', 'per-client']);
+    expect(body.policies.map(policy => policy.name)).toEqual(['mine', 'per-user', 'per-user-endpoint', 'per-address', 'per-certificate', 'per-client']);
     expect(body.policies.every(policy => policy.mode === 'shadow')).toBe(true);
+  });
+
+  test('IP address and certificate are counted before the token: they stand alone, and the editor says so', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('checkbox', { name: 'IP address' }).check();
+    await expect(dialog.getByText('ip and certificate are counted before the token is read')).toBeVisible();
+    await expect(dialog.getByText('failed and unauthenticated attempts and logins only')).toBeVisible();
+    await dialog.getByRole('checkbox', { name: 'Client', exact: true }).uncheck();
+    await expect(dialog.getByText('ip and certificate are counted before the token is read, so')).toHaveCount(0);
+    await dialog.getByLabel('Scope').selectOption('endpoint');
+    await expect(dialog.getByText('take scope edge-wide and no other key')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByRole('group', { name: 'Count by' }).first()).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+    await dialog.getByLabel('Scope').selectOption('edge-wide');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client', by: ['ip'], scope: 'edge-wide' }] });
   });
 
   test('Enforce is offered, says what it does, and is saved as chosen', async ({ page }) => {

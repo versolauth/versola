@@ -1088,9 +1088,10 @@ central; a policy in `shadow` only counts what it would refuse, a policy in `enf
 the limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask).
 
 **Start from the recommended set.** `GET /configuration/edges/rate-limits/recommended` (and "Add recommended policies" in the
-console, on the edge page under *Rate limits*) gives three generous policies, all in `shadow`: `per-client` (12,000 a minute,
-bursts of 500), `per-user` (300 a minute and 5,000 an hour, bursts of 60) and `per-user-endpoint` (120 a minute per user and
-endpoint, bursts of 30). They are meant to catch a runaway client or user, not a busy one. Add them, read
+console, on the edge page under *Rate limits*) gives five generous policies, all in `shadow`: `per-client` (12,000 a minute,
+bursts of 500), `per-user` (300 a minute and 5,000 an hour, bursts of 60), `per-user-endpoint` (120 a minute per user and
+endpoint, bursts of 30), `per-address` (600 a minute, bursts of 100; see R1) and `per-certificate` (60,000 a minute, bursts of
+2,000; mutual-TLS listener). They are meant to catch a runaway client, user, address or certificate, not a busy one. Add them, read
 `edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,
 then switch one policy at a time to `enforce`. Switching it back to `shadow` or `off` is the off switch.
 
@@ -1109,7 +1110,25 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is. A call refused at R3
   has already had its DPoP proof recorded (the proof is checked before the route is known, and reordering would let a caller
   without a valid proof learn whether it is permitted); a call refused at R2 has not, and neither reaches `/userinfo` or the
-  resource. There is no R1 yet (before the token is read, keyed on the source address): it needs a trustworthy address, see #614.
+  resource.
+- **R1, before the token is read, keyed on what the connection shows** (policy `by: ["ip"]` or `["certificate"]`, scope
+  `edge-wide`, no other key):
+  - *Plain listener, the address.* Counts **failed and unauthenticated attempts only**: `/login`, `/complete` and the other entry
+    points count every call (nobody is signed in yet); a proxied call counts only when it is refused as unauthenticated (a
+    missing, invalid or expired token, a bad DPoP proof; not a nonce challenge, a step-up or a redirect to sign in again).
+    **Successful calls are never limited by address**, so a mobile carrier's shared address does not refuse its honest users.
+    An address whose bucket is empty is refused with `429` before anything else is done. IPv4 per address, IPv6 per `/64`.
+  - *Mutual-TLS listener, the certificate.* Keyed by the verified client certificate's SHA-256 thumbprint; every call counts (a
+    certificate is an identity); no address is needed, and none is reliably known behind an L4 proxy.
+  - *Which address:* the edge's own config file, `client-ip = "socket"` (default: the peer of the connection) or `"forwarded"` (the
+    header named by `client-ip-header`, default `X-Real-IP`). Set `forwarded` only when the edge is reachable **only** through the
+    proxy that sets the header (compose network, chart network policy): anything else could write the header and choose its own
+    bucket. nginx (`versola-proxy`) and ingress-nginx already resolve the client chain and set `X-Real-IP`. A header that is
+    missing or not an IP literal falls back to the peer. Behind a proxy with `socket`, every caller is the proxy: the address limit
+    would count the whole world as one caller. Check `edge_client_address_total{source}` (`socket`, `forwarded`,
+    `forwarded_missing`) before enforcing an address policy; the edge logs a warning at start when `forwarded` is set. Whether a
+    cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
+    platform and is to be verified on the first real load balancer.
 - **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
   caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
   passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
@@ -1131,7 +1150,7 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
 `edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
 `edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
 
-Not there yet: R1 (the source address), per-endpoint and per-client policies on the resource and
+Not there yet: per-endpoint and per-client policies on the resource and
 the OAuth client, and the `RateLimit` headers.
 
 ### Access log

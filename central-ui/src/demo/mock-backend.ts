@@ -73,6 +73,8 @@ const RECOMMENDED_RATE_LIMITS = {
     { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 12000, windowSeconds: 60 }], burst: 500, cost: 1, mode: 'shadow' },
     { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, cost: 1, mode: 'shadow' },
     { name: 'per-user-endpoint', by: ['subject'], scope: 'endpoint', limits: [{ limit: 120, windowSeconds: 60 }], burst: 30, cost: 1, mode: 'shadow' },
+    { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, cost: 1, mode: 'shadow' },
+    { name: 'per-certificate', by: ['certificate'], scope: 'edge-wide', limits: [{ limit: 60000, windowSeconds: 60 }], burst: 2000, cost: 1, mode: 'shadow' },
   ],
 };
 

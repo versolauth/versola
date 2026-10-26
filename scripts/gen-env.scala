@@ -2252,6 +2252,15 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
+       |
+       |# Where the rate limits (R1) read a caller's address from. `socket` is the peer of the
+       |# connection: right when callers reach the edge directly (this local setup). Behind a
+       |# reverse proxy or load balancer set `forwarded` -- the address is then read from the
+       |# header below, which nginx / ingress-nginx set from the client chain -- but ONLY if the
+       |# edge is reachable solely through that proxy, or any caller could choose its own bucket
+       |# (deploy.md, Rate limits).
+       |client-ip = "socket"
+       |# client-ip-header = "X-Real-IP"
        |$edgeNativeBlock$edgeMutualTlsBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

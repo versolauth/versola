@@ -64,7 +64,9 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
   private val reachEdge = ZIO.serviceWithZIO[EdgeApi](_.syncConfiguration) *> ZIO.sleep(3.seconds)
 
   private def withPolicies[R, A](policies: Json*)(effect: ZIO[R, Throwable, A]): ZIO[R & CentralApi & EdgeApi, Throwable, A] =
-    (setPolicies(policies*).flatMap(r => ZIO.fail(RuntimeException(s"PUT rate-limits: ${r.status} ${r.body}")).unless(r.status == Status.NoContent)) *>
+    (setPolicies(policies*).flatMap(r =>
+      ZIO.fail(RuntimeException(s"PUT rate-limits: ${r.status} ${r.body}")).unless(r.status == Status.NoContent),
+    ) *>
       reachEdge *> effect).ensuring((setPolicies() *> reachEdge).ignore)
 
   def spec = suite("Edge: rate limits")(
@@ -88,7 +90,13 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         _ <- setPolicies()
       yield assertTrue(
         recommended.status == Status.Ok,
-        policies.map(_.str("name")) == Chunk(Some("per-client"), Some("per-user"), Some("per-user-endpoint")),
+        policies.map(_.str("name")) == Chunk(
+          Some("per-client"),
+          Some("per-user"),
+          Some("per-user-endpoint"),
+          Some("per-address"),
+          Some("per-certificate"),
+        ),
         policies.forall(_.str("mode").contains("shadow")),
         stored.status == Status.NoContent,
       )

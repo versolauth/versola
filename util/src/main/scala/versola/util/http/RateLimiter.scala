@@ -19,6 +19,7 @@ enum RateDecision:
   */
 final class RateLimitKeys(
     val ip: String = "",
+    val certificate: String = "",
     val client: String = "",
     val subject: String = "",
     val session: String = "",
@@ -94,6 +95,57 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
       case 0 => RateDecision.Allowed
       case 1 => checkOne(policies(0), keys, nowNanos)
       case _ => checkAll(policies, keys, nowNanos)
+
+  /** Read-only: would a request at `point` be refused? Nothing is charged, so a refused or a passing request costs the key
+    * nothing; [[charge]] takes the cost afterwards, for a request that turns out to be a failed attempt. Counts `limited` or
+    * `would_limit` for the policies that refuse, and `allowed` when none does.
+    */
+  def gate(point: Checkpoint, keys: RateLimitKeys, nowNanos: Long): RateDecision =
+    val policies = installed.get.at(point.ordinal)
+    var worst: Policy = null
+    var worstWait = Pass
+    var i = 0
+    while i < policies.length do
+      val policy = policies(i)
+      val key = policy.keyOf(keys)
+      if !key.eq(Absent) then
+        val tracker = policy.tracker
+        var entry = tracker.lookup(key, nowNanos)
+        var wait = tracker.probe(entry, nowNanos)
+        while wait == Dead do
+          tracker.evict(key, entry)
+          entry = tracker.lookup(key, nowNanos)
+          wait = tracker.probe(entry, nowNanos)
+        if wait > Pass then
+          if policy.policy.mode == GuardMode.Enforce then
+            tracker.limited.increment()
+            if wait > worstWait then
+              worstWait = wait
+              worst = policy
+          else tracker.wouldLimit.increment()
+        else tracker.allowed.increment()
+      i += 1
+    if worst == null then RateDecision.Allowed else RateDecision.Limited(worst.policy.name, secondsOf(worstWait))
+
+  /** Takes the cost of one request at `point` from every policy that applies, whether or not it would pass: a failed attempt
+    * that arrives at an empty bucket changes nothing (the bucket is already as far ahead as it can usefully be). Counts nothing;
+    * [[gate]] did.
+    */
+  def charge(point: Checkpoint, keys: RateLimitKeys, nowNanos: Long): Unit =
+    val policies = installed.get.at(point.ordinal)
+    var i = 0
+    while i < policies.length do
+      val policy = policies(i)
+      val key = policy.keyOf(keys)
+      if !key.eq(Absent) && policy.policy.mode != GuardMode.Off then
+        val tracker = policy.tracker
+        var entry = tracker.lookup(key, nowNanos)
+        var r = tracker.charge(entry, nowNanos)
+        while r == Dead do
+          tracker.evict(key, entry)
+          entry = tracker.lookup(key, nowNanos)
+          r = tracker.charge(entry, nowNanos)
+      i += 1
 
   private def checkOne(policy: Policy, keys: RateLimitKeys, now: Long): RateDecision =
     val key = policy.keyOf(keys)
@@ -323,6 +375,7 @@ object RateLimiter:
       case RateLimitDimension.Subject => keys.subject
       case RateLimitDimension.Session => keys.session
       case RateLimitDimension.Jkt => keys.jkt
+      case RateLimitDimension.Certificate => keys.certificate
 
   /** The buckets of one policy, and its counts. */
   private[http] final class Tracker(val shape: Shape):

@@ -105,6 +105,24 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("address policies (R1)")(
+      test("ip or certificate alone, edge-wide, is valid; anything wider is refused with the reason") {
+        val ip = valid.copy(name = "per-ip", by = List(RateLimitDimension.Ip))
+        val cert = valid.copy(name = "per-cert", by = List(RateLimitDimension.Certificate))
+        assertTrue(
+          ip.validate.isRight,
+          cert.validate.isRight,
+          ip.checkpoint == Checkpoint.Address,
+          cert.checkpoint == Checkpoint.Address,
+          ip.copy(by = List(RateLimitDimension.Ip, RateLimitDimension.Client)).validate.left.exists(_.contains("before the token is read")),
+          ip.copy(scope = RateLimitScope.Endpoint).validate.left.exists(_.contains("edge-wide")),
+          cert.copy(by = List(RateLimitDimension.Certificate, RateLimitDimension.Ip)).validate.isLeft,
+        )
+      },
+      test("the certificate dimension has its wire name") {
+        assertTrue(RateLimitDimension.parse("certificate") == Some(RateLimitDimension.Certificate))
+      },
+    ),
     suite("replicas")(
       test("default 1, validated between 1 and 1000, round-trips") {
         import zio.json.*
@@ -124,10 +142,10 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         val set = RateLimitPolicies.recommended
         assertTrue(
           set.validate.isRight,
-          set.policies.map(_.name) == List("per-client", "per-user", "per-user-endpoint"),
+          set.policies.map(_.name) == List("per-client", "per-user", "per-user-endpoint", "per-address", "per-certificate"),
           set.policies.forall(_.mode == GuardMode.Shadow),
-          // R2 for the first two, R3 for the endpoint one
-          set.policies.map(_.checkpoint) == List(Checkpoint.Identity, Checkpoint.Identity, Checkpoint.Route),
+          // R2 for the first two, R3 for the endpoint one, R1 for the address and the certificate
+          set.policies.map(_.checkpoint) == List(Checkpoint.Identity, Checkpoint.Identity, Checkpoint.Route, Checkpoint.Address, Checkpoint.Address),
         )
       },
       test("survives the wire") {

@@ -65,10 +65,14 @@ object RateLimitPolicyApplier:
   * of the service.
   */
 object EdgeRateLimiter:
-  val live: ZLayer[RateLimitPolicySource & Scope, Nothing, RateLimiter] =
+  val live: ZLayer[RateLimitPolicySource & Scope & EdgeConfig, Nothing, RateLimiter] =
     ZLayer.fromZIO:
       for
         source <- ZIO.service[RateLimitPolicySource]
+        config <- ZIO.service[EdgeConfig]
+        _ <- ZIO.logWarning(
+          s"client-ip = forwarded: the address limit trusts the ${config.clientIpHeader} header, so this edge must be reachable only through the proxy that sets it",
+        ).when(config.clientIp == ClientIpSource.Forwarded)
         scope <- ZIO.service[Scope]
         limiter <- RateLimiter.make()
         _ <- RateLimitPolicyApplier.run(source.current, limiter, source.replicas).forkIn(scope)

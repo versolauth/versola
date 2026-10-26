@@ -9,7 +9,7 @@
  * (all in `shadow`) that the editor adds with one click.
  */
 
-export type RateLimitDimension = 'client' | 'subject' | 'session' | 'jkt' | 'ip';
+export type RateLimitDimension = 'client' | 'subject' | 'session' | 'jkt' | 'ip' | 'certificate';
 export type RateLimitScope = 'edge-wide' | 'resource' | 'endpoint';
 export type RateLimitMode = 'off' | 'shadow' | 'enforce';
 
@@ -44,13 +44,18 @@ export const MAX_COST = 1000;
 export const MAX_WINDOW_SECONDS = 86_400;
 const NAME_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 
-/** What the editor offers to count by. `ip` is not offered: the edge has no address check yet. */
+/** What the editor offers to count by. `ip` and `certificate` are counted before the token is read (R1) and stand alone. */
 export const DIMENSIONS: ReadonlyArray<{ id: RateLimitDimension; label: string }> = [
   { id: 'client', label: 'Client' },
   { id: 'subject', label: 'User (subject)' },
   { id: 'session', label: 'Session' },
   { id: 'jkt', label: 'DPoP key' },
+  { id: 'ip', label: 'IP address' },
+  { id: 'certificate', label: 'Client certificate (mutual TLS)' },
 ];
+
+/** Counted before the token is read: nothing but the connection is known, so they take no other key and no narrower scope. */
+export const BEFORE_TOKEN: ReadonlyArray<RateLimitDimension> = ['ip', 'certificate'];
 
 export const SCOPES: ReadonlyArray<{ id: RateLimitScope; label: string; text: string }> = [
   { id: 'edge-wide', label: 'Whole edge', text: 'One bucket per key for every call this edge proxies. Checked right after the access token is verified.' },
@@ -146,7 +151,7 @@ export function policiesFromDraft(draft: RateLimitDraft): RateLimitPolicies {
   };
 }
 
-const DIMENSION_ORDER: RateLimitDimension[] = ['ip', 'client', 'subject', 'session', 'jkt'];
+const DIMENSION_ORDER: RateLimitDimension[] = ['ip', 'certificate', 'client', 'subject', 'session', 'jkt'];
 
 export function isEmptyPolicies(set: RateLimitPolicies | undefined | null): boolean {
   return !set || set.policies.length === 0;
@@ -173,6 +178,10 @@ export function validateDraft(draft: RateLimitDraft): Record<string, string> {
       errors[`${n}.name`] = 'two rate limit policies have the same name';
     } else {
       seen.set(name, n);
+    }
+
+    if (policy.by.some(dimension => BEFORE_TOKEN.includes(dimension)) && (policy.scope !== 'edge-wide' || policy.by.length !== 1)) {
+      errors[`${n}.by`] = 'ip and certificate are counted before the token is read, so they take scope edge-wide and no other key';
     }
 
     if (policy.limits.length === 0) errors[`${n}.limits`] = 'limits must have at least one window';
@@ -205,7 +214,7 @@ export function validateDraft(draft: RateLimitDraft): Record<string, string> {
 // ── display ──
 
 const DIMENSION_LABEL: Record<RateLimitDimension, string> = {
-  ip: 'address', client: 'client', subject: 'user', session: 'session', jkt: 'DPoP key',
+  ip: 'address', certificate: 'certificate', client: 'client', subject: 'user', session: 'session', jkt: 'DPoP key',
 };
 const SCOPE_LABEL: Record<RateLimitScope, string> = { 'edge-wide': '', resource: 'per resource', endpoint: 'per endpoint' };
 

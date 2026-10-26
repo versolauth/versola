@@ -3,7 +3,7 @@ package versola.util.http
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
-/** What a rate limit is keyed on. Every value but `Ip` comes from a verified token or a matched route; the edge never keys on
+/** What a rate limit is keyed on. Every value but `Ip` and `Certificate` comes from a verified token or a matched route; the edge never keys on
   * an unverified claim.
   */
 enum RateLimitDimension(val wire: String):
@@ -12,6 +12,9 @@ enum RateLimitDimension(val wire: String):
   case Subject extends RateLimitDimension("subject")
   case Session extends RateLimitDimension("session")
   case Jkt extends RateLimitDimension("jkt")
+
+  /** The verified client certificate of the mutual-TLS listener (its SHA-256 thumbprint). */
+  case Certificate extends RateLimitDimension("certificate")
 
 object RateLimitDimension:
   def parse(value: String): Option[RateLimitDimension] = values.find(_.wire == value.trim.toLowerCase)
@@ -112,6 +115,11 @@ final case class RateLimitPolicy(
       _ <- check(burst <= limits.map(_.limit).min, s"policy $name: burst must not exceed the smallest limit")
       _ <- check(cost >= 1 && cost <= MaxCost, s"policy $name: cost must be between 1 and $MaxCost")
       _ <- check(cost <= burst, s"policy $name: cost must not exceed burst, or a request could never pass")
+      // R1 runs before the token is read, so only what the connection shows is known: the address, or the certificate.
+      _ <- check(
+        !(by.contains(RateLimitDimension.Ip) || by.contains(RateLimitDimension.Certificate)) || (scope == RateLimitScope.EdgeWide && by.size == 1),
+        s"policy $name: ip and certificate are counted before the token is read, so they take scope edge-wide and no other key",
+      )
     yield this
 
   /** Where the policy is evaluated: a scope narrower than the edge is a property of the matched route (R3); a bucket keyed on
@@ -119,7 +127,7 @@ final case class RateLimitPolicy(
     */
   def checkpoint: Checkpoint =
     if scope != RateLimitScope.EdgeWide then Checkpoint.Route
-    else if by.contains(RateLimitDimension.Ip) then Checkpoint.Address
+    else if by.contains(RateLimitDimension.Ip) || by.contains(RateLimitDimension.Certificate) then Checkpoint.Address
     else Checkpoint.Identity
 
 /** The rate limit policies of one edge, as central stores and serves them: the whole set is replaced at once, so the names
@@ -150,7 +158,13 @@ object RateLimitPolicies:
     *   - `per-client`: one OAuth client may not take the edge over (200 calls a second sustained, bursts of 500);
     *   - `per-user`: one user, short and long window (5 a second sustained, bursts of 60: a page load fires dozens of calls);
     *   - `per-user-endpoint`: one user on one endpoint (2 a second sustained, bursts of 30), the cheap guard against a loop
-    *     on a single route.
+    *     on a single route;
+    *   - `per-address` (R1, plain listener): one address's failed and unauthenticated attempts and its logins (10 a second,
+    *     bursts of 100); successful calls are never counted, so a shared carrier address is not refused. **Only meaningful with
+    *     `client-ip = forwarded` behind a proxy**: with `socket` the address is the proxy's, the same for everyone, and
+    *     `edge_client_address_total{source}` shows it;
+    *   - `per-certificate` (R1, mutual-TLS listener): one client certificate (1,000 a second, bursts of 2,000), an identity, so
+    *     every call counts.
     */
   val recommended: RateLimitPolicies = RateLimitPolicies(
     List(
@@ -172,6 +186,18 @@ object RateLimitPolicies:
         scope = RateLimitScope.Endpoint,
         limits = List(RateLimitWindow(limit = 120, windowSeconds = 60)),
         burst = 30,
+      ),
+      RateLimitPolicy(
+        name = "per-address",
+        by = List(RateLimitDimension.Ip),
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        burst = 100,
+      ),
+      RateLimitPolicy(
+        name = "per-certificate",
+        by = List(RateLimitDimension.Certificate),
+        limits = List(RateLimitWindow(limit = 60000, windowSeconds = 60)),
+        burst = 2000,
       ),
     ),
   )

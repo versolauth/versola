@@ -2488,7 +2488,7 @@ paths:
       tags: [Edges]
       summary: The recommended starting set of rate limit policies
       description: |
-        A starting set that is safe to add to any edge: `per-client`, `per-user` and `per-user-endpoint`, all in mode
+        A starting set that is safe to add to any edge: `per-client`, `per-user`, `per-user-endpoint`, `per-address` and `per-certificate`, all in mode
         `shadow`, so the edge only counts what it would refuse. Read `edge_rate_limit_decisions_total{result="would_limit"}`
         for a while, adjust the limits, then switch a policy to `enforce`. The numbers are generous on purpose and are per
         edge pod. Send the body to `PUT /configuration/edges/rate-limits` (the console's "Add recommended policies" does).
@@ -6219,10 +6219,13 @@ components:
           type: array
           items:
             type: string
-            enum: [ip, client, subject, session, jkt]
+            enum: [ip, certificate, client, subject, session, jkt]
           description: |
-            What a bucket is keyed on; empty means one bucket for the whole scope. Every value but `ip` comes from the
-            verified access token, never from what the caller sent. A request that lacks a value (a bearer token has no
+            What a bucket is keyed on; empty means one bucket for the whole scope. `client`, `subject`, `session` and `jkt`
+            come from the verified access token, never from what the caller sent. `ip` (the caller's address on the plain
+            listener, failed and unauthenticated attempts only, see `client-ip` in the edge's config) and `certificate` (the
+            verified client certificate of the mutual-TLS listener, every call) are counted before the token is read, so they
+            stand alone and take scope `edge-wide`. A request that lacks a value (a bearer token has no
             `jkt`) is not counted by that policy.
         scope:
           type: string

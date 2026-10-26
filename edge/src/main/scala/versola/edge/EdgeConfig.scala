@@ -82,6 +82,10 @@ case class EdgeConfig(
     // certificate of the handshake (RFC 8705 §3). Absent serves none: the plain listener
     // cannot see a caller's certificate, so it keeps refusing certificate-bound tokens.
     mutualTls: Option[EdgeConfig.MutualTls] = None,
+    // Where the rate limits (R1) read a caller's address from: see [[ClientIpSource]]. `socket` unless the deployment says its
+    // proxy sets the header, because a forwarded header is only as trustworthy as the network path that guards it.
+    clientIp: ClientIpSource = ClientIpSource.Socket,
+    clientIpHeader: String = "X-Real-IP",
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 

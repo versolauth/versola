@@ -4,7 +4,7 @@ import { repeat } from 'lit/directives/repeat.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, editorStyles, formStyles, segmentedStyles } from '../styles/components';
 import {
-  DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, SCOPES, draftFromPolicy, newPolicyDraft, validateDraft,
+  BEFORE_TOKEN, DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, SCOPES, draftFromPolicy, newPolicyDraft, validateDraft,
   type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type WindowDraft,
 } from '../utils/rate-limit-policies';
 import { fetchRecommendedRateLimitPolicies } from '../utils/central-api';
@@ -262,7 +262,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
       const details = this.renderRoot.querySelector<HTMLDetailsElement>(`[id="rl-${policy.key}-advanced"]`);
       if (details) details.open = true;
     }
-    const id = field === 'limit' ? `rl-${policy.key}-limit-${j}` : field === 'window' ? `rl-${policy.key}-window-${j}`
+    const id = field === 'by' ? `rl-${policy.key}-by` : field === 'limit' ? `rl-${policy.key}-limit-${j}` : field === 'window' ? `rl-${policy.key}-window-${j}`
       : field === 'limits' ? `rl-${policy.key}-limit-0` : `rl-${policy.key}-${field}`;
     this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`[id="${id}"]`)?.focus());
   }
@@ -283,22 +283,26 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     `;
   }
 
-  private renderBy(policy: PolicyDraft) {
+  private renderBy(policy: PolicyDraft, n: number, errors: Record<string, string>) {
     const labelId = `rl-${policy.key}-by-label`;
-    // A stored `ip` is kept and shown, but cannot be added: the edge has no address check yet.
-    const options = policy.by.includes('ip') ? [{ id: 'ip' as RateLimitDimension, label: 'Address' }, ...DIMENSIONS] : DIMENSIONS;
+    const error = errors[`${n}.by`];
+    const beforeToken = policy.by.some(dimension => BEFORE_TOKEN.includes(dimension));
     return html`
       <div class="block">
         <span class="ctrl-label" id=${labelId}>Count by</span>
-        <div class="checks" role="group" aria-labelledby=${labelId}>
-          ${options.map(option => html`
+        <div class="checks" role="group" id="rl-${policy.key}-by" tabindex="-1" aria-labelledby=${labelId}>
+          ${DIMENSIONS.map(option => html`
             <label class="check">
-              <input type="checkbox" .checked=${policy.by.includes(option.id)} ?disabled=${option.id === 'ip' && !policy.by.includes('ip')}
+              <input type="checkbox" .checked=${policy.by.includes(option.id)}
                 @change=${(e: Event) => this.toggleDimension(policy, option.id, (e.target as HTMLInputElement).checked)} />
               <span>${option.label}</span>
             </label>`)}
         </div>
-        <p class="text-line">${policy.by.length === 0 ? 'Nothing selected: one bucket for the whole scope, shared by every caller.' : 'One bucket per combination of these. A call that lacks one of them (a bearer token has no DPoP key) is not counted by this policy.'}</p>
+        ${error ? html`<div class="error-message" role="alert">${error}</div>` : nothing}
+        <p class="text-line">${beforeToken
+          ? 'Counted before the token is read. IP address: failed and unauthenticated attempts and logins only, never a successful call (needs the edge setting client-ip = forwarded behind a proxy). Certificate: every call of that certificate, on the mutual-TLS listener.'
+          : policy.by.length === 0 ? 'Nothing selected: one bucket for the whole scope, shared by every caller.'
+            : 'One bucket per combination of these. A call that lacks one of them (a bearer token has no DPoP key) is not counted by this policy.'}</p>
       </div>
     `;
   }
@@ -391,7 +395,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
           <div class="hint" id="${id}-name-hint">Lower-case letters, digits, <code>_</code> and <code>-</code>. It labels the metrics and is unique on this edge.</div>
         </div>
         ${this.renderMode(policy)}
-        ${this.renderBy(policy)}
+        ${this.renderBy(policy, n, errors)}
         <div class="form-group block">
           <label for="${id}-scope">Scope</label>
           <select id="${id}-scope" .value=${policy.scope} @change=${(e: Event) => this.patch(policy.key, { scope: (e.target as HTMLSelectElement).value as PolicyDraft['scope'] })}>
