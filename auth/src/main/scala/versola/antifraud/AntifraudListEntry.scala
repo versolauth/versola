@@ -1,12 +1,15 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
+import versola.util.JsonStringSchema
+import zio.json.JsonCodec
+import zio.schema.Schema
 
 import java.time.Instant
 import java.util.UUID
 
 /** What a list entry makes the rules do. See [[AntifraudLists]] for how they combine. */
-enum AntifraudListType:
+enum AntifraudListType derives JsonCodec:
   /** Block. */
   case deny
 
@@ -19,8 +22,11 @@ enum AntifraudListType:
   /** Answer as if the step succeeded and do nothing. */
   case fake
 
+object AntifraudListType:
+  given Schema[AntifraudListType] = JsonStringSchema.of
+
 /** What the `value` of an entry is compared with. */
-enum AntifraudValueType:
+enum AntifraudValueType derives JsonCodec:
   /** The keyed hash of a destination, as the event log stores it ([[AntifraudContext.subjectHash]]). */
   case phone_hash
 
@@ -46,6 +52,9 @@ enum AntifraudValueType:
   /** The domain of an address, from the context signal [[AntifraudLists.EmailDomainSignal]]. */
   case email_domain
 
+object AntifraudValueType:
+  given Schema[AntifraudValueType] = JsonStringSchema.of
+
 /** A row of `af_list_entry`.
   *
   * @param tenantId   `None` applies to every tenant
@@ -68,7 +77,7 @@ case class AntifraudListEntry(
     createdAt: Instant,
     hitCount: Long,
     lastHitAt: Option[Instant],
-)
+) derives JsonCodec
 
 /** What the cache needs of an entry: the key and how it applies, not the bookkeeping. */
 case class ListedValue(
@@ -96,17 +105,11 @@ case class NewListEntry(
     shadow: Boolean,
 )
 
-/** Who changes the lists. An operator (no tenant) may change any entry, including global ones, which apply to every
-  * tenant; a tenant's admin only the entries of their own tenant. The HTTP endpoint maps the caller to this. */
-case class ListActor(name: String, tenantId: Option[TenantId]):
-  def isOperator: Boolean = tenantId.isEmpty
-  def mayChange(entryTenant: Option[TenantId]): Boolean = isOperator || (entryTenant.isDefined && entryTenant == tenantId)
-
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
   * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
-case class ListPreview(matched: Option[Long], total: Long)
+case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec
 
-enum AntifraudListAction:
+enum AntifraudListAction derives JsonCodec:
   case create, delete, expire
 
 /** One change of the lists. The entry is copied in because the row it describes may be gone. */
@@ -122,7 +125,7 @@ case class AntifraudListAudit(
     tenantId: Option[TenantId],
     expiresAt: Option[Instant],
     reason: Option[String],
-)
+) derives JsonCodec
 
 /** @param tenantId `None` does not filter; `Some(None)` is the global entries only */
 case class AntifraudListFilter(

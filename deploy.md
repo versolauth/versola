@@ -511,15 +511,20 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
   `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
   interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
-  an `allow` takes off. There is no HTTP endpoint for the lists yet: they are changed through the service API in
-  `auth` (central's endpoint is a follow-up), so for now by SQL, which skips the audit; put the change in `af_list_audit`
-  by hand or wait for the endpoint.
+  an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
+  `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
+  `/antifraud/lists`; the console has no screen for them yet. Entries added by SQL skip the audit and the version bump (an
+  instance still picks them up within a minute). The endpoints are new central resource endpoints with two permissions,
+  `antifraud:read` and `antifraud:manage`: every start registers them on the `central` resource and gives them to `oauth-admin`
+  (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
+  else changes for a deployment that is upgraded. Edge tells central who the admin is (an inject rule for `userId`, a query parameter of a `GET` and a body field of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). There is no per-tenant admin: whoever holds the permissions may change every entry, global ones included. A call to central with the resource secret but no `userId` is `400`. A `phone_hash` entry is made from a phone number (`phone`); the
+  number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
   `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
   `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
-  `shadow_list:<type>` in the fired rules). Only an operator may change global entries. **`fake` is for confirmed fraud only:**
+  `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
   `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
