@@ -2199,10 +2199,12 @@ paths:
       tags: [Delivery settings]
       summary: Replace the delivery settings
       description: |
-        Stores both blocks as sent. A password that is left out keeps the one on record, so a
-        caller that never sees the stored password can still change the rest of the block; an
-        empty password clears it. A block that is left out is removed together with its
-        password. Passwords are encrypted at rest and never returned.
+        Stores both blocks as sent. A password that is left out (or sent as `null`) keeps the one
+        on record, so a caller that never sees the stored password can still change the rest of
+        the block; an empty password clears it. A block that is left out is removed together with
+        its password. Passwords are encrypted at rest and never returned. A save with both blocks
+        left out still counts as a stored record (auth then delivers nothing); to return to the
+        `auth.conf` blocks, delete the record instead.
       operationId: upsertDeliverySettings
       requestBody:
         required: true
@@ -2216,12 +2218,27 @@ paths:
         '400':
           description: |
             A block is not usable, e.g. `smtp.from` is not an email address, `smtp.port` is out
-            of range, `otpProvider.url` is not an absolute HTTP(S) URL or `otpProvider.method`
-            is not one of `GET`, `POST`, `PUT`, `PATCH`. Nothing is stored then.
+            of range, a value carries a control character, `otpProvider.url` is not an absolute
+            HTTP(S) URL or carries credentials (`https://user:secret@host`; use `username` and the
+            password field instead), or `otpProvider.method` is not one of `GET`, `POST`, `PUT`,
+            `PATCH`; or the body is not a delivery settings update at all. The text names the field
+            and the rule, never the value. Nothing is stored then.
           content:
             text/plain:
               schema:
                 type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Delivery settings]
+      summary: Remove the delivery settings
+      description: |
+        Back to nothing stored, as before the first save: auth reads the `smtp` and
+        `otp-provider` blocks of its own `auth.conf` again. Removing nothing is not an error.
+      operationId: deleteDeliverySettings
+      responses:
+        '204':
+          description: Settings removed, or there were none.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5892,7 +5909,9 @@ components:
         url:
           type: string
           format: uri
-          description: Absolute HTTP(S) URL of the provider.
+          description: |
+            Absolute HTTP(S) URL of the provider, without credentials in it (`user:secret@host` is
+            refused; the query string is stored and returned as sent, see `body`).
         username:
           type: string
           nullable: true
@@ -5900,7 +5919,11 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: The JSON body, one string per entry.
+          description: |
+            The JSON body, one string per entry. Stored and returned as sent, like the URL and its
+            query string, so neither must hold credentials: a provider that authenticates with HTTP
+            Basic takes `username` and the write-only password; one that wants its key in the body
+            or the query is not supported by this record.
         enabled:
           type: boolean
       required: [method, url, body, enabled]
@@ -5913,23 +5936,23 @@ components:
           allOf:
             - $ref: '#/components/schemas/SmtpDeliverySettings'
           nullable: true
-        smtpPasswordSet:
+        hasSmtpPassword:
           type: boolean
           description: Whether an SMTP password is on record.
         otpProvider:
           allOf:
             - $ref: '#/components/schemas/OtpProviderDeliverySettings'
           nullable: true
-        otpProviderPasswordSet:
+        hasOtpProviderPassword:
           type: boolean
           description: Whether an OTP provider password is on record.
-      required: [smtpPasswordSet, otpProviderPasswordSet]
+      required: [hasSmtpPassword, hasOtpProviderPassword]
 
     DeliverySettingsUpdate:
       type: object
       description: |
-        What `PUT /configuration/delivery-settings` stores. A password field that is absent
-        keeps the stored password; an empty string clears it.
+        What `PUT /configuration/delivery-settings` stores. A password field that is absent or
+        `null` keeps the stored password; an empty string clears it.
       properties:
         smtp:
           allOf:
@@ -5937,14 +5960,16 @@ components:
           nullable: true
         smtpPassword:
           type: string
-          description: Write-only. Absent keeps the stored password, empty clears it.
+          nullable: true
+          description: Write-only. Absent or `null` keeps the stored password, empty clears it.
         otpProvider:
           allOf:
             - $ref: '#/components/schemas/OtpProviderDeliverySettings'
           nullable: true
         otpProviderPassword:
           type: string
-          description: Write-only. Absent keeps the stored password, empty clears it.
+          nullable: true
+          description: Write-only. Absent or `null` keeps the stored password, empty clears it.
 
     # ─────────────────────────────── Edges ───────────────────────────────
     RegisterEdgeRequest:

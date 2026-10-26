@@ -44,11 +44,21 @@ object SmtpDeliverySettings:
     else if settings.username.trim.isEmpty then Some("smtp.username must not be empty")
     else if Email.from(settings.from).isLeft then Some("smtp.from must be an email address")
     else if settings.subject.trim.isEmpty then Some("smtp.subject must not be empty")
+    // The subject becomes a mail header and the host a connection target: a line break in either
+    // is a header of its own, so none of the control characters gets as far as auth.
+    else if hasControlCharacter(settings.host) then Some("smtp.host must not contain control characters")
+    else if hasControlCharacter(settings.username) then Some("smtp.username must not contain control characters")
+    else if hasControlCharacter(settings.subject) then Some("smtp.subject must not contain control characters")
     else None
 
 /** The `otp-provider` block of `auth.conf` without its password: the request auth sends for each
   * SMS, with `{{phone}}` and `{{message}}` in the body entries standing for the recipient and
   * the text. A `username` makes the request carry HTTP Basic credentials.
+  *
+  * The body entries and the URL, query string included, are stored and returned as they are: a
+  * provider that wants its API key in the body or the query is not served by this record yet,
+  * and the console must say so rather than invite the key into a field every `security:read`
+  * holder can read.
   */
 case class OtpProviderDeliverySettings(
     method: String,
@@ -63,12 +73,24 @@ object OtpProviderDeliverySettings:
 
   def validate(settings: OtpProviderDeliverySettings): Option[String] =
     if !Methods.contains(settings.method) then Some(s"otpProvider.method must be one of ${Methods.toList.sorted.mkString(", ")}")
-    else if !isHttpUrl(settings.url) then Some("otpProvider.url must be an absolute HTTP(S) URL")
-    else if settings.username.exists(_.trim.isEmpty) then Some("otpProvider.username must not be empty when present")
-    else if settings.body.keys.exists(_.trim.isEmpty) then Some("otpProvider.body must not have an empty key")
-    else None
+    else
+      parseHttpUrl(settings.url) match
+        case None => Some("otpProvider.url must be an absolute HTTP(S) URL")
+        // `https://user:secret@host/` would put the secret into the stored JSON and into every
+        // answer of the admin API, which is exactly what the password field exists to avoid.
+        case Some(uri) if Option(uri.getRawUserInfo).isDefined =>
+          Some("otpProvider.url must not carry credentials; use username and the password field")
+        case Some(_) =>
+          if settings.username.exists(_.trim.isEmpty) then Some("otpProvider.username must not be empty when present")
+          else if settings.username.exists(hasControlCharacter) then Some("otpProvider.username must not contain control characters")
+          else if settings.body.keys.exists(_.trim.isEmpty) then Some("otpProvider.body must not have an empty key")
+          else None
 
-  private def isHttpUrl(value: String): Boolean =
-    Try(URI(value)).toOption.exists: uri =>
+  private def parseHttpUrl(value: String): Option[URI] =
+    Try(URI(value)).toOption.filter: uri =>
       val httpScheme = Option(uri.getScheme).exists(scheme => scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
-      uri.isAbsolute && httpScheme && Option(uri.getHost).exists(_.nonEmpty) && uri.getPort <= 65535
+      val portAbsentOrValid = uri.getPort == -1 || (1 to 65535).contains(uri.getPort)
+      uri.isAbsolute && httpScheme && Option(uri.getHost).exists(_.nonEmpty) && portAbsentOrValid
+
+private def hasControlCharacter(value: String): Boolean =
+  value.exists(Character.isISOControl)

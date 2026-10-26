@@ -1136,7 +1136,9 @@ notification and refuses to start, naming this setting, if it cannot.
   available memory first, which lowers the risk but doesn't remove it.
 - **No supported way to change configuration on `vps`** (OTP provider, SMTP, …), so **SMTP and SMS are
   not configured in prod**: password resets and additional admin accounts can't deliver a temporary
-  password.
+  password. Being closed by versolauth/versola#832: central already stores the delivery settings
+  (`PUT /configuration/delivery-settings`; migration `V1028`, one new table, additive, no action), but
+  auth does not read them yet, so until that part lands a saved record changes nothing.
 - **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
   version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules

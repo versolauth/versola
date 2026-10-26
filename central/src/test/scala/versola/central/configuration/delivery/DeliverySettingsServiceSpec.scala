@@ -37,7 +37,9 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
   class Env:
     val repository = stub[DeliverySettingsRepository]
 
-    /** Built through `live`, so the first load, `sync()` and the at-rest key are the real ones. */
+    /** Built through `live`, so the first load, `sync()` and the at-rest key are the real ones.
+      * The first load happens inside `live`, so the repository stub answers before this is called.
+      */
     def service: ZIO[Scope, Throwable, (DeliverySettingsService, SecurityService)] =
       (for
         service <- ZIO.service[DeliverySettingsService]
@@ -48,6 +50,19 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
         ZLayer.succeed(config),
         DeliverySettingsService.live,
       )
+
+  private def update(
+      smtp: Option[SmtpDeliverySettings] = None,
+      smtpPassword: Option[String] = None,
+      otpProvider: Option[OtpProviderDeliverySettings] = None,
+      otpProviderPassword: Option[String] = None,
+  ): DeliverySettingsService.Update =
+    DeliverySettingsService.Update(
+      smtp = smtp,
+      smtpPassword = smtpPassword,
+      otpProvider = otpProvider,
+      otpProviderPassword = otpProviderPassword,
+    )
 
   private def encrypted(security: SecurityService, value: String): Task[Secret] =
     security.encryptAes256(Secret.fromString(value), atRestKey).map(Secret(_))
@@ -63,94 +78,78 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           _ <- env.repository.getAll.succeedsWith(None)
           _ <- env.repository.upsert.succeedsWith(())
           (service, security) <- env.service
-          _ <- service.upsertSettings(
-            DeliverySettingsService.Update(smtp = Some(smtp), smtpPassword = Some(plaintext), otpProvider = None, otpProviderPassword = None),
-          )
-          stored = env.repository.upsert.calls.head
-          storedPassword <- ZIO.fromOption(stored.smtpPassword).orElseFail(RuntimeException("no password stored"))
-          roundTrip <- decrypted(security, storedPassword)
+          _ <- service.upsertSettings(update(smtp = Some(smtp), smtpPassword = Some(plaintext)))
+          written = env.repository.upsert.calls.head
+          ciphertext <- written.smtpPassword match
+            case DeliverySettingsRepository.StoredPassword.Set(ciphertext) => ZIO.succeed(ciphertext)
+            case other => ZIO.fail(RuntimeException(s"expected a new password, got $other"))
+          roundTrip <- decrypted(security, ciphertext)
         yield assertTrue(
-          stored.smtp == Some(smtp),
-          stored.otpProvider.isEmpty,
-          stored.otpProviderPassword.isEmpty,
+          written.smtp == Some(smtp),
+          written.otpProvider.isEmpty,
+          written.otpProviderPassword == DeliverySettingsRepository.StoredPassword.Clear,
           roundTrip == plaintext,
-          !storedPassword.toSeq.containsSlice(plaintext.getBytes(StandardCharsets.UTF_8).toSeq),
+          !ciphertext.toSeq.containsSlice(plaintext.getBytes(StandardCharsets.UTF_8).toSeq),
         )
       },
-      test("keeps the stored password as it is when the update leaves it out") {
+      test("asks the repository to keep the stored password when the update leaves it out") {
         val env = Env()
         for
-          (service, security) <- {
-            // The first load happens inside `live`, so the stub answers before the service exists.
-            for
-              _ <- env.repository.getAll.succeedsWith(None)
-              pair <- env.service
-            yield pair
-          }
-          onRecord <- encrypted(security, plaintext)
-          _ <- env.repository.getAll.succeedsWith(
-            Some(DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = Some(onRecord), otpProvider = None, otpProviderPassword = None)),
-          )
+          _ <- env.repository.getAll.succeedsWith(None)
           _ <- env.repository.upsert.succeedsWith(())
-          _ <- service.upsertSettings(
-            DeliverySettingsService.Update(smtp = Some(smtp.copy(subject = "New subject")), smtpPassword = None, otpProvider = None, otpProviderPassword = None),
-          )
-          stored = env.repository.upsert.calls.head
+          (service, _) <- env.service
+          _ <- service.upsertSettings(update(smtp = Some(smtp.copy(subject = "New subject"))))
+          written = env.repository.upsert.calls.head
         yield assertTrue(
-          stored.smtp.map(_.subject) == Some("New subject"),
-          stored.smtpPassword.map(_.toSeq) == Some(onRecord.toSeq),
+          written.smtp.map(_.subject) == Some("New subject"),
+          written.smtpPassword == DeliverySettingsRepository.StoredPassword.Keep,
         )
       },
       test("clears the stored password when the update sends an empty one") {
         val env = Env()
         for
           _ <- env.repository.getAll.succeedsWith(None)
-          (service, security) <- env.service
-          onRecord <- encrypted(security, plaintext)
-          _ <- env.repository.getAll.succeedsWith(
-            Some(DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = Some(onRecord), otpProvider = None, otpProviderPassword = None)),
-          )
           _ <- env.repository.upsert.succeedsWith(())
-          _ <- service.upsertSettings(
-            DeliverySettingsService.Update(smtp = Some(smtp), smtpPassword = Some(""), otpProvider = None, otpProviderPassword = None),
-          )
-        yield assertTrue(env.repository.upsert.calls.head.smtpPassword.isEmpty)
+          (service, _) <- env.service
+          _ <- service.upsertSettings(update(smtp = Some(smtp), smtpPassword = Some("")))
+        yield assertTrue(env.repository.upsert.calls.head.smtpPassword == DeliverySettingsRepository.StoredPassword.Clear)
       },
-      test("drops a block's password together with the block that is left out") {
+      test("drops a block's password together with the block that is left out, whatever the update says") {
         val env = Env()
         for
           _ <- env.repository.getAll.succeedsWith(None)
-          (service, security) <- env.service
-          onRecord <- encrypted(security, plaintext)
-          _ <- env.repository.getAll.succeedsWith(
-            Some(DeliverySettingsRecord(smtp = None, smtpPassword = None, otpProvider = Some(otpProvider), otpProviderPassword = Some(onRecord))),
-          )
           _ <- env.repository.upsert.succeedsWith(())
-          _ <- service.upsertSettings(
-            DeliverySettingsService.Update(smtp = Some(smtp), smtpPassword = None, otpProvider = None, otpProviderPassword = None),
-          )
-          stored = env.repository.upsert.calls.head
-        yield assertTrue(stored.otpProvider.isEmpty, stored.otpProviderPassword.isEmpty, stored.smtpPassword.isEmpty)
+          (service, _) <- env.service
+          _ <- service.upsertSettings(update(smtp = Some(smtp), otpProviderPassword = Some("orphan")))
+          written = env.repository.upsert.calls.head
+        yield assertTrue(written.otpProvider.isEmpty, written.otpProviderPassword == DeliverySettingsRepository.StoredPassword.Clear)
       },
       test("refuses an invalid block and writes nothing") {
         val env = Env()
         val invalid = List(
-          DeliverySettingsService.Update(smtp = Some(smtp.copy(from = "not-an-address")), smtpPassword = None, otpProvider = None, otpProviderPassword = None),
-          DeliverySettingsService.Update(smtp = Some(smtp.copy(port = 70000)), smtpPassword = None, otpProvider = None, otpProviderPassword = None),
-          DeliverySettingsService.Update(smtp = Some(smtp.copy(host = " ")), smtpPassword = None, otpProvider = None, otpProviderPassword = None),
-          DeliverySettingsService.Update(smtp = None, smtpPassword = None, otpProvider = Some(otpProvider.copy(method = "DELETE")), otpProviderPassword = None),
-          DeliverySettingsService.Update(smtp = None, smtpPassword = None, otpProvider = Some(otpProvider.copy(url = "sms.example.com/send")), otpProviderPassword = None),
-          DeliverySettingsService.Update(smtp = None, smtpPassword = None, otpProvider = Some(otpProvider.copy(body = Map("" -> "x"))), otpProviderPassword = None),
+          update(smtp = Some(smtp.copy(from = "not-an-address"))),
+          update(otpProvider = Some(otpProvider.copy(url = "https://sms:topsecret@sms.example.com/send"))),
         )
         for
           _ <- env.repository.getAll.succeedsWith(None)
           _ <- env.repository.upsert.succeedsWith(())
           (service, _) <- env.service
-          exits <- ZIO.foreach(invalid)(update => service.upsertSettings(update).exit)
+          results <- ZIO.foreach(invalid)(service.upsertSettings)
         yield assertTrue(
-          exits.forall(_.causeOption.exists(_.failures.exists(_.isInstanceOf[DeliverySettingsService.ValidationError]))),
+          results.map(_.left.map(_.message.takeWhile(_ != ' '))) == List(Left("smtp.from"), Left("otpProvider.url")),
           env.repository.upsert.calls.isEmpty,
         )
+      },
+    ),
+    suite("deleteSettings")(
+      test("removes the record through the repository") {
+        val env = Env()
+        for
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- (() => env.repository.delete()).succeedsWith(())
+          (service, _) <- env.service
+          _ <- service.deleteSettings()
+        yield assertTrue((() => env.repository.delete()).calls.length == 1)
       },
     ),
     suite("getSettings")(
@@ -162,7 +161,12 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           before <- service.getSettings
           onRecord <- encrypted(security, plaintext)
           _ <- env.repository.getAll.succeedsWith(
-            Some(DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = Some(onRecord), otpProvider = Some(otpProvider), otpProviderPassword = None)),
+            Some(DeliverySettingsRecord(
+              smtp = Some(smtp),
+              smtpPassword = Some(onRecord),
+              otpProvider = Some(otpProvider),
+              otpProviderPassword = None,
+            )),
           )
           _ <- service.sync()
           after <- service.getSettings

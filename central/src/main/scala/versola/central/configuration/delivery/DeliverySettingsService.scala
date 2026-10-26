@@ -2,39 +2,39 @@ package versola.central.configuration.delivery
 
 import versola.central.CentralConfig
 import versola.util.{CacheSource, ReloadingCache, Secret, SecurityService}
-import zio.json.JsonCodec
-import zio.schema.{Schema, derived}
+import zio.json.JsonDecoder
 import zio.{Scope, Task, ZIO, ZLayer}
 
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
-import scala.util.control.NoStackTrace
 
 trait DeliverySettingsService:
   /** The stored record with its passwords decrypted; `None` until the first save. */
   def getSettings: Task[Option[DeliverySettingsRecord]]
 
-  /** Fails with [[DeliverySettingsService.ValidationError]] when the update cannot be stored;
-    * nothing is written then.
-    */
-  def upsertSettings(update: DeliverySettingsService.Update): Task[Unit]
+  /** `Left` when the update cannot be stored, saying which field and rule; nothing is written then. */
+  def upsertSettings(update: DeliverySettingsService.Update): Task[Either[DeliverySettingsService.ValidationError, Unit]]
+
+  /** Removes the record, so that auth is back to the blocks of its own `auth.conf`. */
+  def deleteSettings(): Task[Unit]
 
   def sync(): Task[Unit]
 
 object DeliverySettingsService:
 
   /** What the admin API stores. The console never sees a stored password, so a password left out
-    * keeps the one on record and the rest of the block can still be saved; an empty one clears
-    * it. A block left out is removed together with its password.
+    * (or sent as `null`) keeps the one on record and the rest of the block can still be saved; an
+    * empty one clears it. A block left out is removed together with its password.
     */
   case class Update(
       smtp: Option[SmtpDeliverySettings],
       smtpPassword: Option[String],
       otpProvider: Option[OtpProviderDeliverySettings],
       otpProviderPassword: Option[String],
-  ) derives Schema, JsonCodec
+  ) derives JsonDecoder // No encoder on purpose: the type holds the plaintext passwords.
 
-  case class ValidationError(message: String) extends RuntimeException(message), NoStackTrace
+  /** Names the field and the rule, never a value, so the message is safe in a response and in the error context. */
+  case class ValidationError(message: String)
 
   def live: ZLayer[DeliverySettingsRepository & SecurityService & CentralConfig & Scope, Throwable, DeliverySettingsService] =
     ZLayer:
@@ -42,7 +42,7 @@ object DeliverySettingsService:
         repository <- ZIO.service[DeliverySettingsRepository]
         securityService <- ZIO.service[SecurityService]
         config <- ZIO.service[CentralConfig]
-        source = decryptingSource(repository, securityService, config)
+        source = decryptingSource(repository = repository, securityService = securityService, config = config)
         cache <- ReloadingCache
           .make[Option[DeliverySettingsRecord]](config.configurationCacheRefreshInterval)
           .provideSomeLayer[Scope](ZLayer.succeed(source))
@@ -81,15 +81,17 @@ object DeliverySettingsService:
     override def getSettings: Task[Option[DeliverySettingsRecord]] =
       cache.get
 
-    override def upsertSettings(update: Update): Task[Unit] =
+    override def upsertSettings(update: Update): Task[Either[ValidationError, Unit]] =
+      update.smtp.flatMap(SmtpDeliverySettings.validate).orElse(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate)) match
+        case Some(reason) => ZIO.left(ValidationError(reason))
+        case None => store(update).asRight
+
+    private def store(update: Update): Task[Unit] =
       for
-        _ <- ZIO.foreachDiscard(update.smtp.flatMap(SmtpDeliverySettings.validate))(reason => ZIO.fail(ValidationError(reason)))
-        _ <- ZIO.foreachDiscard(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate))(reason => ZIO.fail(ValidationError(reason)))
-        stored <- repository.getAll
-        smtpPassword <- password(update.smtp, update.smtpPassword, stored.flatMap(_.smtpPassword))
-        otpProviderPassword <- password(update.otpProvider, update.otpProviderPassword, stored.flatMap(_.otpProviderPassword))
+        smtpPassword <- storedPassword(update.smtp, update.smtpPassword)
+        otpProviderPassword <- storedPassword(update.otpProvider, update.otpProviderPassword)
         _ <- repository.upsert(
-          DeliverySettingsRecord(
+          DeliverySettingsRepository.Write(
             smtp = update.smtp,
             smtpPassword = smtpPassword,
             otpProvider = update.otpProvider,
@@ -98,15 +100,19 @@ object DeliverySettingsService:
         )
       yield ()
 
-    /** The password a block is stored with. A kept password is the ciphertext already on record,
-      * passed on as it is; only a new one is encrypted here.
+    /** Only a new password is encrypted here; keeping the stored one is left to the repository,
+      * which does it in the same statement as the rest of the write.
       */
-    private def password(block: Option[?], supplied: Option[String], stored: Option[Secret]): Task[Option[Secret]] =
+    private def storedPassword(block: Option[?], supplied: Option[String]): Task[DeliverySettingsRepository.StoredPassword] =
       (block, supplied) match
-        case (None, _) => ZIO.none
-        case (Some(_), None) => ZIO.succeed(stored)
-        case (Some(_), Some("")) => ZIO.none
-        case (Some(_), Some(password)) => securityService.encryptAes256(Secret.fromString(password), key).map(bytes => Some(Secret(bytes)))
+        case (None, _) => ZIO.succeed(DeliverySettingsRepository.StoredPassword.Clear)
+        case (Some(_), None) => ZIO.succeed(DeliverySettingsRepository.StoredPassword.Keep)
+        case (Some(_), Some("")) => ZIO.succeed(DeliverySettingsRepository.StoredPassword.Clear)
+        case (Some(_), Some(password)) =>
+          securityService.encryptAes256(Secret.fromString(password), key).map(bytes => DeliverySettingsRepository.StoredPassword.Set(Secret(bytes)))
+
+    override def deleteSettings(): Task[Unit] =
+      repository.delete()
 
     override def sync(): Task[Unit] =
       source.getAll.flatMap(cache.set)

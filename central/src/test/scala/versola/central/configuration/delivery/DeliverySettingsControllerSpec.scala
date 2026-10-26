@@ -21,6 +21,8 @@ import javax.crypto.spec.SecretKeySpec
 object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
 
+  private val path = URL.empty / "configuration" / "delivery-settings"
+
   private val smtp = SmtpDeliverySettings(
     host = "smtp.example.com",
     port = 587,
@@ -49,6 +51,9 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     otpProviderPassword = None,
   )
 
+  // Main code deliberately has no encoder for the update, which carries plaintext passwords.
+  private given JsonEncoder[DeliverySettingsService.Update] = DeriveJsonEncoder.gen
+
   private val update = DeliverySettingsService.Update(
     smtp = Some(smtp),
     smtpPassword = Some(smtpPassword),
@@ -56,17 +61,22 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     otpProviderPassword = None,
   )
 
-  private val syncToken = Unsafe.unsafe { unsafe ?=>
+  private def token(key: Array[Byte]): String = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
-          1.minute,
-          JWT.Signature.Symmetric(SecretKeySpec(Array.fill(32)(7.toByte), "AES")),
+          claims = JWT.Claims(issuer = "a", subject = "b", audience = List("c"), custom = Json.Obj()),
+          ttl = 1.minute,
+          signature = JWT.Signature.Symmetric(SecretKeySpec(key, "AES")),
         ),
       )
       .getOrThrowFiberFailure()
   }
+
+  /** Signed under `TestCentralConfig.config.secretKey`, the way auth signs its own. */
+  private val syncToken = token(Array.fill(32)(7.toByte))
+
+  private val foreignToken = token(Array.fill(32)(8.toByte))
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -77,12 +87,17 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val securityLayer: ULayer[SecurityService] = ZLayer.make[SecurityService](SecureRandom.live, SecurityService.live)
 
+  private def decode[A: JsonDecoder](response: Response): Task[A] =
+    response.body.asString.flatMap(body => ZIO.fromEither(body.fromJson[A]).mapError(error => RuntimeException(s"$error: $body")))
+
   private def controllerTestCase(
       description: String,
       request: Request,
       expectedStatus: Status,
       setup: Stub[DeliverySettingsService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[DeliverySettingsService], SecurityService) => Task[TestResult] = (_, _, _) => ZIO.succeed(assertTrue(true)),
+      // Without any Authorization header; otherwise a request that carries none is sent with the admin credential.
+      anonymous: Boolean = false,
   ) =
     test(description) {
       for
@@ -105,7 +120,7 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
-          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case None if !anonymous => request.addHeader(TestAdminAuth.basicAuthHeader)
           case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service, security.get[SecurityService])
@@ -113,48 +128,45 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   private def put(body: String): Request =
-    Request(
-      method = Method.PUT,
-      url = URL.empty / "configuration" / "delivery-settings",
-      body = Body.fromString(body),
-    ).addHeader(Header.ContentType(MediaType.application.json))
+    Request(method = Method.PUT, url = path, body = Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
+
+  private val notBasic = Header.Authorization.Bearer("not-basic")
 
   def spec = suite("DeliverySettingsController")(
     controllerTestCase(
       description = "GET returns each block and whether its password is set, never the password",
-      request = Request.get(URL.empty / "configuration" / "delivery-settings"),
+      request = Request.get(path),
       expectedStatus = Status.Ok,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (response, svc, _) =>
         for
           raw <- response.body.asString
-          payload <- response.body.asJson[DeliverySettingsController.Settings]
+          payload <- decode[DeliverySettingsController.Settings](response)
         yield assertTrue(
           svc.getSettings.calls.length == 1,
           payload == DeliverySettingsController.Settings(
             smtp = Some(smtp),
-            smtpPasswordSet = true,
+            hasSmtpPassword = true,
             otpProvider = Some(otpProvider),
-            otpProviderPasswordSet = false,
+            hasOtpProviderPassword = false,
           ),
           !raw.contains(smtpPassword),
         ),
     ),
     controllerTestCase(
       description = "GET answers empty blocks while nothing is stored",
-      request = Request.get(URL.empty / "configuration" / "delivery-settings"),
+      request = Request.get(path),
       expectedStatus = Status.Ok,
       setup = svc => svc.getSettings.succeedsWith(None),
       verify = (response, _, _) =>
-        for payload <- response.body.asJson[DeliverySettingsController.Settings]
+        for payload <- decode[DeliverySettingsController.Settings](response)
         yield assertTrue(
-          payload == DeliverySettingsController.Settings(smtp = None, smtpPasswordSet = false, otpProvider = None, otpProviderPasswordSet = false),
+          payload == DeliverySettingsController.Settings(smtp = None, hasSmtpPassword = false, otpProvider = None, hasOtpProviderPassword = false),
         ),
     ),
     controllerTestCase(
       description = "GET returns 401 without credentials",
-      request = Request.get(URL.empty / "configuration" / "delivery-settings")
-        .addHeader(Header.Authorization.Bearer("not-basic")),
+      request = Request.get(path).addHeader(notBasic),
       expectedStatus = Status.Unauthorized,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
@@ -163,14 +175,15 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PUT stores the update and returns 204",
       request = put(update.toJson),
       expectedStatus = Status.NoContent,
-      setup = svc => svc.upsertSettings.succeedsWith(()),
+      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.upsertSettings.calls == List(update))),
     ),
     controllerTestCase(
-      description = "PUT without a password field keeps it absent, so the stored one is kept",
-      request = put("""{"smtp":null,"otpProvider":{"method":"POST","url":"https://sms.example.com/send","body":{},"enabled":true}}"""),
+      description = "PUT without a password field, or with null, keeps it absent so the stored one is kept",
+      request =
+        put("""{"smtp":null,"smtpPassword":null,"otpProvider":{"method":"POST","url":"https://sms.example.com/send","body":{},"enabled":true}}"""),
       expectedStatus = Status.NoContent,
-      setup = svc => svc.upsertSettings.succeedsWith(()),
+      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify = (_, svc, _) =>
         ZIO.succeed(
           assertTrue(
@@ -178,7 +191,13 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
               DeliverySettingsService.Update(
                 smtp = None,
                 smtpPassword = None,
-                otpProvider = Some(OtpProviderDeliverySettings(method = "POST", url = "https://sms.example.com/send", username = None, body = Map.empty, enabled = true)),
+                otpProvider = Some(OtpProviderDeliverySettings(
+                  method = "POST",
+                  url = "https://sms.example.com/send",
+                  username = None,
+                  body = Map.empty,
+                  enabled = true,
+                )),
                 otpProviderPassword = None,
               ),
             ),
@@ -189,7 +208,7 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PUT answers 400 with the reason when the service refuses the update",
       request = put(update.toJson),
       expectedStatus = Status.BadRequest,
-      setup = svc => svc.upsertSettings.failsWith(DeliverySettingsService.ValidationError("smtp.from must be an email address")),
+      setup = svc => svc.upsertSettings.succeedsWith(Left(DeliverySettingsService.ValidationError("smtp.from must be an email address"))),
       verify = (response, _, _) =>
         for text <- response.body.asString
         yield assertTrue(text == "smtp.from must be an email address"),
@@ -198,27 +217,39 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PUT answers 400 for a body that is not an update",
       request = put("""{"smtp":{"host":"x"}}"""),
       expectedStatus = Status.BadRequest,
-      setup = svc => svc.upsertSettings.succeedsWith(()),
+      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.upsertSettings.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "PUT returns 401 without credentials",
-      request = put(update.toJson).addHeader(Header.Authorization.Bearer("not-basic")),
+      request = put(update.toJson).addHeader(notBasic),
       expectedStatus = Status.Unauthorized,
-      setup = svc => svc.upsertSettings.succeedsWith(()),
+      setup = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.upsertSettings.calls.isEmpty)),
     ),
     controllerTestCase(
+      description = "DELETE removes the record and returns 204",
+      request = Request.delete(path),
+      expectedStatus = Status.NoContent,
+      setup = svc => (() => svc.deleteSettings()).succeedsWith(()),
+      verify = (_, svc, _) => ZIO.succeed(assertTrue((() => svc.deleteSettings()).calls.length == 1)),
+    ),
+    controllerTestCase(
+      description = "DELETE returns 401 without credentials",
+      request = Request.delete(path).addHeader(notBasic),
+      expectedStatus = Status.Unauthorized,
+      setup = svc => (() => svc.deleteSettings()).succeedsWith(()),
+      verify = (_, svc, _) => ZIO.succeed(assertTrue((() => svc.deleteSettings()).calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "GET sync serves auth the stored record with the passwords encrypted under the transport secret",
-      request = Request
-        .get(URL.empty / "configuration" / "delivery-settings" / "sync")
-        .addHeader(Header.Authorization.Bearer(syncToken)),
+      request = Request.get(path / "sync").addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (response, _, security) =>
         for
           raw <- response.body.asString
-          payload <- response.body.asJson[DeliverySettingsController.SyncResponse]
+          payload <- decode[DeliverySettingsController.SyncResponse](response)
           encrypted <- ZIO.fromOption(payload.smtpPassword).orElseFail(RuntimeException("no smtp password in the sync answer"))
           decrypted <- security.decryptAes256(Base64.urlDecode(encrypted), config.secretKey)
         yield assertTrue(
@@ -232,22 +263,41 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "GET sync says nothing is stored while there is no record",
-      request = Request
-        .get(URL.empty / "configuration" / "delivery-settings" / "sync")
-        .addHeader(Header.Authorization.Bearer(syncToken)),
+      request = Request.get(path / "sync").addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
       setup = svc => svc.getSettings.succeedsWith(None),
       verify = (response, _, _) =>
-        for payload <- response.body.asJson[DeliverySettingsController.SyncResponse]
+        for payload <- decode[DeliverySettingsController.SyncResponse](response)
         yield assertTrue(
-          payload == DeliverySettingsController.SyncResponse(stored = false, smtp = None, smtpPassword = None, otpProvider = None, otpProviderPassword = None),
+          payload == DeliverySettingsController.SyncResponse(
+            stored = false,
+            smtp = None,
+            smtpPassword = None,
+            otpProvider = None,
+            otpProviderPassword = None,
+          ),
         ),
     ),
     controllerTestCase(
-      description = "GET sync returns 401 without service token",
-      request = Request.get(URL.empty / "configuration" / "delivery-settings" / "sync"),
+      description = "GET sync returns 401 for a token signed under another key",
+      request = Request.get(path / "sync").addHeader(Header.Authorization.Bearer(foreignToken)),
       expectedStatus = Status.Unauthorized,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "GET sync returns 401 for the admin Basic credential",
+      request = Request.get(path / "sync"),
+      expectedStatus = Status.Unauthorized,
+      setup = svc => svc.getSettings.succeedsWith(Some(stored)),
+      verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "GET sync returns 401 without any credential",
+      request = Request.get(path / "sync"),
+      expectedStatus = Status.Unauthorized,
+      setup = svc => svc.getSettings.succeedsWith(Some(stored)),
+      verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
+      anonymous = true,
     ),
   )
