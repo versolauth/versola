@@ -80,9 +80,11 @@ has './postgres.secrets.env' && pass "bundled: the password comes from postgres.
 has 'POSTGRES_USER: "versola_app"' && has 'POSTGRES_DB: "auth"' && pass "bundled: role and database" || fail "bundled: role and database"
 has 'versola-postgres-data-vps:/var/lib/postgresql' && pass "bundled: the data volume is mounted" || fail "bundled: the data volume is mounted"
 tail -4 "$frag" | tr -d ' \n' | grep -q 'versola-postgres-data-vps:external:true' && pass "bundled: the data volume is external" || fail "bundled: the data volume is external"
-healthy=$(grep -c 'condition: service_healthy' "$frag" || true)
-# step-ca's own healthcheck gates mtls-init (one line); the other four are the services waiting for Postgres.
-[ "$healthy" = "5" ] && pass "bundled: migrate, central, auth and edge wait for the healthcheck" || fail "bundled: migrate, central, auth and edge wait for the healthcheck ($healthy)"
+# One `postgres:` entry under depends_on each, followed by its healthy condition: migrate, central, auth, edge.
+waits=$(grep -c '^      postgres:$' "$frag" || true)
+healthy_after=$(grep -A1 '^      postgres:$' "$frag" | grep -c 'condition: service_healthy' || true)
+[ "$waits" = "4" ] && [ "$healthy_after" = "4" ] && pass "bundled: migrate, central, auth and edge wait for the healthcheck" || fail "bundled: migrate, central, auth and edge wait for the healthcheck ($waits, $healthy_after)"
+has 'start_period: 30s' && pass "bundled: the healthcheck has a start period" || fail "bundled: the healthcheck has a start period"
 if grep -q '#@PG@\|@POSTGRES_\|\${VERSION}' "$frag"; then fail "bundled: no placeholder is left"; else pass "bundled: no placeholder is left"; fi
 cmp -s "$tools/postgres-init-schemas.sh" "$work/out.d/postgres-init-schemas.sh" && pass "bundled: the init script is in the bundle" || fail "bundled: the init script is in the bundle"
 mode=$(stat -f %Lp "$work/out.d/postgres-init-schemas.sh" 2>/dev/null || stat -c %a "$work/out.d/postgres-init-schemas.sh")
@@ -118,9 +120,13 @@ printf 'x' > "$work/ca.crt"
 refuses POSTGRES_MODE=bundled POSTGRES_CA_FILE="$work/ca.crt"
 # Not a role name the container can create, or services that disagree on it (checked after gen-env,
 # which is where the names are known, so these are refused with no bundle left behind).
-for bad in 'Idp' '1app' 'a-b' 'a b' 'a"b' "a'b" 'a;b'; do
-  if run_entrypoint POSTGRES_MODE=bundled STUB_USER="$bad"; then fail "refused role: $bad"; else pass "refused role: $bad"; fi
+long_role=$(printf 'a%.0s' $(seq 1 64))
+for bad in 'Idp' '1app' 'a-b' 'a b' 'a"b' "a'b" 'a;b' 'pg_admin' "$long_role"; do
+  if run_entrypoint POSTGRES_MODE=bundled STUB_USER="$bad"; then fail "refused role: $bad"
+  elif grep -q "is not a plain role name" "$work/out"; then pass "refused role: $bad"
+  else fail "refused role for another reason: $bad ($(tail -1 "$work/out"))"; fi
 done
+run_entrypoint POSTGRES_MODE=bundled STUB_USER="$(printf 'a%.0s' $(seq 1 63))" && pass "a 63-character role is accepted" || fail "a 63-character role is accepted"
 if run_entrypoint POSTGRES_MODE=bundled STUB_USER_edge=other_app; then fail "refused: services with different users"; else pass "refused: services with different users"; fi
 grep -q "one Postgres user" "$work/out" && pass "the message says the users differ" || fail "the message says the users differ"
 

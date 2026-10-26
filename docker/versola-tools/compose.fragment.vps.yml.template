@@ -65,9 +65,9 @@ services:
 #@PG@    environment:
 #@PG@      POSTGRES_USER: "@POSTGRES_USER@"
 #@PG@      POSTGRES_DB: "@POSTGRES_DB@"
-#@PG@    # 150 connections: auth 10, central 15 and edge 10 pool connections (plus the LISTEN connection each) per
-#@PG@    # replica, the rollout's stand-ins, `migrate` and the reserved superuser slots. shared_buffers is sized for the
-#@PG@    # 4 GB minimum, where the three JVMs take most of the memory.
+#@PG@    # 150 connections: auth 10, central 15 and edge 10 pool connections (central and edge add a LISTEN connection
+#@PG@    # each) per replica, the rollout's stand-ins, `migrate` and the reserved superuser slots. shared_buffers is
+#@PG@    # sized for a server with 4 GB of RAM, where the three JVMs take most of the memory.
 #@PG@    command:
 #@PG@      - postgres
 #@PG@      - -c
@@ -78,6 +78,9 @@ services:
 #@PG@      - shared_buffers=256MB
 #@PG@    healthcheck:
 #@PG@      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+#@PG@      # The first start runs initdb and the schema script before it accepts connections; failures in this
+#@PG@      # window do not count, so a slow disk cannot make `depends_on: service_healthy` fail the `up`.
+#@PG@      start_period: 30s
 #@PG@      interval: 5s
 #@PG@      timeout: 5s
 #@PG@      retries: 12

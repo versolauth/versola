@@ -312,18 +312,28 @@ if [ "$TARGET" = "vps" ]; then
     pg_role=
     for svc in auth central edge; do
       role=$(sed -n '/^postgres {/,/^}/s/^  user = "\([^"]*\)"$/\1/p' .local/env/vps/$svc.conf)
-      if [ -z "$role" ] || { [ -n "$pg_role" ] && [ "$role" != "$pg_role" ]; }; then
+      if [ -z "$role" ]; then
+        echo "versola-tools: the Postgres user of $svc.conf is not a plain role name the container can create (none found on a line of the form user = \"name\")" >&2
+        exit 1
+      fi
+      if [ -n "$pg_role" ] && [ "$role" != "$pg_role" ]; then
         echo "versola-tools: POSTGRES_MODE=bundled needs one Postgres user for auth, central and edge (found '$pg_role' and '$role')" >&2
         exit 1
       fi
       pg_role=$role
     done
+    # `pg_` names are reserved by Postgres, and an identifier is at most 63 bytes: either one would only
+    # fail later, inside the container's first start.
     case "$pg_role" in
-      ''|[!a-z_]*|*[!a-z0-9_]*)
-        echo "versola-tools: the Postgres user '$pg_role' is not a plain role name (lowercase letters, digits and '_') the container can create" >&2
+      ''|[!a-z_]*|*[!a-z0-9_]*|pg_*)
+        echo "versola-tools: the Postgres user '$pg_role' is not a plain role name (lowercase letters, digits and '_', not starting with 'pg_') the container can create" >&2
         exit 1
         ;;
     esac
+    if [ "${#pg_role}" -gt 63 ]; then
+      echo "versola-tools: the Postgres user '$pg_role' is not a plain role name: longer than 63 characters" >&2
+      exit 1
+    fi
     pg_sed="s/^#@PG@//"
   else
     pg_role=

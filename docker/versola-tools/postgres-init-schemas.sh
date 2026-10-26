@@ -9,7 +9,10 @@
 # schemas"); each schema belongs to the application role so Flyway can create its history table there.
 # `:"role"` is psql's own identifier quoting, which is why the name is passed as a variable and not
 # spliced into the SQL text.
-set -eu
+#
+# The image sources a script that is not executable into its own shell, so this sets no shell options
+# (`set -eu` would leak into the rest of the image's init); `ON_ERROR_STOP` makes psql fail on an error
+# and the image's own entrypoint stops on the failure.
 
 psql -v ON_ERROR_STOP=1 -v role="$POSTGRES_USER" --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
 CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION :"role";
