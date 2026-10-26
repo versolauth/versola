@@ -114,6 +114,8 @@ tags:
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
     description: Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+  - name: Antifraud settings
+    description: Thresholds, rule weights, shadow rules, limits on codes sent and timings that are tuned during an attack. Stored and applied by auth, without a restart.
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -2587,6 +2589,128 @@ paths:
               schema: { $ref: '#/components/schemas/AntifraudListAuditResponse' }
         '400':
           description: A parameter is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Antifraud settings ───────────────────────────────
+  /antifraud/settings:
+    get:
+      tags: [Antifraud settings]
+      summary: The settings of a scope
+      description: |
+        The row stored for the scope (`stored`, absent where there is none) and what applies to it (`effective`). The scope is
+        the tenant given, or the deployment. Per tenant, what applies is the configuration of auth, the global row laid over
+        it, and the tenant's row over that; a row sets only the keys it names.
+      operationId: getAntifraudSettings
+      parameters:
+        - name: tenantId
+          in: query
+          description: The tenant's row. Without it, the global one.
+          schema: { $ref: '#/components/schemas/TenantId' }
+        - $ref: '#/components/parameters/UserIdQuery'
+      responses:
+        '200':
+          description: The row and what applies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettingsResponse' }
+        '400':
+          description: A parameter is not valid (including a missing `userId`).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Antifraud settings]
+      summary: Replace the row of a scope
+      description: |
+        Replaces the row of the scope with `settings`, which sets only the keys it names (the others follow the layer
+        below). It is applied by this instance of auth at once, by the others within `antifraud.tuning.refresh-interval`, with
+        no restart and no loss of the counters. Every change is recorded in the audit with the row before and after.
+
+        `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
+        `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). `delayMillis` and
+        `fakeSendDelayMillis` are for the global row only. Auth refuses (`400`, with the reason as text) a negative or
+        out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
+      operationId: putAntifraudSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenantId: { $ref: '#/components/schemas/TenantId' }
+                settings: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [settings, userId]
+      responses:
+        '200':
+          description: The row as stored and what applies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettingsResponse' }
+        '400':
+          description: The body is not valid, or auth refused the settings (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Antifraud settings]
+      summary: Remove the row of a scope
+      operationId: deleteAntifraudSettings
+      description: The scope is named in the body, where edge adds `userId` for a request that is not a `GET`. The scope then follows the layer below.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenantId: { $ref: '#/components/schemas/TenantId' }
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [userId]
+      responses:
+        '204':
+          description: Removed and recorded in the audit.
+        '400':
+          description: The body is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such row.
+
+  /antifraud/settings/audit:
+    get:
+      tags: [Antifraud settings]
+      summary: Changes of the settings
+      description: Who changed which scope, with the row before and after, latest first.
+      operationId: listAntifraudSettingsAudit
+      parameters:
+        - name: tenantId
+          in: query
+          description: Only this tenant's changes. Excludes `global`.
+          schema: { $ref: '#/components/schemas/TenantId' }
+        - name: global
+          in: query
+          description: "`true` for the global row only. Excludes `tenantId`."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          description: 1 to 500. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 500 }
+        - $ref: '#/components/parameters/UserIdQuery'
+      responses:
+        '200':
+          description: The records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items: { $ref: '#/components/schemas/AntifraudSettingsAudit' }
+                required: [records]
+        '400':
+          description: A parameter is not valid, or `tenantId` and `global` were both given.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -6340,3 +6464,95 @@ components:
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
       required: [id, at, action, actor, entryId, listType, valueType, value]
+    AntifraudVelocityLimit:
+      type: object
+      description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.
+      properties:
+        perMinute: { type: integer, minimum: 0 }
+        perTenMinutes: { type: integer, minimum: 0 }
+        perHour: { type: integer, minimum: 0 }
+        perDay: { type: integer, minimum: 0 }
+        weight: { type: integer }
+      required: [perMinute, perTenMinutes, perHour, perDay, weight]
+    AntifraudVelocityThresholds:
+      type: object
+      properties:
+        phone: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        ip: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        device: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        asn: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        prefix: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        trustedDiscount: { type: integer, minimum: 0 }
+      required: [phone, ip, device, asn, prefix, trustedDiscount]
+    AntifraudSmsLimit:
+      type: object
+      description: Codes allowed to one range of numbers per hour (0 for no limit), and the conversion below which a range with `minVolume` codes sent is closed (0 `minVolume` for no breaker).
+      properties:
+        sentPerHour: { type: integer, minimum: 0 }
+        minVolume: { type: integer, minimum: 0 }
+        minConversion: { type: number, minimum: 0, maximum: 1 }
+      required: [sentPerHour, minVolume, minConversion]
+    AntifraudSmsLimits:
+      type: object
+      description: "`byPrefix` is keyed by the leading digits of a number, country code included; the longest key a number starts with decides."
+      properties:
+        default: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+        byPrefix:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+      required: [default, byPrefix]
+    AntifraudSettingsPatch:
+      type: object
+      description: What a row sets; a key it leaves out follows the layer below. A map, or `thresholds`, is replaced as a whole.
+      properties:
+        delayAt: { type: integer, minimum: 0, description: Score from which a step is delayed; 0 disables (likewise the next three). }
+        challengeAt: { type: integer, minimum: 0 }
+        reviewAt: { type: integer, minimum: 0 }
+        blockAt: { type: integer, minimum: 0 }
+        delayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a `Delay` holds a request back. Global row only. }
+        fakeSendDelayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a fake send waits; 0 waits as long as recent real sends took. Global row only. }
+        thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
+        smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
+        ruleWeights:
+          type: object
+          description: The weight of a rule by its name, in place of its own.
+          additionalProperties: { type: integer }
+        shadowRules:
+          type: array
+          description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
+          items: { type: string }
+    AntifraudSettingsValues:
+      type: object
+      description: What applies to a scope once the layers are put together.
+      properties:
+        delayAt: { type: integer }
+        challengeAt: { type: integer }
+        reviewAt: { type: integer }
+        blockAt: { type: integer }
+        delayMillis: { type: integer }
+        fakeSendDelayMillis: { type: integer }
+        thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
+        smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
+        ruleWeights:
+          type: object
+          additionalProperties: { type: integer }
+        shadowRules:
+          type: array
+          items: { type: string }
+      required: [delayAt, challengeAt, reviewAt, blockAt, delayMillis, fakeSendDelayMillis, thresholds, smsLimits, ruleWeights, shadowRules]
+    AntifraudSettingsResponse:
+      type: object
+      properties:
+        tenantId: { $ref: '#/components/schemas/TenantId' }
+        stored: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+        effective: { $ref: '#/components/schemas/AntifraudSettingsValues' }
+      required: [effective]
+    AntifraudSettingsAudit:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        actor: { type: string }
+        tenantId: { $ref: '#/components/schemas/TenantId' }
+        before: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+        after: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+      required: [at, actor]

@@ -49,6 +49,7 @@ object VelocityCountersSpec extends UnitSpecBase:
     VelocityCounters.live.build.map(_.get).provideSome[Scope](
       ZLayer.succeed(repo),
       ZLayer.succeed(settings),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.tuning(AntifraudTestSettings.decision, settings)),
       ZLayer.succeed(TestEnvConfig.coreConfig),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,

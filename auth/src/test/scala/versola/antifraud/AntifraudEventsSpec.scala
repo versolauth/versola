@@ -56,6 +56,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
       ZLayer.succeed[Antifraud](antifraud),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.StaticTuning(AntifraudTuning.fromSettings(settings))),
       ZLayer.succeed[VelocityCounters](velocity),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -204,6 +205,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
             ZLayer.succeed[Antifraud](Antifraud.off),
+            ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.StaticTuning(AntifraudTuning.fromSettings(small))),
             ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
@@ -260,6 +262,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.StaticTuning(AntifraudTuning.fromSettings(small))),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
@@ -286,6 +289,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.StaticTuning(AntifraudTuning.fromSettings(small))),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
@@ -407,9 +411,10 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60))
         val vsettings = AntifraudTestSettings.velocity.copy(enabled = true, thresholds = thresholds)
         val velocity = VelocityCounters(vsettings)
-        val engine = Antifraud.Impl(
+        val engine = AntifraudTestSettings.engine(
           AntifraudTestSettings.decision.copy(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
-          List(VelocityRules.ruleSet(vsettings)),
+          List(AntifraudTestSettings.velocityRules(vsettings)),
+          vsettings,
         )
         ZIO.scoped:
           for

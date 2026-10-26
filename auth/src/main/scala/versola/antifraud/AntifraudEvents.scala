@@ -145,7 +145,7 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -155,6 +155,7 @@ object AntifraudEvents:
         settings <- ZIO.service[Settings]
         antifraud <- ZIO.service[Antifraud]
         velocity <- ZIO.service[VelocityCounters]
+        tuning <- ZIO.service[AntifraudTuning]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
@@ -165,7 +166,7 @@ object AntifraudEvents:
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
-        budget = SmsBudget(settings.smsBudget)
+        budget = new SmsBudget(settings.smsBudget, tenant => tuning.effective(tenant).smsLimits)
         events = Impl(
           queue,
           settings.queueCapacity,
@@ -174,6 +175,7 @@ object AntifraudEvents:
           velocity,
           SendLatency(),
           settings,
+          tuning,
           securityService,
           secureRandom,
           configService,
@@ -193,6 +195,7 @@ object AntifraudEvents:
       velocity: VelocityCounters,
       latency: SendLatency,
       settings: Settings,
+      tuning: AntifraudTuning,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       configService: OAuthConfigurationService,
@@ -200,7 +203,7 @@ object AntifraudEvents:
   ) extends AntifraudEvents:
 
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
-      if !settings.smsBudget.enabled then ZIO.succeed(true)
+      if !tuning.smsLimitsEnabled then ZIO.succeed(true)
       else
         for
           client <- configService.find(clientId)
@@ -259,17 +262,20 @@ object AntifraudEvents:
 
     override def hold(decision: Decision): UIO[Unit] =
       decision.action match
-        case DecisionAction.Delay | DecisionAction.Challenge => ZIO.sleep(settings.decision.delay)
+        case DecisionAction.Delay | DecisionAction.Challenge => ZIO.sleep(tuning.effective(None).delay)
         case _ => ZIO.unit
 
     override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
 
     override def fakeSendDelay: UIO[Duration] =
       if !settings.decision.enabled then ZIO.succeed(Duration.Zero)
-      else Random.nextIntBounded(Int.MaxValue).map(latency.sample)
+      else
+        tuning.effective(None).fakeSendDelayMillis match
+          case 0L => Random.nextIntBounded(Int.MaxValue).map(latency.sample)
+          case millis => ZIO.succeed(Duration.fromMillis(millis))
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
-      ZIO.when(settings.smsBudget.enabled):
+      ZIO.when(tuning.smsLimitsEnabled):
         configService.find(clientId).map(client => budget.release(client.map(_.tenantId), phone.filter(_.isDigit), at))
       .unit
 
@@ -463,6 +469,11 @@ object AntifraudMetrics:
   private val queueSizeGauge = Metric.gauge("antifraud_event_queue_size")
 
   val enqueued: UIO[Unit] = enqueuedTotal.increment
+
+  private val tuningRefreshFailedTotal = Metric.counter("antifraud_tuning_refresh_failed_total")
+
+  /** The stored tuning could not be read; the instance goes on with the one it has (fail-open). Alert on it increasing. */
+  val tuningRefreshFailed: UIO[Unit] = tuningRefreshFailedTotal.increment
 
   private val smsRefusedTotal = Metric.counter("antifraud_sms_budget_refused_total")
 

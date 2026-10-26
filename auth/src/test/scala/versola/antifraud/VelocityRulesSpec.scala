@@ -26,7 +26,7 @@ object VelocityRulesSpec extends UnitSpecBase:
   )
 
   private def antifraud(s: VelocityCounters.Settings, blockAt: Int = 50) =
-    Antifraud.Impl(AntifraudTestSettings.decision.copy(enabled = true, blockAt = blockAt), List(VelocityRules.ruleSet(s)))
+    AntifraudTestSettings.engine(AntifraudTestSettings.decision.copy(enabled = true, blockAt = blockAt), List(AntifraudTestSettings.velocityRules(s)), s)
 
   /** Makes `n` requests as a caller that counts every step does, and decides the last one. */
   private def decide(s: VelocityCounters.Settings, n: Int, request: AntifraudContext = ctx, blockAt: Int = 50): UIO[Decision] =
@@ -124,6 +124,6 @@ object VelocityRulesSpec extends UnitSpecBase:
     },
     test("has no rules while the counters are off, whatever the limits") {
       val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 1))).copy(enabled = false)
-      VelocityRules.ruleSet(s).rules.map(rules => assertTrue(rules.isEmpty))
+      AntifraudTestSettings.velocityRules(s).rules.map(rules => assertTrue(rules.isEmpty))
     },
   )

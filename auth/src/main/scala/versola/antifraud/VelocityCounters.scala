@@ -1,5 +1,6 @@
 package versola.antifraud
 
+import versola.oauth.client.model.TenantId
 import versola.util.{Base64Url, CoreConfig, Secret, SecurityService}
 import zio.*
 
@@ -58,7 +59,11 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   * @param ipKey how a network (see [[VelocityRules.network]]) becomes the key it is counted and stored under: a keyed hash
   *              in the service (see [[live]]), the network itself in tests; `None` when it cannot be made
   */
-final class VelocityCounters(settings: VelocityCounters.Settings, ipKey: String => UIO[Option[String]]):
+final class VelocityCounters(
+    settings: VelocityCounters.Settings,
+    thresholds: Option[TenantId] => VelocityRules.Thresholds,
+    ipKey: String => UIO[Option[String]],
+):
   import VelocityCounters.*
 
   private val stripes = Integer.highestOneBit(math.max(1, settings.stripes))
@@ -153,7 +158,7 @@ final class VelocityCounters(settings: VelocityCounters.Settings, ipKey: String 
       for
         at <- Clock.instant
         keys <- keysOf(ctx)
-      yield VelocityRules.withSignals(this, settings, ctx, keys, at, extra)
+      yield VelocityRules.withSignals(this, thresholds(ctx.tenantId), ctx, keys, at, extra)
 
   /** Keys not counted because `maxKeys` were tracked and none could be made room for, since the start. More than 0 is
     * itself a sign of an attack (or of a `max-keys` that is too small for the traffic). */
@@ -245,7 +250,8 @@ object VelocityCounters:
   val maxKeyLength = 128
 
   /** Counters that key an address by its network as it is: for tests, and where nothing is stored. */
-  def apply(settings: Settings): VelocityCounters = new VelocityCounters(settings, network => ZIO.succeed(Some(network)))
+  def apply(settings: Settings): VelocityCounters =
+    new VelocityCounters(settings, _ => settings.thresholds, network => ZIO.succeed(Some(network)))
 
   private def pack(minute: Long, count: Int): Long = (minute << 32) | (count.toLong & 0xffffffffL)
   private def minuteOf(packed: Long): Long = packed >>> 32
@@ -408,11 +414,12 @@ object VelocityCounters:
     * An address is stored as a keyed hash of its network (`/32` for IPv4, `/64` for IPv6), made with a key derived from
     * the antifraud subject secret under a label of its own, so the table holds no address, and the hash cannot be
     * matched against one made anywhere else with the same secret. */
-  val live: ZLayer[VelocityRepository & Settings & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
+  val live: ZLayer[VelocityRepository & Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[VelocityRepository]
         settings <- ZIO.service[Settings]
+        tuning <- ZIO.service[AntifraudTuning]
         securityService <- ZIO.service[SecurityService]
         config <- ZIO.service[CoreConfig]
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
@@ -425,13 +432,13 @@ object VelocityCounters:
         counters <-
           if settings.enabled then
             for
-              counters <- ZIO.succeed(new VelocityCounters(settings, hash))
+              counters <- ZIO.succeed(new VelocityCounters(settings, tenant => tuning.effective(tenant).thresholds, hash))
               instance <- ZIO.succeed(UUID.randomUUID())
               failing <- Ref.make(false)
               reported <- ZIO.foreach(List.fill(2)(0L))(Ref.make(_))
               _ <- Flusher(counters, repository, settings, instance, failing, reported(0), reported(1)).run
             yield counters
-          else ZIO.succeed(new VelocityCounters(settings, hash))
+          else ZIO.succeed(new VelocityCounters(settings, tenant => tuning.effective(tenant).thresholds, hash))
       yield counters
 
   /** Rows deleted per statement of the upkeep. */

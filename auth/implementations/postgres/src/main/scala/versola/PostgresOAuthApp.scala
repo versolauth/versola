@@ -10,9 +10,13 @@ import versola.antifraud.{
   AntifraudListRepository,
   AntifraudLists,
   AntifraudProposalRepository,
+  AntifraudSettingsController,
+  AntifraudSettingsRepository,
+  AntifraudTuning,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
+  PostgresAntifraudSettingsRepository,
   PostgresVelocityRepository,
   VelocityCounters,
   VelocityRepository,
@@ -125,6 +129,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudListRepository &
       AntifraudLists &
       AntifraudProposalRepository &
+      AntifraudSettingsRepository &
+      AntifraudTuning &
       AntifraudDetectors &
       ConversationRenderService &
       OtpService &
@@ -164,6 +170,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       MetadataController.routes,
       UserController.routes,
       AntifraudListController.routes,
+      AntifraudSettingsController.routes,
       ServiceController.routes,
       LogoutController.routes,
       EstController.routes,
@@ -242,6 +249,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresVelocityRepository.live >++>
       PostgresAntifraudListRepository.live >++>
       PostgresAntifraudProposalRepository.live >++>
+      PostgresAntifraudSettingsRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -262,6 +270,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]))))
+
+  /** `antifraud.tuning` */
+  private val antifraudTuningSettings: ZLayer[ConfigProvider, Config.Error, AntifraudTuning.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("tuning", deriveConfig[AntifraudTuning.Settings]))))
 
   /** `antifraud.detectors` */
   private val antifraudDetectorSettings: ZLayer[ConfigProvider, Config.Error, AntifraudDetectors.Settings] =
@@ -334,11 +347,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       antifraudSettings >++>
       antifraudListSettings >++>
       AntifraudLists.live >++>
+      antifraudTuningSettings >++>
+      AntifraudTuning.live >++>
       ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
       VelocityCounters.live >++>
       // Each component that adds rules is listed here.
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
-        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity))): Antifraud,
+      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists, tuning: AntifraudTuning) =>
+        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud,
       ) >++>
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>

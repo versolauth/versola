@@ -274,8 +274,8 @@ services:
     # which is what the switches below say; leave this `{}` to change nothing. Changing it restarts auth, which also
     # empties its in-memory velocity counters.
     #
-    # Thresholds, weights, SMS budgets and timings are not here: they are tuned while an attack is going on, so they
-    # are not deployment configuration (deploy.md).
+    # Thresholds, weights, SMS limits and timings are not here: they are tuned while an attack is going on, so they are
+    # stored settings changed through central's admin API, `PUT /antifraud/settings` (deploy.md).
     #
     #   antifraud:
     #     decision: {enabled: true, timeout: "20 milliseconds", failure-action: allow}

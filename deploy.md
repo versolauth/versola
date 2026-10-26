@@ -495,29 +495,51 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
         detectors: {enabled: true, statement-timeout: "10 seconds"}
   ```
 
-  The other keys described below (thresholds and weights, `sms-budget`, delays and the rest) are what an operator
-  changes **during an attack**, which a restart would make slow and would cost the counters, so they are not for the
-  chart: they are moving to a store changed through the admin API. Until then they are read from the config as
-  described, with the defaults file as the fallback.
+  **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
+  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, `GET /antifraud/settings/audit`, see
+  `central/open-api/central.yaml`; permissions `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the
+  in-memory velocity counters. They are: the score thresholds (`delay-at`, `challenge-at`, `review-at`, `block-at`), the
+  limits and weights of the velocity rules, the weight of any rule by name (`ruleWeights`), the rules that only record
+  (`shadowRules`: evaluated and listed in `af_event.rules` as `shadow:<name>`, adding no weight and forcing nothing), the
+  limits on codes sent (`smsLimits`: a default and one per number prefix, the longest prefix a number starts with
+  deciding; the SMS budget below) and the timings of a delay and of a fake send (global only). A row is a patch for a
+  scope: the tenant's row is laid over the global row, which is laid over the config; a key a row leaves out follows the
+  layer below, and deleting a row returns the scope to it. So **the keys of the config for these settings
+  (`decision.*-at`, `velocity.thresholds`, `sms-budget`) are the values that apply where nothing is stored**, and the
+  defaults file is their fallback; they are not exposed by the chart. Every instance rebuilds what it holds when
+  `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in full once a minute; a
+  read that fails keeps what the instance has (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). Every
+  change is audited with the row before and after, and an instance that is down while a change is made reads it when it is
+  back. Per-tenant rows apply to the thresholds, weights, shadow rules, velocity limits and SMS limits; the delay and
+  fake-send timings are global because the request is held where no tenant is known.
 
-  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no `*-at` threshold set (and
+  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
   `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
-  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Add the limits to `env.conf`:
+  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in as global settings:
 
-  ```hocon
-  antifraud {
-    sms-budget { sent-per-hour = 300, prefix-length = 6 }   # acts at once: refuses codes above the limit; size it from the range statistics
-    velocity.thresholds {
-      phone  { per-hour = 3, per-day = 6 }
-      prefix { per-ten-minutes = 60, per-hour = 200 }
-      ip     { per-minute = 10, weight = 10 }               # low weight: carrier-grade NAT shares addresses
+  ```json
+  PUT /antifraud/settings
+  {
+    "settings": {
+      "thresholds": {
+        "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
+        "ip":     {"perMinute": 10, "perTenMinutes": 0, "perHour": 0, "perDay": 0,   "weight": 10},
+        "device": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 60},
+        "asn":    {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 20},
+        "prefix": {"perMinute": 0, "perTenMinutes": 60, "perHour": 200, "perDay": 0, "weight": 30},
+        "trustedDiscount": 40
+      },
+      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}}
     }
   }
   ```
 
-  Run it for at least a week, look at which rules fire for traffic you know to be good (`af_event`, the proposals of the
-  detectors), and only then turn on enforcement by setting `decision.challenge-at` and `decision.block-at` above the
-  scores of the good traffic. Turn a switch off again to go back; nothing it recorded needs undoing.
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `smsLimits` is the one setting of the profile that
+  acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
+  `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
+  rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
+  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic (and `failure-action: challenge` in
+  the config). Delete the row, or put the thresholds back to 0, to go back; nothing it recorded needs undoing.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than

@@ -340,6 +340,41 @@ object AuthClientSpec extends ZIOSpecDefault:
         sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("the antifraud settings calls send the scope, the body and the userId to auth's /antifraud/settings") {
+      val patch = AntifraudSettingsPatch(
+        delayAt = None,
+        challengeAt = None,
+        reviewAt = None,
+        blockAt = Some(80),
+        delayMillis = None,
+        fakeSendDelayMillis = None,
+        thresholds = None,
+        smsLimits = None,
+        ruleWeights = None,
+        shadowRules = None,
+      )
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("[]"))).toRoutes)
+        client <- ZIO.service[AuthClient]
+        _ <- client.antifraudSettingsAudit(AntifraudSettingsAuditQuery(None, Some(true), Some(PageLimit(3))), userId)
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
+        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(Some(tenantId), userId))
+        failed <- client.putAntifraudSettings(PutAntifraudSettingsRequest(None, patch, userId)).either
+        requests <- seen.get
+      yield assertTrue(
+        requests(0).url.path.segments == Chunk("antifraud", "settings", "audit"),
+        requests(0).url.queryParams.queryParam("global").contains("true"),
+        requests(0).url.queryParams.queryParam("limit").contains("3"),
+        requests(0).url.queryParams.queryParam("userId").contains(userId.toString),
+        requests(1).method == Method.DELETE,
+        requests(1).url.path.segments == Chunk("antifraud", "settings"),
+        requests(1).url.queryParams.queryParam("tenantId").contains(tenantId.toString),
+        requests(1).url.queryParams.queryParam("userId").contains(userId.toString),
+        requests(2).method == Method.PUT,
+        failed.isLeft,
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("auth's 400 and 404 are typed errors for an antifraud call, and any other failure is a failure") {
       def answer(status: Status, body: String) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text(body).status(status))).toRoutes
       val delete = DeleteListEntryRequest(id = UUID.randomUUID(), userId = userId)

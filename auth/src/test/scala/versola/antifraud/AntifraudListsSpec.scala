@@ -124,7 +124,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     def rules = ZIO.succeed(List(AntifraudRule("range_closed", 0, Some(DecisionAction.Block), _ => true)))
 
   private def decide(lists: AntifraudLists, others: Antifraud.RuleSet*)(c: AntifraudContext) =
-    Antifraud.Impl(engine, lists.ruleSet :: others.toList).evaluate(c)
+    AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList).evaluate(c)
 
   def spec = suite("AntifraudLists")(
     test("contributes no rule while off, whatever the table holds") {

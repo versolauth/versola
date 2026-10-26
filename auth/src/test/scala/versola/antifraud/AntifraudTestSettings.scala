@@ -26,3 +26,30 @@ object AntifraudTestSettings:
   val limit: VelocityRules.Limit = VelocityRules.Limit(perMinute = 0, perTenMinutes = 0, perHour = 0, perDay = 0, weight = 50)
 
   val velocityOff: VelocityCounters = VelocityCounters(velocity)
+
+  /** A tuning that is never stored: what `tuning` says applies everywhere. */
+  final class StaticTuning(val tuning: Tuning) extends AntifraudTuning:
+    override def effective(tenant: Option[versola.oauth.client.model.TenantId]): Tuning = tuning
+
+    override def smsLimitsEnabled: Boolean = tuning.smsLimits.enabled
+
+    override def stored(tenant: Option[versola.oauth.client.model.TenantId]): Task[Option[TuningPatch]] = ZIO.none
+
+    override def put(tenant: Option[versola.oauth.client.model.TenantId], patch: TuningPatch, actor: String): Task[Unit] =
+      ZIO.dieMessage("not stored")
+
+    override def delete(tenant: Option[versola.oauth.client.model.TenantId], actor: String): Task[Boolean] = ZIO.dieMessage("not stored")
+
+    override def audit(scope: Option[Option[versola.oauth.client.model.TenantId]], limit: Int): Task[List[AntifraudTuningAudit]] =
+      ZIO.dieMessage("not stored")
+
+  /** The tuning the config gives, with the thresholds of `decision` and the limits of `velocity`. */
+  def tuning(decision: Antifraud.Settings, velocity: VelocityCounters.Settings = velocity): StaticTuning =
+    StaticTuning(AntifraudTuning.fromSettings(events.copy(decision = decision, velocity = velocity)))
+
+  def engine(decision: Antifraud.Settings, ruleSets: List[Antifraud.RuleSet], velocity: VelocityCounters.Settings = velocity): Antifraud.Impl =
+    Antifraud.Impl(decision, ruleSets, tuning(decision, velocity))
+
+  /** The velocity rules for limits of `velocity`. */
+  def velocityRules(velocity: VelocityCounters.Settings): Antifraud.RuleSet =
+    VelocityRules.ruleSet(velocity, tuning(decision, velocity))
