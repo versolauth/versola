@@ -6,11 +6,13 @@
 -- per request; expires_at is honoured when a value is looked up, and expired rows are removed by the service.
 -- A phone number or address is stored as the keyed hash of the event log (phone_hash), never as itself.
 -- hit_count and last_hit_at are written in batches from the counters the instances keep in memory.
+--
+-- The columns that hold a kind (type, value_type, action) carry no CHECK: the set of kinds is the service's (AntifraudLists),
+-- and a new kind must not need a migration. A value the service does not know is skipped when the entries are read.
 CREATE TABLE af_list_entry (
     id          UUID        NOT NULL PRIMARY KEY,
-    type        TEXT        NOT NULL CHECK (type IN ('deny', 'allow', 'watch', 'fake')),
-    value_type  TEXT        NOT NULL CHECK (value_type IN
-                    ('phone_hash', 'prefix', 'ip', 'cidr', 'asn', 'device_id', 'ua_hash', 'ja4_hash', 'email_domain')),
+    type        TEXT        NOT NULL,
+    value_type  TEXT        NOT NULL,
     value       TEXT        NOT NULL,
     tenant_id   TEXT,
     expires_at  TIMESTAMPTZ,
@@ -36,7 +38,7 @@ CREATE INDEX af_list_entry_expires_idx ON af_list_entry (expires_at) WHERE expir
 CREATE TABLE af_list_audit (
     id         UUID        NOT NULL PRIMARY KEY,
     at         TIMESTAMPTZ NOT NULL,
-    action     TEXT        NOT NULL CHECK (action IN ('create', 'delete', 'expire')),
+    action     TEXT        NOT NULL,
     actor      TEXT        NOT NULL,
     entry_id   UUID        NOT NULL,
     type       TEXT        NOT NULL,
@@ -55,7 +57,7 @@ CREATE INDEX af_list_audit_entry_idx ON af_list_audit (entry_id, at DESC, id);
 -- one tiny query and rebuilds its snapshot only when it has. A change made by hand in SQL does not bump it; the
 -- instances reload everything once a minute regardless.
 CREATE TABLE af_list_version (
-    id      SMALLINT NOT NULL PRIMARY KEY CHECK (id = 1),
+    id      SMALLINT NOT NULL PRIMARY KEY,
     version BIGINT   NOT NULL
 );
 INSERT INTO af_list_version (id, version) VALUES (1, 0);
