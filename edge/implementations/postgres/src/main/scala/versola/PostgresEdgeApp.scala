@@ -84,6 +84,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   override protected def guardExemptPeers =
     ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
+  // Per-request success lines are most of the edge's log and the metrics have them; failures and slow requests stay.
+  override protected def accessLogDefaultMode = versola.util.http.AccessLogMode.Off
+
   override protected def internalPeers =
     ZIO.serviceWith[EdgeConfig]: config =>
       import versola.util.http.OutboundGuard.peerOf

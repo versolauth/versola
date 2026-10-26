@@ -5038,7 +5038,7 @@ components:
       enum: [off, offered, required_after_grace, required]
       description: >-
         How firmly a user who signed in without having a passkey is asked to enrol one. `off`
-        never asks; `offered` asks after every sign-in and the user may always skip;
+        adds no tenant offer (a client's own `passkeyEnroll` factor still offers a skippable card); `offered` asks after every sign-in and the user may always skip;
         `required_after_grace` asks and allows a skip until the grace is used up, then the
         sign-in cannot finish without a passkey; `required` allows no skip. When a mandatory
         card cannot be offered (the registration ceremony does not start) the sign-in is

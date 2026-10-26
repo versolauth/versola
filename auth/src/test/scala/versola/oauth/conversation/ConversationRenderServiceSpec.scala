@@ -1063,7 +1063,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       },
       test("renders a PasskeyEnroll step and surfaces the enroll_failed error") {
         val env = Env()
-        val step = ConversationStep.PasskeyEnroll("req-state", "{}", true)
+        val step = ConversationStep.PasskeyEnroll("req-state", "{}", enrollFailed = true, skippable = true)
         val record = conversationRecord.copy(step = step)
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))

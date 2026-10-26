@@ -107,10 +107,11 @@ case class ChallengeResult(response: Response, html: String):
   def passkeyEnrollCard: Task[PasskeyEnrollCard] =
     val marker = "window.__VERSOLA_FORM__ = "
     val start = html.indexOf(marker)
-    val end = html.indexOf(";</script>", start)
+    // The page inlines the config on one line, either as `...;</script>...` or as `...;` ending the line.
+    val raw = if start < 0 then "" else html.substring(start + marker.length).takeWhile(_ != '\n').split(";</script>", 2).head.stripSuffix(";")
     for
-      _ <- ZIO.fail(RuntimeException("no form configuration in the challenge HTML")).when(start < 0 || end < 0)
-      config <- ZIO.fromEither(html.substring(start + marker.length, end).fromJson[Json.Obj]).mapError(RuntimeException(_))
+      _ <- ZIO.fail(RuntimeException("no form configuration in the challenge HTML")).when(start < 0)
+      config <- ZIO.fromEither(raw.trim.fromJson[Json.Obj]).mapError(error => RuntimeException(s"form configuration is not JSON [$error]: $raw"))
       step <- ZIO.fromOption(config.get("step").flatMap(_.asObject)).orElseFail(RuntimeException("form configuration has no step"))
       options <- ZIO.fromOption(step.get("publicKeyOptions").flatMap(_.asString)).orElseFail(RuntimeException("step has no publicKeyOptions"))
       skippable <- ZIO.fromOption(step.get("skippable").flatMap(_.asBoolean)).orElseFail(RuntimeException("step has no skippable flag"))

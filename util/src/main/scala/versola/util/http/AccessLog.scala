@@ -69,9 +69,14 @@ object AccessLogSettings:
 
   /** From raw values (`None` when unset). An invalid value falls back to its default, so a typo cannot take the service
     * down (nor, here, silence its logs). */
-  def parse(mode: Option[String], slowMillis: Option[String], sampleRate: Option[String]): AccessLogSettings =
+  def parse(
+      mode: Option[String],
+      slowMillis: Option[String],
+      sampleRate: Option[String],
+      serviceDefault: AccessLogMode = defaultMode,
+  ): AccessLogSettings =
     AccessLogSettings(
-      mode = mode.flatMap(AccessLogMode.parse).getOrElse(defaultMode),
+      mode = mode.flatMap(AccessLogMode.parse).getOrElse(serviceDefault),
       slowMillis = slowMillis.flatMap(_.trim.toLongOption).filter(_ >= 0).getOrElse(defaultSlowMillis),
       successSampleRate = sampleRate
         .flatMap(v => Try(v.trim.toDouble).toOption)
@@ -79,9 +84,11 @@ object AccessLogSettings:
         .getOrElse(defaultSuccessSampleRate),
     )
 
-  def fromEnv: AccessLogSettings =
+  /** From the environment; `serviceDefault` is the mode when `HTTP_ACCESS_LOG` is unset (or invalid): `Full` unless the
+    * service says otherwise (see `VersolaApp.accessLogDefaultMode`). */
+  def fromEnv(serviceDefault: AccessLogMode = defaultMode): AccessLogSettings =
     def env(n: String) = Option(java.lang.System.getenv(n))
-    parse(env("HTTP_ACCESS_LOG"), env("HTTP_ACCESS_LOG_SLOW_MS"), env("HTTP_ACCESS_LOG_SAMPLE_RATE"))
+    parse(env("HTTP_ACCESS_LOG"), env("HTTP_ACCESS_LOG_SLOW_MS"), env("HTTP_ACCESS_LOG_SAMPLE_RATE"), serviceDefault)
 
   /** A uniform position in `[0, 1)` derived from the trace id alone, so the same trace lands on the same side of every
     * rate in every process. Trace ids are random already; the mixing only keeps a prefix-heavy or non-hex id from

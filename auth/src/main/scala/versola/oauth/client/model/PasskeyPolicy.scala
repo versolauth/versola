@@ -28,7 +28,7 @@ enum PasskeyOffer:
   case Mandatory
 
 /** What `auth` remembers of one user's passkey offers: when the first was made (the grace in days runs from it) and how
-  * many were skipped (the grace in skips counts them). Dropped once the user has a passkey.
+  * many were skipped (the grace in skips counts them). Not read once the user has a passkey, which ends the offers; removed with the user.
   */
 case class PasskeyEnrollmentState(
     userId: UserId,

@@ -1264,7 +1264,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("advances to the next registration step when passkey enrollment passes during registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val twoStepFlow = RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp(), RegistrationStep.PasskeyEnroll()), Set(roleId))
         val record = initialRecord.copy(
           step = enrollStep,
@@ -1291,7 +1291,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("finishes the conversation when passkey enrollment passes outside registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val completeResult = ConversationResult.Complete(
           redirectUri,
@@ -1312,7 +1312,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("re-renders the enrollment step with enrollFailed when the ceremony fails") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val failedResult = ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true))
         for
@@ -1323,7 +1323,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("treats a non-failed enrollment render as passed for metrics purposes") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val renderResult = ConversationResult.RenderStep(enrollStep)
         for
@@ -1334,7 +1334,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("skips passkey enrollment and advances the registration step") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val twoStepFlow = RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp(), RegistrationStep.PasskeyEnroll()), Set(roleId))
         val record = initialRecord.copy(
           step = enrollStep,
@@ -1361,7 +1361,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("skips passkey enrollment and finishes outside registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val completeResult = ConversationResult.Complete(
           redirectUri,
@@ -1382,7 +1382,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("returns a render result directly from a skip submission") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
@@ -1659,7 +1659,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("labels a mismatch on the PasskeyEnroll step") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))

@@ -150,10 +150,18 @@ object Observability:
     * a policy from central would be applied ([[AccessLogPolicy.applyTo]] over [[accessLogBase]]).
     */
   val accessLog: java.util.concurrent.atomic.AtomicReference[AccessLogSettings] =
-    new java.util.concurrent.atomic.AtomicReference(AccessLogSettings.fromEnv)
+    new java.util.concurrent.atomic.AtomicReference(AccessLogSettings.fromEnv())
 
   /** What the process started with, the base an [[AccessLogPolicy]] is a patch over. */
-  val accessLogBase: AccessLogSettings = accessLog.get
+  @volatile var accessLogBase: AccessLogSettings = accessLog.get
+
+  /** Applies the service's own default mode: what `HTTP_ACCESS_LOG` unset means for this service (`full` for most, `off`
+    * for the edge). The environment still wins. Called once at start-up, before the server takes requests. */
+  def applyAccessLogDefault(serviceDefault: AccessLogMode): UIO[Unit] =
+    ZIO.succeed:
+      val settings = AccessLogSettings.fromEnv(serviceDefault)
+      accessLogBase = settings
+      accessLog.set(settings)
 
   def updateAccessLog(next: AccessLogSettings): UIO[Unit] = ZIO.succeed(accessLog.set(next))
 

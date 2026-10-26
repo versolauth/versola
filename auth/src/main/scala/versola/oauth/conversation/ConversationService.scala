@@ -1059,12 +1059,14 @@ object ConversationService:
         case Some(policy) if policy.mode != PasskeyEnrollmentMode.off => offerPasskeyEnroll(authId, conversation)
         case _ => finish(authId, conversation)
 
-    /** What this user is offered now: under the tenant's policy, from what is on record for them; a tenant without one
-      * offers a skippable card, as the `passkeyEnroll` factor always did.
+    /** What this user is offered now: under the tenant's policy, from what is on record for them. A tenant without a
+      * policy, or with `off`, adds nothing of its own: the card a client's `passkeyEnroll` factor asks for is skippable,
+      * as it always was, so `off` never overrides a client's factor.
       */
     private def passkeyOffer(userId: UserId, policy: Option[PasskeyPolicy]): Task[PasskeyOffer] =
       policy match
         case None => ZIO.succeed(PasskeyOffer.Skippable)
+        case Some(policy) if policy.mode == PasskeyEnrollmentMode.off => ZIO.succeed(PasskeyOffer.Skippable)
         case Some(policy) =>
           for
             now <- Clock.instant

@@ -1212,7 +1212,7 @@ export class VersolaSecuritySettings extends LitElement {
   private passkeyPolicyLabel(policy: PasskeyPolicy | null | undefined): string {
     if (!policy) return 'Decided by each client';
     switch (policy.mode) {
-      case 'off': return 'Never asked';
+      case 'off': return 'Off; a client may still offer';
       case 'offered': return 'Offered, can always be skipped';
       case 'required': return 'Required';
       case 'required_after_grace': {
@@ -1254,7 +1254,7 @@ export class VersolaSecuritySettings extends LitElement {
     });
     const parse = (value: string) => (value.trim() === '' ? null : parseInt(value) || 0);
     const options: [string, string][] = [
-      ['client', 'Decided by each client'], ['off', 'Never ask'], ['offered', 'Offer, always skippable'],
+      ['client', 'Decided by each client'], ['off', 'Off (a client may still offer)'], ['offered', 'Offer, always skippable'],
       ['required_after_grace', 'Require after a grace'], ['required', 'Require'],
     ];
     return html`
