@@ -158,6 +158,7 @@ object ResourceController extends Controller:
       },
       internal = record.isInternal,
       secretRotation = record.previousSecret.nonEmpty,
+      audienceRateLimits = record.audienceRateLimits,
     )
 
   private def toResourceRegistryEntry(record: ResourceRecord): ResourceRegistryEntry =

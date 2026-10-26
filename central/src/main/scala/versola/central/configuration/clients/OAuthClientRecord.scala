@@ -3,7 +3,6 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.DeclaredRateLimit
 import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, RedirectUri, Secret}
 import zio.http.URL
@@ -20,7 +19,6 @@ given Schema[URL] = Schema.primitive[String].transformOrFail(
 given Equal[URL] = (a, b) => a == b
 given Equal[ThemeOverrides] = (a, b) => a == b
 given Equal[Instant] = (a, b) => a == b
-given Equal[DeclaredRateLimit] = (a, b) => a == b
 
 case class OAuthClientRecord(
     id: ClientId,
@@ -122,10 +120,6 @@ case class OAuthClientRecord(
     /** What this client changes in the theme it uses, laid over it on its sign-in pages (a partner app that
       * brings its own brand colour). `None`, never an empty value, when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
-    /** A limit on how many calls carrying this client's tokens the edge lets through, checked at R2 together with the edge's
-      * own policies (the smaller wins). `None` limits nothing, as every client before the column did. Last and defaulted so
-      * that a record built without naming it is a client with no limit. */
-    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, CanEqual, Equal:
 
   /** A native app whose client authentication is done by the edge fronting it (#420/#421):

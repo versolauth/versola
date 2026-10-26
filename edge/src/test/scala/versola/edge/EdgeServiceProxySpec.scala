@@ -3571,19 +3571,22 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstreamCalls == 2,
       )
     },
-    test("a limit declared on a client refuses calls carrying its tokens at R2, and another client is served") {
+    test(
+      "a limit the resource sets for a client of its audience refuses that client's calls to it at R3 under resource-client, and another client is served",
+    ) {
       val env = new Env
       val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)), mode = GuardMode.Enforce)
       for
         _ <- env.setupDefaults()
         upstream <- Ref.make(0)
         _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
-        revoked <- Ref.make(0)
-        _ <- env.revocationService.isRevoked.returnsZIO((_, _) => revoked.update(_ + 1).as(false))
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(usersEndpoint()))
-        _ <- env.rateLimiter.update(Nil, declared = List(DeclaredLimit(owner = DeclaredOwner.Client, selector = "web-app", limit = declared)))
+        _ <- env.rateLimiter.update(
+          Nil,
+          declared = List(DeclaredLimit(owner = DeclaredOwner.Audience, selector = "web-app", limit = declared, resource = "users-api")),
+        )
         limitedToken <- env.signToken(clientId = "web-app")
         freeToken <- env.signToken(clientId = "other-app")
         service = env.buildService(client, security)
@@ -3592,16 +3595,16 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         first <- call(limitedToken)
         second <- call(limitedToken)
         free <- call(freeToken)
+        body <- second.body.asString
         upstreamCalls <- upstream.get
-        revocationChecks <- revoked.get
       yield assertTrue(
         first.status == Status.Ok,
         second.status == Status.TooManyRequests,
-        second.rawHeader("RateLimit-Policy").contains("\"oauth-client\";q=1;w=900"),
+        second.rawHeader("RateLimit-Policy").contains("\"resource-client\";q=1;w=900"),
+        body == """{"error":"rate_limited","policy":"resource-client"}""",
         free.status == Status.Ok,
-        // the refused call reached neither the revocation check nor the upstream
+        // the refused call never reached the upstream
         upstreamCalls == 2,
-        revocationChecks == 2,
       )
     },
     test("enforce: a refusal names the policy that makes the caller wait longest and spends nothing on the others") {

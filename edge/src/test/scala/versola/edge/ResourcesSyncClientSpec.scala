@@ -113,6 +113,28 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
         endpoints.find(_.id == plain).exists(_.rateLimit.isEmpty),
       )
     },
+    test("reads the limits the resource sets for its audience clients, and a resource that sets none has none") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.succeed(
+            Response.json(
+              """{"resources":[
+                |{"resourceId":"api","resource":"https://api.example","endpoints":[],"secret":null,
+                | "audienceRateLimits":[{"clientId":"plan-a","rateLimit":{"limits":[{"limit":600,"windowSeconds":60}],"burst":50,"by":"subject","mode":"enforce"}}]},
+                |{"resourceId":"plain","resource":"https://plain.example","endpoints":[],"secret":null}]}""".stripMargin,
+            ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, celEvaluator)
+        resources <- service.getAll
+        limits = resources(ResourceId("api")).audienceRateLimits
+      yield assertTrue(
+        limits.map(l => (l.clientId.toString, l.rateLimit.burst, l.rateLimit.by, l.rateLimit.mode)) ==
+          List(("plan-a", 50, DeclaredRateLimitBy.Subject, GuardMode.Enforce)),
+        resources(ResourceId("plain")).audienceRateLimits.isEmpty,
+      )
+    },
     test("precompiles allow, step-up and inject expressions from every synced endpoint") {
       val endpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000001"))
       for

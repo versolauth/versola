@@ -15,7 +15,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.http.{DeclaredRateLimit, GuardMode, Observability, RateLimitWindow}
+import versola.util.http.Observability
 import versola.util.theme.{BrandColor, Mode, Shape, ThemeOverrides}
 import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
@@ -230,9 +230,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
   )
-
-  private val clientRateLimit =
-    DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
 
   private val partnerTheme =
     ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None, background = None)
@@ -566,31 +563,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           payload <- response.body.asJson[GetOAuthClientsSyncResponse]
         yield assertTrue(payload.clients.map(_.themeOverrides) == Vector(Some(partnerTheme), None)),
-    ),
-    controllerTestCase(
-      description = "carry a client's rate limit to the edge in the sync response and to the console in the list, and none when it has none",
-      request = Request.get(
-        (URL.empty / "configuration" / "clients" / "sync")
-          .addQueryParam("tenantId", tenantId.toString),
-      ).addHeader(Header.Authorization.Bearer(syncToken)),
-      expectedStatus = Status.Ok,
-      setup = service =>
-        service.getClientsForSync.succeedsWith(Vector(clients.head.copy(rateLimit = Some(clientRateLimit)), clients(1))),
-      verify = (response, _, _) =>
-        for
-          payload <- response.body.asJson[GetOAuthClientsSyncResponse]
-        yield assertTrue(payload.clients.map(_.rateLimit) == Vector(Some(clientRateLimit), None)),
-    ),
-    controllerTestCase(
-      description = "list a client's rate limit",
-      request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
-      expectedStatus = Status.Ok,
-      setup = service =>
-        service.getTenantClients.succeedsWith(Vector(clients.head.copy(rateLimit = Some(clientRateLimit)))),
-      verify = (response, _, _) =>
-        for
-          payload <- response.body.asJson[GetAllClientsResponse]
-        yield assertTrue(payload.clients.map(_.rateLimit) == List(Some(clientRateLimit))),
     ),
     controllerTestCase(
       description = "list a client's theme overrides",

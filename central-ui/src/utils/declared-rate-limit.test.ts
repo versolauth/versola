@@ -27,23 +27,23 @@ describe('declared rate limit wire form', () => {
 describe('validateDeclared', () => {
   it('accepts a well-formed limit on either owner', () => {
     expect(validateDeclared(draft(), 'endpoint')).toEqual({});
-    expect(validateDeclared(draft(), 'client')).toEqual({});
-    expect(validateDeclared(null, 'client')).toEqual({});
+    expect(validateDeclared(draft(), 'audience')).toEqual({});
+    expect(validateDeclared(null, 'audience')).toEqual({});
   });
 
   it('says what central says', () => {
     expect(validateDeclared(draft({ burst: '601' }), 'endpoint').burst).toBe('burst must not exceed the smallest limit');
     expect(validateDeclared(draft({ burst: '0' }), 'endpoint').burst).toBe('burst must be between 1 and 1000000');
     expect(validateDeclared(draft({ limits: [] }), 'endpoint').limits).toBe('policy resource-endpoint: limits must have at least one window');
-    expect(validateDeclared(draft({ limits: [] }), 'client').limits).toBe('policy oauth-client: limits must have at least one window');
+    expect(validateDeclared(draft({ limits: [] }), 'audience').limits).toBe('policy resource-client: limits must have at least one window');
     expect(validateDeclared(draft({ limits: [{ limit: '5', windowSeconds: '60' }, { limit: '9', windowSeconds: '60' }] }), 'endpoint').limits).toBe('two limits have the same window');
     expect(validateDeclared(draft({ limits: [{ limit: '', windowSeconds: '0' }] }), 'endpoint')).toMatchObject({
       'limit.0': 'limit must be between 1 and 1000000', 'window.0': 'windowSeconds must be between 1 and 86400',
     });
   });
 
-  it('refuses by client on a client, where it would mean the same as none', () => {
-    expect(validateDeclared(draft({ by: 'client' }), 'client').by).toMatch(/subject or none/);
+  it('refuses by client on an audience client, where it would mean the same as none', () => {
+    expect(validateDeclared(draft({ by: 'client' }), 'audience').by).toMatch(/subject or none/);
     expect(hasErrors(draft({ by: 'client' }), 'endpoint')).toBe(false);
   });
 
@@ -56,7 +56,7 @@ describe('validateDeclared', () => {
 describe('declaredSummary', () => {
   it('reads as one line', () => {
     expect(declaredSummary(limit, 'endpoint')).toBe('Enforce · 600 / 60 s + 10000 / 3600 s · each user · burst 50');
-    expect(declaredSummary({ limits: [{ limit: 5, windowSeconds: 1 }] }, 'client')).toBe('Shadow · 5 / 1 s · client as a whole');
-    expect(declaredSummary(undefined, 'client')).toBe('No limit');
+    expect(declaredSummary({ limits: [{ limit: 5, windowSeconds: 1 }] }, 'audience')).toBe('Shadow · 5 / 1 s · client as a whole');
+    expect(declaredSummary(undefined, 'audience')).toBe('No limit');
   });
 });

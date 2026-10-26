@@ -17,7 +17,13 @@ export { MODES, MODE_TEXT };
 export type { RateLimitMode, RateLimitWindow, WindowDraft };
 
 export type DeclaredBy = 'subject' | 'client' | 'none';
-export type DeclaredOwner = 'endpoint' | 'client';
+export type DeclaredOwner = 'endpoint' | 'audience';
+
+/** What the resource sets for one client of its audience (`audienceRateLimits` on the resource). */
+export interface AudienceRateLimit {
+  clientId: string;
+  rateLimit: DeclaredRateLimit;
+}
 
 export interface DeclaredRateLimit {
   limits: RateLimitWindow[];
@@ -34,20 +40,20 @@ export interface DeclaredDraft {
   burst: string;
 }
 
-/** What a bucket can be counted by on each owner. On a client, `client` would mean the same as `none`, so it is not offered. */
+/** What a bucket can be counted by on each owner. For an audience client, `client` would mean the same as `none`, so it is not offered. */
 export const BY_OPTIONS: Record<DeclaredOwner, ReadonlyArray<{ id: DeclaredBy; label: string; text: string }>> = {
   endpoint: [
     { id: 'none', label: 'The endpoint as a whole', text: 'One bucket for this endpoint: every caller together.' },
     { id: 'client', label: 'Each client', text: 'One bucket per OAuth client calling this endpoint.' },
     { id: 'subject', label: 'Each user', text: 'One bucket per user (the token’s subject) on this endpoint.' },
   ],
-  client: [
-    { id: 'none', label: 'The client as a whole', text: 'One bucket for every call carrying a token issued to this client.' },
-    { id: 'subject', label: 'Each user', text: 'One bucket per user of this client.' },
+  audience: [
+    { id: 'none', label: 'The client as a whole', text: 'One bucket for this client’s calls to this resource.' },
+    { id: 'subject', label: 'Each user', text: 'One bucket per user of this client on this resource.' },
   ],
 };
 
-export const OWNER_NAME: Record<DeclaredOwner, string> = { endpoint: 'resource-endpoint', client: 'oauth-client' };
+export const OWNER_NAME: Record<DeclaredOwner, string> = { endpoint: 'resource-endpoint', audience: 'resource-client' };
 
 export function newDeclaredDraft(): DeclaredDraft {
   return { mode: 'shadow', by: 'none', limits: [{ limit: '', windowSeconds: '' }], burst: '' };
@@ -91,7 +97,7 @@ export function validateDeclared(draft: DeclaredDraft | null, owner: DeclaredOwn
   if (!draft) return errors;
   const name = OWNER_NAME[owner];
   if (!BY_OPTIONS[owner].some(option => option.id === draft.by)) {
-    errors.by = 'by must be subject or none on an OAuth client: a client’s limit is already counted for the client';
+    errors.by = 'by must be subject or none on an audience client: its limit is already counted for the client';
   }
   if (draft.limits.length === 0) errors.limits = `policy ${name}: limits must have at least one window`;
   if (draft.limits.length > MAX_WINDOWS) errors.limits = `policy ${name}: limits must have at most ${MAX_WINDOWS} windows`;

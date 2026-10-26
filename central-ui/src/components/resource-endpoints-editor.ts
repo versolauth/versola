@@ -5,7 +5,7 @@ import { buttonStyles, cardStyles, editorStyles, formStyles, methodBadgeStyles, 
 import type { InjectRule, InjectTarget, ResourceEndpoint, ResourceEndpointId } from '../types';
 import type { SaveResourceEndpointPayload } from '../utils/central-api';
 import { validateCel } from '../utils/cel-validator';
-import { declaredFromDraft, declaredSnapshot, draftFromDeclared, hasErrors as declaredHasErrors, type DeclaredDraft } from '../utils/declared-rate-limit';
+import { declaredFromDraft, declaredSnapshot, declaredSummary, draftFromDeclared, hasErrors as declaredHasErrors, type DeclaredDraft } from '../utils/declared-rate-limit';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { formatDurationShort, parseDurationShort } from '../utils/duration';
@@ -1097,13 +1097,18 @@ export class VersolaResourceEndpointsEditor extends LitElement {
       </section>`;
   }
 
+  /** Rarely changed, so it starts folded: the summary says what is set, and it opens by itself when the limit is wrong. */
   private renderRateLimit(draft: Draft) {
+    const wrong = declaredHasErrors(draft.rateLimit, 'endpoint') && this.problem?.draftKey === draft.key;
+    const summary = draft.rateLimit ? declaredSummary(declaredFromDraft(draft.rateLimit), 'endpoint') : 'No limit';
     return html`
       <section class="editor-box" aria-labelledby="panel-rate-limit">
-        <h3 id="panel-rate-limit">Rate limit</h3>
-        <p class="editor-sub">How often this endpoint may be called. Edge refuses calls over the limit with 429 before they reach the resource.</p>
-        <versola-declared-rate-limit-editor owner="endpoint" fieldId="endpoint-rl" .draft=${draft.rateLimit} ?disabled=${this.saving} ?submitted=${this.problem?.draftKey === draft.key}
-          @draft-change=${(e: CustomEvent<{ draft: DeclaredDraft | null }>) => this.patch(draft.key, { rateLimit: e.detail.draft })}></versola-declared-rate-limit-editor>
+        <details class="fold" ?open=${wrong}>
+          <summary><h3 id="panel-rate-limit">Rate limit</h3><span class="fold-hint">${summary}</span></summary>
+          <p class="editor-sub">How often this endpoint may be called. Edge refuses calls over the limit with 429 before they reach the resource.</p>
+          <versola-declared-rate-limit-editor owner="endpoint" fieldId="endpoint-rl" .draft=${draft.rateLimit} ?disabled=${this.saving} ?submitted=${this.problem?.draftKey === draft.key}
+            @draft-change=${(e: CustomEvent<{ draft: DeclaredDraft | null }>) => this.patch(draft.key, { rateLimit: e.detail.draft })}></versola-declared-rate-limit-editor>
+        </details>
       </section>`;
   }
 
@@ -1164,8 +1169,8 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         ${this.renderRequest(draft)}
         ${this.renderWho(draft)}
         ${this.renderStepUp(draft)}
-        ${this.renderRateLimit(draft)}
         ${this.renderInject(draft)}
+        ${this.renderRateLimit(draft)}
       </div>`;
   }
 

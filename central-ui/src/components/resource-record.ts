@@ -1,11 +1,12 @@
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, recordStyles, tagStyles } from '../styles/components';
+import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, recordStyles, tagStyles } from '../styles/components';
 import type { OAuthClient, Resource, ResourceEndpointId } from '../types';
 import { deletePreviousResourceSecret, deleteResource, rotateResourceSecret, updateResource } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
+import { declaredFromDraft, declaredSummary, draftFromDeclared, hasErrors as declaredHasErrors, type AudienceRateLimit, type DeclaredDraft } from '../utils/declared-rate-limit';
 import { copyToClipboard } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
 import { validateResourceUri } from '../utils/validators';
@@ -14,6 +15,7 @@ import { statusIcon } from './status-icon';
 import type { EndpointsSaveDetail } from './resource-endpoints-editor';
 import './client-picker';
 import './danger-card';
+import './declared-rate-limit-editor';
 import './nav-toggle';
 import './record-card';
 import './record-header';
@@ -73,6 +75,9 @@ export class VersolaResourceRecord extends LitElement {
 
   @state() private uriDraft = '';
   @state() private audienceDraft: string[] = [];
+  /** What the resource sets for each audience client, as being edited; a client with no entry (or null) has no limit. */
+  @state() private limitDrafts: Record<string, DeclaredDraft | null> = {};
+  @state() private limitsSubmitted = false;
   @state() private saving = false;
   @state() private saveError = '';
   @state() private actionError = '';
@@ -89,9 +94,11 @@ export class VersolaResourceRecord extends LitElement {
     tagStyles,
     bannerStyles,
     formStyles,
+    editorStyles,
     recordStyles,
     css`
       :host {
+
         display: block;
         --compact-field-max-width: 22.8rem;
       }
@@ -105,6 +112,32 @@ export class VersolaResourceRecord extends LitElement {
       section.record-card,
       versola-record-card {
         margin-bottom: var(--spacing-md);
+      }
+
+      .limits-box {
+        margin-top: var(--spacing-md);
+      }
+
+      details.client-limit {
+        padding: 0.75rem 0;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      details.client-limit > versola-declared-rate-limit-editor {
+        margin-top: var(--spacing-sm);
+      }
+
+      .limit-lines {
+        display: grid;
+        gap: 0.25rem;
+        margin-top: var(--spacing-sm);
+        font-size: var(--text-sm);
+      }
+
+      .limit-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.125rem 0.75rem;
       }
 
       .grid-2 {
@@ -295,6 +328,8 @@ export class VersolaResourceRecord extends LitElement {
     this.submitted = false;
     this.uriDraft = this.resource.resource;
     this.audienceDraft = [...this.resource.audience];
+    this.limitDrafts = Object.fromEntries((this.resource.audienceRateLimits ?? []).map(limit => [limit.clientId, draftFromDeclared(limit.rateLimit)]));
+    this.limitsSubmitted = false;
   }
 
   private openEditor(group: ResourceEditGroup) {
@@ -308,7 +343,8 @@ export class VersolaResourceRecord extends LitElement {
   private get editorDirty(): boolean {
     if (this.editGroup === 'general') return this.uriDraft.trim() !== this.resource.resource;
     if (this.editGroup === 'audience') {
-      return this.audienceDraft.length !== this.resource.audience.length || this.audienceDraft.some(id => !this.resource.audience.includes(id));
+      return this.audienceDraft.length !== this.resource.audience.length || this.audienceDraft.some(id => !this.resource.audience.includes(id))
+        || this.limitsChanged;
     }
     return false;
   }
@@ -368,13 +404,44 @@ export class VersolaResourceRecord extends LitElement {
     }
   }
 
+  /** The limits as typed, for the clients that are in the audience being saved: a client taken out of it keeps none. */
+  private get draftedLimits(): AudienceRateLimit[] {
+    return this.audienceDraft.flatMap(clientId => {
+      const rateLimit = declaredFromDraft(this.limitDrafts[clientId] ?? null);
+      return rateLimit ? [{ clientId, rateLimit }] : [];
+    });
+  }
+
+  private get limitsChanged(): boolean {
+    // both sides through the same normalisation, so the order of the members and the defaults left out do not count as a change
+    const normalised = (limit: AudienceRateLimit) => ({ clientId: limit.clientId, rateLimit: declaredFromDraft(draftFromDeclared(limit.rateLimit)) });
+    const stored = JSON.stringify((this.resource.audienceRateLimits ?? []).map(normalised).sort((a, b) => a.clientId.localeCompare(b.clientId)));
+    const typed = JSON.stringify([...this.draftedLimits].sort((a, b) => a.clientId.localeCompare(b.clientId)));
+    return stored !== typed;
+  }
+
   private async saveAudience() {
     if (this.saving) return;
+    const wrong = this.audienceDraft.filter(clientId => declaredHasErrors(this.limitDrafts[clientId] ?? null, 'audience'));
+    if (wrong.length > 0) {
+      this.limitsSubmitted = true;
+      void this.updateComplete.then(() => {
+        const details = this.renderRoot.querySelector<HTMLDetailsElement>('details.limits');
+        if (details) details.open = true;
+        this.renderRoot.querySelector<HTMLDetailsElement>(`details[data-client="${wrong[0]}"]`)?.setAttribute('open', '');
+        void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement & { focusFirstError(): void }>(`details[data-client="${wrong[0]}"] versola-declared-rate-limit-editor`)?.focusFirstError());
+      });
+      return;
+    }
     this.saving = true;
     this.saveError = '';
     try {
-      await updateResource(this.resource.resourceId, { audience: { existing: this.resource.audience, next: this.audienceDraft } });
-      this.notifyUpdated({ ...this.resource, audience: [...this.audienceDraft] });
+      const limits = this.draftedLimits;
+      await updateResource(this.resource.resourceId, {
+        audience: { existing: this.resource.audience, next: this.audienceDraft },
+        ...(this.limitsChanged ? { audienceRateLimits: limits } : {}),
+      });
+      this.notifyUpdated({ ...this.resource, audience: [...this.audienceDraft], audienceRateLimits: limits });
       this.closeEditor();
     } catch (error) {
       this.saveError = error instanceof Error ? error.message : 'Failed to save the audience';
@@ -565,7 +632,8 @@ export class VersolaResourceRecord extends LitElement {
               ${resource.audience.map(id => clientIds.has(id)
                 ? html`<button type="button" class="tag" aria-label=${`Open client ${id}`} @click=${() => this.openClient(id)}>${id}</button>`
                 : html`<span class="tag quiet" title="This client no longer exists in the tenant">${id}</span>`)}
-            </div></div>`}></versola-record-card>
+            </div>
+            ${this.renderAudienceLimits(resource)}</div>`}></versola-record-card>
       </div>
 
       <versola-record-card heading="Endpoints" subheading="What edge forwards for this resource and the rules it applies on the way."
@@ -592,6 +660,39 @@ export class VersolaResourceRecord extends LitElement {
         <versola-danger-card heading="Delete resource" text="Permissions linked to its endpoints become detached. This can't be undone."
           actionLabel="Delete resource" .actionAriaLabel=${`Delete resource ${resource.resourceId}`}
           @action=${this.deleteThis}></versola-danger-card>` : nothing}`;
+  }
+
+  /** What the resource sets for its clients, one line per client that has a limit; nothing when it sets none. */
+  private renderAudienceLimits(resource: Resource) {
+    const limits = (resource.audienceRateLimits ?? []).filter(limit => resource.audience.includes(limit.clientId));
+    if (limits.length === 0) return nothing;
+    return html`
+      <div class="limit-lines" role="list" aria-label="Rate limits of audience clients">
+        ${limits.map(limit => html`
+          <div class="limit-line" role="listitem"><span class="mono">${limit.clientId}</span><span class="muted">${declaredSummary(limit.rateLimit, 'audience')}</span></div>`)}
+      </div>`;
+  }
+
+  /** Rarely changed, so it starts folded, and so does each client: the summaries say what is set. */
+  private renderLimitsEditor() {
+    const set = this.audienceDraft.filter(clientId => this.limitDrafts[clientId]).length;
+    return html`
+      <section class="editor-box limits-box" aria-labelledby="audience-limits-title">
+        <details class="fold limits">
+          <summary><h3 id="audience-limits-title">Rate limits</h3><span class="fold-hint">${set === 0 ? 'None set' : `${set} of ${this.audienceDraft.length} clients`}</span></summary>
+          <p class="editor-sub">How much each of these clients may take from this resource. Each limit applies to that client’s calls to the resource, together with the edge’s own rate limit policies, and the smaller limit wins.</p>
+          ${this.audienceDraft.length === 0 ? html`<div class="muted">Add clients to the audience to set a limit for them.</div>` : this.audienceDraft.map(clientId => {
+            const draft = this.limitDrafts[clientId] ?? null;
+            const wrong = this.limitsSubmitted && declaredHasErrors(draft, 'audience');
+            return html`
+              <details class="fold client-limit" data-client=${clientId} ?open=${wrong}>
+                <summary><span class="mono">${clientId}</span><span class="fold-hint">${draft ? declaredSummary(declaredFromDraft(draft), 'audience') : 'No limit'}</span></summary>
+                <versola-declared-rate-limit-editor owner="audience" fieldId=${`audience-rl-${clientId}`} .draft=${draft} ?disabled=${this.saving} ?submitted=${this.limitsSubmitted}
+                  @draft-change=${(e: CustomEvent<{ draft: DeclaredDraft | null }>) => { this.limitDrafts = { ...this.limitDrafts, [clientId]: e.detail.draft }; }}></versola-declared-rate-limit-editor>
+              </details>`;
+          })}
+        </details>
+      </section>`;
   }
 
   private renderEditorHeader(title: string, resource: Resource) {
@@ -623,6 +724,7 @@ export class VersolaResourceRecord extends LitElement {
           ${error}
           <versola-client-picker label="Audience" .heading=${`Clients in ${this.tenantId ?? 'this tenant'}`} .clients=${this.clients} .value=${this.audienceDraft}
             @change=${(e: CustomEvent<{ value: string[] }>) => { this.audienceDraft = e.detail.value; }}></versola-client-picker>
+          ${this.renderLimitsEditor()}
           <div class="form-actions">
             <button type="button" class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.cancelEditor()}>Cancel</button>
             <button type="button" class="btn btn-primary" ?disabled=${this.saving} @click=${() => this.saveAudience()}>Save audience</button>

@@ -244,6 +244,18 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )),
     ),
     controllerTestCase(
+      description = "list the limits a resource sets for its audience",
+      request = Request.get((URL.empty / "configuration" / "resources").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantResources.succeedsWith(
+          Vector(resourceRecords.head.copy(audienceRateLimits = List(AudienceRateLimit(audience.head, limit)))),
+        ),
+      verify = (response, _) =>
+        for payload <- decodeJsonBody[GetAllResourcesResponse](response)
+        yield assertTrue(payload.resources.head.audienceRateLimits == List(AudienceRateLimit(audience.head, limit))),
+    ),
+    controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get((URL.empty / "configuration" / "resources").addQueryParam("tenantId", tenantId.toString)),
       expectedStatus = Status.Ok,

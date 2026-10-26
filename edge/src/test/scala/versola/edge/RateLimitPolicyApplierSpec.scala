@@ -84,41 +84,44 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       for
         limiter <- RateLimiter.make()
         (usable, refused) = RateLimitPolicyApplier.validDeclared(
-          List(DeclaredLimit(DeclaredOwner.Client, "ok", good), DeclaredLimit(DeclaredOwner.Client, "broken", bad)),
+          List(
+            DeclaredLimit(DeclaredOwner.Audience, "ok", good, resource = "api"),
+            DeclaredLimit(DeclaredOwner.Audience, "broken", bad, resource = "api"),
+          ),
         )
         result <- RateLimitPolicyApplier(Nil, limiter, declared = usable)
-        decisions = (1 to 2).map(_ => limiter.check(Checkpoint.Identity, RateLimitKeys(client = "ok"), 0L))
+        decisions = (1 to 2).map(_ => limiter.check(Checkpoint.Route, RateLimitKeys(resource = "api", client = "ok"), 0L))
       yield assertTrue(
         result == Right(()),
         usable.map(_.selector) == List("ok"),
-        refused.exists(m => m.contains("oauth-client") && m.contains("burst")),
-        decisions == List(RateDecision.Allowed, RateDecision.Limited("oauth-client", 3600)),
+        refused.exists(m => m.contains("resource-client") && m.contains("burst")),
+        decisions == List(RateDecision.Allowed, RateDecision.Limited("resource-client", 3600)),
       )
     },
     test("run follows the declared source, and a change to an unrelated policy keeps a declaration's buckets") {
       val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce)
-      val limit = DeclaredLimit(DeclaredOwner.Client, "web", declared)
+      val limit = DeclaredLimit(DeclaredOwner.Audience, "web", declared, resource = "api")
       for
         policies <- Ref.make(List.empty[RateLimitPolicy])
         limits <- Ref.make(List.empty[DeclaredLimit])
         limiter <- RateLimiter.make()
         fiber <- RateLimitPolicyApplier.run(policies.get, limiter, declared = limits.get).fork
         _ <- TestClock.adjust(1.second)
-        inactive = !limiter.active(Checkpoint.Identity)
+        inactive = !limiter.active(Checkpoint.Route)
         _ <- limits.set(List(limit))
         _ <- TestClock.adjust(1.second)
-        first = limiter.check(Checkpoint.Identity, RateLimitKeys(client = "web"), 0L)
+        first = limiter.check(Checkpoint.Route, RateLimitKeys(resource = "api", client = "web"), 0L)
         _ <- policies.set(List(policy("unrelated", GuardMode.Shadow)))
         _ <- TestClock.adjust(1.second)
-        second = limiter.check(Checkpoint.Identity, RateLimitKeys(client = "web"), 0L)
+        second = limiter.check(Checkpoint.Route, RateLimitKeys(resource = "api", client = "web"), 0L)
         _ <- limits.set(Nil)
         _ <- TestClock.adjust(1.second)
         _ <- fiber.interrupt
       yield assertTrue(
         inactive,
         first == RateDecision.Allowed,
-        second == RateDecision.Limited("oauth-client", 3600),
-        !limiter.names.contains("oauth-client"),
+        second == RateDecision.Limited("resource-client", 3600),
+        !limiter.names.contains("resource-client"),
       )
     },
     test("the default source has no policy") {
@@ -168,10 +171,9 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
           override val current: UIO[List[RateLimitPolicy]] = held.get
           override val replicas: UIO[Int] = ZIO.succeed(3)
           override val refreshNow: Task[Unit] = ZIO.unit
-        limit = DeclaredLimit(DeclaredOwner.Client, "web", DeclaredRateLimit(limits = List(RateLimitWindow(1, 60))))
+        limit = DeclaredLimit(DeclaredOwner.Audience, "web", DeclaredRateLimit(limits = List(RateLimitWindow(1, 60))), resource = "api")
         declaredService = new DeclaredRateLimitService:
           override val current: UIO[List[DeclaredLimit]] = ZIO.succeed(List(limit))
-          override val refreshNow: Task[Unit] = ZIO.unit
         source = (ZLayer.succeed[RateLimitPolicyService](service) ++ ZLayer.succeed[DeclaredRateLimitService](declaredService)) >>>
           RateLimitPolicySource.fromCentral
         first <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(source)

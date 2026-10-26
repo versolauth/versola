@@ -1205,30 +1205,31 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
 `edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
 `edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
 
-**Limits declared on an endpoint and on a client** (levels 2 and 3 of #744 section 4). A limit can also be declared where the
-API or the client is declared, so its owner protects it there and a change travels with it:
+**Limits declared by the owner of an API** (levels 2 and 3 of #744 section 4). The resource owner sets limits where the API is
+declared, so a change travels with it and the owner of a client sets nothing about how much of an API it may take:
 
 - *A resource endpoint*: `rateLimit` in the endpoint of `POST` / `PUT /configuration/resources` (`createEndpoints` replaces an
   endpoint by id, so send the whole endpoint), read back by `GET /configuration/resources`. Applied at R3 for that endpoint, one
   bucket per key and registered endpoint template. Stored inside the endpoint's JSON in `resources.endpoints`: no migration, and an
   endpoint stored before this has none.
-- *An OAuth client*: `rateLimit` in the body of `POST` / `PUT /configuration/clients/{web,native,service}` (`null` on `PUT` removes
-  it, absent leaves it), read back by `GET /configuration/clients`. Applied at R2 to every call carrying a token issued to the
-  client, including a public client the edge holds no credential for. Stored in `oauth_clients.rate_limit` (nullable JSONB,
-  migration `V1030`, additive like `V1029`).
+- *A client of the resource's audience*: `audienceRateLimits` on the resource, a list of `{"clientId": ..., "rateLimit": ...}`, in
+  `POST` / `PUT /configuration/resources` (on `PUT` it replaces the whole list; absent leaves it; removing a client from the
+  audience drops its limit), read back by `GET /configuration/resources`. Applied at R3 to that client's calls to this resource,
+  whichever endpoint; one entry per client, only for a client in the audience. Stored in `resources.audience_rate_limits` (JSONB,
+  migration `V1030`: `NOT NULL DEFAULT '[]'`, because the previous release's inserts do not name it and an existing row has none).
 - *The shape*: `{"limits": [{"limit": 600, "windowSeconds": 60}], "burst": 50, "by": "subject", "mode": "shadow"}`. `by` is `subject`
-  (one bucket per user), `client` (per client; endpoints only) or `none` (one bucket for the endpoint, or for the client);
-  `burst` defaults to 1, `by` to `none`, `mode` to `shadow`. The rules are those of a policy (`400` names the first problem;
-  `InvalidRateLimit` for an endpoint), and `cost` is always 1.
+  (one bucket per user), `client` (per client; endpoints only) or `none` (one bucket for the endpoint, or for that client on the
+  resource); `burst` defaults to 1, `by` to `none`, `mode` to `shadow`. The rules are those of a policy (`400` names the first
+  problem; `InvalidRateLimit` for an endpoint, `InvalidAudienceRateLimit` for an audience client), and `cost` is always 1.
 - *They add to the edge's policies, they do not replace them*: a request must pass every limit that applies to it, so the
   effective limit is the smallest. Declared limits are divided by `replicas` like the edge's own. A bootstrap start keeps a
   `rateLimit` an operator put on one of the account endpoints.
-- *Metrics*: the policy is named `resource-endpoint` or `oauth-client` (reserved: an edge policy cannot take either name), never the
-  endpoint or the client, so the label set stays closed; the key counts of every declaration add up under that name. A `429` names
+- *Metrics*: the policy is named `resource-endpoint` or `resource-client` (reserved: an edge policy cannot take either name), never the
+  endpoint, resource or client, so the label set stays closed; the key counts of every declaration add up under that name. A `429` names
   the same policy. Up to 10,000 tracked keys per declaration (the edge's own policies keep 100,000), so many declarations cannot
   grow memory.
-- *Order of work and rollback*: an edge that predates this ignores the field, and a central that predates it sends none, so either
-  can be upgraded first. The previous release keeps serving on the new schema, and `rate_limit` can stay when rolling back.
+- *Order of work and rollback*: an edge that predates this ignores the fields, and a central that predates them sends none, so either
+  can be upgraded first. The previous release keeps serving on the new schema, and `audience_rate_limits` can stay when rolling back.
 
 Not there yet: partner edges tightening any of these locally.
 

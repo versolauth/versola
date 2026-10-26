@@ -54,7 +54,7 @@ type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | nu
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
 type ClientKindDto = 'web' | 'device' | 'service';
-export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null; rateLimit?: DeclaredRateLimitDto | null };
+export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 export type DeclaredRateLimitDto = { limits: Array<{ limit: number; windowSeconds: number }>; burst?: number; by?: 'subject' | 'client' | 'none'; mode?: 'off' | 'shadow' | 'enforce' };
@@ -65,7 +65,8 @@ type ResourceEndpointDto = {
   id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[];
   stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto;
 };
-export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
+export type AudienceRateLimitDto = { clientId: string; rateLimit: DeclaredRateLimitDto };
+export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean; audienceRateLimits?: AudienceRateLimitDto[] };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 /** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
@@ -166,6 +167,7 @@ type UpdateResourceRequest = {
   resourceId: string;
   resource?: string;
   audience?: { add: string[]; remove: string[] };
+  audienceRateLimits?: AudienceRateLimitDto[];
   deleteEndpoints: ResourceEndpointId[];
   createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto }>;
 };
@@ -603,17 +605,17 @@ const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
     'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
-    'edgeClientCertificate', 'themeOverrides', 'rateLimit',
+    'edgeClientCertificate', 'themeOverrides',
   ],
   device: [
     'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
     'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
-    'edgeClientCertificate', 'themeOverrides', 'rateLimit',
+    'edgeClientCertificate', 'themeOverrides',
   ],
   service: [
     'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
-    'dpopMinRsaKeySize', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'rateLimit',
+    'dpopMinRsaKeySize', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks',
   ],
 };
 
@@ -840,10 +842,6 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         // An empty object clears the overrides, as central does.
         if (payload.themeOverrides !== undefined) {
           client.themeOverrides = Object.keys(payload.themeOverrides).length > 0 ? payload.themeOverrides : null;
-        }
-        // Patch semantics: null removes the limit, absent leaves it.
-        if ('rateLimit' in payload) {
-          client.rateLimit = (payload.rateLimit as DeclaredRateLimitDto | null | undefined) ?? null;
         }
 
         await route.fulfill({ status: 204, body: '' });
@@ -1134,6 +1132,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (payload.resource !== undefined) resource.resource = payload.resource;
         if (payload.audience) {
           resource.audience = [...(resource.audience ?? []).filter(id => !payload.audience!.remove.includes(id)), ...payload.audience.add];
+        }
+        // As central does: the new set replaces the old one, and a client that left the audience keeps no limit.
+        if (payload.audienceRateLimits !== undefined) resource.audienceRateLimits = payload.audienceRateLimits;
+        if (resource.audienceRateLimits) {
+          resource.audienceRateLimits = resource.audienceRateLimits.filter(limit => (resource.audience ?? []).includes(limit.clientId));
         }
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);

@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
-import versola.util.http.{DeclaredRateLimit, Observability}
+import versola.util.http.Observability
 import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
 import zio.http.{Client, Header, Request}
 import zio.json.ast.Json
@@ -16,20 +16,6 @@ trait OAuthClientsSyncClient extends CacheSource[Map[ClientId, OAuthClient]]:
 
   /** Every client's permissions, including clients edge holds no credential for. */
   def getPermissions: Task[Map[ClientId, Set[PermissionId]]]
-
-  /** The rate limit declared on every client that has one, including clients edge holds no credential for: a call carrying
-    * such a client's token is limited whether or not the edge can act as the client. */
-  def getRateLimits: Task[Map[ClientId, DeclaredRateLimit]]
-
-/** The rate limits declared on clients, which are not part of [[OAuthClient]] because the edge drops a client it holds no credential for. */
-trait ClientRateLimitsSyncClient extends CacheSource[Map[ClientId, DeclaredRateLimit]]
-
-object ClientRateLimitsSyncClient:
-  val live: URLayer[OAuthClientsSyncClient, ClientRateLimitsSyncClient] =
-    ZLayer.fromFunction((source: OAuthClientsSyncClient) =>
-      new ClientRateLimitsSyncClient:
-        def getAll = source.getRateLimits,
-    )
 
 /** Permissions of every client central syncs, whether or not edge holds a credential for it. */
 trait ClientPermissionsSyncClient extends CacheSource[Map[ClientId, Set[PermissionId]]]
@@ -69,9 +55,6 @@ object OAuthClientsSyncClient:
 
     override def getPermissions: Task[Map[ClientId, Set[PermissionId]]] =
       fetch.map(_.clients.map(c => c.id -> c.permissions.map(PermissionId(_))).toMap)
-
-    override def getRateLimits: Task[Map[ClientId, DeclaredRateLimit]] =
-      fetch.map(_.clients.flatMap(c => c.rateLimit.map(c.id -> _)).toMap)
 
     /** The client as edge can act for it, or nothing.
       *
@@ -169,7 +152,6 @@ object OAuthClientsSyncClient:
         applicationType: ApplicationType = ApplicationType.web,
         redirectUris: Set[String] = Set.empty,
         edgeCertificateSubject: Option[CertificateSubject],
-        rateLimit: Option[DeclaredRateLimit] = None,
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

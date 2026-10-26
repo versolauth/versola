@@ -21,6 +21,9 @@ case class ResourceEndpoint(
   /** The registered route, never the concrete path: what R3 keys its buckets on and what a limit declared here is found by. */
   def template(resourceId: ResourceId): String = s"$method /resources/$resourceId$path"
 
+/** What the owner of a resource lets one client of its audience take from it, checked at R3 with the edge's own policies. */
+case class AudienceRateLimit(clientId: ClientId, rateLimit: DeclaredRateLimit) derives JsonCodec
+
 /** `secret` is the decrypted secret edge authenticates to this resource with
   * (see [[ResourcesSyncClient]]). A resource with a secret is internal: edge sends
   * `Authorization: Basic <resourceId>:<secret>` upstream instead of forwarding the
@@ -31,6 +34,7 @@ case class Resource(
     resource: URL,
     endpoints: Vector[ResourceEndpoint],
     secret: Option[Secret],
+    audienceRateLimits: List[AudienceRateLimit] = Nil,
 ) derives JsonCodec
 
 object Resource:

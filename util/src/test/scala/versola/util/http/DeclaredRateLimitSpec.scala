@@ -49,33 +49,33 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
     ),
     suite("validate")(
       test("accepts a well-formed declaration on either owner") {
-        assertTrue(valid.validate(DeclaredOwner.Endpoint) == Right(valid), valid.validate(DeclaredOwner.Client) == Right(valid))
+        assertTrue(valid.validate(DeclaredOwner.Endpoint) == Right(valid), valid.validate(DeclaredOwner.Audience) == Right(valid))
       },
       test("applies the rules of a policy: burst, windows, limits") {
         invalid(valid.copy(burst = 61), DeclaredOwner.Endpoint, "burst must not exceed the smallest limit") &&
         invalid(valid.copy(limits = Nil), DeclaredOwner.Endpoint, "limits must have at least one window") &&
-        invalid(valid.copy(limits = List(RateLimitWindow(0, 60))), DeclaredOwner.Client, "limit must be between")
+        invalid(valid.copy(limits = List(RateLimitWindow(0, 60))), DeclaredOwner.Audience, "limit must be between")
       },
       test("names the fixed policy of the owner in the message") {
         invalid(valid.copy(burst = 0), DeclaredOwner.Endpoint, "resource-endpoint") &&
-        invalid(valid.copy(burst = 0), DeclaredOwner.Client, "oauth-client")
+        invalid(valid.copy(burst = 0), DeclaredOwner.Audience, "resource-client")
       },
       test("by client is refused on a client, where it would mean the same as none") {
         val byClient = valid.copy(by = DeclaredRateLimitBy.Client)
-        assertTrue(byClient.validate(DeclaredOwner.Endpoint).isRight) && invalid(byClient, DeclaredOwner.Client, "by must be subject or none")
+        assertTrue(byClient.validate(DeclaredOwner.Endpoint).isRight) && invalid(byClient, DeclaredOwner.Audience, "by must be subject or none")
       },
     ),
     suite("toPolicy")(
-      test("an endpoint's limit is scoped to the endpoint template and runs at R3; a client's runs at R2") {
+      test("both owners are checked at R3: an endpoint's limit per endpoint template, an audience client's per resource") {
         assertTrue(
           valid.toPolicy(DeclaredOwner.Endpoint).checkpoint == Checkpoint.Route,
-          valid.toPolicy(DeclaredOwner.Client).checkpoint == Checkpoint.Identity,
-          valid.copy(by = DeclaredRateLimitBy.None).toPolicy(DeclaredOwner.Client).checkpoint == Checkpoint.Identity,
+          valid.toPolicy(DeclaredOwner.Audience).checkpoint == Checkpoint.Route,
+          valid.copy(by = DeclaredRateLimitBy.None).toPolicy(DeclaredOwner.Audience).scope == RateLimitScope.Resource,
           valid.toPolicy(DeclaredOwner.Endpoint).name == "resource-endpoint",
         )
       },
       test("the edge's own policies cannot take the names of the declared ones") {
-        val taken = RateLimitPolicy(name = "oauth-client", limits = List(RateLimitWindow(1, 1)))
+        val taken = RateLimitPolicy(name = "resource-client", limits = List(RateLimitWindow(1, 1)))
         val result = RateLimitPolicy.validateAll(List(taken))
         assertTrue(result.left.exists(_.contains("reserved")))
       },

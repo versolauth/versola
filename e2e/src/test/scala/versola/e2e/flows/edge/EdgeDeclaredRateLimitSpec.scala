@@ -6,13 +6,13 @@ import zio.http.{Client, Method, Status}
 import zio.json.ast.Json
 import zio.test.*
 
-/** Rate limits declared where the API and the client are declared (levels 2 and 3 of issue #744), end to end: a `rateLimit` set
-  * through central's resource and client APIs reaches the running edge by its configuration sync, and an `enforce` limit answers
-  * `429` with `Retry-After` before the call reaches the upstream, under the fixed policy names `resource-endpoint` and
-  * `oauth-client`.
+/** Rate limits declared by the owner of an API (levels 2 and 3 of issue #744), end to end: a `rateLimit` on an endpoint, and a limit
+  * the resource sets for a client of its audience, set through central's resource API, reach the running edge by its configuration
+  * sync, and an `enforce` limit answers `429` with `Retry-After` before the call reaches the upstream, under the fixed policy names
+  * `resource-endpoint` and `resource-client`.
   *
   * The unit specs prove the limiter and each sync step on stubs. What only this level shows is the wiring: central's validation,
-  * the JSON column and the new `oauth_clients.rate_limit` column, the sync of both to the edge, and the limit the caller gets.
+  * the JSON column and the new `resources.audience_rate_limits` column, the sync of both to the edge, and the limit the caller gets.
   *
   * Nothing here is shared: the fixture registers its own client and resource, so no other spec is limited, and the edge's own
   * policy set is not touched.
@@ -65,13 +65,17 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
       ).flatMap(r => ZIO.fail(RuntimeException(s"PUT resources: ${r.status} ${r.body}")).unless(r.status == Status.NoContent)),
     )
 
-  private def setClientLimit(f: EdgeFixture, rateLimit: Json) =
+  /** The limits the resource sets for its audience clients, as a whole; an empty list removes them. */
+  private def setAudienceLimits(f: EdgeFixture, limits: List[Json]) =
     ZIO.serviceWithZIO[CentralApi](
-      _.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> rateLimit)),
+      _.put("/configuration/resources", Fixtures.resourceUpdate(f.resourceId, audienceRateLimits = Some(limits))),
     )
 
-  def spec = suite("Edge: rate limits declared on an endpoint and on a client")(
-    test("central refuses a declaration that breaks a policy rule, on an endpoint and on a client, and says which") {
+  private def audienceLimit(f: EdgeFixture, rateLimit: Json, clientId: Option[String] = None) =
+    Json.Obj("clientId" -> Json.Str(clientId.getOrElse(f.clientId)), "rateLimit" -> rateLimit)
+
+  def spec = suite("Edge: rate limits declared on an endpoint and on an audience client")(
+    test("central refuses a declaration that breaks a policy rule, on an endpoint and on an audience client, and says which") {
       for
         f <- ZIO.service[EdgeFixture]
         central <- ZIO.service[CentralApi]
@@ -83,13 +87,16 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
               List(Fixtures.endpoint(id = f.endpoint("limited"), path = "/limited", rateLimit = Some(limit("enforce", 5).add("burst", Json.Num(6))))),
           ),
         )
-        client <- setClientLimit(f, limit("enforce", 5, by = "client"))
+        byClient <- setAudienceLimits(f, List(audienceLimit(f, limit("enforce", 5, by = "client"))))
+        stranger <- setAudienceLimits(f, List(audienceLimit(f, limit("enforce", 5), clientId = Some("not-in-the-audience"))))
       yield assertTrue(
         endpoint.status == Status.BadRequest,
         endpoint.body.contains("InvalidRateLimit"),
         endpoint.body.contains("burst"),
-        client.status == Status.BadRequest,
-        client.body.contains("by must be subject or none"),
+        byClient.status == Status.BadRequest,
+        byClient.body.contains("by must be subject or none"),
+        stranger.status == Status.BadRequest,
+        stranger.body.contains("not in the audience"),
       )
     },
     test("a limit declared on an endpoint refuses that endpoint with 429 under resource-endpoint, and the other endpoint is served") {
@@ -124,19 +131,19 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         lifted.forall(_.status == Status.Ok),
       )
     },
-    test("a limit declared on the client refuses calls carrying its tokens with 429 under oauth-client, and removing it lifts it") {
+    test("a limit the resource sets for its client refuses that client's calls with 429 under resource-client, and removing it lifts it") {
       for
         f <- ZIO.service[EdgeFixture]
         edgeApi <- ZIO.service[EdgeApi]
         established <- ZIO.service[EdgeSession]
-        stored <- setClientLimit(f, limit("enforce", 2))
+        stored <- setAudienceLimits(f, List(audienceLimit(f, limit("enforce", 2))))
         _ <- reachEdge
         call = edgeApi.proxy(Method.GET, f.resourceId, "/free", established.auth)
         first <- call
         second <- call
         third <- call
-        removed <-
-          ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
+        read <- ZIO.serviceWithZIO[CentralApi](_.get("/configuration/resources", "tenantId" -> Fixtures.suiteTenant))
+        removed <- setAudienceLimits(f, Nil)
         _ <- reachEdge
         lifted <- ZIO.foreach(1 to 3)(_ => call)
       yield assertTrue(
@@ -144,7 +151,8 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         first.status == Status.Ok,
         second.status == Status.Ok,
         third.status == Status.TooManyRequests,
-        third.body.contains("oauth-client"),
+        third.body.contains("resource-client"),
+        read.body.contains("audienceRateLimits"),
         removed.status == Status.NoContent,
         lifted.forall(_.status == Status.Ok),
       )
@@ -154,11 +162,10 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         f <- ZIO.service[EdgeFixture]
         edgeApi <- ZIO.service[EdgeApi]
         established <- ZIO.service[EdgeSession]
-        _ <- setClientLimit(f, limit("shadow", 1))
+        _ <- setAudienceLimits(f, List(audienceLimit(f, limit("shadow", 1))))
         _ <- reachEdge
         calls <- ZIO.foreach(1 to 3)(_ => edgeApi.proxy(Method.GET, f.resourceId, "/free", established.auth))
-        _ <-
-          ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
+        _ <- setAudienceLimits(f, Nil)
         _ <- reachEdge
       yield assertTrue(calls.forall(_.status == Status.Ok))
     },

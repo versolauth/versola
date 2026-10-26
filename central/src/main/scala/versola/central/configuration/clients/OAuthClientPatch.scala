@@ -1,7 +1,6 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.http.DeclaredRateLimit
 import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, Patch, Secret}
 import zio.Duration
@@ -49,8 +48,6 @@ case class OAuthClientPatch(
     applicationType: Option[ApplicationType],
     /** `Some(empty)` clears the overrides. */
     themeOverrides: Option[ThemeOverrides],
-    /** `Deleted` removes the limit. */
-    rateLimit: Option[Patch[DeclaredRateLimit]] = None,
 )
 
 object OAuthClientPatch:

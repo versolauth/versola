@@ -1,7 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{ClientId, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId}
-import versola.util.ReloadingCache
+import versola.edge.model.{AudienceRateLimit, ClientId, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId}
 import versola.util.http.{DeclaredLimit, DeclaredOwner, DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import zio.*
 import zio.http.URL
@@ -35,67 +34,57 @@ object DeclaredRateLimitServiceSpec extends ZIOSpecDefault:
   private val orders = endpoint(1, "/orders/{id}", Some(perMinute))
   private val health = endpoint(2, "/health", None)
 
-  private val api = Resource(
-    resourceId = ResourceId("api"),
-    resource = URL.decode("https://api.example").toOption.get,
-    endpoints = Vector(orders, health),
-    secret = None,
-  )
+  private def resource(id: String, endpoints: Vector[ResourceEndpoint], audience: List[AudienceRateLimit] = Nil) =
+    Resource(
+      resourceId = ResourceId(id),
+      resource = URL.decode(s"https://$id.example").toOption.get,
+      endpoints = endpoints,
+      secret = None,
+      audienceRateLimits = audience,
+    )
 
-  private def resources(known: Resource*): ResourceService =
-    new ResourceService:
-      override def findByResourceId(resourceId: ResourceId) = ZIO.succeed(known.find(_.resourceId == resourceId))
-      override val all: UIO[Vector[Resource]] = ZIO.succeed(Vector.from(known))
-      override val refreshNow: Task[Unit] = ZIO.unit
+  private val api = resource("api", Vector(orders, health))
 
-  private def clientLimits(fromCentral: Map[ClientId, DeclaredRateLimit]): ClientRateLimitsSyncClient =
-    new ClientRateLimitsSyncClient:
-      override def getAll: Task[Map[ClientId, DeclaredRateLimit]] = ZIO.succeed(fromCentral)
-
-  private def service(
-      resourceList: Seq[Resource] = Nil,
-      cached: Map[ClientId, DeclaredRateLimit] = Map.empty,
-      fromCentral: Map[ClientId, DeclaredRateLimit] = Map.empty,
-  ): UIO[DeclaredRateLimitService] =
-    Ref.make(cached).map(ref => DeclaredRateLimitService.Impl(ReloadingCache(ref), clientLimits(fromCentral), resources(resourceList*)))
+  private def service(resources: Resource*): DeclaredRateLimitService =
+    DeclaredRateLimitService.Impl(new ResourceService:
+      override def findByResourceId(resourceId: ResourceId) = ZIO.succeed(resources.find(_.resourceId == resourceId))
+      override val all: UIO[Vector[Resource]] = ZIO.succeed(Vector.from(resources))
+      override val refreshNow: Task[Unit] = ZIO.unit)
 
   def spec = suite("DeclaredRateLimitService")(
     test("nothing declared, nothing derived") {
-      for
-        s <- service(resourceList = List(api.copy(endpoints = Vector(health))))
-        current <- s.current
+      for current <- service(resource("api", Vector(health))).current
       yield assertTrue(current.isEmpty)
     },
     test("an endpoint's limit is found by the same template R3 keys on, and an endpoint without one adds nothing") {
-      for
-        s <- service(resourceList = List(api))
-        current <- s.current
+      for current <- service(api).current
       yield assertTrue(
         current == List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = "GET /resources/api/orders/{id}", limit = perMinute)),
         current.head.selector == orders.template(ResourceId("api")),
       )
     },
-    test("a client's limit is found by its id, whether or not the edge holds a credential for it") {
-      for
-        s <- service(cached = Map(ClientId("public-spa") -> perMinute))
-        current <- s.current
-      yield assertTrue(current == List(DeclaredLimit(owner = DeclaredOwner.Client, selector = "public-spa", limit = perMinute)))
+    test("a limit the resource sets for an audience client is found by the resource and the client id, as R3 keys them") {
+      val plan = AudienceRateLimit(ClientId("plan-a"), perMinute)
+      for current <- service(resource("api", Vector(health), List(plan))).current
+      yield assertTrue(current == List(DeclaredLimit(owner = DeclaredOwner.Audience, selector = "plan-a", limit = perMinute, resource = "api")))
     },
-    test("the result does not depend on the order the maps happen to iterate in, so an unchanged sync is not a change") {
-      val other = api.copy(resourceId = ResourceId("aaa"))
-      for
-        a <- service(resourceList = List(api, other), cached = Map(ClientId("b") -> perMinute, ClientId("a") -> perMinute))
-        b <- service(resourceList = List(other, api), cached = Map(ClientId("a") -> perMinute, ClientId("b") -> perMinute))
-        first <- a.current
-        second <- b.current
-      yield assertTrue(first == second, first.map(_.selector).take(2) == List("GET /resources/aaa/orders/{id}", "GET /resources/api/orders/{id}"))
+    test("the same client on two resources has a limit on each, and the endpoints come before the audience limits") {
+      val plan = AudienceRateLimit(ClientId("plan-a"), perMinute)
+      for current <- service(resource("b-api", Vector(health), List(plan)), resource("a-api", Vector(orders), List(plan))).current
+      yield assertTrue(
+        current.map(l => (l.owner, l.resource, l.selector)) == List(
+          (DeclaredOwner.Endpoint, "", "GET /resources/a-api/orders/{id}"),
+          (DeclaredOwner.Audience, "a-api", "plan-a"),
+          (DeclaredOwner.Audience, "b-api", "plan-a"),
+        ),
+      )
     },
-    test("refreshNow loads the client limits from central, and a limit removed there is gone") {
+    test("the result does not depend on the order the resources and clients come in, so an unchanged sync is not a change") {
+      val a = AudienceRateLimit(ClientId("a"), perMinute)
+      val b = AudienceRateLimit(ClientId("b"), perMinute)
       for
-        s <- service(cached = Map(ClientId("old") -> perMinute), fromCentral = Map(ClientId("new") -> perMinute))
-        before <- s.current
-        _ <- s.refreshNow
-        after <- s.current
-      yield assertTrue(before.map(_.selector) == List("old"), after.map(_.selector) == List("new"))
+        first <- service(resource("x", Vector(orders), List(a, b)), resource("y", Vector(orders), List(b, a))).current
+        second <- service(resource("y", Vector(orders), List(a, b)), resource("x", Vector(orders), List(b, a))).current
+      yield assertTrue(first == second)
     },
   )

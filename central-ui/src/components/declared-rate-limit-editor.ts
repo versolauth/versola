@@ -136,7 +136,7 @@ export class VersolaDeclaredRateLimitEditor extends LitElement {
   }
 
   private get noun() {
-    return this.owner === 'endpoint' ? 'endpoint' : 'client';
+    return this.owner === 'endpoint' ? 'the endpoint' : 'this client';
   }
 
   /** Errors to show: an empty required field stays quiet until the first submit. */
@@ -250,7 +250,7 @@ export class VersolaDeclaredRateLimitEditor extends LitElement {
     if (!draft) {
       return html`
         <fieldset ?disabled=${this.disabled}>
-          <p class="text-line">No limit is declared on this ${this.noun}. It is limited only by the edge’s own rate limit policies.</p>
+          <p class="text-line">No limit is set for ${this.noun}. It is limited only by the edge’s own rate limit policies.</p>
           <div class="actions">
             <button type="button" class="btn btn-secondary" @click=${() => this.change(newDeclaredDraft())}>Set a limit</button>
           </div>
@@ -260,7 +260,7 @@ export class VersolaDeclaredRateLimitEditor extends LitElement {
     return html`
       <fieldset ?disabled=${this.disabled}>
         <p class="text-line">Checked together with the edge’s own rate limit policies: a call must pass every one, so the smallest limit wins. In metrics it is the policy
-          <code>${this.owner === 'endpoint' ? 'resource-endpoint' : 'oauth-client'}</code>. Start in shadow, read <code>would_limit</code>, then enforce.</p>
+          <code>${this.owner === 'endpoint' ? 'resource-endpoint' : 'resource-client'}</code>. Start in shadow, read <code>would_limit</code>, then enforce.</p>
         ${this.renderMode(draft)}
         ${this.renderBy(draft, errors)}
         ${this.renderWindows(draft, errors)}

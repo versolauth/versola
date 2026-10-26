@@ -87,12 +87,12 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
         val shape = Shape.of(policy, settings, pods)
         val reused = before.byName.get(policy.name).map(_.tracker).filter(_.shape == shape)
         new Policy(policy, reused.getOrElse(new Tracker(shape)))
-      // A limit declared on an endpoint or a client keeps its buckets the same way, found by what it is declared on.
+      // A limit declared on an endpoint or an audience client keeps its buckets the same way, found by what it is declared on.
       val declaredRuntimes = declared.filter(_.limit.mode != GuardMode.Off).map: d =>
         val policy = d.limit.toPolicy(d.owner)
         val shape = Shape.of(policy, settings, pods).copy(maxKeys = settings.maxKeysPerDeclared)
-        val reused = before.declaredById.get((d.owner, d.selector)).map(_.tracker).filter(_.shape == shape)
-        (d.owner, d.selector, new Policy(policy, reused.getOrElse(new Tracker(shape))))
+        val reused = before.declaredById.get((d.owner, d.resource, d.selector)).map(_.tracker).filter(_.shape == shape)
+        (d, new Policy(policy, reused.getOrElse(new Tracker(shape))))
       val next = Installed.of(runtimes, declaredRuntimes)
       installed.set(next)
       before.all.map(_.policy.name).toSet -- next.all.map(_.policy.name)
@@ -553,44 +553,54 @@ object RateLimiter:
   private[http] final class Installed(
       val all: Array[Policy],
       val byName: Map[String, Policy],
-      val declaredById: Map[(DeclaredOwner, String), Policy],
+      val declaredById: Map[(DeclaredOwner, String, String), Policy],
       byPoint: Array[Array[Policy]],
-      // per checkpoint: what a limit declared on an endpoint or a client adds to the edge's policies for requests that
-      // carry it, the two already joined, so a request finds its whole list with one map lookup
-      declaredByPoint: Array[Map[String, Array[Policy]]],
+      // what a limit declared on an endpoint adds to the edge's policies at R3, by endpoint template, and what one declared on a
+      // client of a resource's audience adds, by resource and client: each already joined with the edge's policies, so a request
+      // finds its whole list with a map lookup (and a concatenation only for a request that has both)
+      byEndpoint: Map[String, Array[Policy]],
+      byAudience: Map[String, Map[String, Array[Policy]]],
   ):
+    private val route = Checkpoint.Route.ordinal
+    private val routeBase = byPoint(route)
+    private val hasDeclared = byEndpoint.nonEmpty || byAudience.nonEmpty
+
     def at(point: Int): Array[Policy] = byPoint(point)
 
-    def active(point: Int): Boolean = byPoint(point).length > 0 || declaredByPoint(point).nonEmpty
+    def active(point: Int): Boolean = byPoint(point).length > 0 || (point == route && hasDeclared)
 
-    /** Every policy that applies to a request at `point`: the edge's own, and the limit declared on what the request is
-      * for (its endpoint at R3, its client at R2). The request must pass all of them, so the smallest limit wins.
+    /** Every policy that applies to a request at `point`: the edge's own, and at R3 the limits declared on the endpoint it matched
+      * and on its client as a member of the resource's audience. The request must pass all of them, so the smallest limit wins.
       */
     def policiesFor(point: Int, keys: RateLimitKeys): Array[Policy] =
-      val declared = declaredByPoint(point)
-      if declared.isEmpty then byPoint(point)
+      if point != route || !hasDeclared then byPoint(point)
       else
-        val selector = point match
-          case p if p == Checkpoint.Route.ordinal => keys.endpoint
-          case p if p == Checkpoint.Identity.ordinal => keys.client
-          case _ => ""
-        declared.getOrElse(selector, byPoint(point))
+        val endpoint = byEndpoint.get(keys.endpoint)
+        val audience = byAudience.get(keys.resource).flatMap(_.get(keys.client))
+        (endpoint, audience) match
+          case (None, None) => routeBase
+          case (Some(e), None) => e
+          case (None, Some(a)) => a
+          // both: the edge's policies once, then the two declarations
+          case (Some(e), Some(a)) => e ++ a.drop(routeBase.length)
 
   private[http] object Installed:
     val empty: Installed = of(Nil, Nil)
 
-    def of(policies: List[Policy], declared: List[(DeclaredOwner, String, Policy)]): Installed =
+    def of(policies: List[Policy], declared: List[(DeclaredLimit, Policy)]): Installed =
       val byPoint = Checkpoint.values.map(point => policies.filter(_.policy.checkpoint == point).toArray)
-      val declaredByPoint = Checkpoint.values.map: point =>
-        declared
-          .filter(_._3.policy.checkpoint == point)
-          .groupMap(_._2)(_._3)
-          .map((selector, ps) => selector -> (byPoint(point.ordinal) ++ ps))
-      val declaredIds = declared.map((owner, selector, p) => (owner, selector) -> p).toMap
-      new Installed(
-        (policies ++ declared.map(_._3)).toArray,
-        policies.map(p => p.policy.name -> p).toMap,
-        declaredIds,
-        byPoint,
-        declaredByPoint,
-      )
+      val base = byPoint(Checkpoint.Route.ordinal)
+      // both owners are narrower than the edge, so a declaration is checked at R3
+      val onRoute = declared.filter(_._2.policy.checkpoint == Checkpoint.Route)
+      val byEndpoint = onRoute
+        .collect { case (d, p) if d.owner == DeclaredOwner.Endpoint => d.selector -> p }
+        .groupMap(_._1)(_._2)
+        .map((selector, ps) => selector -> (base ++ ps))
+      val byAudience = onRoute
+        .collect { case (d, p) if d.owner == DeclaredOwner.Audience => (d.resource, d.selector) -> p }
+        .groupMap(_._1)(_._2)
+        .toList
+        .groupMap(_._1._1)(entry => entry._1._2 -> (base ++ entry._2))
+        .map((resource, clients) => resource -> clients.toMap)
+      val ids = declared.map((d, p) => (d.owner, d.resource, d.selector) -> p).toMap
+      new Installed((policies ++ declared.map(_._2)).toArray, policies.map(p => p.policy.name -> p).toMap, ids, byPoint, byEndpoint, byAudience)

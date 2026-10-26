@@ -697,17 +697,6 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'console/client-edit-ratelimit', kind: 'frame', path: clientsPath,
-    state: withClients({
-      ...webClient,
-      rateLimit: { limits: [{ limit: 600, windowSeconds: 60 }, { limit: 10000, windowSeconds: 3600 }], burst: 50, by: 'subject', mode: 'shadow' },
-    }),
-    before: async page => {
-      await editClient('storefront-web', 'rate limit', 'Rate limit')(page);
-      await expect(page.getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('600');
-    },
-  },
-  {
     name: 'console/client-edit-tokens-mobile', kind: 'frame', path: clientsPath, state: withClients(mobileClient),
     before: async page => {
       await editClient('storefront-mobile', 'tokens', 'Tokens')(page);
@@ -1266,6 +1255,7 @@ const consoleShots: DocsShot[] = [
     section: page => page.getByRole('region', { name: 'Rate limit' }),
     before: async page => {
       await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('region', { name: 'Rate limit' }).locator('summary').click();
       await page.getByRole('button', { name: 'Set a limit' }).click();
       await page.getByRole('button', { name: 'Enforce' }).click();
       await page.getByLabel('Count by').selectOption('subject');
@@ -1273,6 +1263,23 @@ const consoleShots: DocsShot[] = [
       await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
       await page.getByLabel('Burst').fill('5');
       await expect(page.getByLabel('Burst')).toHaveValue('5');
+    },
+  },
+
+  {
+    name: 'console/resource-audience-ratelimit', kind: 'crop', path: `${resourcePath}&edit=audience`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limits' }),
+    before: async page => {
+      await page.getByRole('region', { name: 'Rate limits' }).locator('summary').first().click();
+      const mobile = page.locator('details[data-client="storefront-web"]');
+      await mobile.locator('summary').click();
+      await mobile.getByRole('button', { name: 'Set a limit' }).click();
+      await mobile.getByRole('button', { name: 'Shadow' }).click();
+      await mobile.getByLabel('Count by').selectOption('subject');
+      await mobile.getByRole('textbox', { name: 'Window 1: requests' }).fill('600');
+      await mobile.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await mobile.getByLabel('Burst').fill('50');
+      await expect(mobile.getByLabel('Burst')).toHaveValue('50');
     },
   },
 

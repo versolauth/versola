@@ -13,12 +13,12 @@ trait RateLimitPolicySource:
   /** The number of pods the traffic is shared by; a limit is divided by it. */
   def replicas: UIO[Int] = ZIO.succeed(1)
 
-  /** The limits declared on resource endpoints and on OAuth clients, applied together with [[current]]. */
+  /** The limits declared on resource endpoints and on clients of a resource's audience, applied together with [[current]]. */
   def declared: UIO[List[DeclaredLimit]] = ZIO.succeed(Nil)
 
 object RateLimitPolicySource:
   /** The policies central holds for this edge, as [[RateLimitPolicyService]] syncs them, and the limits declared on endpoints and
-    * clients, as [[DeclaredRateLimitService]] derives them.
+    * on audience clients, as [[DeclaredRateLimitService]] derives them.
     */
   val fromCentral: URLayer[RateLimitPolicyService & DeclaredRateLimitService, RateLimitPolicySource] =
     ZLayer.fromFunction((service: RateLimitPolicyService, declaredService: DeclaredRateLimitService) =>

@@ -107,6 +107,29 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
           cleared.flatMap(_.endpoints.find(_.id == usersListEndpointId)).map(_.rateLimit) == Some(None),
         )
       },
+      test("the limits a resource sets for its audience survive the round trip, are replaced as a whole, and a resource has none by default") {
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+          burst = 50,
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+        )
+        val client = audience.head
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          fresh <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.updateAudienceRateLimits(resourceId, List(AudienceRateLimit(client, limit)))
+          set <- env.resourceRepository.findResource(resourceId)
+          all <- env.resourceRepository.getAll
+          _ <- env.resourceRepository.updateAudienceRateLimits(resourceId, Nil)
+          cleared <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          fresh.map(_.audienceRateLimits) == Some(Nil),
+          set.map(_.audienceRateLimits) == Some(List(AudienceRateLimit(client, limit))),
+          all.flatMap(_.audienceRateLimits) == Vector(AudienceRateLimit(client, limit)),
+          cleared.map(_.audienceRateLimits) == Some(Nil),
+        )
+      },
       test("create resource with secret") {
         val secret = Array.fill(32)(9.toByte)
         for

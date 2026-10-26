@@ -25,7 +25,14 @@ import versola.central.configuration.clients.{
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.{Permission, PermissionRecord, PermissionService}
-import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRecord, ResourceService}
+import versola.central.configuration.resources.{
+  AudienceRateLimit,
+  ResourceEndpointId,
+  ResourceEndpointRecord,
+  ResourceId,
+  ResourceRecord,
+  ResourceService,
+}
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleService}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -434,6 +441,18 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for payload <- decodeBody[GetResourcesSyncResponse](response)
           yield assertTrue(payload.resources.head.endpoints.map(_.rateLimit) == Vector(Some(declaredLimit), None)),
+      ),
+      testCase(
+        description = "resources: the limits the resource sets for its audience travel to the edge",
+        request = Request.get(sync("resources")),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.resources.getResourcesForSync.succeedsWith(
+            Vector(resourceA.copy(audienceRateLimits = List(AudienceRateLimit(clientA.id, declaredLimit)))),
+          ),
+        verify = (response, _) =>
+          for payload <- decodeBody[GetResourcesSyncResponse](response)
+          yield assertTrue(payload.resources.head.audienceRateLimits == List(AudienceRateLimit(clientA.id, declaredLimit))),
       ),
       // Edge stays on the previous secret until it is removed, so a rotation does not cut it
       // off from the resources it fronts.

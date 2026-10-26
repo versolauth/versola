@@ -283,6 +283,7 @@ object EdgeSyncController extends Controller:
           )
         },
         secret = encryptedSecret,
+        audienceRateLimits = record.audienceRateLimits,
       )
     }
 

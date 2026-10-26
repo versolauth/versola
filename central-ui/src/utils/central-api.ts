@@ -1,6 +1,6 @@
 import { clientKindOf, type ClientKind } from './client-presets';
 import type { ThemeVariableCatalog } from './theme-variables';
-import type { DeclaredRateLimit } from './declared-rate-limit';
+import type { AudienceRateLimit, DeclaredRateLimit } from './declared-rate-limit';
 import type {
   AuthFlow,
   AuthMethod,
@@ -114,7 +114,7 @@ type ResourceEndpointDto = {
   maxAge?: number;
   rateLimit?: DeclaredRateLimit | null;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
+type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean; audienceRateLimits?: AudienceRateLimit[] };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -167,7 +167,6 @@ type ClientsResponse = {
     template?: ClientTemplate | null;
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
-    rateLimit?: DeclaredRateLimit | null;
     est?: ClientEstState | null;
   }>;
 };
@@ -672,6 +671,7 @@ function mapResource(resource: ResourceResponseDto): Resource {
     })),
     hasSecret: resource.internal,
     hasPreviousSecret: resource.secretRotation,
+    ...(resource.audienceRateLimits?.length ? { audienceRateLimits: resource.audienceRateLimits.map(limit => ({ clientId: limit.clientId, rateLimit: limit.rateLimit })) } : {}),
   };
 }
 
@@ -787,7 +787,6 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
-        rateLimit: client.rateLimit ?? null,
         est: client.est ?? null,
         tenantId,
       };
@@ -940,6 +939,8 @@ export async function updateResource(
   patch: {
     resource?: string;
     audience?: { existing: string[]; next: string[] };
+    /** Replaces what the resource sets for its audience clients, as a whole; absent leaves it. */
+    audienceRateLimits?: AudienceRateLimit[];
     deleteEndpoints?: ResourceEndpointId[];
     createEndpoints?: SaveResourceEndpointPayload[];
   },
@@ -952,6 +953,7 @@ export async function updateResource(
       resourceId,
       ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
       audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      ...(patch.audienceRateLimits !== undefined ? { audienceRateLimits: patch.audienceRateLimits } : {}),
       deleteEndpoints: patch.deleteEndpoints ?? [],
       createEndpoints,
     },
@@ -1173,7 +1175,7 @@ const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
 };
 
 const COMMON_UPDATE_FIELDS = [
-  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'rateLimit',
+  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
 ] as const;
 
 const SIGN_IN_UPDATE_FIELDS = [
@@ -1326,8 +1328,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       themeOverrides: sameJsonValue(nonEmptyOverrides(existing.themeOverrides), nonEmptyOverrides(client.themeOverrides))
         ? undefined
         : (nonEmptyOverrides(client.themeOverrides) ?? {}),
-      // Patch semantics: omitted leaves the stored limit alone, null removes it.
-      rateLimit: sameJsonValue(existing.rateLimit ?? null, client.rateLimit ?? null) ? undefined : (client.rateLimit ?? null),
     }, UPDATE_FIELDS[kind]),
   });
 
