@@ -19,9 +19,12 @@ import zio.test.*
   */
 object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub & EdgeSession]:
 
+  /** Its own upstream port: a resource's URI is unique, and EdgeProxySpec registers the default stub's. */
+  private val UpstreamPort = 9113
+
   private val config = EdgeFixture.Config(
     resourceId = "e2e-edge-rate-limit",
-    resourceUri = UpstreamStub.uri,
+    resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(EdgeFixture.Endpoint(name = "list", method = "GET", path = "/items")),
     awaitProxyReady = true,
   )
@@ -32,7 +35,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
   override val bootstrap
       : ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub & EdgeSession] =
     val clients = (E2EConfig.live ++ Client.default) >>> (OAuthClient.live ++ CentralApi.live ++ EdgeApi.live)
-    val fixtured = (clients ++ UpstreamStub.live) >+> EdgeFixture.layer(config)
+    val fixtured = (clients ++ UpstreamStub.liveOn(UpstreamPort)) >+> EdgeFixture.layer(config)
     fixtured >+> ZLayer.fromZIO:
       for
         edgeApi <- ZIO.service[EdgeApi]
