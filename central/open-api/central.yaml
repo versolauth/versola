@@ -3418,6 +3418,12 @@ components:
           description: |
             Where the client stands when it obtains its certificate through EST (`estEnrollment`);
             `null` (or absent) when it does not.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how many calls carrying this client's access tokens the edge lets through, checked right after the
+            token is verified, together with the edge's own rate limit policies: a call must pass all of them, so the smallest
+            limit wins. Absent means no limit.
       required:
         - id
         - clientName
@@ -3631,6 +3637,12 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how many calls carrying this client's access tokens the edge lets through, checked right after the
+            token is verified, together with the edge's own rate limit policies: a call must pass all of them, so the smallest
+            limit wins. Absent means no limit.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateNativeClientRequest:
       type: object
@@ -3756,6 +3768,12 @@ components:
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how many calls carrying this client's access tokens the edge lets through, checked right after the
+            token is verified, together with the edge's own rate limit policies: a call must pass all of them, so the smallest
+            limit wins. Absent means no limit.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateServiceClientRequest:
       type: object
@@ -3865,6 +3883,12 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how many calls carrying this client's access tokens the edge lets through, checked right after the
+            token is verified, together with the edge's own rate limit policies: a call must pass all of them, so the smallest
+            limit wins. Absent means no limit.
       required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
     UpdateWebClientRequest:
       type: object
@@ -3991,6 +4015,12 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
+        rateLimit:
+          oneOf:
+            - $ref: '#/components/schemas/DeclaredRateLimit'
+            - type: 'null'
+          description: |
+            Replaces the client's rate limit: absent leaves it unchanged, `null` removes it. See `DeclaredRateLimit`.
       required: [clientId]
     UpdateNativeClientRequest:
       type: object
@@ -4082,6 +4112,12 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
+        rateLimit:
+          oneOf:
+            - $ref: '#/components/schemas/DeclaredRateLimit'
+            - type: 'null'
+          description: |
+            Replaces the client's rate limit: absent leaves it unchanged, `null` removes it. See `DeclaredRateLimit`.
       required: [clientId]
     UpdateServiceClientRequest:
       type: object
@@ -4153,6 +4189,12 @@ components:
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
             assertions with. `null` means the client does not use the method.
+        rateLimit:
+          oneOf:
+            - $ref: '#/components/schemas/DeclaredRateLimit'
+            - type: 'null'
+          description: |
+            Replaces the client's rate limit: absent leaves it unchanged, `null` removes it. See `DeclaredRateLimit`.
       required: [clientId]
     CreateClientResponse:
       type: object
@@ -4385,6 +4427,12 @@ components:
         maxAge:
           type: [integer, 'null']
           description: Maximum authentication age, in seconds, accepted for this endpoint.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, method, path, fetchUserInfo, inject]
     ResourceResponse:
       type: object
@@ -4439,6 +4487,12 @@ components:
           type: [string, 'null']
         maxAge:
           type: [integer, 'null']
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
@@ -4548,6 +4602,15 @@ components:
             endpointId:
               $ref: '#/components/schemas/ResourceEndpointId'
           required: [endpointId]
+        InvalidRateLimit:
+          type: object
+          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            message:
+              type: string
+          required: [endpointId, message]
         AmbiguousEndpointPath:
           type: object
           description: |
@@ -6433,6 +6496,50 @@ components:
           enum: [off, shadow, enforce]
           default: shadow
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
+    DeclaredRateLimit:
+      type: object
+      required: [limits]
+      description: |
+        A rate limit declared where an API or a client is declared (on a resource endpoint, or on an OAuth client), not in the
+        edge's own set. The rules are those of `RateLimitPolicy` (windows, burst, mode); `cost` is always 1. It applies together
+        with the edge's policies and a request must pass all of them, so the smallest limit wins. In metrics it is the policy
+        `resource-endpoint` or `oauth-client`, never an id.
+      properties:
+        limits:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: Every window must pass. Windows are distinct.
+          items:
+            type: object
+            required: [limit, windowSeconds]
+            properties:
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000000
+              windowSeconds:
+                type: integer
+                minimum: 1
+                maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          default: 1
+          description: How many calls may arrive together. Not above the smallest `limit`. `1` is strict spacing.
+        by:
+          type: string
+          enum: [subject, client, none]
+          default: none
+          description: |
+            What a bucket is keyed on. On an endpoint, `none` is one bucket for the endpoint, `client` one per client and
+            `subject` one per user. On a client, `none` is one bucket for the client and `subject` one per user of it;
+            `client` is refused there, since it would mean the same as `none`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+          default: shadow
+          description: '`off` ignores the limit; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     RateLimitPoliciesError:
       type: object
       properties:

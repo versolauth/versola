@@ -21,6 +21,7 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.CertificateSubject
+import versola.util.http.DeclaredRateLimit
 import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
@@ -157,6 +158,7 @@ case class ResourceEndpointResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec
 
 case class GetAllResourcesResponse(
@@ -213,6 +215,7 @@ case class CreateResourceEndpointRequest(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec
 
 case class CreateRoleRequest(
@@ -412,6 +415,8 @@ case class OAuthClientResponse(
     themeOverrides: Option[ThemeOverrides],
     /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
     est: Option[ClientEstService.State] = None,
+    /** The limit on calls carrying this client's tokens; absent when there is none. */
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -537,6 +542,8 @@ case class CreateClientRequest(
       * client is registered by [[mtlsAuth]] or, where it names none, by `CN=<client>,OU=<tenant>,O=Versola`. Mutually
       * exclusive with [[issueEdgeClientCertificate]], [[enrollEdgeClientCertificate]] and supplying a certificate. */
     estEnrollment: Boolean = false,
+    /** A limit on how many calls carrying this client's tokens the edge lets through (see [[DeclaredRateLimit]]); absent for none. */
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -593,6 +600,8 @@ case class UpdateClientRequest(
     applicationType: Option[ApplicationType],
     /** Replaces the client's theme overrides; an empty value clears them, absent leaves them. */
     themeOverrides: Option[ThemeOverrides],
+    /** Replaces the client's rate limit; `null` removes it, absent leaves it. */
+    rateLimit: Option[Patch[DeclaredRateLimit]] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -662,6 +671,7 @@ case class ResourceEndpointSyncResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec
 
 case class ResourceSyncResponse(
@@ -806,6 +816,8 @@ case class SyncOAuthClientRecord(
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** The limit on calls carrying this client's tokens, enforced by the edge at R2; absent when there is none. */
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

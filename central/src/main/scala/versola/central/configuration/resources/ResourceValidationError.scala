@@ -11,6 +11,9 @@ enum ResourceValidationError derives JsonCodec, Schema:
   case InvalidStepUpConditionExpression(endpointId: ResourceEndpointId, expression: String, message: String)
   case InvalidEndpointPath(endpointId: ResourceEndpointId)
 
+  /** The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule. */
+  case InvalidRateLimit(endpointId: ResourceEndpointId, message: String)
+
   /** Another endpoint with the same method matches exactly the same requests, differing
     * only in its path parameter names. */
   case AmbiguousEndpointPath(endpointId: ResourceEndpointId, path: String)

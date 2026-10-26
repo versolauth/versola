@@ -80,6 +80,7 @@ object ClientController extends Controller:
               applicationType = client.applicationType,
               kind = ClientKind.of(client),
               themeOverrides = client.themeOverrides,
+              rateLimit = client.rateLimit,
               est = estStates.get(client.id),
             )
           })
@@ -170,6 +171,7 @@ object ClientController extends Controller:
           applicationType = client.applicationType,
           edgeCertificateSubject = enrollmentSubjects.get(client.id),
           themeOverrides = client.themeOverrides,
+          rateLimit = client.rateLimit,
         )
       }
     yield GetOAuthClientsSyncResponse(clients = encryptedClients)

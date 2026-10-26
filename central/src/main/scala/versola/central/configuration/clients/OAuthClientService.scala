@@ -273,6 +273,7 @@ object OAuthClientService:
           request.themeOverrides,
           request.consentFlow.isDefined,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRateLimit(request.id, request.rateLimit))(ZIO.fail(_))
         generatedKey <- ZIO.foreach(request.generateJwks)(ClientKeyGeneration.generate(securityService, _))
         jwks = generatedKey.map(_.publicKeys).orElse(request.jwks)
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
@@ -367,6 +368,7 @@ object OAuthClientService:
           createdAt = registeredAt,
           applicationType = applicationType,
           themeOverrides = request.themeOverrides.filterNot(_.isEmpty),
+          rateLimit = request.rateLimit,
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
@@ -406,6 +408,10 @@ object OAuthClientService:
               case Some(Patch.Deleted) => false
               case None => client.consentFlow.isDefined,
           ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRateLimit(
+          request.clientId,
+          request.rateLimit.applyTo(None),
+        ))(ZIO.fail(_))
         // Only what the patch adds: a URI registered before this rule existed stays removable.
         _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
@@ -500,6 +506,7 @@ object OAuthClientService:
             edgeClientCertificate = edgeCertificatePatch,
             applicationType = request.applicationType,
             themeOverrides = request.themeOverrides,
+            rateLimit = request.rateLimit,
           ),
         )
       yield ()

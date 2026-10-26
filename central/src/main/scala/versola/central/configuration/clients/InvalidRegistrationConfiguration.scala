@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.http.{DeclaredOwner, DeclaredRateLimit}
 import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
@@ -70,6 +71,11 @@ object InvalidRegistrationConfiguration:
         "themeOverrides can only be set on a client that asks for consent (a partner client); " +
           "set a consentFlow first, or leave themeOverrides out",
       )
+
+  /** A client's `rateLimit` is held to the rules of a rate limit policy, so a declaration the edge would refuse never reaches
+    * it. Removing the limit (`Deleted`) is always valid. */
+  def validateRateLimit(clientId: ClientId, rateLimit: Option[DeclaredRateLimit]): Option[InvalidRegistrationConfiguration] =
+    rateLimit.flatMap(_.validate(DeclaredOwner.Client).left.toOption).map(InvalidRegistrationConfiguration(clientId, _))
 
   def validateAccessTokenTtl(
       clientId: ClientId,

@@ -4,6 +4,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, ResourceUri}
 import versola.util.Secret
+import versola.util.http.DeclaredRateLimit
 
 case class ResourceRecord(
     tenantId: TenantId,
@@ -28,4 +29,7 @@ case class ResourceEndpointRecord(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    /** A limit on how often this endpoint is called, checked at the edge together with the edge's own policies (the
+      * smaller wins). `None` limits nothing; stored in the endpoint's JSON, so an endpoint written before it reads as `None`. */
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives CanEqual

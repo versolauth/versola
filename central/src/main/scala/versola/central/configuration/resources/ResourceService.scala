@@ -7,6 +7,7 @@ import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
 import versola.util.cel.CelEvaluator
+import versola.util.http.DeclaredOwner
 import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
 
@@ -257,6 +258,10 @@ object ResourceService:
       val trimmedPath = endpoint.path.trim
       if !isValidEndpointPath(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
+      // the rules are those of a rate limit policy, so a declaration the edge would refuse is refused here
+      val rateLimitProblem = endpoint.rateLimit.flatMap(_.validate(DeclaredOwner.Endpoint).left.toOption)
+      if rateLimitProblem.nonEmpty then
+        return ZIO.some(ResourceValidationError.InvalidRateLimit(endpoint.id, rateLimitProblem.getOrElse("")))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
         case Some(expression) =>
@@ -298,4 +303,5 @@ object ResourceService:
         stepUpCondition = request.stepUpCondition,
         stepUpAcr = request.stepUpAcr,
         maxAge = request.maxAge,
+        rateLimit = request.rateLimit,
       )

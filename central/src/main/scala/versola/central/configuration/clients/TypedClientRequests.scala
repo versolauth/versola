@@ -4,6 +4,7 @@ import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.util.http.DeclaredRateLimit
 import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.json.{JsonCodec, jsonNoExtraFields}
@@ -63,6 +64,7 @@ case class CreateWebClientRequest(
     enrollEdgeClientCertificate: Boolean,
     themeOverrides: Option[ThemeOverrides],
     estEnrollment: Boolean = false,
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -102,6 +104,7 @@ case class CreateWebClientRequest(
       enrollEdgeClientCertificate,
       themeOverrides,
       estEnrollment = estEnrollment,
+      rateLimit = rateLimit,
     )
 
 /** An app installed on a device, which holds a DPoP key of its own and no credential. Either
@@ -139,6 +142,7 @@ case class CreateNativeClientRequest(
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
     themeOverrides: Option[ThemeOverrides],
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -180,6 +184,7 @@ case class CreateNativeClientRequest(
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
       themeOverrides,
+      rateLimit = rateLimit,
     )
 
 /** Code calling an API on its own behalf, with no user present: no redirect URIs, sign-in flow,
@@ -201,6 +206,7 @@ case class CreateServiceClientRequest(
     jwks: Option[JsonWebKeySet] = None,
     generateJwks: Option[ClientAssertion.Algorithm] = None,
     estEnrollment: Boolean = false,
+    rateLimit: Option[DeclaredRateLimit] = None,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -240,6 +246,7 @@ case class CreateServiceClientRequest(
       enrollEdgeClientCertificate = false,
       themeOverrides = None,
       estEnrollment = estEnrollment,
+      rateLimit = rateLimit,
     )
 
 // An update names the client and what changes. The client's kind, its `authMethod` and what a
@@ -274,6 +281,7 @@ case class UpdateWebClientRequest(
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
     themeOverrides: Option[ThemeOverrides],
+    rateLimit: Option[Patch[DeclaredRateLimit]] = None,
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -307,6 +315,7 @@ case class UpdateWebClientRequest(
       edgeClientCertificate,
       applicationType = None,
       themeOverrides = themeOverrides,
+      rateLimit = rateLimit,
     )
 
 object UpdateWebClientRequest:
@@ -363,6 +372,7 @@ case class UpdateNativeClientRequest(
     dpopMinRsaKeySize: Option[Patch[Int]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
     themeOverrides: Option[ThemeOverrides],
+    rateLimit: Option[Patch[DeclaredRateLimit]] = None,
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -396,6 +406,7 @@ case class UpdateNativeClientRequest(
       edgeClientCertificate,
       applicationType = None,
       themeOverrides = themeOverrides,
+      rateLimit = rateLimit,
     )
 
 object UpdateNativeClientRequest:
@@ -436,6 +447,7 @@ case class UpdateServiceClientRequest(
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
+    rateLimit: Option[Patch[DeclaredRateLimit]] = None,
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -469,6 +481,7 @@ case class UpdateServiceClientRequest(
       edgeClientCertificate = None,
       applicationType = None,
       themeOverrides = None,
+      rateLimit = rateLimit,
     )
 
 object UpdateServiceClientRequest:
