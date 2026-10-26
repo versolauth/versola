@@ -2,8 +2,8 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
-import type { AccessLogPolicy, Edge, OverloadPolicy, Tenant } from '../types';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeAccessLogPolicy, setEdgeDpopNonce, setEdgeOverloadPolicy } from '../utils/central-api';
+import type { AccessLogPolicy, Edge, OverloadPolicy, RateLimitPolicies, Tenant } from '../types';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeAccessLogPolicy, setEdgeDpopNonce, setEdgeOverloadPolicy, setEdgeRateLimitPolicies } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
@@ -17,8 +17,13 @@ import {
   modeLabel as accessLogModeLabel, policyFromDraft as accessLogPolicyFromDraft, setSummary as accessLogSetSummary,
   validateDraft as validateAccessLogDraft, type AccessLogDraft,
 } from '../utils/access-log-policy';
+import {
+  countText as rateLimitCountText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimitPolicies,
+  policiesFromDraft as rateLimitPoliciesFromDraft, summary as rateLimitSummary, validateDraft as validateRateLimitDraft, type RateLimitDraft,
+} from '../utils/rate-limit-policies';
 import type { VersolaOverloadPolicyEditor } from './overload-policy-editor';
 import type { VersolaAccessLogPolicyEditor } from './access-log-policy-editor';
+import type { VersolaRateLimitPoliciesEditor } from './rate-limit-policies-editor';
 import { statusIcon } from './status-icon';
 import { valueChips } from './value-chips';
 import type { DataTableColumn, RowMenuItem, VersolaDataTable } from './data-table';
@@ -31,6 +36,7 @@ import './filter-bar';
 import './loading-cards';
 import './overload-policy-editor';
 import './access-log-policy-editor';
+import './rate-limit-policies-editor';
 import './record-card';
 import './record-header';
 import './side-panel';
@@ -63,6 +69,7 @@ export class VersolaEdgesList extends LitElement {
   @state() private draftDpop = true;
   @state() private draftOverload: OverloadDraft = emptyDraft();
   @state() private draftAccessLog: AccessLogDraft = emptyAccessLogDraft();
+  @state() private draftRateLimit: RateLimitDraft = emptyRateLimitDraft();
   /** What the last save or reset said, shown on that edge's panel until it is left. */
   @state() private policyNotice: { edgeId: string; text: string } | null = null;
   @state() private formError = '';
@@ -71,6 +78,7 @@ export class VersolaEdgesList extends LitElement {
   @query('versola-data-table') private table?: VersolaDataTable<Edge>;
   @query('versola-overload-policy-editor') private overloadEditor?: VersolaOverloadPolicyEditor;
   @query('versola-access-log-policy-editor') private accessLogEditor?: VersolaAccessLogPolicyEditor;
+  @query('versola-rate-limit-policies-editor') private rateLimitEditor?: VersolaRateLimitPoliciesEditor;
   private draftKey = '';
 
   static styles = [
@@ -303,8 +311,8 @@ export class VersolaEdgesList extends LitElement {
   }
 
   /** Which group of the open edge is being edited, if any. */
-  private get editTarget(): 'dpop' | 'overload' | 'access-log' | null {
-    return this.openEdge && (this.route.edit === 'dpop' || this.route.edit === 'overload' || this.route.edit === 'access-log') ? this.route.edit : null;
+  private get editTarget(): 'dpop' | 'overload' | 'access-log' | 'rate-limits' | null {
+    return this.openEdge && (this.route.edit === 'dpop' || this.route.edit === 'overload' || this.route.edit === 'access-log' || this.route.edit === 'rate-limits') ? this.route.edit : null;
   }
 
   /** The private key is shown once: leaving its edge asks first. */
@@ -331,7 +339,7 @@ export class VersolaEdgesList extends LitElement {
     if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
   }
 
-  private openEditor(target: 'dpop' | 'overload' | 'access-log' = 'dpop') {
+  private openEditor(target: 'dpop' | 'overload' | 'access-log' | 'rate-limits' = 'dpop') {
     dispatchRecordRoute(this, { edit: target, create: false });
   }
 
@@ -339,7 +347,7 @@ export class VersolaEdgesList extends LitElement {
 
   private get draftSnapshot(): string {
     // The overload draft is compared by what it would send, so `0.50` for `0.5` is not a change.
-    return JSON.stringify([this.draftId, this.draftDpop, policyFromDraft(this.draftOverload), accessLogPolicyFromDraft(this.draftAccessLog)]);
+    return JSON.stringify([this.draftId, this.draftDpop, policyFromDraft(this.draftOverload), accessLogPolicyFromDraft(this.draftAccessLog), rateLimitPoliciesFromDraft(this.draftRateLimit)]);
   }
 
   /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
@@ -359,6 +367,7 @@ export class VersolaEdgesList extends LitElement {
     this.draftDpop = this.openEdge?.requireDpopNonce ?? true;
     this.draftOverload = draftFromPolicy(this.openEdge?.overloadPolicy);
     this.draftAccessLog = accessLogDraftFromPolicy(this.openEdge?.accessLogPolicy);
+    this.draftRateLimit = rateLimitDraftFromPolicies(this.openEdge?.rateLimitPolicies);
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
@@ -413,6 +422,17 @@ export class VersolaEdgesList extends LitElement {
         await setEdgeAccessLogPolicy(edge.id, policy);
         this.applyAccessLogPolicy(edge.id, policy);
         dispatchRecordRoute(this, { edit: null, create: false });
+      } else if (this.editTarget === 'rate-limits') {
+        const edge = this.openEdge!;
+        if (Object.keys(validateRateLimitDraft(this.draftRateLimit)).length > 0) {
+          this.isSaving = false;
+          this.rateLimitEditor?.focusFirstError();
+          return;
+        }
+        const policies = rateLimitPoliciesFromDraft(this.draftRateLimit);
+        await setEdgeRateLimitPolicies(edge.id, policies);
+        this.applyRateLimitPolicies(edge.id, policies);
+        dispatchRecordRoute(this, { edit: null, create: false });
       } else {
         const edge = this.openEdge!;
         await setEdgeDpopNonce(edge.id, this.draftDpop);
@@ -454,6 +474,50 @@ export class VersolaEdgesList extends LitElement {
         ? 'Access log returned to the defaults. The edge applies it on its next configuration sync.'
         : 'Access log saved. The edge applies it on its next configuration sync.',
     };
+  }
+
+  private applyRateLimitPolicies(edgeId: string, policies: RateLimitPolicies) {
+    const empty = isEmptyRateLimitPolicies(policies);
+    this.edges = this.edges.map(candidate => {
+      if (candidate.id !== edgeId) return candidate;
+      const { rateLimitPolicies: _previous, ...rest } = candidate;
+      return empty ? rest : { ...rest, rateLimitPolicies: policies };
+    });
+    this.policyNotice = {
+      edgeId,
+      text: empty
+        ? 'Rate limit policies removed. The edge applies no rate limit after its next configuration sync.'
+        : 'Rate limit policies saved. The edge applies them on its next configuration sync.',
+    };
+  }
+
+  /** Removes every policy: the edge applies no rate limit. */
+  private async handleResetRateLimits(edge: Edge) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Remove all rate limit policies',
+      messagePrefix: 'Remove every rate limit policy of edge ',
+      messageSubject: edge.id,
+      messageSuffix: '? The edge applies no rate limit after its next configuration sync.',
+      confirmLabel: 'Remove all',
+    });
+    if (!confirmed) return;
+    if (this.isSaving) return;
+    this.isSaving = true;
+    this.formError = '';
+    this.errorMessage = '';
+    try {
+      await setEdgeRateLimitPolicies(edge.id, { policies: [] });
+      this.applyRateLimitPolicies(edge.id, { policies: [] });
+      this.draftRateLimit = emptyRateLimitDraft();
+      this.draftBaseline = this.draftSnapshot;
+      if (this.editTarget === 'rate-limits') dispatchRecordRoute(this, { edit: null, create: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to remove the rate limit policies';
+      if (this.editTarget === 'rate-limits') this.formError = message;
+      else this.errorMessage = message;
+    } finally {
+      this.isSaving = false;
+    }
   }
 
   /** Removes the policy: the edge goes back to its built-in defaults. */
@@ -702,6 +766,16 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('access-log')}></versola-record-card>
 
+      <versola-record-card heading="Rate limits" subheading="Who may send how much through this edge. Counted only for now: nothing is refused until enforcement is released. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
+        ${this.row('Policies', rateLimitCountText(edge.rateLimitPolicies))}
+        ${(edge.rateLimitPolicies?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
+        ${(edge.rateLimitPolicies?.policies.length ?? 0) > 5 ? this.row('', `and ${edge.rateLimitPolicies!.policies.length - 5} more`) : ''}
+        ${this.canManage && !isEmptyRateLimitPolicies(edge.rateLimitPolicies) ? html`
+          <versola-record-row .value=${html`<div class="key-actions">
+            <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isSaving} @click=${() => this.handleResetRateLimits(edge)}>Remove all policies</button>
+          </div>`}></versola-record-row>` : ''}
+      `} @edit=${() => this.openEditor('rate-limits')}></versola-record-card>
+
       <versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
         ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
           : html`<span class="muted">No tenants assigned to this edge.</span>`)}
@@ -794,6 +868,9 @@ export class VersolaEdgesList extends LitElement {
                 : html`<div class="hint" id="edge-id-hint">Registered as <span class="mono">edge-${this.draftId.trim() || '…'}</span>. Lowercase letters, digits and dashes.</div>`}
             </div>
           </div>
+        ` : this.editTarget === 'rate-limits' ? html`
+          <versola-rate-limit-policies-editor .draft=${this.draftRateLimit} ?disabled=${this.isSaving} ?submitted=${this.submitted}
+            @draft-change=${(e: CustomEvent<{ draft: RateLimitDraft }>) => this.draftRateLimit = e.detail.draft}></versola-rate-limit-policies-editor>
         ` : this.editTarget === 'access-log' ? html`
           <versola-access-log-policy-editor .draft=${this.draftAccessLog} ?disabled=${this.isSaving}
             @draft-change=${(e: CustomEvent<{ draft: AccessLogDraft }>) => this.draftAccessLog = e.detail.draft}></versola-access-log-policy-editor>
@@ -825,10 +902,11 @@ export class VersolaEdgesList extends LitElement {
     if (mode === 'view' && !edge) return '';
     const overload = this.editTarget === 'overload';
     const accessLog = this.editTarget === 'access-log';
-    const heading = mode === 'create' ? 'Register edge' : mode === 'edit' ? (overload ? 'Edit overload protection' : accessLog ? 'Edit access log' : 'Edit DPoP nonce') : edge!.id;
-    const submitLabel = mode === 'create' ? 'Register edge' : overload ? 'Save overload protection' : accessLog ? 'Save access log' : 'Save DPoP nonce';
+    const rateLimits = this.editTarget === 'rate-limits';
+    const heading = mode === 'create' ? 'Register edge' : mode === 'edit' ? (overload ? 'Edit overload protection' : accessLog ? 'Edit access log' : rateLimits ? 'Edit rate limits' : 'Edit DPoP nonce') : edge!.id;
+    const submitLabel = mode === 'create' ? 'Register edge' : overload ? 'Save overload protection' : accessLog ? 'Save access log' : rateLimits ? 'Save rate limits' : 'Save DPoP nonce';
     return html`
-      <versola-side-panel kind="Edge" .heading=${heading} .recordId=${edge?.id ?? ''} idLabel="edge ID" .mode=${mode} ?wide=${overload}
+      <versola-side-panel kind="Edge" .heading=${heading} .recordId=${edge?.id ?? ''} idLabel="edge ID" .mode=${mode} ?wide=${overload || rateLimits}
         .parentLabel=${edge?.id ?? ''} .subtitle=${mode === 'create' ? 'The ID is fixed once registered.' : ''}
         .meta=${edge && mode === 'view' ? this.renderMeta(edge) : null}
         @close=${() => mode === 'view' ? this.closePanel() : this.cancelEditor()}
@@ -841,6 +919,7 @@ export class VersolaEdgesList extends LitElement {
           <div slot="footer">
             ${overload && edge ? html`<button type="button" class="btn btn-secondary footer-reset" ?disabled=${this.isSaving || isEmptyPolicy(edge.overloadPolicy)} @click=${() => this.handleResetOverload(edge)}>Reset to deployment defaults</button>` : ''}
             ${accessLog && edge ? html`<button type="button" class="btn btn-secondary footer-reset" ?disabled=${this.isSaving || isEmptyAccessLogPolicy(edge.accessLogPolicy)} @click=${() => this.handleResetAccessLog(edge)}>Reset to defaults</button>` : ''}
+            ${rateLimits && edge ? html`<button type="button" class="btn btn-secondary footer-reset" ?disabled=${this.isSaving || isEmptyRateLimitPolicies(edge.rateLimitPolicies)} @click=${() => this.handleResetRateLimits(edge)}>Remove all policies</button>` : ''}
             <button type="button" class="btn btn-secondary" @click=${() => this.cancelEditor()} ?disabled=${this.isSaving}>Cancel</button>
             <button type="submit" form="edge-editor" class="btn btn-primary" ?disabled=${this.isSaving}>${this.isSaving ? 'Saving…' : submitLabel}</button>
           </div>` : ''}

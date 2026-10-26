@@ -9,6 +9,7 @@ import type {
   Edge,
   OverloadPolicy,
   AccessLogPolicy,
+  RateLimitPolicies,
   Locale,
   FormPreview,
   FormRecord,
@@ -110,7 +111,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1388,6 +1389,7 @@ export async function fetchEdges(): Promise<Edge[]> {
     requireDpopNonce: edge.requireDpopNonce ?? true,
     ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
     ...(edge.accessLogPolicy ? { accessLogPolicy: edge.accessLogPolicy } : {}),
+    ...(edge.rateLimitPolicies ? { rateLimitPolicies: edge.rateLimitPolicies } : {}),
   })));
 }
 
@@ -1414,6 +1416,15 @@ export async function setEdgeAccessLogPolicy(edgeId: string, policy: AccessLogPo
     method: 'PUT',
     query: { edgeId },
     body: policy,
+  });
+}
+
+/** Replaces the edge's rate limit policies as a whole; an empty list removes them. Central answers 400 with the first thing wrong. */
+export async function setEdgeRateLimitPolicies(edgeId: string, policies: RateLimitPolicies): Promise<void> {
+  await requestVoid('/configuration/edges/rate-limits', {
+    method: 'PUT',
+    query: { edgeId },
+    body: policies,
   });
 }
 

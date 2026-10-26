@@ -67,7 +67,7 @@ type ResourceEndpointDto = {
 export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; rateLimitPolicies?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -390,6 +390,10 @@ export type MockConfigState = {
   accessLogRejection?: string;
   /** Holds `PUT /configuration/edges/access-log` for this long, to look at the saving state. */
   accessLogDelayMs?: number;
+  /** Makes `PUT /configuration/edges/rate-limits` answer 400 with this message. */
+  rateLimitRejection?: string;
+  /** Holds `PUT /configuration/edges/rate-limits` for this long, to look at the saving state. */
+  rateLimitDelayMs?: number;
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
@@ -508,6 +512,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     overloadDelayMs: overrides.overloadDelayMs,
     accessLogRejection: overrides.accessLogRejection,
     accessLogDelayMs: overrides.accessLogDelayMs,
+    rateLimitRejection: overrides.rateLimitRejection,
+    rateLimitDelayMs: overrides.rateLimitDelayMs,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
@@ -1316,6 +1322,25 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       const policy = body as Record<string, unknown>;
       if (Object.keys(policy).length === 0) delete edge.accessLogPolicy;
       else edge.accessLogPolicy = policy;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/edges/rate-limits' && method === 'PUT') {
+      const edgeId = url.searchParams.get('edgeId');
+      const edge = state.edges.find(e => e.id === edgeId);
+      if (!edge) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      if (state.rateLimitDelayMs) await new Promise(resolve => setTimeout(resolve, state.rateLimitDelayMs));
+      if (state.rateLimitRejection) {
+        await route.fulfill(json({ error: state.rateLimitRejection }, 400));
+        return;
+      }
+      const set = body as { policies?: unknown[] };
+      if (!set.policies || set.policies.length === 0) delete edge.rateLimitPolicies;
+      else edge.rateLimitPolicies = set as Record<string, unknown>;
       await route.fulfill({ status: 204, body: '' });
       return;
     }

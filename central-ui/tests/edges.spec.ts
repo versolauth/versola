@@ -414,3 +414,143 @@ test.describe('access log', () => {
     await expect(card.getByRole('button')).toHaveCount(0);
   });
 });
+
+test.describe('rate limits', () => {
+  const set = { policies: [{ name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, mode: 'shadow' }] };
+  const editPath = '/?view=edges&id=edge-alpha&edit=rate-limits';
+  const alpha = { ...alphaEdge, rateLimitPolicies: set };
+  const put = (request: { method: string; pathname: string }) => request.method === 'PUT' && request.pathname === '/configuration/edges/rate-limits';
+
+  test('the edge panel says what is set and that nothing is refused yet', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, rateLimitPolicies: set }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await expect(card).toContainText('Nothing: this edge applies no rate limit');
+    await expect(card).toContainText('nothing is refused until enforcement is released');
+    await expect(card.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Rate limits' });
+    await expect(custom).toContainText('1 policy');
+    await expect(custom).toContainText('per-client');
+    await expect(custom).toContainText('Shadow · 100 / 60 s · by client · burst 5');
+  });
+
+  test('adds a policy, saves the set as typed and shows it on the card', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await expect(dialog.getByText('The edge only counts for now')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Add policy' }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toBeFocused();
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('per-endpoint');
+    await dialog.getByLabel('Scope').selectOption('endpoint');
+    await dialog.getByRole('checkbox', { name: 'User (subject)' }).check();
+    await dialog.getByLabel('Window 1: requests').fill('10');
+    await dialog.getByLabel('Window 1: seconds').fill('1');
+    await dialog.getByRole('button', { name: 'Add window' }).click();
+    await dialog.getByLabel('Window 2: requests').fill('500');
+    await dialog.getByLabel('Window 2: seconds').fill('3600');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+
+    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({
+      policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], mode: 'shadow' }],
+    });
+    await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Shadow · 10 / 1 s + 500 / 3600 s · by client, user, per endpoint');
+    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+  });
+
+  test('Enforce is not offered, a stored one is shown, and the edge says it is applied as shadow', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await expect(dialog.getByRole('button', { name: 'Enforce', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Shadow', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('button', { name: 'Off', exact: true }).click();
+    await expect(dialog.getByText('The policy is ignored.')).toBeVisible();
+
+    await loadAdminApp(page, { path: editPath, state: { edges: [{ ...alphaEdge, rateLimitPolicies: { policies: [{ ...set.policies[0], mode: 'enforce' }] } }] } });
+    const stored = panel(page, 'Edit rate limits');
+    await expect(stored.getByRole('button', { name: 'Enforce', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(stored.getByText('Applied as shadow until enforcement is released')).toBeVisible();
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Add policy' }).click();
+    // an empty required field is quiet until the first submit
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Bad Name');
+    await expect(dialog.getByText('name must be 1 to 48 characters')).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('ok');
+    await dialog.getByLabel('Window 1: requests').fill('10');
+    await dialog.getByLabel('Window 1: seconds').fill('60');
+    await dialog.getByText('Advanced').click();
+    await dialog.getByLabel('Burst').fill('11');
+    await expect(dialog.getByText('burst must not exceed the smallest limit')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByLabel('Burst')).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+
+    await dialog.getByLabel('Burst').fill('');
+    await dialog.getByLabel('Window 1: requests').fill('');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByText('limit must be between 1 and 1000000')).toBeVisible();
+    expect(api.requests.some(put)).toBe(false);
+  });
+
+  test('shows what central refuses and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], rateLimitRejection: 'two rate limit policies have the same name' } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'two rate limit policies have the same name' })).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('per-client');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], rateLimitDelayMs: 600 } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
+    expect(api.requests.filter(put)).toHaveLength(1);
+  });
+
+  test('removing a policy and saving sends the rest; Remove all policies sends an empty list after a confirmation', async ({ page }) => {
+    const two = { policies: [...set.policies, { ...set.policies[0], name: 'second' }] };
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [{ ...alphaEdge, rateLimitPolicies: two }] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Remove policy second' }).click();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client' }] });
+
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await card.getByRole('button', { name: 'Remove all policies' }).click();
+    await page.getByRole('button', { name: 'Remove all', exact: true }).click();
+    await expect(card).toContainText('Nothing: this edge applies no rate limit');
+    expect(api.requests.filter(put).at(-1)?.body).toEqual({ policies: [] });
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit rate limits');
+      await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Bad');
+      await dialog.getByRole('button', { name: 'Add policy' }).click();
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await expect(card).toContainText('per-client');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
+});
