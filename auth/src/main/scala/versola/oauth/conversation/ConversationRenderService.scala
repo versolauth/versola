@@ -114,6 +114,10 @@ object ConversationRenderService:
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
+
+    /** What the form needs to solve the challenge `kind` names, and the token to send back with the solution. */
+    @jsonHint("proof")
+    case class Proof(kind: String, token: String, params: Map[String, String]) extends StepView
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
 
@@ -586,6 +590,7 @@ object ConversationRenderService:
         case _: ConversationStep.Password => "password"
         case _: ConversationStep.SetPassword => "set-password"
         case _: ConversationStep.Otp => "otp"
+        case _: ConversationStep.Proof => "proof"
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
@@ -623,6 +628,7 @@ object ConversationRenderService:
 
     private def stepErrorKey(step: ConversationStep): Option[String] = step match
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
+      case s: ConversationStep.Proof if s.attempts > 0 => Some("proof_failed")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.temporaryExpired && s.timesSubmitted > 0 => Some("temporary_expired")
       case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
@@ -757,6 +763,9 @@ object ConversationRenderService:
             destination = credential.map(_.fold(Email.mask, Phone.mask)),
           )
 
+        case s: ConversationStep.Proof =>
+          ZIO.succeed(StepView.Proof(kind = s.kind, token = s.token, params = s.params))
+
         case s: ConversationStep.PasskeyEnroll =>
           ZIO.succeed(StepView.PasskeyEnroll(publicKeyOptions = s.publicKeyOptions))
 
@@ -887,6 +896,7 @@ object ConversationRenderService:
       case _: StepView.Password => "password"
       case _: StepView.SetPassword => "set-password"
       case _: StepView.Otp => "otp"
+      case _: StepView.Proof => "proof"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
       case _: StepView.Consent => "consent"
       case _: StepView.AccountSettings => "auth-settings"

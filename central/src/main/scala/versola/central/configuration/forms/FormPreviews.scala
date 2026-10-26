@@ -179,6 +179,34 @@ object FormPreviews:
       ),
     ),
     FormPreview(
+      "proof",
+      Vector(
+        scenario(
+          "checking",
+          "Checking the request",
+          "Проверка запроса",
+          obj(
+            "type" -> str("proof"),
+            "kind" -> str("pow"),
+            "token" -> str("preview"),
+            "params" -> obj("seed" -> str("preview"), "difficulty" -> str("40")),
+          ),
+        ),
+        scenario(
+          "refused",
+          "Solution refused",
+          "Решение не принято",
+          obj(
+            "type" -> str("proof"),
+            "kind" -> str("pow"),
+            "token" -> str("preview"),
+            "params" -> obj("seed" -> str("preview"), "difficulty" -> str("40")),
+          ),
+          Some("proof_failed"),
+        ),
+      ),
+    ),
+    FormPreview(
       "password",
       Vector(
         scenario("password", "Enter the password", "Ввод пароля", obj("type" -> str("password"), "passwordRegex" -> str(passwordRegex))),

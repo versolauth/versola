@@ -678,6 +678,31 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is no way yet to approve a proposal: that, and creating the entry (`AntifraudProposal.toNewListEntry`), is a
   follow-up.
 
+- **Challenges (a proof of work before a code is sent; no table).** A request the decision engine scores at or above
+  `antifraud.decision.challenge-at` (and below `block-at`) is no longer only held for `antifraud.decision.delay`: auth
+  sends no code and answers with the `proof` step, a page whose script finds a number for which SHA-256 of `seed:number`
+  starts with *difficulty* zero bits, and sends it back by itself; the code goes out once it is right. A phone needs
+  about a second at 16 bits and each bit doubles the work, so a request that scores higher is asked for more:
+  `min-difficulty` (16) plus one bit per `score-step` (15) points above `challenge-at`, at most `max-difficulty`
+  (20). The token that carries it is signed (a key derived from `security.antifraud-subject-secret`, or the sessions
+  secret without one), names the tenant, client, conversation and the hash of the destination, and is good for `ttl`
+  (2 minutes, after which a new challenge is made); the conversation holds the one it issued, so a solution is used once
+  and cannot be taken to another request. `max-attempts` (5) wrong solutions refuse the request (`blocked`). The keys of
+  the optional `antifraud.challenge` block are `enabled` (`true`; `false` keeps the pause), `min-difficulty`,
+  `max-difficulty`, `score-step`, `ttl` and `max-attempts`, **read whole: set every key, or none** (a block that
+  leaves one out is not read at all). It fails open like the rest of the engine: a request that cannot be challenged (the
+  block is off, a token could not be made, the `proof` form is missing) is held and sent as before, and **a failed
+  evaluation (`antifraud_error`, `failure-action`) is a `Challenge` by default**, so an engine that times out now
+  costs every request a proof instead of a pause. The step is the form `proof`, which central seeds at start-up like the others (a
+  deployment that replaced the forms with its own needs it added in the console, or its requests are held and sent as
+  before). The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
+  column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
+  `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and
+  `antifraud_challenges_total{kind,outcome}` counts them. A script that finds the number gets its code: the proof makes
+  an attack cost CPU, it does not stop one, so keep the limits of the lists, the velocity counters and the SMS budget.
+  Only the proof of work is built; the `ChallengeVerifier` interface is where a provider's check (Turnstile and the
+  like) is added.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

@@ -381,7 +381,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             seen.get.flatMap(_.ip) == Some("203.0.113.7"),
             seen.get.flatMap(_.destPrefix) == Some("491512"),
             details == Some(
-              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked")),
+              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked"), None, None),
             ),
           )
       },
@@ -397,7 +397,35 @@ object AntifraudEventsSpec extends UnitSpecBase:
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             decision == Decision.allow,
-            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"))),
+            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"), None, None)),
+          )
+      },
+      test("a challenge step puts the decision, the kind and the level of the challenge on the log context, and its outcome in the event log") {
+        val e = env
+        val challenging = Decision(DecisionAction.Challenge, 61, List("phone_velocity"))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small)
+            _ <- events.challengeStep(authId, clientId, None, Right(phone), AntifraudOutcome.challenged, challenging, "pow", 17)
+            details <- logContext.get.map(_.get(Observability.antifraud))
+            _ <- TestClock.adjust(0.seconds)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            details == Some(Observability.AntifraudDetails(
+              "otp_request",
+              "Challenge",
+              61,
+              List("phone_velocity"),
+              Some("491512"),
+              Some("challenged"),
+              Some("pow"),
+              Some(17),
+            )),
+            written.map(_.outcome) == List(AntifraudOutcome.challenged),
+            written.map(_.action) == List(AntifraudAction.otp_request),
+            written.flatMap(_.decision) == List("Challenge"),
           )
       },
     ),
@@ -408,14 +436,24 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val vsettings = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
         val velocity = VelocityCounters(vsettings)
         val engine = Antifraud.Impl(
-          Antifraud.Settings(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          Antifraud.Settings(
+            enabled = true,
+            blockAt = 50,
+            delayAt = 0,
+            challengeAt = 0,
+            reviewAt = 0,
+            delay = 1.second,
+            timeout = 1.second,
+            failureAction = DecisionAction.Challenge,
+          ),
           List(VelocityRules.ruleSet(vsettings)),
         )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            events <-
+              build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
             first <- events.decideOtpRequest(clientId, None, Right(phone))
             second <- events.decideOtpRequest(clientId, None, Right(phone))
             third <- events.decideOtpRequest(clientId, None, Right(phone))

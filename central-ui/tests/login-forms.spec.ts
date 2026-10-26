@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
 
@@ -524,6 +525,48 @@ test.describe('credential', () => {
   });
 });
 
+test.describe('proof', () => {
+  // Sixteen zero bits: a few tens of milliseconds, so the page is seen before it moves on. 40 is never found within a test.
+  const step = { type: 'proof', kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '16' } };
+  const unsolvable = { ...step, params: { seed: 'abc', difficulty: '40' } };
+
+  test('solves the challenge by itself and sends the token with the solution', async ({ page }) => {
+    const { submitted } = await renderForm(page, 'proof', { step });
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0]).toMatchObject({ method: 'POST', path: '/challenge/proof' });
+    expect(submitted[0].query.get('ui_locale')).toBe('en');
+    expect(submitted[0].fields.get('token')).toBe('signed.token');
+    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+    // What it sent really is a solution: SHA-256 of `seed:nonce` starts with sixteen zero bits.
+    const nonce = submitted[0].fields.get('solution')!;
+    expect(nonce).toMatch(/^\d+$/);
+    const digest = createHash('sha256').update(`abc:${nonce}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1]).toBe(0);
+  });
+
+  test('says what it is doing', async ({ page }) => {
+    const { t } = await renderForm(page, 'proof', { step: unsolvable });
+
+    await expect(page.getByRole('heading', { name: t.title })).toBeVisible();
+    await expect(page.getByText(t.working)).toBeVisible();
+  });
+
+  test('shows why it is asking again after a solution was refused', async ({ page }) => {
+    const { t } = await renderForm(page, 'proof', { step: unsolvable, error: 'proof_failed' });
+
+    await expect(page.getByText(t.proof_failed)).toBeVisible();
+  });
+
+  test('a kind it cannot solve says so, and sends nothing', async ({ page }) => {
+    const { t, submitted } = await renderForm(page, 'proof', { step: { ...step, kind: 'widget' } });
+
+    await expect(page.getByText(t.unsupported)).toBeVisible();
+    expect(submitted).toHaveLength(0);
+  });
+});
+
 test.describe('consent', () => {
   const scopes = [
     { scope: 'openid', description: 'Know who you are', claims: [], deselectable: false },
@@ -825,6 +868,7 @@ test.describe('terminal screens', () => {
  */
 const accessibilityCases: Array<[string, FormConfig]> = [
   ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' } }],
+  ['proof', { step: { type: 'proof', kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '40' } } }],
   ['password', { step: { type: 'password' } }],
   ['set-password', { step: { type: 'set-password' } }],
   ['credential', { step: { type: 'credential', primaryCredentials: ['login'], passkey: true } }],

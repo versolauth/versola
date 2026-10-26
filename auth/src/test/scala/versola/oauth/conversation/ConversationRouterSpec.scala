@@ -364,6 +364,26 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 1,
         )
       },
+      test("a proof submitted to a conversation that is on the proof step is handed to the service") {
+        val env = Env()
+        val proof = ConversationStep.Proof("pow", "tok", 16, Map("seed" -> "s"), factorIndex = 0, score = 61, rules = Nil, attempts = 0)
+        val proofRecord = otpRecord.copy(step = proof)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(proofRecord))
+          _ <- env.otpConversationService.solveProof.succeedsWith(ConversationResult.RenderStep(proof))
+          (result, _) <- env.router.submit(authId, ProofSubmission("tok", "42", "test-csrf"), None, None)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(proof),
+          env.otpConversationService.solveProof.calls.map(_._5) == List("tok"),
+        )
+      },
+      test("a proof submitted to a conversation that is not on the proof step is a step mismatch") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          (result, _) <- env.router.submit(authId, ProofSubmission("tok", "42", "test-csrf"), None, None)
+        yield assertTrue(result == ConversationResult.BadRequest, env.otpConversationService.solveProof.calls.isEmpty)
+      },
       test("return BadRequest when the submission does not match the current step") {
         val env = Env()
         val submission = OtpSubmission(otpCode, "test-csrf")

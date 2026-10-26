@@ -1,0 +1,28 @@
+{
+  "en": {
+    "page_title": "Checking your request",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
+    "title": "One moment",
+    "description": "We are checking that this request comes from a person. It takes a few seconds and continues by itself.",
+    "working": "Checking…",
+    "proof_failed": "The check did not pass. Trying again.",
+    "unsupported": "This check is not supported by your browser. Please try another browser.",
+    "service_unavailable": "Service temporarily unavailable. Please try again later"
+  },
+  "ru": {
+    "page_title": "Проверка запроса",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
+    "title": "Минутку",
+    "description": "Мы проверяем, что запрос отправил человек. Это займёт несколько секунд, дальше всё произойдёт само.",
+    "working": "Проверяем…",
+    "proof_failed": "Проверка не пройдена. Пробуем ещё раз.",
+    "unsupported": "Ваш браузер не поддерживает эту проверку. Попробуйте другой браузер.",
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+  }
+}

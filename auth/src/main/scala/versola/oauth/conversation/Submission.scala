@@ -21,6 +21,10 @@ case class OtpResendSubmission(csrf: String)
 case class OtpSubmission(code: OtpCode, csrf: String)
   extends Submission derives Schema
 
+/** The solution of the proof the conversation asked for, with the token it was asked with. */
+case class ProofSubmission(token: String, solution: String, csrf: String)
+  extends Submission derives Schema
+
 case class PasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
 

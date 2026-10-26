@@ -79,6 +79,18 @@ final class RecordingAntifraudEvents(
       decision,
     ))) *> afterRequested
 
+  override def challengeStep(
+      authId: AuthId,
+      clientId: ClientId,
+      userAgent: Option[String],
+      credential: Either[Email, Phone],
+      outcome: AntifraudOutcome,
+      decision: Decision,
+      kind: String,
+      level: Int,
+  ): UIO[Unit] =
+    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, Some(decision)))).unit
+
   override def otpChecked(
       authId: AuthId,
       clientId: ClientId,
