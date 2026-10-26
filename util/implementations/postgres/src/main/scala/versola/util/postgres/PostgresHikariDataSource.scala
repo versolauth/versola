@@ -230,14 +230,17 @@ object PostgresHikariDataSource:
     import java.nio.file.{Files, Path, Paths}
     import scala.jdk.CollectionConverters.*
 
+    def name(path: Path): Option[String] = Option(path.getFileName).map(_.toString)
+
     val root = new java.io.File(".").getCanonicalFile.toPath
     Files.walk(root, 4)
       .iterator()
       .asScala
       // By path components, not a string suffix: on Windows the separator is `\`, and a suffix
       // check found nothing there -- Flyway then ran with no locations and every repository
-      // spec failed on a missing table.
-      .filter(path => path.getFileName.toString == "migrations" && Option(path.getParent).exists(_.getFileName.toString == "postgres"))
+      // spec failed on a missing table. The walk yields `root` itself first, whose file name is
+      // null when the working directory is a filesystem root, hence the `Option`s.
+      .filter(path => name(path).contains("migrations") && Option(path.getParent).flatMap(name).contains("postgres"))
       .map { path =>
         s"filesystem:./${root.relativize(path).toString.replace('\\', '/')}"
       }
