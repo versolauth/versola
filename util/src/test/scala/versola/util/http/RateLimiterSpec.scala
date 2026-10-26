@@ -365,7 +365,10 @@ object RateLimiterSpec extends ZIOSpecDefault:
           l <- RateLimiter.make(RateLimiterSettings(1000))
           _ <- l.update(Nil, declared = List(limit))
           _ = l.check(Checkpoint.Identity, client("c"), 0L)
-          _ <- l.update(Nil, declared = List(limit.copy(limit = one.copy(mode = GuardMode.Shadow)), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one)))
+          _ <- l.update(
+            Nil,
+            declared = List(limit.copy(limit = one.copy(mode = GuardMode.Shadow)), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one)),
+          )
           kept = l.check(Checkpoint.Identity, client("c"), 0L)
           _ <- l.update(Nil, declared = List(limit.copy(limit = one.copy(limits = List(RateLimitWindow(5, 60)), burst = 5))))
           fresh = l.check(Checkpoint.Identity, client("c"), 0L)
@@ -384,11 +387,18 @@ object RateLimiterSpec extends ZIOSpecDefault:
         val one = DeclaredRateLimit(limits = List(RateLimitWindow(10, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
-          _ <- l.update(Nil, declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one)))
+          _ <- l.update(
+            Nil,
+            declared =
+              List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one)),
+          )
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x"), 0L)
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/y"), 0L)
           _ <- l.publish
-          allowed <- Metric.counter("edge_rate_limit_decisions_total").tagged(Set(MetricLabel("policy", "resource-endpoint"), MetricLabel("result", "allowed"))).value
+          allowed <- Metric.counter("edge_rate_limit_decisions_total").tagged(Set(
+            MetricLabel("policy", "resource-endpoint"),
+            MetricLabel("result", "allowed"),
+          )).value
           keys <- Metric.gauge("edge_rate_limit_tracked_keys").tagged(MetricLabel("policy", "resource-endpoint")).value
         yield assertTrue(allowed.count >= 2.0, keys.value >= 2.0, l.names == List("resource-endpoint"))
       },
@@ -398,7 +408,13 @@ object RateLimiterSpec extends ZIOSpecDefault:
         val keys = RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x")
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
-          _ <- l.update(Nil, declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast)))
+          _ <- l.update(
+            Nil,
+            declared = List(
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast),
+            ),
+          )
           limited: RateDecision.Limited = RateDecision.Limited("resource-endpoint", 60)
         yield assertTrue(
           l.responseHeaders(limited, Checkpoint.Route, keys) == List(

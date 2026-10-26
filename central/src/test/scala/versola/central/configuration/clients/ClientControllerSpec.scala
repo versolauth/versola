@@ -231,7 +231,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     themeOverrides = None,
   )
 
-  private val clientRateLimit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
+  private val clientRateLimit =
+    DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
 
   private val partnerTheme =
     ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None, background = None)

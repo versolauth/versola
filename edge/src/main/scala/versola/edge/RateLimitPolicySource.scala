@@ -74,14 +74,14 @@ object RateLimitPolicyApplier:
             else
               val (usable, refused) = validDeclared(declaredLimits)
               ZIO.logWarning(s"rate limits declared on endpoints or clients not applied: ${refused.mkString("; ")}").when(refused.nonEmpty) *>
-              RateLimitPolicyApplier(policies, limiter, pods, usable).flatMap:
-                case Right(_) =>
-                  applied.set(Some(current)) *> ZIO.logInfo(
-                    s"rate limit policies applied: ${describe(policies)}, replicas $pods, declared ${describeDeclared(usable)}",
-                  )
-                case Left(why) =>
-                  // remembered, so a set that stays invalid is reported once and not every second
-                  applied.set(Some(current)) *> ZIO.logWarning(s"rate limit policies not applied: $why")
+                RateLimitPolicyApplier(policies, limiter, pods, usable).flatMap:
+                  case Right(_) =>
+                    applied.set(Some(current)) *> ZIO.logInfo(
+                      s"rate limit policies applied: ${describe(policies)}, replicas $pods, declared ${describeDeclared(usable)}",
+                    )
+                  case Left(why) =>
+                    // remembered, so a set that stays invalid is reported once and not every second
+                    applied.set(Some(current)) *> ZIO.logWarning(s"rate limit policies not applied: $why")
         .repeat(Schedule.fixed(1.second))
         .forever
 

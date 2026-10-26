@@ -258,8 +258,14 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         stored == Right((resourceId, None)),
         env.repository.createResource.calls.map(_._5.head.rateLimit) == List(Some(limit)),
-        burstTooHigh == Left(ResourceValidationError.InvalidRateLimit(existingEndpointId, "policy resource-endpoint: burst must not exceed the smallest limit")),
-        noWindow == Left(ResourceValidationError.InvalidRateLimit(existingEndpointId, "policy resource-endpoint: limits must have at least one window")),
+        burstTooHigh == Left(ResourceValidationError.InvalidRateLimit(
+          existingEndpointId,
+          "policy resource-endpoint: burst must not exceed the smallest limit",
+        )),
+        noWindow == Left(ResourceValidationError.InvalidRateLimit(
+          existingEndpointId,
+          "policy resource-endpoint: limits must have at least one window",
+        )),
         // the refused requests reached the repository no more than the first
         env.repository.createResource.calls.size == 1,
       )

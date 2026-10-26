@@ -175,7 +175,8 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService, noEnrollment)
         limits <- service.getRateLimits
-        viaCache <- ClientRateLimitsSyncClient.live.build.provideLayer(ZLayer.succeed[OAuthClientsSyncClient](service) ++ Scope.default).flatMap(_.get.getAll)
+        viaCache <-
+          ClientRateLimitsSyncClient.live.build.provideLayer(ZLayer.succeed[OAuthClientsSyncClient](service) ++ Scope.default).flatMap(_.get.getAll)
       yield assertTrue(limits == Map(ClientId("public-spa") -> limit), viaCache == limits)
     },
     test("fails the whole sync on an unusable key rather than serving a doubtful snapshot") {

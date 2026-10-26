@@ -288,7 +288,13 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
   def stats(policy: String): Option[RateLimitStats] =
     Option(installed.get.all.filter(_.policy.name == policy)).filter(_.nonEmpty).map: ps =>
       val ts = ps.map(_.tracker)
-      RateLimitStats(ts.map(_.allowed.sum).sum, ts.map(_.limited.sum).sum, ts.map(_.wouldLimit.sum).sum, ts.map(_.overflowHits.sum).sum, ts.map(_.size).sum)
+      RateLimitStats(
+        ts.map(_.allowed.sum).sum,
+        ts.map(_.limited.sum).sum,
+        ts.map(_.wouldLimit.sum).sum,
+        ts.map(_.overflowHits.sum).sum,
+        ts.map(_.size).sum,
+      )
 
   /** Moves the counts and gauges into the metrics registry. The hot path only bumps adders; this runs once a second. */
   val publish: UIO[Unit] =

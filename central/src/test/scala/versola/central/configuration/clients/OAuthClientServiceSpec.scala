@@ -593,7 +593,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("registerClient stores a client's rate limit and refuses one that breaks a rule, naming the client") {
       val env = new Env(Vector.empty)
-      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        burst = 50,
+        by = DeclaredRateLimitBy.Subject,
+        mode = GuardMode.Enforce,
+      )
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
@@ -608,7 +613,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case error: InvalidRegistrationConfiguration => error.reason.contains("by must be subject or none on an OAuth client")
           case _ => false,
         burst.left.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("burst must not exceed the smallest limit") && error.clientId == createRequest.id
+          case error: InvalidRegistrationConfiguration =>
+            error.reason.contains("burst must not exceed the smallest limit") && error.clientId == createRequest.id
           case _ => false,
       )
     },

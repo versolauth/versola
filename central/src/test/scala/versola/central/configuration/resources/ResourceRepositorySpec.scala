@@ -1,11 +1,11 @@
 package versola.central.configuration.resources
 
-import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, InjectTarget, PatchAudience, ResourceUri}
 import versola.util.DatabaseSpecBase
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import zio.test.*
 
 import java.util.UUID

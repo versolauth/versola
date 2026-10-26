@@ -1,6 +1,18 @@
 package versola.edge
 
-import versola.util.http.{Checkpoint, DeclaredLimit, DeclaredOwner, DeclaredRateLimit, GuardMode, RateDecision, RateLimitDimension, RateLimitKeys, RateLimitPolicy, RateLimitWindow, RateLimiter}
+import versola.util.http.{
+  Checkpoint,
+  DeclaredLimit,
+  DeclaredOwner,
+  DeclaredRateLimit,
+  GuardMode,
+  RateDecision,
+  RateLimitDimension,
+  RateLimitKeys,
+  RateLimitPolicy,
+  RateLimitWindow,
+  RateLimiter,
+}
 import zio.*
 import zio.test.*
 

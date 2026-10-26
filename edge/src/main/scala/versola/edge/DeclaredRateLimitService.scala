@@ -47,11 +47,12 @@ object DeclaredRateLimitService:
         resourceList <- resources.all
         clientMap <- clients.get
       yield
-        val endpoints = for
-          resource <- resourceList.toList.sortBy(_.resourceId.toString)
-          endpoint <- resource.endpoints.toList
-          limit <- endpoint.rateLimit
-        yield DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = endpoint.template(resource.resourceId), limit = limit)
+        val endpoints =
+          for
+            resource <- resourceList.toList.sortBy(_.resourceId.toString)
+            endpoint <- resource.endpoints.toList
+            limit <- endpoint.rateLimit
+          yield DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = endpoint.template(resource.resourceId), limit = limit)
         val byClient = clientMap.toList.sortBy(_._1.toString).map: (id, limit) =>
           DeclaredLimit(owner = DeclaredOwner.Client, selector = id.toString, limit = limit)
         endpoints ++ byClient

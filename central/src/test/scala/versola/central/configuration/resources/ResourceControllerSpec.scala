@@ -238,7 +238,10 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       verify = (response, _) =>
         for payload <- decodeJsonBody[GetAllResourcesResponse](response)
-        yield assertTrue(payload.resources.head.endpoints.map(e => e.id -> e.rateLimit).toMap == Map(usersCreateEndpointId -> Some(limit), usersListEndpointId -> None)),
+        yield assertTrue(payload.resources.head.endpoints.map(e => e.id -> e.rateLimit).toMap == Map(
+          usersCreateEndpointId -> Some(limit),
+          usersListEndpointId -> None,
+        )),
     ),
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",

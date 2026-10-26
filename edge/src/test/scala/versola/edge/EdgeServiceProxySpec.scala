@@ -10,7 +10,20 @@ import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
-import versola.util.http.{Checkpoint, DeclaredLimit, DeclaredOwner, DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, Observability, RateLimitDimension, RateLimitPolicy, RateLimitScope, RateLimitWindow, RateLimiter}
+import versola.util.http.{
+  Checkpoint,
+  DeclaredLimit,
+  DeclaredOwner,
+  DeclaredRateLimit,
+  DeclaredRateLimitBy,
+  GuardMode,
+  Observability,
+  RateLimitDimension,
+  RateLimitPolicy,
+  RateLimitScope,
+  RateLimitWindow,
+  RateLimiter,
+}
 import versola.util.{
   DpopNonce,
   EcKeyPair,
@@ -3523,7 +3536,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("a limit declared on an endpoint refuses that endpoint only, under the fixed name, and the smaller of it and the edge's policy wins") {
       val env = new Env
-      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+      val declared =
+        DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
       val generous = shadowPolicy("edge-generous", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
         .copy(mode = GuardMode.Enforce, limits = List(RateLimitWindow(limit = 1000, windowSeconds = 60)), burst = 100)
       val users = usersEndpoint().copy(rateLimit = Some(declared))

@@ -79,7 +79,8 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
           "/configuration/resources",
           Fixtures.resourceUpdate(
             f.resourceId,
-            createEndpoints = List(Fixtures.endpoint(id = f.endpoint("limited"), path = "/limited", rateLimit = Some(limit("enforce", 5).add("burst", Json.Num(6))))),
+            createEndpoints =
+              List(Fixtures.endpoint(id = f.endpoint("limited"), path = "/limited", rateLimit = Some(limit("enforce", 5).add("burst", Json.Num(6))))),
           ),
         )
         client <- setClientLimit(f, limit("enforce", 5, by = "client"))
@@ -134,7 +135,8 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         first <- call
         second <- call
         third <- call
-        removed <- ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
+        removed <-
+          ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
         _ <- reachEdge
         lifted <- ZIO.foreach(1 to 3)(_ => call)
       yield assertTrue(
@@ -155,7 +157,8 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         _ <- setClientLimit(f, limit("shadow", 1))
         _ <- reachEdge
         calls <- ZIO.foreach(1 to 3)(_ => edgeApi.proxy(Method.GET, f.resourceId, "/free", established.auth))
-        _ <- ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
+        _ <-
+          ZIO.serviceWithZIO[CentralApi](_.put("/configuration/clients/web", Json.Obj("clientId" -> Json.Str(f.clientId), "rateLimit" -> Json.Null)))
         _ <- reachEdge
       yield assertTrue(calls.forall(_.status == Status.Ok))
     },

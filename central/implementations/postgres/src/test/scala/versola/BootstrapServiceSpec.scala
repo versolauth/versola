@@ -1,6 +1,5 @@
 package versola
 
-import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.jwk.{Curve, JWK}
@@ -21,6 +20,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
