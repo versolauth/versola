@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.util.http.{RateLimitPolicy, RateLimiter}
+import versola.util.http.{ClientIpSource, RateLimitPolicy, RateLimiter}
 import zio.*
 
 /** The rate limit policies this edge should apply now. Nothing in request handling reads it: [[RateLimitPolicyApplier]] polls

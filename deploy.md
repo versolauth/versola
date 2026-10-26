@@ -1153,6 +1153,48 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
 Not there yet: per-endpoint and per-client policies on the resource and
 the OAuth client, and the `RateLimit` headers.
 
+### Limits on auth's channel that is not mutual TLS
+
+The edge's rate limits stand in front of the resources. `auth` reached without the edge, that is not over mutual TLS, is exposed
+directly, so it has limits of its own (#745), from the `limits` block of auth's config file (every key optional; the block may be
+absent):
+
+| Limit | Applies to | Counts | Default |
+|---|---|---|---|
+| failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
+| entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
+
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds) and `{"error":"rate_limited"}`
+before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
+address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
+secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a
+certificate is not a guessable secret).
+
+```hocon
+limits {
+  failed-mode = "enforce"     # off | shadow | enforce
+  failed-per-minute = 20
+  failed-burst = 10
+  entry-mode = "shadow"
+  entry-per-minute = 600
+  entry-burst = 100
+  client-ip = "socket"        # socket | forwarded
+  ip-header = "X-Real-IP"
+}
+```
+
+`client-ip` is read as the edge's is (see *Rate limits*, R1): `socket` is the peer of the connection, `forwarded` the last value of
+`ip-header`, to be used **only** when auth is reachable solely through the proxy that sets it. Behind a proxy with `socket` every
+caller is the proxy, so the limit would count the world as one address. A value outside its range stops the start. State is per
+pod (N pods allow N times a limit) and bounded (a flood of addresses shares an overflow bucket).
+`gen-env.scala` writes `failed-mode = "shadow"` into the **local** config, because the e2e suite fails client authentication from one
+address on purpose; a generated deployment has no block, so the defaults apply. A load campaign whose drivers share addresses
+should set `failed-mode` and `entry-mode` to `shadow` for the run.
+
+Metrics: `auth_rate_limit_decisions_total{policy,result}` (`allowed`, `limited`, `would_limit`; policies
+`failed-client-auth-per-address` and `authorize-per-address`), `auth_rate_limit_tracked_keys{policy}`,
+`auth_rate_limit_overflow_hits_total{policy}`.
+
 ### Access log
 
 Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are

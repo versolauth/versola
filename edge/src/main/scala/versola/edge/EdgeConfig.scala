@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
+import versola.util.http.ClientIpSource
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
 import zio.config.magnolia.DeriveConfig
 import zio.http.{ClientSSLConfig, Scheme, URL}

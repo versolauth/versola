@@ -62,8 +62,12 @@ object RateLimiterSettings:
   * Metrics, published by [[publish]]: `edge_rate_limit_decisions_total{policy,result}` (`allowed`, `limited`, `would_limit`),
   * `edge_rate_limit_tracked_keys{policy}` and `edge_rate_limit_overflow_hits_total{policy}`. A key is never a label.
   */
-final class RateLimiter private (settings: RateLimiterSettings, installed: AtomicReference[RateLimiter.Installed]):
+final class RateLimiter private (settings: RateLimiterSettings, installed: AtomicReference[RateLimiter.Installed], metricPrefix: String):
   import RateLimiter.*
+
+  private val decisions = Metric.counter(s"${metricPrefix}_rate_limit_decisions_total")
+  private val overflowHitsMetric = Metric.counter(s"${metricPrefix}_rate_limit_overflow_hits_total")
+  private val trackedKeys = Metric.gauge(s"${metricPrefix}_rate_limit_tracked_keys")
 
   /** Whether any policy applies at `point`: one volatile read, which is all a deployment with no policies pays. */
   def active(point: Checkpoint): Boolean = installed.get.at(point.ordinal).length > 0
@@ -280,10 +284,6 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
 final case class RateLimitStats(allowed: Long, limited: Long, wouldLimit: Long, overflowHits: Long, trackedKeys: Int)
 
 object RateLimiter:
-  private val decisions = Metric.counter("edge_rate_limit_decisions_total")
-  private val overflowHitsMetric = Metric.counter("edge_rate_limit_overflow_hits_total")
-  private val trackedKeys = Metric.gauge("edge_rate_limit_tracked_keys")
-
   private def labels(policy: String, result: String): Set[MetricLabel] =
     Set(MetricLabel("policy", policy), MetricLabel("result", result))
 
@@ -306,8 +306,9 @@ object RateLimiter:
   private def secondsOf(retryNanos: Long): Int =
     math.max(1L, math.min(Int.MaxValue.toLong, (retryNanos + NanosPerSecond - 1) / NanosPerSecond)).toInt
 
-  def make(settings: RateLimiterSettings = RateLimiterSettings.default): UIO[RateLimiter] =
-    ZIO.succeed(new RateLimiter(settings, new AtomicReference(Installed.empty)))
+  /** @param metricPrefix the service that owns the limiter: `edge_rate_limit_decisions_total`, `auth_rate_limit_decisions_total` */
+  def make(settings: RateLimiterSettings = RateLimiterSettings.default, metricPrefix: String = "edge"): UIO[RateLimiter] =
+    ZIO.succeed(new RateLimiter(settings, new AtomicReference(Installed.empty), metricPrefix))
 
   /** Everything that decides what a bucket is: when this is equal, the buckets of the old policy remain valid. */
   private[http] final case class Shape(

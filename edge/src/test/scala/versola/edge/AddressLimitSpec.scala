@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.util.http.{Checkpoint, GuardMode, RateLimitDimension, RateLimitPolicy, RateLimitWindow, RateLimiter}
+import versola.util.http.{Checkpoint, ClientIpSource, GuardMode, RateLimitDimension, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import versola.util.{Secret, TestCertificates}
 import zio.*
 import zio.http.*
@@ -109,7 +109,11 @@ object AddressLimitSpec extends ZIOSpecDefault:
           _ <- proxied.set(Unauthorized)
           failed <- go(from("/resources/x/items", "198.51.100.2"))
           blocked <- go(from("/resources/x/items", "198.51.100.2"))
-        yield assertTrue(results.forall(_.status == Status.Unauthorized), failed.status == Status.Unauthorized, blocked.status == Status.TooManyRequests)
+        yield assertTrue(
+          results.forall(_.status == Status.Unauthorized),
+          failed.status == Status.Unauthorized,
+          blocked.status == Status.TooManyRequests,
+        )
       },
       test("entry points count every call: /login is limited by address even when it redirects") {
         for
