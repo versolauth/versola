@@ -124,11 +124,22 @@ final case class RateLimitPolicy(
 
 /** The rate limit policies of one edge, as central stores and serves them: the whole set is replaced at once, so the names
   * stay unique and the limit of 64 holds. An empty set is stored as none.
+  *
+  * `replicas` is how many edge pods share the traffic: each pod enforces `limit / replicas` (and `burst / replicas`, rounded up),
+  * so the edge as a whole allows about the limit the operator wrote. As exact as the balancer is even; there is no shared counter.
   */
-final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil) derives JsonCodec, Schema:
-  def validate: Either[String, RateLimitPolicies] = RateLimitPolicy.validateAll(policies).map(_ => this)
+final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil, replicas: Int = 1) derives JsonCodec, Schema:
+  def validate: Either[String, RateLimitPolicies] =
+    for
+      _ <- RateLimitPolicy.check(
+        replicas >= 1 && replicas <= RateLimitPolicies.MaxReplicas,
+        s"replicas must be between 1 and ${RateLimitPolicies.MaxReplicas}",
+      )
+      _ <- RateLimitPolicy.validateAll(policies)
+    yield this
 
 object RateLimitPolicies:
+  val MaxReplicas = 1000
   val empty: RateLimitPolicies = RateLimitPolicies()
 
   /** The starting set an operator can add to an edge with one click (central serves it, so the console and the API agree).

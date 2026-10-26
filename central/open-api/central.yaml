@@ -6193,6 +6193,15 @@ components:
     RateLimitPolicies:
       type: object
       properties:
+        replicas:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: |
+            How many edge pods share the traffic. Each pod enforces `limit / replicas` of every window (and `burst / replicas`,
+            rounded up, never below `cost`), so the edge as a whole allows about the limit written here. As exact as the balancer
+            is even; there is no shared counter. Set it to the number of pods of this edge.
         policies:
           type: array
           maxItems: 64

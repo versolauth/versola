@@ -20,7 +20,7 @@ import { statusIcon } from './status-icon';
  */
 @customElement('versola-rate-limit-policies-editor')
 export class VersolaRateLimitPoliciesEditor extends LitElement {
-  @property({ attribute: false }) draft: RateLimitDraft = { policies: [] };
+  @property({ attribute: false }) draft: RateLimitDraft = { policies: [], replicas: '' };
   /** The inputs are inert while the host saves. */
   @property({ type: Boolean }) disabled = false;
   /** Set by the host on a submit: empty fields are errors from then on. */
@@ -199,7 +199,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
   }
 
   private patch(key: number, patch: Partial<PolicyDraft>) {
-    this.change({ policies: this.draft.policies.map(policy => policy.key === key ? { ...policy, ...patch } : policy) });
+    this.change({ ...this.draft, policies: this.draft.policies.map(policy => policy.key === key ? { ...policy, ...patch } : policy) });
   }
 
   private updateWindow(policy: PolicyDraft, index: number, patch: Partial<WindowDraft>) {
@@ -208,7 +208,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
 
   private addPolicy() {
     const policy = newPolicyDraft();
-    this.change({ policies: [...this.draft.policies, policy] });
+    this.change({ ...this.draft, policies: [...this.draft.policies, policy] });
     // The host owns the draft: the new block exists once it has re-rendered this element with it.
     setTimeout(() => void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`[id="rl-${policy.key}-name"]`)?.focus()));
   }
@@ -220,7 +220,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
       const recommended = await fetchRecommendedRateLimitPolicies();
       const have = new Set(this.draft.policies.map(policy => policy.name.trim()));
       const added = recommended.policies.filter(policy => !have.has(policy.name)).map(draftFromPolicy);
-      this.change({ policies: [...this.draft.policies, ...added] });
+      this.change({ ...this.draft, policies: [...this.draft.policies, ...added] });
     } catch (error) {
       this.recommendedError = error instanceof Error ? error.message : 'Could not load the recommended policies';
     } finally {
@@ -229,7 +229,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
   }
 
   private removePolicy(key: number) {
-    this.change({ policies: this.draft.policies.filter(policy => policy.key !== key) });
+    this.change({ ...this.draft, policies: this.draft.policies.filter(policy => policy.key !== key) });
   }
 
   private toggleDimension(policy: PolicyDraft, dimension: RateLimitDimension, on: boolean) {
@@ -414,6 +414,18 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
           <div class="banner-text">
             <div class="banner-title">${statusIcon('info')}Start in shadow, then enforce</div>
             <div>A policy in shadow mode is checked on every proxied call and the edge counts what it would refuse (<code>edge_rate_limit_decisions_total</code>, result <code>would_limit</code>); nothing is refused. Read it for a while, then switch a policy to enforce: calls over the limit get <code>429</code> with <code>Retry-After</code>. The limit is per edge pod: with several pods the edge as a whole allows up to the limit times the number of pods.</div>
+          </div>
+        </div>
+        <div class="editor-box">
+          <h3>Edge pods</h3>
+          <p class="editor-sub">A limit is counted in each pod separately. Set how many pods this edge runs and each enforces its share, so the edge as a whole allows about the limit you write.</p>
+          <div class="form-group">
+            <label for="rl-replicas">Pods</label>
+            <input type="text" id="rl-replicas" class=${errors.replicas ? 'input-error' : ''} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="1"
+              .value=${this.draft.replicas} aria-invalid=${errors.replicas ? 'true' : nothing} aria-describedby="rl-replicas-error rl-replicas-hint"
+              @input=${(e: Event) => this.change({ ...this.draft, replicas: (e.target as HTMLInputElement).value })} />
+            ${errors.replicas ? html`<div class="error-message" id="rl-replicas-error" role="alert">${errors.replicas}</div>` : html`<span id="rl-replicas-error"></span>`}
+            <div class="hint" id="rl-replicas-hint">Empty: 1, the full limit applies to each pod. As even as the balancer: there is no shared counter.</div>
           </div>
         </div>
         ${policies.length === 0 ? html`

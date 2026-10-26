@@ -10,12 +10,16 @@ import zio.*
 trait RateLimitPolicySource:
   def current: UIO[List[RateLimitPolicy]]
 
+  /** The number of pods the traffic is shared by; a limit is divided by it. */
+  def replicas: UIO[Int] = ZIO.succeed(1)
+
 object RateLimitPolicySource:
   /** The policies central holds for this edge, as [[RateLimitPolicyService]] syncs them. */
   val fromCentral: URLayer[RateLimitPolicyService, RateLimitPolicySource] =
     ZLayer.fromFunction((service: RateLimitPolicyService) =>
       new RateLimitPolicySource:
-        override val current: UIO[List[RateLimitPolicy]] = service.current,
+        override val current: UIO[List[RateLimitPolicy]] = service.current
+        override val replicas: UIO[Int] = service.replicas,
     )
 
   /** No policy at all (tests, tools): the limiter stays disabled and a request pays one volatile read. */
@@ -29,27 +33,28 @@ object RateLimitPolicySource:
   */
 object RateLimitPolicyApplier:
   /** Applies `policies` if they are valid. `Left` carries what was wrong with them. */
-  def apply(policies: List[RateLimitPolicy], limiter: RateLimiter): UIO[Either[String, Unit]] =
+  def apply(policies: List[RateLimitPolicy], limiter: RateLimiter, replicas: Int = 1): UIO[Either[String, Unit]] =
     RateLimitPolicy.validateAll(policies) match
       case Left(why) => ZIO.succeed(Left(why))
-      case Right(valid) => limiter.update(valid).as(Right(()))
+      case Right(valid) => limiter.update(valid, replicas).as(Right(()))
 
   /** Polls `source` once a second and applies what it yields when it changed, for the life of the service. A change is logged
     * once, with names and modes (never keys); nothing is logged while the policies stay the same.
     */
-  def run(source: UIO[List[RateLimitPolicy]], limiter: RateLimiter): UIO[Nothing] =
-    Ref.make[Option[List[RateLimitPolicy]]](None).flatMap: applied =>
-      source
-        .flatMap: policies =>
+  def run(source: UIO[List[RateLimitPolicy]], limiter: RateLimiter, replicas: UIO[Int] = ZIO.succeed(1)): UIO[Nothing] =
+    Ref.make[Option[(List[RateLimitPolicy], Int)]](None).flatMap: applied =>
+      (source <*> replicas)
+        .flatMap: current =>
+          val (policies, pods) = current
           applied.get.flatMap: previous =>
-            if previous.contains(policies) then ZIO.unit
+            if previous.contains(current) then ZIO.unit
             else
-              RateLimitPolicyApplier(policies, limiter).flatMap:
+              RateLimitPolicyApplier(policies, limiter, pods).flatMap:
                 case Right(_) =>
-                  applied.set(Some(policies)) *> ZIO.logInfo(s"rate limit policies applied: ${describe(policies)}")
+                  applied.set(Some(current)) *> ZIO.logInfo(s"rate limit policies applied: ${describe(policies)}, replicas $pods")
                 case Left(why) =>
                   // remembered, so a set that stays invalid is reported once and not every second
-                  applied.set(Some(policies)) *> ZIO.logWarning(s"rate limit policies not applied: $why")
+                  applied.set(Some(current)) *> ZIO.logWarning(s"rate limit policies not applied: $why")
         .repeat(Schedule.fixed(1.second))
         .forever
 
@@ -66,6 +71,6 @@ object EdgeRateLimiter:
         source <- ZIO.service[RateLimitPolicySource]
         scope <- ZIO.service[Scope]
         limiter <- RateLimiter.make()
-        _ <- RateLimitPolicyApplier.run(source.current, limiter).forkIn(scope)
+        _ <- RateLimitPolicyApplier.run(source.current, limiter, source.replicas).forkIn(scope)
         _ <- limiter.run.forkIn(scope)
       yield limiter

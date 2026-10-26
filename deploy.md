@@ -1118,8 +1118,12 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   (the IETF draft is still moving).
 - **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
   protection refuses whoever is there, by priority, with `503`.
-- **The limit is per pod.** With several replicas behind a balancer the edge as a whole allows up to the policy's limit times
-  the number of pods; divide the limit by the replicas when you set it. A per-replica share setting is not there yet.
+- **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
+  path). Set `replicas` in the policy set (`{"replicas": 3, "policies": [...]}`, "Edge pods" in the console) to the number of pods
+  of the edge and each pod enforces `limit / replicas` of every window and `burst / replicas` (rounded up, never below `cost`), so the
+  edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
+  (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
+  applies to each pod and N pods allow N times it. Change it when the number of pods changes.
 - **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
   `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
 
@@ -1127,7 +1131,7 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
 `edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
 `edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
 
-Not there yet: R1 (the source address), the per-replica share of a limit, per-endpoint and per-client policies on the resource and
+Not there yet: R1 (the source address), per-endpoint and per-client policies on the resource and
 the OAuth client, and the `RateLimit` headers.
 
 ### Access log

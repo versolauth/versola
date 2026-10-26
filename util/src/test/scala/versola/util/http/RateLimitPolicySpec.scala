@@ -105,6 +105,20 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("replicas")(
+      test("default 1, validated between 1 and 1000, round-trips") {
+        import zio.json.*
+        val set = RateLimitPolicies(List(valid), replicas = 3)
+        assertTrue(
+          RateLimitPolicies().replicas == 1,
+          set.validate.isRight,
+          RateLimitPolicies(List(valid), replicas = 0).validate.left.exists(_.contains("replicas")),
+          RateLimitPolicies(List(valid), replicas = 1001).validate.isLeft,
+          set.toJson.fromJson[RateLimitPolicies] == Right(set),
+          """{"policies":[]}""".fromJson[RateLimitPolicies] == Right(RateLimitPolicies.empty),
+        )
+      },
+    ),
     suite("recommended set")(
       test("validates, has unique names and starts every policy in shadow") {
         val set = RateLimitPolicies.recommended

@@ -71,11 +71,11 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
     * switching a mode or an unrelated policy does not hand every key a full bucket. The policies are expected to have passed
     * [[RateLimitPolicy.validateAll]].
     */
-  def update(policies: List[RateLimitPolicy]): UIO[Unit] =
+  def update(policies: List[RateLimitPolicy], replicas: Int = 1): UIO[Unit] =
     publish *> ZIO.succeed:
       val before = installed.get
       val runtimes = policies.filter(_.mode != GuardMode.Off).map: policy =>
-        val shape = Shape.of(policy, settings)
+        val shape = Shape.of(policy, settings, math.max(1, replicas))
         val reused = before.byName.get(policy.name).map(_.tracker).filter(_.shape == shape)
         new Policy(policy, reused.getOrElse(new Tracker(shape)))
       installed.set(Installed.of(runtimes))
@@ -265,11 +265,14 @@ object RateLimiter:
       burst: Int,
       cost: Int,
       maxKeys: Int,
-  )
+      replicas: Int,
+  ):
+    /** What each pod allows of one window: `limit / replicas` as a longer emission interval, and a burst that is at least the cost. */
+    def podBurst: Int = math.max(cost, (burst + replicas - 1) / replicas)
 
   private[http] object Shape:
-    def of(policy: RateLimitPolicy, settings: RateLimiterSettings): Shape =
-      Shape(policy.scope, policy.by, policy.limits, policy.burst, policy.cost, settings.maxKeysPerPolicy)
+    def of(policy: RateLimitPolicy, settings: RateLimiterSettings, replicas: Int = 1): Shape =
+      Shape(policy.scope, policy.by, policy.limits, policy.burst, policy.cost, settings.maxKeysPerPolicy, replicas)
 
   /** The state of one key: a `tat` per window, `Removed` in the first when the entry has left its map. */
   private[http] final class Entry(windows: Int):
@@ -325,9 +328,9 @@ object RateLimiter:
   private[http] final class Tracker(val shape: Shape):
     private val windows = shape.limits.size
     // per window: nanoseconds one cost unit takes, and how far `tat` may run ahead of the clock (burst tolerance)
-    private val emission = shape.limits.map(w => w.windowSeconds * NanosPerSecond / w.limit).toArray
+    private val emission = shape.limits.map(w => w.windowSeconds * NanosPerSecond * shape.replicas / w.limit).toArray
     private val increment = emission.map(_ * shape.cost)
-    private val tolerance = emission.map(_ * shape.burst)
+    private val tolerance = emission.map(_ * shape.podBurst)
 
     private val entries = new ConcurrentHashMap[String, Entry]()
     private val count = new AtomicInteger(0)

@@ -18,7 +18,7 @@ import {
   validateDraft as validateAccessLogDraft, type AccessLogDraft,
 } from '../utils/access-log-policy';
 import {
-  countText as rateLimitCountText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimitPolicies,
+  countText as rateLimitCountText, podsText as rateLimitPodsText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimitPolicies,
   policiesFromDraft as rateLimitPoliciesFromDraft, summary as rateLimitSummary, validateDraft as validateRateLimitDraft, type RateLimitDraft,
 } from '../utils/rate-limit-policies';
 import type { VersolaOverloadPolicyEditor } from './overload-policy-editor';
@@ -768,6 +768,7 @@ export class VersolaEdgesList extends LitElement {
 
       <versola-record-card heading="Rate limits" subheading="Who may send how much through this edge. Start in shadow (counts only), then enforce. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
         ${this.row('Policies', rateLimitCountText(edge.rateLimitPolicies))}
+        ${this.row('Edge pods', rateLimitPodsText(edge.rateLimitPolicies))}
         ${(edge.rateLimitPolicies?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
         ${(edge.rateLimitPolicies?.policies.length ?? 0) > 5 ? this.row('', `and ${edge.rateLimitPolicies!.policies.length - 5} more`) : ''}
         ${this.canManage && !isEmptyRateLimitPolicies(edge.rateLimitPolicies) ? html`

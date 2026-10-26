@@ -31,9 +31,12 @@ export interface RateLimitPolicy {
 /** The body of the PUT and the field central returns per edge. */
 export interface RateLimitPolicies {
   policies: RateLimitPolicy[];
+  /** How many edge pods share the traffic; each enforces limit / replicas. Absent means 1. */
+  replicas?: number;
 }
 
 export const MAX_POLICIES = 64;
+export const MAX_REPLICAS = 1000;
 export const MAX_WINDOWS = 8;
 export const MAX_NAME_LENGTH = 48;
 export const MAX_COUNT = 1_000_000;
@@ -87,6 +90,8 @@ export interface PolicyDraft {
 
 export interface RateLimitDraft {
   policies: PolicyDraft[];
+  /** The number of edge pods as typed; empty means 1. */
+  replicas: string;
 }
 
 let nextKey = 1;
@@ -101,11 +106,12 @@ export function newPolicyDraft(): PolicyDraft {
 }
 
 export function emptyDraft(): RateLimitDraft {
-  return { policies: [] };
+  return { policies: [], replicas: '' };
 }
 
 export function draftFromPolicies(set: RateLimitPolicies | undefined | null): RateLimitDraft {
   return {
+    replicas: set?.replicas && set.replicas !== 1 ? String(set.replicas) : '',
     policies: (set?.policies ?? []).map(policy => ({
       key: nextKey++,
       name: policy.name,
@@ -122,7 +128,9 @@ export function draftFromPolicies(set: RateLimitPolicies | undefined | null): Ra
 
 /** The body of the PUT: what the operator typed, with the defaults left out. */
 export function policiesFromDraft(draft: RateLimitDraft): RateLimitPolicies {
+  const replicas = draft.replicas.trim();
   return {
+    ...(replicas !== '' ? { replicas: Number(replicas) } : {}),
     policies: draft.policies.map(policy => {
       const body: RateLimitPolicy = {
         name: policy.name.trim(),
@@ -153,6 +161,8 @@ function parseInt10(raw: string): number | null {
 /** The first message of each field that fails, keyed `<n>.name`, `<n>.limit.<j>`, `<n>.window.<j>`, `<n>.burst`, `<n>.cost`, `<n>.limits` (the block's windows as a whole) or `set`. */
 export function validateDraft(draft: RateLimitDraft): Record<string, string> {
   const errors: Record<string, string> = {};
+  const pods = draft.replicas.trim();
+  if (pods !== '' && (parseInt10(pods) === null || parseInt10(pods)! < 1 || parseInt10(pods)! > MAX_REPLICAS)) errors.replicas = `replicas must be between 1 and ${MAX_REPLICAS}`;
   if (draft.policies.length > MAX_POLICIES) errors.set = `at most ${MAX_POLICIES} rate limit policies`;
   const seen = new Map<string, number>();
   draft.policies.forEach((policy, n) => {
@@ -215,6 +225,11 @@ export function summary(policy: RateLimitPolicy): string {
   if (policy.burst && policy.burst > 1) parts.push(`burst ${policy.burst}`);
   if (policy.cost && policy.cost > 1) parts.push(`cost ${policy.cost}`);
   return parts.join(' · ');
+}
+
+export function podsText(set: RateLimitPolicies | undefined | null): string {
+  const pods = set?.replicas ?? 1;
+  return pods === 1 ? 'One (the full limit applies to each pod)' : `${pods} (each pod enforces 1/${pods} of a limit)`;
 }
 
 export function countText(set: RateLimitPolicies | undefined | null): string {

@@ -12,6 +12,9 @@ trait RateLimitPolicyService:
   /** The policies now, empty when none are set. */
   def current: UIO[List[RateLimitPolicy]]
 
+  /** How many edge pods share the traffic, so each enforces its share of a limit. */
+  def replicas: UIO[Int]
+
   /** Reloads from central now, instead of waiting for the refresh interval (the non-prod `/service/configuration/sync`). */
   def refreshNow: Task[Unit]
 
@@ -31,5 +34,7 @@ object RateLimitPolicyService:
       source: RateLimitPolicySyncClient,
   ) extends RateLimitPolicyService:
     override def current: UIO[List[RateLimitPolicy]] = cache.get.map(_.policies)
+
+    override def replicas: UIO[Int] = cache.get.map(_.replicas)
 
     override def refreshNow: Task[Unit] = source.getAll.flatMap(cache.set)

@@ -572,3 +572,15 @@ test.describe('rate limits', () => {
     await expect(card.getByRole('button')).toHaveCount(0);
   });
 });
+
+test('rate limits: the number of edge pods is saved with the set and shown on the card', async ({ page }) => {
+  const alpha = { ...alphaEdge, rateLimitPolicies: { policies: [{ name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], mode: 'shadow' }] } };
+  const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=rate-limits', state: { edges: [alpha] } });
+  const dialog = sidePanel(page, 'Edit rate limits');
+  await dialog.getByLabel('Pods').fill('0');
+  await expect(dialog.getByText('replicas must be between 1 and 1000')).toBeVisible();
+  await dialog.getByLabel('Pods').fill('3');
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ replicas: 3, policies: [{ name: 'per-client' }] });
+  await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('3 (each pod enforces 1/3 of a limit)');
+});

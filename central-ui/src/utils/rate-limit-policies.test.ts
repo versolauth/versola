@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  draftFromPolicies, emptyDraft, isEmptyPolicies, newPolicyDraft, policiesFromDraft, summary, validateDraft, type PolicyDraft, type RateLimitPolicies,
+  draftFromPolicies, emptyDraft, isEmptyPolicies, newPolicyDraft, podsText, policiesFromDraft, summary, validateDraft, type PolicyDraft, type RateLimitPolicies,
 } from './rate-limit-policies';
 
 const valid = (patch: Partial<PolicyDraft> = {}): PolicyDraft => ({
@@ -16,7 +16,7 @@ describe('rate limit policies', () => {
   });
 
   it('sends numbers, trims, leaves burst and cost out when empty, and keeps dimensions in a fixed order', () => {
-    const body = policiesFromDraft({ policies: [valid({ name: ' per-client ', by: ['jkt', 'client'], burst: ' 5 ' })] });
+    const body = policiesFromDraft({ replicas: '', policies: [valid({ name: ' per-client ', by: ['jkt', 'client'], burst: ' 5 ' })] });
     expect(body).toEqual({
       policies: [{ name: 'per-client', by: ['client', 'jkt'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, mode: 'shadow' }],
     });
@@ -34,11 +34,11 @@ describe('rate limit policies', () => {
   });
 
   it('accepts a valid policy', () => {
-    expect(validateDraft({ policies: [valid()] })).toEqual({});
+    expect(validateDraft({ replicas: '', policies: [valid()] })).toEqual({});
   });
 
   it('says what the server says about the name, a repeated name and the windows', () => {
-    const errors = validateDraft({ policies: [valid({ name: 'Bad Name' }), valid(), valid(), valid({ name: 'two', limits: [{ limit: '1', windowSeconds: '60' }, { limit: '2', windowSeconds: '60' }] })] });
+    const errors = validateDraft({ replicas: '', policies: [valid({ name: 'Bad Name' }), valid(), valid(), valid({ name: 'two', limits: [{ limit: '1', windowSeconds: '60' }, { limit: '2', windowSeconds: '60' }] })] });
     expect(errors['0.name']).toContain('name must be 1 to 48 characters');
     expect(errors['1.name']).toBeUndefined();
     expect(errors['2.name']).toBe('two rate limit policies have the same name');
@@ -46,7 +46,7 @@ describe('rate limit policies', () => {
   });
 
   it('checks the ranges, burst against the smallest limit and cost against burst', () => {
-    const errors = validateDraft({
+    const errors = validateDraft({ replicas: '',
       policies: [
         valid({ limits: [{ limit: '0', windowSeconds: '86401' }] }),
         valid({ name: 'b', limits: [{ limit: '10', windowSeconds: '1' }, { limit: '500', windowSeconds: '3600' }], burst: '11' }),
@@ -64,8 +64,21 @@ describe('rate limit policies', () => {
   });
 
   it('an empty required field is an error and a number with letters is too', () => {
-    const errors = validateDraft({ policies: [valid({ name: '', limits: [{ limit: '', windowSeconds: '6o' }] })] });
+    const errors = validateDraft({ replicas: '', policies: [valid({ name: '', limits: [{ limit: '', windowSeconds: '6o' }] })] });
     expect(Object.keys(errors).sort()).toEqual(['0.limit.0', '0.name', '0.window.0']);
+  });
+
+  it('replicas: sent only when set, validated like the server, round-tripped, and read as 1 when absent', () => {
+    expect(policiesFromDraft({ ...emptyDraft(), replicas: ' 3 ' })).toEqual({ replicas: 3, policies: [] });
+    expect(policiesFromDraft(emptyDraft())).toEqual({ policies: [] });
+    expect(validateDraft({ ...emptyDraft(), replicas: '0' }).replicas).toBe('replicas must be between 1 and 1000');
+    expect(validateDraft({ ...emptyDraft(), replicas: '1001' }).replicas).toBe('replicas must be between 1 and 1000');
+    expect(validateDraft({ ...emptyDraft(), replicas: 'two' }).replicas).toBeDefined();
+    expect(validateDraft({ ...emptyDraft(), replicas: '12' })).toEqual({});
+    expect(draftFromPolicies({ policies: [], replicas: 4 }).replicas).toBe('4');
+    expect(draftFromPolicies({ policies: [] }).replicas).toBe('');
+    expect(podsText(undefined)).toContain('One');
+    expect(podsText({ policies: [], replicas: 4 })).toBe('4 (each pod enforces 1/4 of a limit)');
   });
 
   it('summarises a policy for the record card', () => {
