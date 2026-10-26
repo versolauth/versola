@@ -693,9 +693,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/email", Map("email" -> email, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
-  /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
-  def submitPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+  /** POST /challenge/phone — submits a phone credential to start the OTP flow. `ip` is sent in the header the
+    * suite's tenant reads the client's address from (`X-Forwarded-For`, see [[upsertChallengeSettings]]), which the
+    * antifraud rules key on. */
+  def submitPhone(cookie: String, phone: String, csrf: String, ip: Option[String] = None): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie, ip.map("X-Forwarded-For" -> _).toList)
       .map(SubmitResult(_))
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
@@ -1865,10 +1867,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private def formPost(url: String, fields: Map[String, String], cookie: String): Task[Response] =
-    val req = Request.post(url, formBody(fields))
-      .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
-      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+  private def formPost(url: String, fields: Map[String, String], cookie: String, headers: List[(String, String)] = Nil): Task[Response] =
+    val req = headers.foldLeft(
+      Request.post(url, formBody(fields))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+    ) { case (request, (name, value)) => request.addHeader(Header.Custom(name, value)) }
     Client.batched(req).provide(ZLayer.succeed(client))
 
   private def formBody(fields: Map[String, String]): Body =

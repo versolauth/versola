@@ -265,14 +265,18 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
       // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
       // does so in the middle of this, the test is repeated.
     } @@ TestAspect.eventually,
-    test("the table refuses a list or value type it does not know") {
+    test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
       for
         repository <- clean
         xa <- ZIO.service[TransactorZIO]
-        bad <- xa.connect(
+        now <- Clock.instant
+        _ <- xa.connect(
           sql"""INSERT INTO af_list_entry (id, type, value_type, value, source, created_by, created_at)
-                VALUES (${UUID.randomUUID()}, 'ban', 'ip', 'x', 's', 'c', now())""".update.run(),
-        ).exit
-      yield assertTrue(bad.isFailure)
+                VALUES (${UUID.randomUUID()}, 'ban', 'ip', 'x', 's', 'c', now()),
+                       (${UUID.randomUUID()}, 'deny', 'fingerprint', 'y', 's', 'c', now()),
+                       (${UUID.randomUUID()}, 'deny', 'ip', '203.0.113.7', 's', 'c', now())""".update.run(),
+        )
+        loaded <- repository.loadActive(now)
+      yield assertTrue(loaded.map(_.value) == List("203.0.113.7"))
     },
   ) @@ TestAspect.sequential
