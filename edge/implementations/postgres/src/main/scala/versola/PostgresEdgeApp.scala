@@ -33,6 +33,8 @@ import versola.edge.{
   RateLimitPolicySource,
   ResourceService,
   SSOClient,
+  SSOClientWarmUp,
+  ServiceController,
 }
 import versola.util.*
 import versola.util.SequentialLayers.*
@@ -182,7 +184,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier.live >++>
       EdgeService.live >++>
       NativeAuthClient.live >++>
-      NativeService.live
+      NativeService.live >++>
+      SSOClientWarmUp.live
 
   /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
     * on one database keep their own. See [[ConfigSnapshot]].
