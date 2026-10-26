@@ -2,6 +2,7 @@ package versola.central.configuration.sync
 
 import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService}
+import versola.central.configuration.delivery.DeliverySettingsService
 import versola.central.configuration.details.AuthorizationDetailTypeService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
@@ -22,11 +23,11 @@ trait CacheSyncService:
 
 object CacheSyncService:
   def live: ZLayer[
-    CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope,
+    CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & DeliverySettingsService & JwksService & ThemeService & ServerMetadataService & Scope,
     Nothing,
     CacheSyncService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -44,6 +45,7 @@ object CacheSyncService:
       otpChallengeService: OtpChallengeService,
       challengeSettingsService: ChallengeSettingsService,
       systemSettingsService: SystemSettingsService,
+      deliverySettingsService: DeliverySettingsService,
       jwksService: JwksService,
       themeService: ThemeService,
       serverMetadataService: ServerMetadataService,
@@ -96,6 +98,9 @@ object CacheSyncService:
 
           case SyncEvent.SystemSettingsUpdated =>
             systemSettingsService.sync().either
+
+          case SyncEvent.DeliverySettingsUpdated =>
+            deliverySettingsService.sync().either
 
           case SyncEvent.ServerMetadataUpdated =>
             serverMetadataService.sync().either

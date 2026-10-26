@@ -110,6 +110,11 @@ tags:
     description: Overrides merged into the RFC 8414 authorization server metadata document.
   - name: System settings
     description: Global, non-tenant-scoped settings such as the password policy.
+  - name: Delivery settings
+    description: |
+      How auth delivers one-time codes and temporary passwords: the SMTP server for email and
+      the HTTP provider for SMS. One record per deployment; it replaces the `smtp` and
+      `otp-provider` blocks of `auth.conf` once stored. Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
   - name: Service
@@ -2166,6 +2171,53 @@ paths:
           description: Settings stored.
         '400':
           description: The password policy is not usable, e.g. `passwordRegex` does not compile.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/delivery-settings:
+    get:
+      tags: [Delivery settings]
+      summary: Get the delivery settings
+      description: |
+        Each block without its password, and whether a password is on record. Both blocks are
+        absent until the first save.
+      operationId: getDeliverySettings
+      responses:
+        '200':
+          description: The stored settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliverySettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Delivery settings]
+      summary: Replace the delivery settings
+      description: |
+        Stores both blocks as sent. A password that is left out keeps the one on record, so a
+        caller that never sees the stored password can still change the rest of the block; an
+        empty password clears it. A block that is left out is removed together with its
+        password. Passwords are encrypted at rest and never returned.
+      operationId: upsertDeliverySettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliverySettingsUpdate'
+      responses:
+        '204':
+          description: Settings stored.
+        '400':
+          description: |
+            A block is not usable, e.g. `smtp.from` is not an email address, `smtp.port` is out
+            of range, `otpProvider.url` is not an absolute HTTP(S) URL or `otpProvider.method`
+            is not one of `GET`, `POST`, `PUT`, `PATCH`. Nothing is stored then.
           content:
             text/plain:
               schema:
@@ -5797,6 +5849,102 @@ components:
           type: integer
           description: How many characters a new password must differ by.
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
+
+    # ─────────────────────────── Delivery settings ───────────────────────────
+    SmtpDeliverySettings:
+      type: object
+      description: |
+        The SMTP server auth sends email through, without its password. `enabled` keeps the
+        server on record while nothing is sent through it.
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        username:
+          type: string
+        from:
+          type: string
+          format: email
+          description: The sender address.
+        subject:
+          type: string
+          description: Subject line of every message.
+        startTls:
+          type: boolean
+          description: Whether the connection is upgraded with STARTTLS.
+        enabled:
+          type: boolean
+      required: [host, port, username, from, subject, startTls, enabled]
+
+    OtpProviderDeliverySettings:
+      type: object
+      description: |
+        The HTTP request auth sends for each SMS, without its password. `{{phone}}` and
+        `{{message}}` in a body entry stand for the recipient and the text. A `username` makes
+        the request carry HTTP Basic credentials.
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH]
+        url:
+          type: string
+          format: uri
+          description: Absolute HTTP(S) URL of the provider.
+        username:
+          type: string
+          nullable: true
+        body:
+          type: object
+          additionalProperties:
+            type: string
+          description: The JSON body, one string per entry.
+        enabled:
+          type: boolean
+      required: [method, url, body, enabled]
+
+    DeliverySettings:
+      type: object
+      description: The stored settings as the admin surface sees them. No password is ever returned.
+      properties:
+        smtp:
+          allOf:
+            - $ref: '#/components/schemas/SmtpDeliverySettings'
+          nullable: true
+        smtpPasswordSet:
+          type: boolean
+          description: Whether an SMTP password is on record.
+        otpProvider:
+          allOf:
+            - $ref: '#/components/schemas/OtpProviderDeliverySettings'
+          nullable: true
+        otpProviderPasswordSet:
+          type: boolean
+          description: Whether an OTP provider password is on record.
+      required: [smtpPasswordSet, otpProviderPasswordSet]
+
+    DeliverySettingsUpdate:
+      type: object
+      description: |
+        What `PUT /configuration/delivery-settings` stores. A password field that is absent
+        keeps the stored password; an empty string clears it.
+      properties:
+        smtp:
+          allOf:
+            - $ref: '#/components/schemas/SmtpDeliverySettings'
+          nullable: true
+        smtpPassword:
+          type: string
+          description: Write-only. Absent keeps the stored password, empty clears it.
+        otpProvider:
+          allOf:
+            - $ref: '#/components/schemas/OtpProviderDeliverySettings'
+          nullable: true
+        otpProviderPassword:
+          type: string
+          description: Write-only. Absent keeps the stored password, empty clears it.
 
     # ─────────────────────────────── Edges ───────────────────────────────
     RegisterEdgeRequest:

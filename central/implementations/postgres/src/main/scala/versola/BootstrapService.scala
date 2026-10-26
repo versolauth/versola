@@ -404,6 +404,7 @@ object BootstrapService:
         endpointId("GET", "/configuration/jwks"),
         endpointId("GET", "/configuration/jwks/keys"),
         endpointId("GET", "/configuration/system-settings"),
+        endpointId("GET", "/configuration/delivery-settings"),
       ),
     ),
     (
@@ -421,6 +422,7 @@ object BootstrapService:
         endpointId("PUT", "/configuration/jwks"),
         endpointId("DELETE", "/configuration/jwks"),
         endpointId("PUT", "/configuration/system-settings"),
+        endpointId("PUT", "/configuration/delivery-settings"),
       ),
     ),
     (
@@ -879,6 +881,8 @@ object BootstrapService:
     "PUT" -> "/configuration/challenges/challenge-settings",
     "GET" -> "/configuration/system-settings",
     "PUT" -> "/configuration/system-settings",
+    "GET" -> "/configuration/delivery-settings",
+    "PUT" -> "/configuration/delivery-settings",
     "GET" -> "/configuration/challenges/otp-templates",
     "PUT" -> "/configuration/challenges/otp-templates",
     "DELETE" -> "/configuration/challenges/otp-templates",
