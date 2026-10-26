@@ -5,6 +5,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import versola.util.theme.{Background, BrandColor, Mode, Shape, Surface, ThemeOverrides}
 import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
@@ -262,6 +263,37 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           untouched.flatMap(_.themeOverrides) == Some(replaced),
           cleared.map(_.themeOverrides) == Some(None),
         )
+      },
+      test("create and find a client with a rate limit, then replace it, leave it alone and remove it") {
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 600, windowSeconds = 60), RateLimitWindow(limit = 10000, windowSeconds = 3600)),
+          burst = 50,
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+        )
+        val replaced = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 5, windowSeconds = 1)), burst = 5)
+        for
+          _ <- env.repository.createClient(client.copy(rateLimit = Some(limit)))
+          created <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(rateLimit = Some(Patch.Modified(replaced))))
+          replacedFound <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(clientName = Some(Map("en" -> "patched"))))
+          untouched <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(rateLimit = Some(Patch.Deleted)))
+          removed <- env.repository.find(clientId)
+        yield assertTrue(
+          created.flatMap(_.rateLimit) == Some(limit),
+          replacedFound.flatMap(_.rateLimit) == Some(replaced),
+          untouched.map(_.clientName) == Some(Map("en" -> "patched")),
+          untouched.flatMap(_.rateLimit) == Some(replaced),
+          removed.map(_.rateLimit) == Some(None),
+        )
+      },
+      test("a client created without a rate limit reads back with none") {
+        for
+          _ <- env.repository.createClient(client)
+          found <- env.repository.find(clientId)
+        yield assertTrue(found.map(_.rateLimit) == Some(None))
       },
       test("create and find a client with a DPoP proof key policy") {
         val narrowed = client.copy(

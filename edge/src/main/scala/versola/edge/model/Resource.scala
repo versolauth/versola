@@ -1,5 +1,6 @@
 package versola.edge.model
 
+import versola.util.http.DeclaredRateLimit
 import versola.util.{Base64, Secret}
 import zio.http.URL
 import zio.json.JsonCodec
@@ -14,7 +15,11 @@ case class ResourceEndpoint(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
-) derives JsonCodec
+    /** A limit on how often this endpoint is called, applied at R3 together with the edge's own policies. */
+    rateLimit: Option[DeclaredRateLimit] = None,
+) derives JsonCodec:
+  /** The registered route, never the concrete path: what R3 keys its buckets on and what a limit declared here is found by. */
+  def template(resourceId: ResourceId): String = s"$method /resources/$resourceId$path"
 
 /** `secret` is the decrypted secret edge authenticates to this resource with
   * (see [[ResourcesSyncClient]]). A resource with a secret is internal: edge sends

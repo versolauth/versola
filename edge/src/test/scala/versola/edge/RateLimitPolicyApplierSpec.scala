@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.util.http.{Checkpoint, GuardMode, RateDecision, RateLimitDimension, RateLimitKeys, RateLimitPolicy, RateLimitWindow, RateLimiter}
+import versola.util.http.{Checkpoint, DeclaredLimit, DeclaredOwner, DeclaredRateLimit, GuardMode, RateDecision, RateLimitDimension, RateLimitKeys, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import zio.*
 import zio.test.*
 
@@ -66,6 +66,49 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
         _ <- fiber.interrupt
       yield assertTrue(none.isEmpty, one == List("one"), !off, limiter.names.isEmpty)
     },
+    test("declared limits are applied with the policies; one that breaks a rule is left out and the others stay") {
+      val good = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce)
+      val bad = good.copy(burst = 5)
+      for
+        limiter <- RateLimiter.make()
+        (usable, refused) = RateLimitPolicyApplier.validDeclared(
+          List(DeclaredLimit(DeclaredOwner.Client, "ok", good), DeclaredLimit(DeclaredOwner.Client, "broken", bad)),
+        )
+        result <- RateLimitPolicyApplier(Nil, limiter, declared = usable)
+        decisions = (1 to 2).map(_ => limiter.check(Checkpoint.Identity, RateLimitKeys(client = "ok"), 0L))
+      yield assertTrue(
+        result == Right(()),
+        usable.map(_.selector) == List("ok"),
+        refused.exists(m => m.contains("oauth-client") && m.contains("burst")),
+        decisions == List(RateDecision.Allowed, RateDecision.Limited("oauth-client", 3600)),
+      )
+    },
+    test("run follows the declared source, and a change to an unrelated policy keeps a declaration's buckets") {
+      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce)
+      val limit = DeclaredLimit(DeclaredOwner.Client, "web", declared)
+      for
+        policies <- Ref.make(List.empty[RateLimitPolicy])
+        limits <- Ref.make(List.empty[DeclaredLimit])
+        limiter <- RateLimiter.make()
+        fiber <- RateLimitPolicyApplier.run(policies.get, limiter, declared = limits.get).fork
+        _ <- TestClock.adjust(1.second)
+        inactive = !limiter.active(Checkpoint.Identity)
+        _ <- limits.set(List(limit))
+        _ <- TestClock.adjust(1.second)
+        first = limiter.check(Checkpoint.Identity, RateLimitKeys(client = "web"), 0L)
+        _ <- policies.set(List(policy("unrelated", GuardMode.Shadow)))
+        _ <- TestClock.adjust(1.second)
+        second = limiter.check(Checkpoint.Identity, RateLimitKeys(client = "web"), 0L)
+        _ <- limits.set(Nil)
+        _ <- TestClock.adjust(1.second)
+        _ <- fiber.interrupt
+      yield assertTrue(
+        inactive,
+        first == RateDecision.Allowed,
+        second == RateDecision.Limited("oauth-client", 3600),
+        !limiter.names.contains("oauth-client"),
+      )
+    },
     test("the default source has no policy") {
       for current <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(RateLimitPolicySource.none)
       yield assertTrue(current.isEmpty)
@@ -113,10 +156,16 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
           override val current: UIO[List[RateLimitPolicy]] = held.get
           override val replicas: UIO[Int] = ZIO.succeed(3)
           override val refreshNow: Task[Unit] = ZIO.unit
-        source = ZLayer.succeed[RateLimitPolicyService](service) >>> RateLimitPolicySource.fromCentral
+        limit = DeclaredLimit(DeclaredOwner.Client, "web", DeclaredRateLimit(limits = List(RateLimitWindow(1, 60))))
+        declaredService = new DeclaredRateLimitService:
+          override val current: UIO[List[DeclaredLimit]] = ZIO.succeed(List(limit))
+          override val refreshNow: Task[Unit] = ZIO.unit
+        source = (ZLayer.succeed[RateLimitPolicyService](service) ++ ZLayer.succeed[DeclaredRateLimitService](declaredService)) >>>
+          RateLimitPolicySource.fromCentral
         first <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(source)
+        declared <- ZIO.serviceWithZIO[RateLimitPolicySource](_.declared).provide(source)
         _ <- held.set(Nil)
         second <- ZIO.serviceWithZIO[RateLimitPolicySource](_.current).provide(source)
-      yield assertTrue(first.map(_.name) == List("from-central"), second.isEmpty)
+      yield assertTrue(first.map(_.name) == List("from-central"), declared == List(limit), second.isEmpty)
     },
   ) @@ TestAspect.silentLogging

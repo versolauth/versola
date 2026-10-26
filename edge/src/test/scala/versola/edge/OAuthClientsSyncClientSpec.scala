@@ -3,6 +3,7 @@ package versola.edge
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.RSAKey
 import versola.edge.model.{ClientCredential, ClientId, EdgeId, PermissionId}
+import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.{Base64, Secret, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -67,6 +68,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       applicationType: Option[String] = None,
       redirectUris: Set[String] = Set.empty,
       edgeCertificateSubject: Option[versola.util.CertificateSubject] = None,
+      rateLimit: Option[DeclaredRateLimit] = None,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -158,6 +160,23 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         clients.isEmpty,
         permissions == Map(ClientId("utils") -> Set(PermissionId("oauth:read"), PermissionId("service:operate"))),
       )
+    },
+    // A public client has no credential here either, and its tokens are exactly what a per-client limit is for.
+    test("reports the rate limit declared on a client, including one edge holds no credential for; a client without one is absent") {
+      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce)
+      val body = SyncResponseMirror(
+        Vector(
+          SyncClientRecordMirror(ClientId("public-spa"), None, 15.minutes, rateLimit = Some(limit)),
+          SyncClientRecordMirror(ClientId("unlimited"), None, 15.minutes),
+        ),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService, noEnrollment)
+        limits <- service.getRateLimits
+        viaCache <- ClientRateLimitsSyncClient.live.build.provideLayer(ZLayer.succeed[OAuthClientsSyncClient](service) ++ Scope.default).flatMap(_.get.getAll)
+      yield assertTrue(limits == Map(ClientId("public-spa") -> limit), viaCache == limits)
     },
     test("fails the whole sync on an unusable key rather than serving a doubtful snapshot") {
       val keyCiphertext = Base64.urlEncode(Array.fill(32)(43.toByte))

@@ -7,7 +7,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{DeclaredRateLimit, GuardMode, Observability, RateLimitWindow}
 import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -122,6 +122,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       previousSecret = None,
     ),
   )
+  private val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce)
   private val syncSecret = Secret(Array.fill(32)(7.toByte))
   private val previousSyncSecret = Secret(Array.fill(32)(8.toByte))
   private val edgeId = EdgeId("edge-1")
@@ -219,6 +220,25 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           ),
         ),
+    ),
+    controllerTestCase(
+      description = "list the rate limit declared on an endpoint, and none for one without",
+      request = Request.get((URL.empty / "configuration" / "resources").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantResources.succeedsWith(
+          Vector(
+            resourceRecords.head.copy(endpoints =
+              Vector(
+                resourceRecords.head.endpoints.head.copy(rateLimit = Some(limit)),
+                resourceRecords.head.endpoints(1),
+              ),
+            ),
+          ),
+        ),
+      verify = (response, _) =>
+        for payload <- decodeJsonBody[GetAllResourcesResponse](response)
+        yield assertTrue(payload.resources.head.endpoints.map(e => e.id -> e.rateLimit).toMap == Map(usersCreateEndpointId -> Some(limit), usersListEndpointId -> None)),
     ),
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",

@@ -41,6 +41,8 @@ import versola.central.configuration.{
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.http.{
   AccessLogPolicy,
+  DeclaredRateLimit,
+  GuardMode,
   InboundPolicy,
   Observability,
   OverloadPolicy,
@@ -197,6 +199,8 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
   )
 
+  private val declaredLimit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce)
+  private val otherEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-0000000007ff"))
   private val resourceA = resource("api-a", tenantA)
   private val resourceB = resource("api-b", tenantB)
 
@@ -411,6 +415,25 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             payload.resources.map(_.tenantId) == Vector(tenantA),
             recovered.toVector == resourceSecret.toVector,
           ),
+      ),
+      testCase(
+        description = "resources: the rate limit declared on an endpoint travels to the edge, and an endpoint without one carries none",
+        request = Request.get(sync("resources")),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.resources.getResourcesForSync.succeedsWith(
+            Vector(
+              resourceA.copy(endpoints =
+                Vector(
+                  resourceA.endpoints.head.copy(rateLimit = Some(declaredLimit)),
+                  resourceA.endpoints.head.copy(id = otherEndpointId, path = "/health"),
+                ),
+              ),
+            ),
+          ),
+        verify = (response, _) =>
+          for payload <- decodeBody[GetResourcesSyncResponse](response)
+          yield assertTrue(payload.resources.head.endpoints.map(_.rateLimit) == Vector(Some(declaredLimit), None)),
       ),
       // Edge stays on the previous secret until it is removed, so a rotation does not cut it
       // off from the resources it fronts.

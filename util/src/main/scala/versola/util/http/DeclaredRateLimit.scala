@@ -3,6 +3,9 @@ package versola.util.http
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
+// the wire strings of GuardMode (`off`, `shadow`, `enforce`) are the ones of a policy; `derives` below reads them from here
+import RateLimitPolicy.given
+
 /** What a limit declared on an API or a client counts separately: one bucket per subject, per client, or for everyone who
   * reaches it. Narrower than [[RateLimitDimension]] on purpose: the declaration is read by the owner of an API or a client,
   * who does not need session or `jkt`, and each value here is known at the point the limit runs.
@@ -54,8 +57,6 @@ final case class DeclaredRateLimit(
     by: DeclaredRateLimitBy = DeclaredRateLimitBy.None,
     mode: GuardMode = GuardMode.Shadow,
 ) derives JsonCodec, Schema:
-  import RateLimitPolicy.given
-
   /** The policy the limiter runs for this declaration. The scope narrows to the endpoint's template for an endpoint, and stays
     * the whole edge for a client (the limiter keeps the declaration's own buckets, so nothing is shared with another owner).
     */

@@ -27,6 +27,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import versola.util.theme.{BrandColor, Mode, ThemeOverrides}
 import versola.util.{
   ClientAssertion,
@@ -588,6 +589,43 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
           case _ => false,
         createCalls == 0,
+      )
+    },
+    test("registerClient stores a client's rate limit and refuses one that breaks a rule, naming the client") {
+      val env = new Env(Vector.empty)
+      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(rateLimit = Some(limit)))
+        byClient <- env.service.registerClient(createRequest.copy(rateLimit = Some(limit.copy(by = DeclaredRateLimitBy.Client)))).either
+        burst <- env.service.registerClient(createRequest.copy(rateLimit = Some(limit.copy(burst = 601)))).either
+        stored = env.repository.createClient.calls.map(_.rateLimit)
+      yield assertTrue(
+        stored == List(Some(limit)),
+        byClient.left.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("by must be subject or none on an OAuth client")
+          case _ => false,
+        burst.left.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("burst must not exceed the smallest limit") && error.clientId == createRequest.id
+          case _ => false,
+      )
+    },
+    test("updateClient hands a rate limit to the repository as a patch: set, removed with null, left alone when absent") {
+      val env = new Env(Vector(cachedClient))
+      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(noopUpdate.copy(rateLimit = Some(Patch.Modified(limit))))
+        _ <- env.service.updateClient(noopUpdate.copy(rateLimit = Some(Patch.Deleted)))
+        _ <- env.service.updateClient(noopUpdate)
+        refused <- env.service.updateClient(noopUpdate.copy(rateLimit = Some(Patch.Modified(limit.copy(limits = Nil))))).either
+        patched = env.repository.updateClient.calls.map(_._2.rateLimit)
+      yield assertTrue(
+        patched == List(Some(Patch.Modified(limit)), Some(Patch.Deleted), None),
+        refused.isLeft,
+        env.repository.updateClient.calls.size == 3,
       )
     },
     test("updateClient hands the theme overrides of a partner client to the repository, and an empty value to clear them") {

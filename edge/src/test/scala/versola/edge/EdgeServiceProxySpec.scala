@@ -10,7 +10,7 @@ import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
-import versola.util.http.{Checkpoint, GuardMode, Observability, RateLimitDimension, RateLimitPolicy, RateLimitScope, RateLimitWindow, RateLimiter}
+import versola.util.http.{Checkpoint, DeclaredLimit, DeclaredOwner, DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, Observability, RateLimitDimension, RateLimitPolicy, RateLimitScope, RateLimitWindow, RateLimiter}
 import versola.util.{
   DpopNonce,
   EcKeyPair,
@@ -3519,6 +3519,75 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         // two served calls: one user-info call (only the first call's endpoint asks) and two upstream calls
         infoCalls == 1,
         upstreamCalls == 2,
+      )
+    },
+    test("a limit declared on an endpoint refuses that endpoint only, under the fixed name, and the smaller of it and the edge's policy wins") {
+      val env = new Env
+      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+      val generous = shadowPolicy("edge-generous", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
+        .copy(mode = GuardMode.Enforce, limits = List(RateLimitWindow(limit = 1000, windowSeconds = 60)), burst = 100)
+      val users = usersEndpoint().copy(rateLimit = Some(declared))
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(users, userByIdEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(generous),
+          declared = List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared)),
+        )
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        get = (path: String) =>
+          service.proxy(ResourceId("users-api"), Path.decode(path), Request.get(URL.decode(path).toOption.get).addCookie(sessionCookie(token)))
+        first <- get("/users")
+        second <- get("/users")
+        other <- get("/users/7")
+        body <- second.body.asString
+        upstreamCalls <- upstream.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("Retry-After").contains("600"),
+        second.rawHeader("RateLimit-Policy").contains("\"resource-endpoint\";q=1;w=600"),
+        body == """{"error":"rate_limited","policy":"resource-endpoint"}""",
+        other.status == Status.Ok,
+        upstreamCalls == 2,
+      )
+    },
+    test("a limit declared on a client refuses calls carrying its tokens at R2, and another client is served") {
+      val env = new Env
+      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)), mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        revoked <- Ref.make(0)
+        _ <- env.revocationService.isRevoked.returnsZIO((_, _) => revoked.update(_ + 1).as(false))
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(Nil, declared = List(DeclaredLimit(owner = DeclaredOwner.Client, selector = "web-app", limit = declared)))
+        limitedToken <- env.signToken(clientId = "web-app")
+        freeToken <- env.signToken(clientId = "other-app")
+        service = env.buildService(client, security)
+        call = (token: AccessToken) =>
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        first <- call(limitedToken)
+        second <- call(limitedToken)
+        free <- call(freeToken)
+        upstreamCalls <- upstream.get
+        revocationChecks <- revoked.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("RateLimit-Policy").contains("\"oauth-client\";q=1;w=900"),
+        free.status == Status.Ok,
+        // the refused call reached neither the revocation check nor the upstream
+        upstreamCalls == 2,
+        revocationChecks == 2,
       )
     },
     test("enforce: a refusal names the policy that makes the caller wait longest and spends nothing on the others") {

@@ -19,7 +19,7 @@ import zio.{Scope, ZLayer}
   * operator issuer's public discovery and JWKS without a token or an enrolment of its own.
   */
 type ConfigurationSource =
-  AuthorizationPresetsSyncClient & OAuthClientsSyncClient & ClientPermissionsSyncClient & ResourcesSyncClient &
+  AuthorizationPresetsSyncClient & OAuthClientsSyncClient & ClientPermissionsSyncClient & ClientRateLimitsSyncClient & ResourcesSyncClient &
     RolesSyncClient & PermissionsSyncClient & DpopAlgorithmsSyncClient & DpopPolicySyncClient & JwksSyncClient &
     OverloadPolicySyncClient & AccessLogPolicySyncClient & RateLimitPolicySyncClient
 
@@ -49,6 +49,7 @@ object ConfigurationSource:
       ClientCertificateEnrollment.live >++>
       OAuthClientsSyncClient.live >++>
       ClientPermissionsSyncClient.live >++>
+      ClientRateLimitsSyncClient.live >++>
       ResourcesSyncClient.live >++>
       RolesSyncClient.live >++>
       PermissionsSyncClient.live >++>

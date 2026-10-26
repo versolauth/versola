@@ -16,6 +16,7 @@ import versola.central.configuration.{
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.cel.CelEvaluator
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import versola.util.{ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.test.*
@@ -237,6 +238,48 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           ),
           None,
         )),
+      )
+    },
+    test("createResource stores the rate limit declared on an endpoint, and one that breaks a policy rule is refused") {
+      val env = new Env
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+        burst = 10,
+        by = DeclaredRateLimitBy.Subject,
+        mode = GuardMode.Enforce,
+      )
+      def withLimit(rateLimit: DeclaredRateLimit) =
+        createRequest.copy(endpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(rateLimit))))
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        stored <- env.service.createResource(withLimit(limit))
+        burstTooHigh <- env.service.createResource(withLimit(limit.copy(burst = 61)))
+        noWindow <- env.service.createResource(withLimit(limit.copy(limits = Nil)))
+      yield assertTrue(
+        stored == Right((resourceId, None)),
+        env.repository.createResource.calls.map(_._5.head.rateLimit) == List(Some(limit)),
+        burstTooHigh == Left(ResourceValidationError.InvalidRateLimit(existingEndpointId, "policy resource-endpoint: burst must not exceed the smallest limit")),
+        noWindow == Left(ResourceValidationError.InvalidRateLimit(existingEndpointId, "policy resource-endpoint: limits must have at least one window")),
+        // the refused requests reached the repository no more than the first
+        env.repository.createResource.calls.size == 1,
+      )
+    },
+    test("updateResource refuses a replacement endpoint whose rate limit breaks a rule") {
+      val env = new Env
+      val bad = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)), burst = 2)
+      val request = UpdateResourceRequest(
+        resourceId = resourceId,
+        resource = None,
+        audience = PatchAudience(Set.empty, Set.empty),
+        deleteEndpoints = Set.empty,
+        createEndpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(bad))),
+      )
+      for
+        _ <- env.repository.findResource.succeedsWith(None)
+        result <- env.service.updateResource(request)
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[ResourceValidationError.InvalidRateLimit]),
+        env.repository.updateResource.calls.isEmpty,
       )
     },
     test("createResource rejects the reserved edge resource id") {

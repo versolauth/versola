@@ -29,6 +29,19 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
           parsed.map(_.mode) == Right(GuardMode.Shadow),
         )
       },
+      test("the strings are the documented ones, the same as a policy's") {
+        val parsed = """{"by":"client","mode":"enforce","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+        val json = valid.toJson
+        assertTrue(
+          parsed.map(r => (r.by, r.mode)) == Right((DeclaredRateLimitBy.Client, GuardMode.Enforce)),
+          json.contains("\"mode\":\"enforce\""),
+          json.contains("\"by\":\"subject\""),
+        )
+      },
+      test("an unknown mode is refused with the same message as a policy's") {
+        val parsed = """{"mode":"loud","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+        assertTrue(parsed.left.exists(_.contains("mode must be off, shadow or enforce")))
+      },
       test("an unknown key is refused with the choices") {
         val parsed = """{"by":"session","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
         assertTrue(parsed.left.exists(_.contains("by must be one of subject, client, none")))

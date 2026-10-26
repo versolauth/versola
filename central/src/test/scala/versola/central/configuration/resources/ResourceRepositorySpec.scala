@@ -1,5 +1,6 @@
 package versola.central.configuration.resources
 
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
@@ -79,6 +80,31 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         yield assertTrue(
           found == Some(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
           all == Vector(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
+        )
+      },
+      test("an endpoint's rate limit survives the round trip through the JSON column, and an endpoint stored without one reads back with none") {
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+          burst = 10,
+          by = DeclaredRateLimitBy.Client,
+          mode = GuardMode.Enforce,
+        )
+        val limited = endpointRecord(usersListEndpointId).copy(rateLimit = Some(limit))
+        val plain = endpointRecord(usersDeleteEndpointId, method = "DELETE")
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(limited, plain), None)
+          found <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.updateResource(
+            resourceId,
+            None,
+            PatchAudience(Set.empty, Set.empty),
+            Vector(limited.copy(rateLimit = None)),
+            Set.empty,
+          )
+          cleared <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          found.map(_.endpoints.map(_.rateLimit).toSet) == Some(Set(Some(limit), None)),
+          cleared.flatMap(_.endpoints.find(_.id == usersListEndpointId)).map(_.rateLimit) == Some(None),
         )
       },
       test("create resource with secret") {
