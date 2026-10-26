@@ -25,6 +25,7 @@ object ConversationController extends Controller:
     submitLoginPasswordRoute,
     submitOtpRoute,
     submitResendOtpRoute,
+    submitProofRoute,
     getPasskeyOptionsRoute,
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
@@ -85,6 +86,9 @@ object ConversationController extends Controller:
 
   val submitResendOtpRoute =
     submit[OtpResendSubmission](Method.POST / "challenge" / "otp" / "resend")
+
+  val submitProofRoute =
+    submit[ProofSubmission](Method.POST / "challenge" / "proof")
 
   /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
     * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
@@ -258,6 +262,13 @@ object ConversationController extends Controller:
       code <- FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield OtpSubmission(code, csrf)
+
+  given FormDecoder[ProofSubmission] = (form: Form) =>
+    for
+      token <- FormDecoder.single[String](form, "token", Right(_))
+      solution <- FormDecoder.single[String](form, "solution", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield ProofSubmission(token, solution, csrf)
 
   given FormDecoder[PasswordSubmission] = (form: Form) =>
     for

@@ -151,6 +151,12 @@ object ConversationRecord:
         case (otp: ConversationStep.Otp, Some(credential)) => Some((otp, credential))
         case _ => None
 
+  object Proof:
+    def unapply(record: ConversationRecord): Option[(ConversationStep.Proof, Either[Email, Phone])] =
+      (record.step, record.credential) match
+        case (proof: ConversationStep.Proof, Some(credential)) => Some((proof, credential))
+        case _ => None
+
   object Password:
     def unapply(record: ConversationRecord): Option[ConversationStep.Password] =
       record.step match

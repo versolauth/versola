@@ -142,6 +142,9 @@ object ConversationRouter:
         case (_: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
           conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
 
+        case (submitted: ProofSubmission, ConversationRecord.Proof(proof, credential)) =>
+          conversationService.solveProof(authId, conversation, proof, credential, submitted.token, submitted.solution)
+
         case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
           conversationService.checkPassword(conversation, password, submitted.password, authId)
             .tap(observeDecision("password"))
@@ -473,6 +476,7 @@ object ConversationRouter:
       step match
         case _: ConversationStep.Credential => "credential"
         case _: ConversationStep.Otp => "otp"
+        case _: ConversationStep.Proof => "proof"
         case _: ConversationStep.Password => "password"
         case _: ConversationStep.SetPassword => "set_password"
         case _: ConversationStep.PasskeyEnroll => "passkey_enroll"

@@ -710,6 +710,59 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("\"resendAfter\":30"))
       },
+      test("renders the proof step with what the form needs to solve it, and nothing of the conversation's state") {
+        val env = Env()
+        val proof = ConversationStep.Proof(
+          "pow",
+          "tok.en",
+          16,
+          Map("seed" -> "abc", "difficulty" -> "16"),
+          factorIndex = 0,
+          score = 61,
+          rules = List("phone_velocity"),
+          attempts = 0,
+        )
+        val record = conversationRecord.copy(step = proof)
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "proof")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield assertTrue(
+          body.contains("\"type\":\"proof\""),
+          body.contains("\"kind\":\"pow\""),
+          body.contains("\"token\":\"tok.en\""),
+          body.contains("\"difficulty\":\"16\""),
+          !body.contains("phone_velocity"),
+        )
+      },
+      test("a refused proof shows the proof_failed message") {
+        val env = Env()
+        val proof = ConversationStep.Proof(
+          "pow",
+          "tok.en",
+          16,
+          Map("seed" -> "abc", "difficulty" -> "16"),
+          factorIndex = 0,
+          score = 0,
+          rules = Nil,
+          attempts = 1,
+        )
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "proof")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getTenantLogo.succeedsWith(None)
+          response <- env.service.renderStep(conversationRecord.copy(step = proof), None)
+          body <- response.body.asString
+        yield assertTrue(body.contains("\"error\":\"proof_failed\""))
+      },
       test("renders a masked destination for the OTP recipient") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")

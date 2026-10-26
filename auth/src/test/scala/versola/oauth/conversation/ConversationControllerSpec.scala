@@ -236,6 +236,16 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
     successfulSubmitTestCase(
+      description = "submit proof",
+      request = Request.post(
+        url = URL.empty / "challenge" / "proof",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("token" -> "payload.mac", "solution" -> "4711", "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, ProofSubmission("payload.mac", "4711", ""), None, None),
+    ),
+    successfulSubmitTestCase(
       description = "submit otp resend",
       request = Request.post(
         url = URL.empty / "challenge" / "otp" / "resend",

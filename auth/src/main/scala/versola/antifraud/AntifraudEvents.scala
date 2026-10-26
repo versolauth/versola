@@ -44,8 +44,8 @@ trait AntifraudEvents:
       credential: Either[Email, Phone],
   ): UIO[Decision]
 
-  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, until a challenge can be asked for,
-    * P1-2): the pause is the friction. Returns at once for any other decision. */
+  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, when no challenge could be put to the
+    * client, see [[ChallengeVerifier]]): the pause is the friction. Returns at once for any other decision. */
   def hold(decision: Decision): UIO[Unit]
 
   /** A real code took `took` to hand to the provider; what a fake send imitates. */
@@ -63,6 +63,19 @@ trait AntifraudEvents:
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
       decision: Option[Decision] = None,
+  ): UIO[Unit]
+
+  /** A step of putting `decision`'s challenge of `kind` and strength `level` to the client: it was `challenged`, then
+    * `challenge_passed` or `challenge_failed`. Goes on the request's log line with the decision that asked for it. */
+  def challengeStep(
+      authId: AuthId,
+      clientId: ClientId,
+      userAgent: Option[String],
+      credential: Either[Email, Phone],
+      outcome: AntifraudOutcome,
+      decision: Decision,
+      kind: String,
+      level: Int,
   ): UIO[Unit]
 
   /** A submitted OTP was checked and this is how it ended. */
@@ -135,6 +148,17 @@ object AntifraudEvents:
         credential: Either[Email, Phone],
         outcome: AntifraudOutcome,
         decision: Option[Decision],
+    ): UIO[Unit] = ZIO.unit
+
+    override def challengeStep(
+        authId: AuthId,
+        clientId: ClientId,
+        userAgent: Option[String],
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+        decision: Decision,
+        kind: String,
+        level: Int,
     ): UIO[Unit] = ZIO.unit
 
     override def otpChecked(
@@ -258,7 +282,16 @@ object AntifraudEvents:
             AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List("antifraud_error")))
 
     private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
-      AntifraudDetails(action.toString, DecisionAction.Allow.toString, 0, Nil, credential.toOption.map(destPrefix), None)
+      AntifraudDetails(
+        action = action.toString,
+        decision = DecisionAction.Allow.toString,
+        score = 0,
+        rules = Nil,
+        destPrefix = credential.toOption.map(destPrefix),
+        outcome = None,
+        challenge = None,
+        challengeLevel = None,
+      )
 
     override def hold(decision: Decision): UIO[Unit] =
       decision.action match
@@ -306,6 +339,28 @@ object AntifraudEvents:
         decision: Option[Decision],
     ): UIO[Unit] =
       event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, decision)
+
+    override def challengeStep(
+        authId: AuthId,
+        clientId: ClientId,
+        userAgent: Option[String],
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+        decision: Decision,
+        kind: String,
+        level: Int,
+    ): UIO[Unit] =
+      AntifraudMetrics.challenge(kind, outcome) *>
+        Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
+          _.copy(
+            decision = decision.action.toString,
+            score = decision.score,
+            rules = decision.firedRules,
+            challenge = Some(kind),
+            challengeLevel = Some(level),
+          ),
+        ) *>
+        event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, Some(decision))
 
     override def otpChecked(
         authId: AuthId,
@@ -482,6 +537,12 @@ object AntifraudMetrics:
   /** Decisions by action, a closed set of labels. */
   def decided(action: DecisionAction): UIO[Unit] =
     decisionsTotal.tagged(Set(MetricLabel("action", action.toString))).increment
+
+  private val challengesTotal = Metric.counter("antifraud_challenges_total")
+
+  /** Steps of putting a challenge to a client by `kind` (a verifier's, a closed set) and how each ended. */
+  def challenge(kind: String, outcome: AntifraudOutcome): UIO[Unit] =
+    challengesTotal.tagged(Set(MetricLabel("kind", kind), MetricLabel("outcome", outcome.toString))).increment
 
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 

@@ -1,6 +1,6 @@
 package versola.oauth.conversation
 
-import versola.antifraud.{AntifraudEvents, AntifraudOutcome, Decision, DecisionAction}
+import versola.antifraud.{AntifraudEvents, AntifraudOutcome, ChallengeResult, ChallengeSubject, ChallengeVerifier, Decision, DecisionAction}
 import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
@@ -55,6 +55,19 @@ trait ConversationService:
       conversation: ConversationRecord,
       credential: Either[Email, Phone],
       factorIndex: Int,
+  ): Task[ConversationResult.Render]
+
+  /** Checks the solution of the proof an OTP request was held for. A right one sends the code, as the request would
+    * have sent it; a wrong one is counted and asked again, up to the verifier's limit; a challenge that ran out of time
+    * is replaced by a new one.
+    */
+  def solveProof(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      proof: ConversationStep.Proof,
+      credential: Either[Email, Phone],
+      token: String,
+      solution: String,
   ): Task[ConversationResult.Render]
 
   def checkOtp(
@@ -206,7 +219,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -229,6 +242,7 @@ object ConversationService:
       userService: UserService,
       consentService: ConsentService,
       antifraudEvents: AntifraudEvents,
+      challengeVerifier: ChallengeVerifier,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -303,9 +317,11 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
         decision: Decision,
+        challenged: Boolean,
     ): Task[ConversationResult.Render] =
       for
-        _ <- antifraudEvents.hold(decision)
+        // A request that solved its challenge has paid already.
+        _ <- ZIO.unless(challenged)(antifraudEvents.hold(decision))
         effectiveUserId = conversation.userId
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
         otp <- otpService.prepareOtp(
@@ -406,8 +422,92 @@ object ConversationService:
             antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential).flatMap: decision =>
               if decision.action == DecisionAction.Block then
                 otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
-              else sendInitialOtp(authId, conversation, credential, factorIndex, decision)
+              else if decision.action == DecisionAction.Challenge then askForProof(authId, conversation, credential, factorIndex, decision)
+              else sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
       yield result
+
+    private val ProofFormId = "proof"
+
+    private def proofSubject(authId: AuthId, conversation: ConversationRecord, credential: Either[Email, Phone]): Task[ChallengeSubject] =
+      for
+        hash <- antifraudEvents.subjectHash(credential)
+        client <- configService.find(conversation.clientId)
+      yield ChallengeSubject(tenantId = client.map(_.tenantId), clientId = conversation.clientId, conversationId = authId, subjectHash = hash)
+
+    /** Puts the challenge to the client instead of sending the code; the code is sent once it is solved. A request
+      * that cannot be challenged (no verifier, or it failed) is let through with the pause it had before challenges
+      * existed: fail open, as the decision engine does. */
+    private def askForProof(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        factorIndex: Int,
+        decision: Decision,
+    ): Task[ConversationResult.Render] =
+      // A deployment whose forms predate the proof step has none to show: the request is held and sent, not stranded on a page that is not there.
+      configService.getForm(ProofFormId)
+        .flatMap:
+          case None => ZIO.none
+          case Some(_) => proofSubject(authId, conversation, credential).flatMap(challengeVerifier.issue(_, decision.score)).orElseSucceed(None)
+        .flatMap:
+          case None => sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+          case Some(challenge) =>
+            val step = ConversationStep.Proof(
+              kind = challenge.kind,
+              token = challenge.token,
+              level = challenge.level,
+              params = challenge.params,
+              factorIndex = factorIndex,
+              score = decision.score,
+              rules = decision.firedRules,
+              attempts = 0,
+            )
+            conversationRepository.overwrite(authId, conversation.copy(credential = Some(credential), step = step)).flatMap:
+              case true =>
+                antifraudEvents
+                  .challengeStep(
+                    authId,
+                    conversation.clientId,
+                    conversation.userAgent,
+                    credential,
+                    AntifraudOutcome.challenged,
+                    decision,
+                    step.kind,
+                    step.level,
+                  )
+                  .as(ConversationResult.RenderStep(step): ConversationResult.Render)
+              case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+
+    override def solveProof(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        proof: ConversationStep.Proof,
+        credential: Either[Email, Phone],
+        token: String,
+        solution: String,
+    ): Task[ConversationResult.Render] =
+      val decision = Decision(DecisionAction.Challenge, proof.score, proof.rules)
+      def step(outcome: AntifraudOutcome) =
+        antifraudEvents.challengeStep(authId, conversation.clientId, conversation.userAgent, credential, outcome, decision, proof.kind, proof.level)
+      for
+        subject <- proofSubject(authId, conversation, credential)
+        // Only the token this step issued counts: an older one, solved earlier, does not stand for this request.
+        result <-
+          if token != proof.token then ZIO.succeed(ChallengeResult.Failed)
+          else challengeVerifier.verify(subject, token, solution)
+        rendered <- result match
+          case ChallengeResult.Passed =>
+            step(AntifraudOutcome.challenge_passed) *>
+              sendInitialOtp(authId, conversation, credential, proof.factorIndex, decision, challenged = true)
+          case ChallengeResult.Expired =>
+            askForProof(authId, conversation, credential, proof.factorIndex, decision)
+          case ChallengeResult.Failed =>
+            step(AntifraudOutcome.challenge_failed) *>
+              (if proof.attempts + 1 >= challengeVerifier.maxAttempts then
+                 otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *>
+                   Observability.setError("proof_failed") *> accessDenied(authId, conversation)
+               else renderStep(authId, conversation, proof.copy(attempts = proof.attempts + 1)))
+      yield rendered
 
     override def prepareInitialPassword(
         authId: AuthId,

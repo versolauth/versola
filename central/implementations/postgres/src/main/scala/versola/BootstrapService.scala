@@ -868,6 +868,7 @@ object BootstrapService:
       NumberProperty("length", 6, Some(4), Some(6)),
       NumberProperty("resendAfter", 60, None, None),
     ),
+    "proof" -> Vector.empty,
     "password" -> Vector.empty,
     "set-password" -> Vector.empty,
     "access-denied" -> Vector.empty,
