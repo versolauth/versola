@@ -81,6 +81,12 @@ object AccessLogSpec extends ZIOSpecDefault:
         val s = AccessLogSettings.parse(None, None, None)
         assertTrue(s.mode == AccessLogMode.Full, s.slowMillis == 500, s.successSampleRate == 0.05)
       },
+      test("a service default replaces full when the mode is unset, and an explicit mode still wins") {
+        val edge = AccessLogSettings.parse(None, None, None, AccessLogMode.Off)
+        val explicit = AccessLogSettings.parse(Some("full"), None, None, AccessLogMode.Off)
+        val invalid = AccessLogSettings.parse(Some("verbose"), None, None, AccessLogMode.Off)
+        assertTrue(edge.mode == AccessLogMode.Off, explicit.mode == AccessLogMode.Full, invalid.mode == AccessLogMode.Off)
+      },
       test("reads valid values") {
         val s = AccessLogSettings.parse(Some(" Sampled "), Some("250"), Some("0.1"))
         assertTrue(s.mode == AccessLogMode.Sampled, s.slowMillis == 250, s.successSampleRate == 0.1)
