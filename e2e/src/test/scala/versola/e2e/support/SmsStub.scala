@@ -27,19 +27,21 @@ final class SmsStub private (server: HttpServer):
       .repeat(Schedule.spaced(100.millis) *> Schedule.recurUntil[List[Received]](_.length >= count))
       .timeoutFail(RuntimeException(s"the SMS stub received fewer than $count request(s) within $within"))(within)
 
-  server.createContext("/", (exchange: HttpExchange) =>
-    val body = String(exchange.getRequestBody.readAllBytes(), StandardCharsets.UTF_8)
-    received.add(
-      Received(
-        method = exchange.getRequestMethod,
-        path = exchange.getRequestURI.getPath,
-        authorization = Option(exchange.getRequestHeaders.getFirst("Authorization")),
-        contentType = Option(exchange.getRequestHeaders.getFirst("Content-Type")),
-        body = body,
-      ),
-    )
-    exchange.sendResponseHeaders(200, -1)
-    exchange.close(),
+  server.createContext(
+    "/",
+    (exchange: HttpExchange) =>
+      val body = String(exchange.getRequestBody.readAllBytes(), StandardCharsets.UTF_8)
+      received.add(
+        Received(
+          method = exchange.getRequestMethod,
+          path = exchange.getRequestURI.getPath,
+          authorization = Option(exchange.getRequestHeaders.getFirst("Authorization")),
+          contentType = Option(exchange.getRequestHeaders.getFirst("Content-Type")),
+          body = body,
+        ),
+      )
+      exchange.sendResponseHeaders(200, -1)
+      exchange.close(),
   )
   server.start()
 

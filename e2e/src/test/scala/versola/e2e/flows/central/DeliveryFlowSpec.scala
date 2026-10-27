@@ -46,7 +46,9 @@ object DeliveryFlowSpec extends CentralApiSpec:
     )
 
   private def save(central: CentralApi, fields: (String, Json)*): Task[ApiResult] =
-    central.put(path, Json.Obj(fields*)).tap(result => ZIO.fail(RuntimeException(s"saving failed: ${result.status} ${result.body}")).unless(result.status == Status.NoContent))
+    central.put(path, Json.Obj(fields*)).tap(result =>
+      ZIO.fail(RuntimeException(s"saving failed: ${result.status} ${result.body}")).unless(result.status == Status.NoContent),
+    )
 
   /** Auth reloads its caches now. Through central, the way every e2e spec does it. */
   private def syncAuth(central: CentralApi): Task[Unit] =

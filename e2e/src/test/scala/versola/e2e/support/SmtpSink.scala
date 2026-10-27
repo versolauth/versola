@@ -36,7 +36,10 @@ final class SmtpSink private (socket: ServerSocket):
   private def close(): Unit =
     running.set(false)
     socket.close()
-    accepted.asScala.foreach(client => try client.close() catch case _: IOException => ())
+    accepted.asScala.foreach(client =>
+      try client.close()
+      catch case _: IOException => (),
+    )
 
   private val acceptor = Thread(() =>
     while running.get() do
