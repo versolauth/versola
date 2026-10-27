@@ -320,40 +320,79 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         replay.str("next").isEmpty,
       )
     },
-    test("a request that cannot answer is refused, not sent, and a wrong solution is asked again") {
+    test("a request that cannot answer is left on the code step with nothing sent, and asks for the code there as a resend") {
       for
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
-        plainIp = randomIp()
-        wrongIp = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", plainIp), ListEntry("watch", "ip", wrongIp))
+        ip = randomIp()
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
         auth = f.a.auth
-        plain <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
-        plainCookie = plain.conversationCookie.get
-        plainCsrf <- auth.getChallenge(plainCookie).map(_.csrf)
-        _ <- auth.submitPhone(plainCookie, s.phone.get, plainCsrf, Some(plainIp))
-        plainStep <- auth.getChallenge(plainCookie).map(_.step)
-        plainLine <- line(f.a, plainIp, Path, 0)
+        authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        csrf <- auth.getChallenge(cookie).map(_.csrf)
+        _ <- auth.submitPhone(cookie, s.phone.get, csrf, Some(ip))
+        plainStep <- auth.getChallenge(cookie).map(_.step)
+        plainLine <- line(f.a, ip, Path, 0)
+        // The page of that step asks for the code as a resend, from script.
+        asked <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline).flatMap(inlineAnswer)
+        answer <- answerOf(asked)
+        answered <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
+        askedLine <- line(f.a, ip, "/challenge/otp/resend", 0)
+        sentLine <- line(f.a, ip, "/challenge/otp/resend", 1)
+      yield assertTrue(
+        plainStep.contains(ConversationStep.Otp),
+        plainLine.decision == "Challenge",
+        plainLine.outcome.contains("challenged"),
+        asked.obj("challenge").isDefined,
+        askedLine.outcome.contains("challenged"),
+        answered.str("next").isDefined,
+        sentLine.outcome.contains("sent"),
+      )
+    },
+    test("login_hint is answered the same way: the request is left on the code step, and the code is sent on the resend's solution") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        ip = randomIp()
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        auth = f.a.auth
+        authorize <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, loginHint = s.phone, ip = Some(ip))
+        cookie = authorize.conversationCookie.get
+        challenged <- auth.getChallenge(cookie)
+        hintLine <- line(f.a, ip, "/authorize", 0)
+        asked <- auth.submitOtpResendWith(cookie, challenged.csrf, Some(ip), Inline).flatMap(inlineAnswer)
+        answer <- answerOf(asked)
+        answered <- auth.submitOtpResendWith(cookie, challenged.csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
+        sentLine <- line(f.a, ip, "/challenge/otp/resend", 1)
+      yield assertTrue(
+        challenged.step.contains(ConversationStep.Otp),
+        hintLine.decision == "Challenge",
+        hintLine.outcome.contains("challenged"),
+        answered.str("next").isDefined,
+        sentLine.outcome.contains("sent"),
+      )
+    },
+    test("a wrong solution is asked again, and the conversation stays where it was") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        ip = randomIp()
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        auth = f.a.auth
         wrong <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
-        wrongCookie = wrong.conversationCookie.get
-        wrongCsrf <- auth.getChallenge(wrongCookie).map(_.csrf)
-        asked <- auth.submitPhoneWith(wrongCookie, s.phone.get, wrongCsrf, Some(wrongIp), Inline).flatMap(inlineAnswer)
+        cookie = wrong.conversationCookie.get
+        csrf <- auth.getChallenge(cookie).map(_.csrf)
+        asked <- auth.submitPhoneWith(cookie, s.phone.get, csrf, Some(ip), Inline).flatMap(inlineAnswer)
         token <- ZIO.fromOption(asked.obj("challenge").flatMap(_.str("token"))).orElseFail(RuntimeException("no token"))
         again <- auth.submitPhoneWith(
-          wrongCookie,
+          cookie,
           s.phone.get,
-          wrongCsrf,
-          Some(wrongIp),
+          csrf,
+          Some(ip),
           Inline ++ Map("proof_token" -> token, "proof_solution" -> "not-a-number"),
         ).flatMap(inlineAnswer)
-        wrongStep <- auth.getChallenge(wrongCookie).map(_.step)
-      yield assertTrue(
-        plainStep.contains(ConversationStep.AccessDenied),
-        plainLine.decision == "Challenge",
-        plainLine.outcome.contains("blocked"),
-        again.obj("challenge").isDefined,
-        wrongStep.contains(ConversationStep.Credential),
-      )
+        step <- auth.getChallenge(cookie).map(_.step)
+      yield assertTrue(again.obj("challenge").isDefined, step.contains(ConversationStep.Credential))
     },
   )
 

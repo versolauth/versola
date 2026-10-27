@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
 import versola.antifraud.{
-  Antifraud,
   AntifraudEvents,
   AntifraudOutcome,
   ChallengeResult,
@@ -444,7 +443,9 @@ object ConversationService:
         // Only a genuine answer makes a request the second turn of one that was counted. A wrong or forged token does not:
         // were it to, any request could opt out of the counters by attaching one.
         solved = verdict.contains(ChallengeResult.Passed)
-        decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = solved)
+        // The request of a code that was left pending is the one already counted, asked for again by the page.
+        decision <-
+          antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = solved || pending(conversation))
         result <-
           if decision.action == DecisionAction.Block then
             otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
@@ -454,6 +455,41 @@ object ConversationService:
             challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None) *>
               sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = true)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
+      yield result
+
+    private def pending(conversation: ConversationRecord): Boolean =
+      conversation.step match
+        case otp: ConversationStep.Otp => otp.pending
+        case _ => false
+
+    /** A request that cannot answer a challenge here (a password form's post, `/authorize` with `login_hint`) is not
+      * refused: it is left on the code step with nothing sent, and that page asks for the code as a resend, which it can
+      * answer. A script that posts without answering gets a page and no code. */
+    private def leavePending(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        factorIndex: Int,
+        decision: Decision,
+    ): Task[ConversationResult.Render] =
+      val step = ConversationStep.Otp(
+        real = None,
+        timesRequested = 0,
+        timesSubmitted = 0,
+        factorIndex = factorIndex,
+        rateLimitExceeded = false,
+        lockedSeconds = 0,
+        lastSentAt = None,
+      )
+      for
+        _ <- ZIO.foreachDiscard(conversation.userId)(uid => Observability.setUserId(uid.toString))
+        written <- conversationRepository.overwrite(authId, conversation.copy(credential = Some(credential), step = step))
+        result <-
+          if written then
+            // Asked for again by the page, it is the same request: recorded once.
+            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None))
+              .as(ConversationResult.RenderStep(step): ConversationResult.Render)
+          else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result
 
     private def challengeSubject(authId: AuthId, conversation: ConversationRecord, credential: Either[Email, Phone]): Task[ChallengeSubject] =
@@ -491,8 +527,8 @@ object ConversationService:
         level,
       )
 
-    /** A `Challenge` that was not answered rightly: put it to the client, or refuse the request when the client cannot
-      * answer or has answered wrongly too often. A challenge that cannot be made at all (the verifier is off, or
+    /** A `Challenge` that was not answered rightly: put it to the client, leave it pending when the client cannot answer
+      * here, or refuse the request when the client has answered wrongly too often. A challenge that cannot be made at all (the verifier is off, or
       * failed) is the engine failing open: held and sent. */
     private def challenge(
         authId: AuthId,
@@ -512,11 +548,9 @@ object ConversationService:
       for
         _ <- ZIO.when(attempts > 0)(challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_failed, decision, level = None))
         result <-
-          // A challenge that came of the engine failing, not of a score, is not a reason to lock out a request that cannot
-          // answer (the second factor after a password, `login_hint`): the pause it was before challenges.
-          if !challengeVerifier.enabled || (proof == ProofInput.NoScript && decision.firedRules.contains(Antifraud.ErrorRule)) then
-            sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
-          else if proof == ProofInput.NoScript || attempts >= challengeVerifier.maxAttempts then refuse
+          if !challengeVerifier.enabled then sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+          else if attempts >= challengeVerifier.maxAttempts then refuse
+          else if proof == ProofInput.NoScript then leavePending(authId, conversation, credential, factorIndex, decision)
           else
             challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.issue(_, decision.score, attempts)).flatMap:
               case Some(challenge) =>

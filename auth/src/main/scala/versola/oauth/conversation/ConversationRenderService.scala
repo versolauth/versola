@@ -113,7 +113,7 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean) extends StepView
 
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
@@ -756,6 +756,8 @@ object ConversationRenderService:
             lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
             // Masked here so the unmasked credential never reaches window.__VERSOLA_FORM__.
             destination = credential.map(_.fold(Email.mask, Phone.mask)),
+            // No code was sent yet: the page asks for it by itself.
+            pending = s.pending,
           )
 
         case s: ConversationStep.PasskeyEnroll =>

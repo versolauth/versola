@@ -5,7 +5,7 @@ import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
 import { canSubmitInline, submitInline } from '../shared/inline';
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean };
 
 interface FormConfig extends BaseFormConfig {
   step: OtpStep;
@@ -34,6 +34,13 @@ function OtpForm(props: { config: FormConfig }) {
     );
   };
   let resending = false;
+  const resendAction = () => `/challenge/otp/resend?ui_locale=${currentLocale()}`;
+  /** Asks for a code, from script, answering a proof the server wants unseen. */
+  const requestCode = async () => {
+    if (resending) return;
+    resending = true;
+    await submitInline(resendAction(), new URLSearchParams({ csrf: props.config.csrf ?? '' }));
+  };
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
   let submitRef!: HTMLButtonElement;
@@ -56,6 +63,9 @@ function OtpForm(props: { config: FormConfig }) {
 
   onMount(() => {
     if (!props.config.previewId && lockRemaining() <= 0) inputRef.focus();
+    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend,
+    // which can. If that cannot be done from script the person can ask for it with the button below.
+    if (props.config.step.pending && canSubmitInline(props.config)) requestCode().catch(() => { resending = false; });
   });
 
   return (
@@ -117,15 +127,13 @@ function OtpForm(props: { config: FormConfig }) {
       >
         <form
           method="post"
-          action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}
+          action={resendAction()}
           onSubmit={(e) => {
             // From script, so that a proof the server asks for is solved unseen (see shared/inline).
             if (!canSubmitInline(props.config)) return;
             e.preventDefault();
             const form = e.currentTarget;
-            if (resending) return;
-            resending = true;
-            submitInline(form.action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>)).catch(() => {
+            requestCode().catch(() => {
               HTMLFormElement.prototype.submit.call(form);
             });
           }}

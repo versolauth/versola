@@ -199,16 +199,44 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.otpService.sendOtp.calls.isEmpty,
         )
       },
-      test("a Challenge decision for a request that cannot answer is refused like a blocked one, and never sent") {
+      test("a Challenge decision for a request that cannot answer is left on the code step with nothing sent, to be asked for there") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           result <- request(env, ProofInput.NoScript)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
         yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.blocked),
+          result.isInstanceOf[ConversationResult.RenderStep],
+          written.map(_.step).collect { case otp: ConversationStep.Otp => otp.pending } == List(true),
+          written.map(_.credential) == List(Some(phone)),
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenged),
           env.otpService.sendOtp.calls.isEmpty,
           env.antifraud.smsAsked.isEmpty,
+          env.antifraud.holds == 0,
         )
+      },
+      test("the page's resend from that step is the same request: not counted again, not recorded again, and asked for a proof") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        val pendingStep = realOtp.copy(real = None, timesRequested = 0)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.find.succeedsWith(None)
+          result <- env.service.prepareInitialOtp(authId, initialConversation.copy(step = pendingStep), phone, factorIndex = 0, ProofInput.Asked)
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Challenged],
+          env.antifraud.decisions == List(true),
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenged),
+        )
+      },
+      test("a request that cannot answer and is posted again from the pending step sends nothing either") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        val pendingStep = realOtp.copy(real = None, timesRequested = 0)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.prepareInitialOtp(authId, initialConversation.copy(step = pendingStep), phone, factorIndex = 0, ProofInput.NoScript)
+        yield assertTrue(result.isInstanceOf[ConversationResult.RenderStep], env.otpService.sendOtp.calls.isEmpty, env.antifraud.steps.isEmpty)
       },
       test("with the verifier off a Challenge stays the pause it was: held and sent, whoever asks") {
         val env = Env(decision = challenging)
@@ -259,20 +287,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result.isInstanceOf[ConversationResult.Challenged],
           env.otpService.sendOtp.calls.isEmpty,
         )
-      },
-      test("a challenge that came of the engine failing does not lock out a request that cannot answer: held and sent as before") {
-        val env =
-          Env(decision = Decision(DecisionAction.Challenge, 0, List("antifraud_error")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
-        for
-          _ <- request(env, ProofInput.NoScript)
-        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
-      },
-      test("a real score is refused for a request that cannot answer, even while the engine is failing elsewhere") {
-        val env =
-          Env(decision = Decision(DecisionAction.Challenge, 70, List("phone_velocity")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
-        for
-          result <- request(env, ProofInput.NoScript)
-        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied), env.otpService.sendOtp.calls.isEmpty)
       },
       test("two callers racing with the same solved token send one code, record one send, and the loser gives its charge back") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))

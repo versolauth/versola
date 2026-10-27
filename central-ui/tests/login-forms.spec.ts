@@ -16,6 +16,35 @@ const PASSWORD_REGEX = '^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$';
 test.describe('otp', () => {
   const step = { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' };
 
+  test('a step left with no code sent asks for it by itself, as a resend, and answers the proof it is given', async ({ page }) => {
+    const seen: Array<{ path: string; fields: URLSearchParams }> = [];
+    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true } }, {
+      beforeRender: async (p) => {
+        await p.route('**/challenge/otp/resend*', (route) => {
+          const request = route.request();
+          seen.push({ path: new URL(request.url()).pathname, fields: new URLSearchParams(request.postData() ?? '') });
+          const body = seen.length === 1 ? { challenge: { kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '12' } } } : { next: '/challenge' };
+          return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+        });
+      },
+    });
+
+    await expect.poll(() => seen.length).toBe(2);
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/otp/resend', '/challenge/otp/resend']);
+    expect(seen[0].fields.get('proof_inline')).toBe('1');
+    expect(seen[1].fields.get('proof_token')).toBe('signed.token');
+    const digest = createHash('sha256').update(`abc:${seen[1].fields.get('proof_solution')}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1] >> 4).toBe(0);
+    expect(t.title).toBeTruthy();
+  });
+
+  test('a step with a code sent does not ask for one', async ({ page }) => {
+    const { submitted } = await renderForm(page, 'otp', { step });
+    await page.waitForTimeout(300);
+    expect(submitted).toHaveLength(0);
+  });
+
   test('says where the code was sent', async ({ page }) => {
     const { t } = await renderForm(page, 'otp', { step });
 

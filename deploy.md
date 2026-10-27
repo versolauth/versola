@@ -701,14 +701,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
   real bound is the per-credential OTP request limit, which every repeated request takes a turn of, and the token's
   `ttl`; a guess costs the server one SHA-256.
-  **A challenged request that cannot answer is refused, not sent:** a plain form post (no JavaScript, the password forms
-  that lead on to a code, `/authorize` with `login_hint`) or a page that cannot solve the kind gets "access denied" as a
-  blocked request does, since sending it would be a way round the challenge for any script. Only a verifier that is
+  **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
+  form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
+  step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
+  it can answer like the credential form does and which is the same request (not counted again). A client that
+  cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
   off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
-  challenges existed, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
-  for a request that cannot answer, so that an outage of the engine does not lock out the second factor after a password or
-  `login_hint`. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that times out
-  to ask every request that can answer for a proof. Routing those two paths through a page that can solve is a follow-up.
+  challenges existed. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that
+  times out to ask every request for a proof.
   The keys of the optional `antifraud.challenge` block are `enabled` (`true`), `min-difficulty`, `max-difficulty`,
   `score-step`, `ttl` and `max-attempts`, **read whole: set every key, or none** (a block that leaves one out is not read at
   all). The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
