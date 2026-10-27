@@ -98,6 +98,7 @@ object DeliverySettingsService:
             otpProviderPassword = otpProviderPassword,
           ),
         )
+        _ <- refreshNow
       yield ()
 
     /** Only a new password is encrypted here; keeping the stored one is left to the repository,
@@ -112,7 +113,13 @@ object DeliverySettingsService:
           securityService.encryptAes256(Secret.fromString(password), key).map(bytes => DeliverySettingsRepository.StoredPassword.Set(Secret(bytes)))
 
     override def deleteSettings(): Task[Unit] =
-      repository.delete()
+      repository.delete() *> refreshNow
+
+    /** A write is read back at once, so an admin's next read on this instance shows it instead of waiting for the change
+      * notification. A failed read here only costs that: the write is done, and the notification refreshes the cache anyway.
+      */
+    private def refreshNow: Task[Unit] =
+      sync().ignoreLogged
 
     override def sync(): Task[Unit] =
       source.getAll.flatMap(cache.set)

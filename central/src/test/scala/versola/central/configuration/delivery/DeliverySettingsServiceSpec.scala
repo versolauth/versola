@@ -124,6 +124,29 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           written = env.repository.upsert.calls.head
         yield assertTrue(written.otpProvider.isEmpty, written.otpProviderPassword == DeliverySettingsRepository.StoredPassword.Clear)
       },
+      test("serves its own write at once, without waiting for the change notification") {
+        val env = Env()
+        val saved = DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = None, otpProvider = None, otpProviderPassword = None)
+        for
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          before <- service.getSettings
+          _ <- env.repository.getAll.succeedsWith(Some(saved))
+          _ <- service.upsertSettings(update(smtp = Some(smtp)))
+          after <- service.getSettings
+        yield assertTrue(before.isEmpty, after.flatMap(_.smtp) == Some(smtp))
+      },
+      test("still succeeds when reading the record back fails after the write") {
+        val env = Env()
+        for
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          _ <- env.repository.getAll.failsWith(RuntimeException("database unreachable"))
+          result <- service.upsertSettings(update(smtp = Some(smtp)))
+        yield assertTrue(result == Right(()), env.repository.upsert.calls.length == 1)
+      },
       test("refuses an invalid block and writes nothing") {
         val env = Env()
         val invalid = List(
@@ -150,6 +173,19 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           (service, _) <- env.service
           _ <- service.deleteSettings()
         yield assertTrue((() => env.repository.delete()).calls.length == 1)
+      },
+      test("serves the empty record at once after the removal") {
+        val env = Env()
+        val saved = DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = None, otpProvider = None, otpProviderPassword = None)
+        for
+          _ <- env.repository.getAll.succeedsWith(Some(saved))
+          _ <- (() => env.repository.delete()).succeedsWith(())
+          (service, _) <- env.service
+          before <- service.getSettings
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- service.deleteSettings()
+          after <- service.getSettings
+        yield assertTrue(before.flatMap(_.smtp) == Some(smtp), after.isEmpty)
       },
     ),
     suite("getSettings")(
