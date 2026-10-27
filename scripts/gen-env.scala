@@ -1871,6 +1871,42 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
   // ── Build config files ────────────────────────────────────────────────────────
 
+  // #745: limits on auth's channel that is not mutual TLS. Absent, auth applies its defaults: failed client authentication
+  // (`/token`, `/par`, `/introspect`, `/revoke`) 20 a minute per address, enforced; `/authorize` counted in shadow. A local setup (and
+  // the e2e suite, whose negative tests fail client authentication from one address on purpose) starts in shadow.
+  val authLimitsBlock =
+    if isLocal then
+      """# Limits on the channel that is not mutual TLS (#745). Local and e2e: shadow, counted and never refused, because the e2e suite
+        |# fails client authentication on purpose, from one address. Remove this block for auth's defaults (failed client authentication
+        |# enforced, 20 a minute per address). `client-ip = "forwarded"` reads the address from `ip-header`, for an auth reachable
+        |# only through the proxy that sets it.
+        |limits {
+        |  failed-mode = "shadow"
+        |  entry-mode = "shadow"
+        |  # failed-per-minute = 20
+        |  # failed-burst = 10
+        |  # entry-per-minute = 600
+        |  # entry-burst = 100
+        |  # client-ip = "socket"
+        |  # ip-header = "X-Real-IP"
+        |}
+        |""".stripMargin
+    else
+      """# Limits on the channel that is not mutual TLS (#745). The defaults need no block: failed client authentication (`/token`, `/par`,
+        |# `/introspect`, `/revoke`) is limited to 20 a minute per address and enforced, `/authorize` is counted in shadow. Uncomment to
+        |# change. Set `client-ip = "forwarded"` only when auth is reachable solely through the proxy that sets `ip-header`.
+        |# limits {
+        |#   failed-mode = "enforce"       # off | shadow | enforce
+        |#   failed-per-minute = 20
+        |#   failed-burst = 10
+        |#   entry-mode = "shadow"
+        |#   entry-per-minute = 600
+        |#   entry-burst = 100
+        |#   client-ip = "socket"          # socket | forwarded
+        |#   ip-header = "X-Real-IP"
+        |# }
+        |""".stripMargin
+
   val authConf =
     s"""env = $env
        |
@@ -1996,7 +2032,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    }
        |  ]
        |}
-       |""".stripMargin
+       |$authLimitsBlock""".stripMargin
 
   // #440: central issues and renews edge-fronted clients' certificates through a CA it holds no
   // key of. docker-local/vps: step-ca, through the provisioner key and root `mtls-init` copies
@@ -2252,6 +2288,15 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
+       |
+       |# Where the rate limits (R1) read a caller's address from. `socket` is the peer of the
+       |# connection: right when callers reach the edge directly (this local setup). Behind a
+       |# reverse proxy or load balancer set `forwarded` -- the address is then read from the
+       |# header below, which nginx / ingress-nginx set from the client chain -- but ONLY if the
+       |# edge is reachable solely through that proxy, or any caller could choose its own bucket
+       |# (deploy.md, Rate limits).
+       |client-ip = "socket"
+       |# client-ip-header = "X-Real-IP"
        |$edgeNativeBlock$edgeMutualTlsBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

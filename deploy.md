@@ -357,6 +357,20 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
+
+`HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
+in a compose file or a Helm `env` block is ignored. See [Access log](#access-log).
+
+- **auth and central** always log every request, and have no setting for it.
+- **The edge** starts at `off` (failures and slow requests only; 500 ms, 0.05 when sampled) and is configured per edge in
+  central: the admin console (an edge's page, "Access log") or `PATCH /configuration/edges/policies?edgeId=...` with an `accessLog` section. It reaches
+  the edge on its next configuration sync.
+- An edge that had `HTTP_ACCESS_LOG=full` or `sampled` returns to `off` until a policy is set for it. Set one after
+  upgrading if you want the lines back.
+- Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
+  `LOG_LEVEL` is unchanged.
+
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
@@ -1179,34 +1193,203 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
+### Rate limits
+
+The edge limits how much each client, user, session or key may send through it. An operator sets the policies per edge in
+central; a policy in `shadow` only counts what it would refuse, a policy in `enforce` refuses. An edge with no policy runs with
+the limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask).
+
+**Start from the recommended set.** `GET /configuration/edges/rate-limits/recommended` (and "Add recommended policies" in the
+console, on the edge page under *Rate limits*) gives five generous policies, all in `shadow`: `per-client` (120,000 a minute,
+bursts of 5,000), `per-user` (300 a minute and 5,000 an hour, bursts of 60), `per-user-endpoint` (120 a minute per user and
+endpoint, bursts of 30), `per-address` (600 a minute, bursts of 100; see R1) and `per-certificate` (60,000 a minute, bursts of
+2,000; mutual-TLS listener). They are meant to catch a runaway client, user, address or certificate, not a busy one. Add them, read
+`edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,
+then switch one policy at a time to `enforce`. Switching it back to `shadow` or `off` is the off switch.
+
+- **Policies per edge, in central: one endpoint for all the edge's policies.** `GET` and `PATCH /configuration/edges/policies?edgeId=`
+  (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
+  - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
+    whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` also names the section and the first problem; `404` for
+    an unknown edge. The answer is the new state with the new `revisions`.
+  - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
+    (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
+    written and the answer is `409` with the current state in `current`. A section that is not named has no precondition, so a client
+    that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
+    it read and, on `409`, reads the edges again and says so.
+  - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
+    writing nothing: for CI and automation.
+  - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
+    `edges.policy_meta` (`V1030`), all nullable JSONB and additive: the previous release's inserts do not name them and a rollback works on
+    the new schema. The edge listing shows `rateLimitPolicies`, `overloadPolicy`, `accessLogPolicy` and `policyRevisions`; the edge gets a
+    section in its own sync (`GET /edge/sync/rate-limits`, `/overload`, `/access-log`; the calling edge's own row only). The sections are
+    independent. The edge picks a change up on its
+  next configuration sync (the refresh interval, 5 minutes by default), keeps the last set while central is unreachable, and
+  treats `404` from an older central as "none set". A set that fails validation on the edge is not applied and the previous
+  one stays.
+- **Two checkpoints on the proxy path**, both fed by the verified token and the matched route, never by what the caller
+  sent: R2, after the JWT is verified and before the revocation check and the DPoP proof is recorded (client, subject,
+  session `sid`, key `jkt`); R3, after the endpoint and the caller's permissions are resolved and before the `/userinfo`
+  call and the upstream (resource and registered endpoint template, global and per subject). A request refused by
+  permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is. A call refused at R3
+  has already had its DPoP proof recorded (the proof is checked before the route is known, and reordering would let a caller
+  without a valid proof learn whether it is permitted); a call refused at R2 has not, and neither reaches `/userinfo` or the
+  resource.
+- **R1, before the token is read, keyed on what the connection shows** (policy `by: ["ip"]` or `["certificate"]`, scope
+  `edge-wide`, no other key):
+  - *Plain listener, the address.* Counts **failed and unauthenticated attempts only**: `/login`, `/complete` and the other entry
+    points count every call (nobody is signed in yet); a proxied call counts only when it is refused as unauthenticated (a
+    missing, invalid or expired token, a bad DPoP proof; not a nonce challenge, a step-up or a redirect to sign in again).
+    **Successful calls are never limited by address**, so a mobile carrier's shared address does not refuse its honest users.
+    An address whose bucket is empty is refused with `429` before anything else is done. IPv4 per address, IPv6 per `/64`.
+  - *Mutual-TLS listener, the certificate.* Keyed by the verified client certificate's SHA-256 thumbprint; every call counts (a
+    certificate is an identity); no address is needed, and none is reliably known behind an L4 proxy.
+  - *Which address:* the edge's own config file, `client-ip = "socket"` (default: the peer of the connection) or `"forwarded"` (the
+    header named by `client-ip-header`, default `X-Real-IP`). Set `forwarded` only when the edge is reachable **only** through the
+    proxy that sets the header (compose network, chart network policy): anything else could write the header and choose its own
+    bucket. nginx (`versola-proxy`) and ingress-nginx already resolve the client chain and set `X-Real-IP`. A header that is
+    missing or not an IP literal falls back to the peer. **Inside a Kubernetes cluster** a call through a Service (or an internal load balancer)
+    from a pod on another node reaches the backend with the caller's *node* address as its source (measured on the test cluster; only a
+    caller on the same node with `externalTrafficPolicy: Local` kept its own address). So behind kube-proxy, pods on one node share one
+    address, and `socket` cannot tell them apart: put a proxy that sets the header in front (ingress-nginx does) and use `forwarded`. The
+    address a real internet client has through a cloud load balancer was not measured (the cloud's address quota blocked creating one). Behind a proxy with `socket`, every caller is the proxy: the address limit
+    would count the whole world as one caller. Check `edge_client_address_total{source}` (`socket`, `forwarded`,
+    `forwarded_missing`) before enforcing an address policy; the edge logs a warning at start when `forwarded` is set. Whether a
+    cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
+    platform and is to be verified on the first real load balancer.
+- **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
+  caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
+  passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
+  (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
+  refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
+  policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
+  has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
+- **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
+  protection refuses whoever is there, by priority, with `503`.
+- **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
+  path). Set `replicas` in the policy set (`{"replicas": 3, "policies": [...]}`, "Edge pods" in the console) to the number of pods
+  of the edge and each pod enforces `limit / replicas` of every window and `burst / replicas` (rounded up, never below `cost`), so the
+  edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
+  (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
+  applies to each pod and N pods allow N times it. Change it when the number of pods changes.
+- **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
+  `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
+
+**Metrics** (a key is never a label; the policy name is a closed set, at most 64 names of `[a-z][a-z0-9_-]*`):
+`edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
+`edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
+
+**Limits declared by the owner of an API** (levels 2 and 3 of #744 section 4). The resource owner sets limits where the API is
+declared, so a change travels with it and the owner of a client sets nothing about how much of an API it may take:
+
+- *A resource endpoint*: `rateLimit` in the endpoint of `POST` / `PUT /configuration/resources` (`createEndpoints` replaces an
+  endpoint by id, so send the whole endpoint), read back by `GET /configuration/resources`. Applied at R3 for that endpoint, one
+  bucket per key and registered endpoint template. Stored inside the endpoint's JSON in `resources.endpoints`: no migration, and an
+  endpoint stored before this has none.
+- *A client of the resource's audience*: `audienceRateLimits` on the resource, a list of `{"clientId": ..., "rateLimit": ...}`, in
+  `POST` / `PUT /configuration/resources` (on `PUT` it replaces the whole list; absent leaves it; removing a client from the
+  audience drops its limit), read back by `GET /configuration/resources`. Applied at R3 to that client's calls to this resource,
+  whichever endpoint; one entry per client, only for a client in the audience. Stored in `resources.audience_rate_limits` (JSONB,
+  migration `V1030`: `NOT NULL DEFAULT '[]'`, because the previous release's inserts do not name it and an existing row has none).
+- *The shape*: `{"limits": [{"limit": 600, "windowSeconds": 60}], "burst": 50, "by": "subject", "mode": "shadow"}`. `by` is `subject`
+  (one bucket per user), `client` (per client; endpoints only) or `none` (one bucket for the endpoint, or for that client on the
+  resource); `burst` defaults to 1, `by` to `none`, `mode` to `shadow`. The rules are those of a policy (`400` names the first
+  problem; `InvalidRateLimit` for an endpoint, `InvalidAudienceRateLimit` for an audience client), and `cost` is always 1.
+- *They add to the edge's policies, they do not replace them*: a request must pass every limit that applies to it, so the
+  effective limit is the smallest. Declared limits are divided by `replicas` like the edge's own. A bootstrap start keeps a
+  `rateLimit` an operator put on one of the account endpoints.
+- *Metrics*: the policy is named `resource-endpoint` or `resource-client` (reserved: an edge policy cannot take either name), never the
+  endpoint, resource or client, so the label set stays closed; the key counts of every declaration add up under that name. A `429` names
+  the same policy. Up to 10,000 tracked keys per declaration (the edge's own policies keep 100,000), so many declarations cannot
+  grow memory.
+- *Order of work and rollback*: an edge that predates this ignores the fields, and a central that predates them sends none, so either
+  can be upgraded first. The previous release keeps serving on the new schema, and `audience_rate_limits` can stay when rolling back.
+
+Not there yet: partner edges tightening any of these locally.
+
+### Limits on auth's channel that is not mutual TLS
+
+The edge's rate limits stand in front of the resources. `auth` reached without the edge, that is not over mutual TLS, is exposed
+directly, so it has limits of its own (#745), from the `limits` block of auth's config file (every key optional; the block may be
+absent):
+
+| Limit | Applies to | Counts | Default |
+|---|---|---|---|
+| failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
+| entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
+
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds) and `{"error":"rate_limited"}`
+before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
+address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
+secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a
+certificate is not a guessable secret).
+
+```hocon
+limits {
+  failed-mode = "enforce"     # off | shadow | enforce
+  failed-per-minute = 20
+  failed-burst = 10
+  entry-mode = "shadow"
+  entry-per-minute = 600
+  entry-burst = 100
+  client-ip = "socket"        # socket | forwarded
+  ip-header = "X-Real-IP"
+}
+```
+
+`client-ip` is read as the edge's is (see *Rate limits*, R1): `socket` is the peer of the connection, `forwarded` the last value of
+`ip-header`, to be used **only** when auth is reachable solely through the proxy that sets it. Behind a proxy with `socket` every
+caller is the proxy, so the limit would count the world as one address. A value outside its range stops the start. State is per
+pod (N pods allow N times a limit) and bounded (a flood of addresses shares an overflow bucket).
+`gen-env.scala` writes `failed-mode = "shadow"` into the **local** config, because the e2e suite fails client authentication from one
+address on purpose; a generated deployment has no block, so the defaults apply. A load campaign whose drivers share addresses
+should set `failed-mode` and `entry-mode` to `shadow` for the run.
+
+Metrics: `auth_rate_limit_decisions_total{policy,result}` (`allowed`, `limited`, `would_limit`; policies
+`failed-client-auth-per-address` and `authorize-per-address`), `auth_rate_limit_tracked_keys{policy}`,
+`auth_rate_limit_overflow_hits_total{policy}`.
+
 ### Access log
 
 Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are
 the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
 profile under load, almost all of it for successful requests.
 
-- `HTTP_ACCESS_LOG=full` (default of auth and central): every request, as before.
-- `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
-  against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
-  `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
-  (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
-  trace id is sampled at random.
-- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
-- The default when `HTTP_ACCESS_LOG` is unset depends on the service: the **edge starts at `off`** (its successful request lines are most of its log and the `http_server_*` metrics have them; failures and slow requests are still logged), auth and central at `full`. Set `HTTP_ACCESS_LOG=full` or `sampled` on an edge to log more.
-- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
+- **auth and central have no access-log setting.** They always log every request (`full`), and there is no environment
+  variable or console field to change that: their lines are few, and they are where an investigation of a login or an
+  admin change ends up. A successful outbound call is `DEBUG` below 500 ms, as described further down.
+- **The edge** is the only service whose access log is set, and it is set **in central, per edge**: in the admin console
+  (an edge's page, section "Access log") or with `PATCH /configuration/edges/policies?edgeId=...` and an `accessLog` section (the body is described
+  in `central/open-api/central.yaml`; `null` removes the policy). There is no environment variable for it, and no value in
+  the edge's own configuration. A fresh edge, or one that has never reached central, uses the built-in defaults:
+  `mode` `off`, `slowMillis` 500, `successSampleRate` 0.05. A policy field that is absent means that default.
+- `mode` `full`: every request.
+- `mode` `sampled`: a request is always logged when its status is 400 or above, when an error was recorded against it,
+  or when it took `slowMillis` or longer. Other requests are logged for `successSampleRate` (one in 20 by default) of
+  traces. The choice is a hash of the trace id, so every hop of a trace (edge, auth, central) keeps or drops its lines
+  together, and a sampled trace is complete. A request that has no trace id is sampled at random.
+- `mode` `off` (the edge's default, because its successful request lines are most of its log and the `http_server_*`
+  metrics have them): only requests that failed (400 and above, or an error) and slow ones.
+- The policy reaches a running edge on its next configuration sync (at most the refresh interval, 5 minutes by default).
+  The edge keeps the last policy it received while central is unreachable. Central refuses an invalid policy with `400`;
+  an edge ignores one it cannot validate (a central newer or older than the edge) and keeps what it had. Removing the
+  policy returns the edge to the defaults above. It is independent of the overload policy, which is stored and served
+  the same way but keeps an environment base because the outbound guard has to protect the process before the first sync.
+- `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value
+  left in a compose file or a Helm `env` block is ignored, and an edge that relied on one is back to `off` until a policy
+  is set for it. `LOG_LEVEL` is separate and stays an environment setting.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
 error ratios and latency do not change; only a search for one successful request in the log can come up empty.
 
 `send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
-upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+upstreams) are `DEBUG` when the call was faster than the slow threshold (`slowMillis`, 500 ms unless an edge's policy sets it), so they are not written at the default
 `LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
 `debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
-is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+is external: its success is `INFO` whatever the access-log mode is, because that line is the record that a message was
 handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
-
-Invalid values fall back to the defaults.
 
 ### Configuration reference
 
@@ -1217,11 +1400,10 @@ Invalid values fall back to the defaults.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
-| `HTTP_ACCESS_LOG` | `off` on edge, `full` on central (auth always logs everything) | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
-| `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
-| `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
+
+The access log has no variables: auth and central always log every request, and an edge's is set in central (see [Access log](#access-log)).
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
 OpenBao, not in environment variables.

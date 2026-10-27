@@ -270,6 +270,266 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(a == RateDecision.Allowed, b == RateDecision.Allowed, c == RateDecision.Allowed)
       },
     ),
+    suite("response headers")(
+      test("a refusal names the policy and its tightest rate, with the wait; a missing policy has none") {
+        val p = policy(name = "two", limits = List(RateLimitWindow(100, 60), RateLimitWindow(500, 3600)), burst = 1)
+        for l <- limiter(p)()
+        yield assertTrue(
+          l.responseHeaders(RateDecision.Limited("two", 7)) == List(
+            "RateLimit-Policy" -> "\"two\";q=500;w=3600",
+            "RateLimit" -> "\"two\";r=0;t=7",
+          ),
+          l.responseHeaders(RateDecision.Limited("gone", 7)).isEmpty,
+        )
+      },
+    ),
+    suite("limits declared on an endpoint or on an audience client")(
+      test("an endpoint's limit applies to that endpoint only, and the stricter of it and an edge policy wins") {
+        val edge = policy(name = "per-user", by = List(RateLimitDimension.Subject), limits = List(RateLimitWindow(100, 1)), burst = 100)
+        val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        def route(endpoint: String) = RateLimitKeys(subject = "u1", endpoint = endpoint)
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(List(edge), declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", declared)))
+          first = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
+          second = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
+          other = (1 to 5).map(_ => l.check(Checkpoint.Route, route("GET /resources/a/y"), 0L))
+        yield assertTrue(
+          first == RateDecision.Allowed,
+          second == RateDecision.Limited("resource-endpoint", 60),
+          other.forall(_ == RateDecision.Allowed),
+          l.active(Checkpoint.Route),
+          !l.active(Checkpoint.Address),
+        )
+      },
+      test("a limit the resource sets for a client of its audience runs at R3 for that client on that resource only, per client or per user") {
+        val perClient = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce)
+        val perUser = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        def call(resource: String, client: String, subject: String) =
+          RateLimitKeys(resource = resource, client = client, subject = subject, endpoint = s"GET /resources/$resource/x")
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            Nil,
+            declared = List(
+              DeclaredLimit(DeclaredOwner.Audience, "plan", perClient, resource = "api"),
+              DeclaredLimit(DeclaredOwner.Audience, "app", perUser, resource = "api"),
+            ),
+          )
+          a = (1 to 3).map(i => l.check(Checkpoint.Route, call("api", "plan", s"u$i"), 0L))
+          b1 = l.check(Checkpoint.Route, call("api", "app", "u1"), 0L)
+          b2 = l.check(Checkpoint.Route, call("api", "app", "u1"), 0L)
+          b3 = l.check(Checkpoint.Route, call("api", "app", "u2"), 0L)
+          free = l.check(Checkpoint.Route, call("api", "unlimited", "u1"), 0L)
+          // the same client on another resource is not this resource's business
+          elsewhere = (1 to 4).map(_ => l.check(Checkpoint.Route, call("other", "plan", "u1"), 0L))
+        yield assertTrue(
+          a.take(2).forall(_ == RateDecision.Allowed),
+          a(2) == RateDecision.Limited("resource-client", 30),
+          b1 == RateDecision.Allowed,
+          b2 == RateDecision.Limited("resource-client", 60),
+          b3 == RateDecision.Allowed,
+          free == RateDecision.Allowed,
+          elsewhere.forall(_ == RateDecision.Allowed),
+          !l.active(Checkpoint.Identity),
+        )
+      },
+      test("an endpoint limit and an audience limit on the same call both apply, the edge's policies once, and the smallest wins") {
+        val edge = policy(
+          name = "edge",
+          by = List(RateLimitDimension.Subject),
+          scope = RateLimitScope.Resource,
+          limits = List(RateLimitWindow(100, 60)),
+          burst = 100,
+        )
+        val endpoint = DeclaredRateLimit(limits = List(RateLimitWindow(5, 60)), burst = 5, mode = GuardMode.Enforce)
+        val audience = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce)
+        val keys = RateLimitKeys(resource = "api", client = "plan", subject = "u1", endpoint = "GET /resources/api/x")
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            List(edge),
+            declared = List(
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/api/x", endpoint),
+              DeclaredLimit(DeclaredOwner.Audience, "plan", audience, resource = "api"),
+            ),
+          )
+          results = (1 to 3).map(_ => l.check(Checkpoint.Route, keys, 0L))
+        yield assertTrue(
+          results.take(2).forall(_ == RateDecision.Allowed),
+          results(2) == RateDecision.Limited("resource-client", 30),
+          // the edge's policy was charged for the two admitted calls and not for the refused one
+          l.stats("edge").exists(_.allowed == 2),
+          // a call to another endpoint by the same client is limited by the audience limit alone
+          l.check(
+            Checkpoint.Route,
+            RateLimitKeys(resource = "api", client = "plan", subject = "u1", endpoint = "GET /resources/api/y"),
+            0L,
+          ) == RateDecision.Limited("resource-client", 30),
+        )
+      },
+      test("shadow counts would_limit and refuses nothing; off is not installed") {
+        val shadow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Shadow)
+        val off = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Off)
+        def call(client: String) = RateLimitKeys(resource = "api", client = client)
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            Nil,
+            declared = List(
+              DeclaredLimit(DeclaredOwner.Audience, "s", shadow, resource = "api"),
+              DeclaredLimit(DeclaredOwner.Audience, "o", off, resource = "api"),
+            ),
+          )
+          s = (1 to 3).map(_ => l.check(Checkpoint.Route, call("s"), 0L))
+          o = (1 to 3).map(_ => l.check(Checkpoint.Route, call("o"), 0L))
+        yield assertTrue(
+          s.forall(_ == RateDecision.Allowed),
+          o.forall(_ == RateDecision.Allowed),
+          l.stats("resource-client").exists(r => r.allowed == 1 && r.wouldLimit == 2),
+        )
+      },
+      test("an update that leaves a declaration's shape alone keeps its buckets; a changed one starts afresh; a removed one is gone") {
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
+        val limit = DeclaredLimit(DeclaredOwner.Audience, "c", one, resource = "api")
+        val keys = RateLimitKeys(resource = "api", client = "c")
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(Nil, declared = List(limit))
+          _ = l.check(Checkpoint.Route, keys, 0L)
+          _ <- l.update(
+            Nil,
+            declared = List(limit.copy(limit = one.copy(mode = GuardMode.Shadow)), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one)),
+          )
+          kept = l.check(Checkpoint.Route, keys, 0L)
+          _ <- l.update(Nil, declared = List(limit.copy(limit = one.copy(limits = List(RateLimitWindow(5, 60)), burst = 5))))
+          fresh = l.check(Checkpoint.Route, keys, 0L)
+          _ <- l.update(Nil)
+          gone = l.check(Checkpoint.Route, keys, 0L)
+        yield assertTrue(
+          kept == RateDecision.Allowed, // shadow now: counted, not refused
+          l.stats("resource-client").isEmpty,
+          fresh == RateDecision.Allowed,
+          gone == RateDecision.Allowed,
+          !l.active(Checkpoint.Route),
+          l.names.isEmpty,
+        )
+      },
+      test("the same client id on two resources has two limits, and a limit on one does not bleed into the other") {
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            Nil,
+            declared =
+              List(DeclaredLimit(DeclaredOwner.Audience, "c", one, resource = "a"), DeclaredLimit(DeclaredOwner.Audience, "c", one, resource = "b")),
+          )
+          a1 = l.check(Checkpoint.Route, RateLimitKeys(resource = "a", client = "c"), 0L)
+          a2 = l.check(Checkpoint.Route, RateLimitKeys(resource = "a", client = "c"), 0L)
+          b1 = l.check(Checkpoint.Route, RateLimitKeys(resource = "b", client = "c"), 0L)
+        yield assertTrue(a1 == RateDecision.Allowed, a2 == RateDecision.Limited("resource-client", 60), b1 == RateDecision.Allowed)
+      },
+      test("the metric label is the fixed name, and the keys of every declaration add up under it") {
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(10, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            Nil,
+            declared =
+              List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one)),
+          )
+          _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x"), 0L)
+          _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/y"), 0L)
+          _ <- l.publish
+          allowed <- Metric.counter("edge_rate_limit_decisions_total").tagged(Set(
+            MetricLabel("policy", "resource-endpoint"),
+            MetricLabel("result", "allowed"),
+          )).value
+          keys <- Metric.gauge("edge_rate_limit_tracked_keys").tagged(MetricLabel("policy", "resource-endpoint")).value
+        yield assertTrue(allowed.count >= 2.0, keys.value >= 2.0, l.names == List("resource-endpoint"))
+      },
+      test("a refusal answers with the rate of the declaration that refused, not of another endpoint's") {
+        val slow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
+        val fast = DeclaredRateLimit(limits = List(RateLimitWindow(10, 1)), mode = GuardMode.Enforce)
+        val keys = RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x")
+        for
+          l <- RateLimiter.make(RateLimiterSettings(1000))
+          _ <- l.update(
+            Nil,
+            declared = List(
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast),
+            ),
+          )
+          limited: RateDecision.Limited = RateDecision.Limited("resource-endpoint", 60)
+        yield assertTrue(
+          l.responseHeaders(limited, Checkpoint.Route, keys) == List(
+            "RateLimit-Policy" -> "\"resource-endpoint\";q=1;w=60",
+            "RateLimit" -> "\"resource-endpoint\";r=0;t=60",
+          ),
+        )
+      },
+    ) @@ TestAspect.sequential, // the metrics registry is global: tests that name the same policy must not interleave
+    suite("gate and charge (R1: failed attempts only)")(
+      test("gate charges nothing: any number of gated requests pass, and charge is what drains the bucket") {
+        val ip = RateLimitKeys(ip = "203.0.113.7")
+        val p = policy(by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(3, 3)), burst = 3)
+        for
+          l <- limiter(p)()
+          gated = (1 to 10).map(_ => l.gate(Checkpoint.Address, ip, 0L))
+          _ = (1 to 3).foreach(_ => l.charge(Checkpoint.Address, ip, 0L))
+          after = l.gate(Checkpoint.Address, ip, 0L)
+          later = l.gate(Checkpoint.Address, ip, 2 * Second)
+        yield assertTrue(
+          gated.forall(_ == RateDecision.Allowed),
+          after == RateDecision.Limited("p", 1),
+          // one token of the three-per-three-seconds rate is back after a second
+          later == RateDecision.Allowed,
+        )
+      },
+      test("another address is unaffected, and an extra charge on an empty bucket changes nothing") {
+        val a = RateLimitKeys(ip = "198.51.100.1")
+        val b = RateLimitKeys(ip = "198.51.100.2")
+        val p = policy(by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(1, 10)))
+        for
+          l <- limiter(p)()
+          _ = (1 to 50).foreach(_ => l.charge(Checkpoint.Address, a, 0L))
+          blocked = l.gate(Checkpoint.Address, a, 0L)
+          other = l.gate(Checkpoint.Address, b, 0L)
+          // 50 failures did not push the wait beyond what one window means
+          retry = l.gate(Checkpoint.Address, a, 5 * Second)
+        yield assertTrue(blocked == RateDecision.Limited("p", 10), other == RateDecision.Allowed, retry == RateDecision.Limited("p", 5))
+      },
+      test("shadow counts would_limit at the gate and refuses nothing; a policy with no value for the key does not apply") {
+        val p = policy(name = "sh", by = List(RateLimitDimension.Ip), limits = List(RateLimitWindow(1, 10)), mode = GuardMode.Shadow)
+        val ip = RateLimitKeys(ip = "192.0.2.9")
+        for
+          l <- limiter(p)()
+          _ = l.charge(Checkpoint.Address, ip, 0L)
+          shadowed = l.gate(Checkpoint.Address, ip, 0L)
+          none = l.gate(Checkpoint.Address, RateLimitKeys(), 0L)
+        yield assertTrue(
+          shadowed == RateDecision.Allowed,
+          none == RateDecision.Allowed,
+          l.stats("sh").map(st => (st.limited, st.wouldLimit)) == Some((0L, 1L)),
+          l.stats("sh").map(_.trackedKeys) == Some(1),
+        )
+      },
+      test("a certificate policy is an address-checkpoint policy keyed on the certificate") {
+        val p = policy(by = List(RateLimitDimension.Certificate), limits = List(RateLimitWindow(1, 60)))
+        for
+          l <- limiter(p)()
+          first = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-a"), 0L)
+          second = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-a"), 0L)
+          other = l.check(Checkpoint.Address, RateLimitKeys(certificate = "thumb-b"), 0L)
+        yield assertTrue(
+          p.checkpoint == Checkpoint.Address,
+          first == RateDecision.Allowed,
+          second == RateDecision.Limited("p", 60),
+          other == RateDecision.Allowed,
+        )
+      },
+    ),
     suite("memory")(
       test("a key that has been quiet long enough is dropped") {
         for

@@ -37,7 +37,13 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyReposi
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient, ServiceController}
-import versola.oauth.clientauth.{ClientAssertionRepository, ClientAssertionService, ClientAuthentication, PostgresClientAssertionRepository}
+import versola.oauth.clientauth.{
+  ClientAssertionRepository,
+  ClientAssertionService,
+  ClientAuthThrottle,
+  ClientAuthentication,
+  PostgresClientAssertionRepository,
+}
 import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService, SmsOtpProvider}
@@ -137,6 +143,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
+      ClientAuthThrottle &
       AccountSettingsService &
       ChallengeThrottleRepository &
       LogoutService &
@@ -152,9 +159,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override protected def internalPeers =
     ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
-  override protected def accessLogConfigurable: Boolean = false
-
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
+    ClientAuthThrottle[Dependencies & Tracing & EnvName, Throwable](mainRoutes)
+
+  private def mainRoutes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,
       PushedAuthorizationController.routes,
@@ -353,6 +361,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >++>
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
+      ClientAuthThrottle.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>

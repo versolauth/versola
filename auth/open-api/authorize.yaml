@@ -61,6 +61,20 @@ paths:
           $ref: '#/components/responses/SeeOther'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '429':
+          description: |
+            This address has started too many authorization requests (600 a minute by default, burst 100; counted in shadow
+            unless `limits.entry-mode` is `enforce` in auth's config file). The request is not read. `Retry-After` is the wait in whole seconds.
+          headers:
+            Retry-After:
+              schema: {type: integer, minimum: 1}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string, enum: [rate_limited]}
 
     post:
       operationId: authorizePost
@@ -86,6 +100,20 @@ paths:
           $ref: '#/components/responses/SeeOther'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '429':
+          description: |
+            This address has started too many authorization requests (600 a minute by default, burst 100; counted in shadow
+            unless `limits.entry-mode` is `enforce` in auth's config file). The request is not read. `Retry-After` is the wait in whole seconds.
+          headers:
+            Retry-After:
+              schema: {type: integer, minimum: 1}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string, enum: [rate_limited]}
 
 components:
   parameters:
