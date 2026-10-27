@@ -46,6 +46,7 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.GuardMode
 import versola.util.http.RateLimitScope
 import versola.util.http.{
@@ -74,7 +75,6 @@ import java.security.cert.Certificate
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.UUID
-import versola.util.http.DeclaredRateLimitBy
 
 /** The edge-facing surface (#554). What matters here is who gets what: an edge is served the
   * tenants bound to it and nothing of another's, every secret is encrypted to that edge's own
@@ -220,7 +220,12 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
   )
 
-  private val declaredLimit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
+  private val declaredLimit = DeclaredRateLimit(
+    limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+    burst = 10,
+    mode = GuardMode.Enforce,
+    by = DeclaredRateLimitBy.None,
+  )
   private val otherEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-0000000007ff"))
   private val resourceA = resource("api-a", tenantA)
   private val resourceB = resource("api-b", tenantB)

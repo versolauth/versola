@@ -3539,7 +3539,12 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     test("a limit declared on an endpoint refuses that endpoint only, under the fixed name, and the smaller of it and the edge's policy wins") {
       val env = new Env
       val declared =
-        DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce, burst = 1)
+        DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)),
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+          burst = 1,
+        )
       val generous = shadowPolicy("edge-generous", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
         .copy(mode = GuardMode.Enforce, limits = List(RateLimitWindow(limit = 1000, windowSeconds = 60)), burst = 100)
       val users = usersEndpoint().copy(rateLimit = Some(declared))
@@ -3577,7 +3582,12 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       "a limit the resource sets for a client of its audience refuses that client's calls to it at R3 under resource-client, and another client is served",
     ) {
       val env = new Env
-      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
+      val declared = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)),
+        mode = GuardMode.Enforce,
+        burst = 1,
+        by = DeclaredRateLimitBy.None,
+      )
       for
         _ <- env.setupDefaults()
         upstream <- Ref.make(0)

@@ -1,5 +1,6 @@
 package versola.edge
 
+import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.{
   Checkpoint,
   DeclaredLimit,
@@ -16,7 +17,6 @@ import versola.util.http.{
 }
 import zio.*
 import zio.test.*
-import versola.util.http.DeclaredRateLimitBy
 
 object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
 
@@ -178,7 +178,12 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
           override val current: UIO[List[RateLimitPolicy]] = held.get
           override val replicas: UIO[Int] = ZIO.succeed(3)
           override val refreshNow: Task[Unit] = ZIO.unit
-        limit = DeclaredLimit(DeclaredOwner.Audience, "web", DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), burst = 1, by = DeclaredRateLimitBy.None, mode = GuardMode.Shadow), resource = "api")
+        limit = DeclaredLimit(
+          DeclaredOwner.Audience,
+          "web",
+          DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), burst = 1, by = DeclaredRateLimitBy.None, mode = GuardMode.Shadow),
+          resource = "api",
+        )
         declaredService = new DeclaredRateLimitService:
           override val current: UIO[List[DeclaredLimit]] = ZIO.succeed(List(limit))
         source = (ZLayer.succeed[RateLimitPolicyService](service) ++ ZLayer.succeed[DeclaredRateLimitService](declaredService)) >>>

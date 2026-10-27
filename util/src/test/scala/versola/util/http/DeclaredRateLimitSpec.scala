@@ -75,7 +75,15 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
         )
       },
       test("the edge's own policies cannot take the names of the declared ones") {
-        val taken = RateLimitPolicy(name = "resource-client", limits = List(RateLimitWindow(1, 1)), by = Nil, scope = RateLimitScope.EdgeWide, burst = 1, cost = 1, mode = GuardMode.Shadow)
+        val taken = RateLimitPolicy(
+          name = "resource-client",
+          limits = List(RateLimitWindow(1, 1)),
+          by = Nil,
+          scope = RateLimitScope.EdgeWide,
+          burst = 1,
+          cost = 1,
+          mode = GuardMode.Shadow,
+        )
         val result = RateLimitPolicy.validateAll(List(taken))
         assertTrue(result.left.exists(_.contains("reserved")))
       },

@@ -276,7 +276,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateResource refuses a replacement endpoint whose rate limit breaks a rule") {
       val env = new Env
-      val bad = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)), burst = 2, by = DeclaredRateLimitBy.None, mode = GuardMode.Shadow)
+      val bad = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)),
+        burst = 2,
+        by = DeclaredRateLimitBy.None,
+        mode = GuardMode.Shadow,
+      )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
@@ -787,7 +792,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("createResource stores the limits the resource sets for its audience, and refuses one that is not valid") {
       val env = new Env
-      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        burst = 50,
+        mode = GuardMode.Enforce,
+        by = DeclaredRateLimitBy.None,
+      )
       val client = audience.head
       def with_(limits: AudienceRateLimit*) = createRequest.copy(audienceRateLimits = limits.toList)
       for
@@ -813,7 +823,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateResource replaces the audience limits as a whole, keeps them when absent, and drops those of a client it removes") {
-      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        mode = GuardMode.Enforce,
+        burst = 1,
+        by = DeclaredRateLimitBy.None,
+      )
       val other = ClientId("other-client")
       val both = resource.copy(
         audience = List(audience.head, other),

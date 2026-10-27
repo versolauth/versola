@@ -20,6 +20,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
@@ -31,7 +32,6 @@ import zio.test.*
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
-import versola.util.http.DeclaredRateLimitBy
 
 object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
