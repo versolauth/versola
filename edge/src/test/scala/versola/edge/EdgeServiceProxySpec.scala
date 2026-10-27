@@ -3568,7 +3568,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         second.status == Status.TooManyRequests,
         second.rawHeader("Retry-After").contains("600"),
         second.rawHeader("RateLimit-Policy").contains("\"resource-endpoint\";q=1;w=600"),
-        body == """{"error":"rate_limited","policy":"resource-endpoint"}""",
+        body.isEmpty,
         other.status == Status.Ok,
         upstreamCalls == 2,
       )
@@ -3603,7 +3603,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         first.status == Status.Ok,
         second.status == Status.TooManyRequests,
         second.rawHeader("RateLimit-Policy").contains("\"resource-client\";q=1;w=900"),
-        body == """{"error":"rate_limited","policy":"resource-client"}""",
+        body.isEmpty,
         free.status == Status.Ok,
         // the refused call never reached the upstream
         upstreamCalls == 2,
