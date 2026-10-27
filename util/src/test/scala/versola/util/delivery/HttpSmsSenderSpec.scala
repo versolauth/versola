@@ -88,6 +88,17 @@ object HttpSmsSenderSpec extends ZIOSpecDefault:
         result.left.exists(_.isInstanceOf[SmsSender.ProviderRejected]),
       )
     },
+    test("treats a redirect as a failure and never follows it, so the Basic credentials stay with the saved host") {
+      for
+        seen <- capture(Status.Found)
+        client <- ZIO.service[Client]
+        result <- SmsSender.http(client, settings()).send(phone, message).either
+        request <- seen.get
+      yield assertTrue(
+        result.left.map(_.getMessage) == Left("OTP provider responded with 302"),
+        request.isDefined,
+      )
+    },
     test("gives up on a provider that never answers, naming the timeout and not the provider") {
       for
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](_ => ZIO.never).toRoutes)
