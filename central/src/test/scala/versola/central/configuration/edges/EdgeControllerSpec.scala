@@ -28,6 +28,7 @@ import zio.test.*
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import versola.util.http.RateLimitScope
 
 object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -159,14 +160,17 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     RSAKey.Builder(testKeyPair.publicKey).keyID(testKeyPair.keyId).build()
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
-  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty)
 
   private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
     name = "per-client",
     by = List(RateLimitDimension.Client),
     limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
     burst = 5,
-  )))
+    scope = RateLimitScope.EdgeWide,
+    cost = 1,
+    mode = GuardMode.Shadow,
+  )), replicas = 1)
 
   // lazy: it reads vals declared below it, which an object initialises in order
   private lazy val storedRecord = edgeRecord.copy(
@@ -192,9 +196,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def patch(body: String, params: (String, String)*): Request = patchFor(edgeId.toString, body, params*)
 
-  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1), slowMillis = None)
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100), continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -210,16 +214,16 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service =>
         service.getAllEdges.succeedsWith(
           Vector(
-            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None, requireDpopNonce = true),
-            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj()), requireDpopNonce = false),
+            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty),
+            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj()), requireDpopNonce = false, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty),
           ),
         ),
       verify = (response, _) =>
         for body <- response.body.asJson[GetAllEdgesResponse]
         yield assertTrue(
           body.edges == List(
-            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true),
-            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false),
+            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, groupId = EdgeGroup.DefaultId),
+            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, groupId = EdgeGroup.DefaultId),
           ),
         ),
     ),
@@ -283,7 +287,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getAllEdges.succeedsWith(
           Vector(
             edgeRecord,
-            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
+            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty),
           ),
         ),
       tenants = Vector(
@@ -387,7 +391,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               (
                 edgeId,
                 EdgePoliciesPatch(
-                  accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"))),
+                  accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)),
                   expectedRevisions = Map(PolicySection.AccessLog -> 0),
                 ),
                 true,

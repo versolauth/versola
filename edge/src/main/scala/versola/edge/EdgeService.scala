@@ -109,7 +109,7 @@ object EdgeService:
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
-      returnTo: Option[String] = None,
+      returnTo: Option[String],
       cookieDomain: Option[String],
       cookiePath: Option[String],
   ):

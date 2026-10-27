@@ -6,6 +6,7 @@ import versola.util.http.{
   ClientIpSource,
   GuardMode,
   IpAddress,
+  RateLimitScope,
   Observability,
   RateDecision,
   RateLimitDimension,
@@ -80,6 +81,8 @@ object ClientAuthThrottle:
         limits = List(RateLimitWindow(limit = perMinute, windowSeconds = 60)),
         burst = burst,
         mode = mode,
+        scope = RateLimitScope.EdgeWide,
+        cost = 1,
       )
     for
       failed <- RateLimiter.make(metricPrefix = "auth")

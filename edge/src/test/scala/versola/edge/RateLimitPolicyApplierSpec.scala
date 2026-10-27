@@ -3,6 +3,7 @@ package versola.edge
 import versola.util.http.{Checkpoint, GuardMode, RateDecision, RateLimitDimension, RateLimitKeys, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import zio.*
 import zio.test.*
+import versola.util.http.RateLimitScope
 
 object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
 
@@ -12,6 +13,9 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       by = List(RateLimitDimension.Client),
       limits = List(RateLimitWindow(limit = 1, windowSeconds = 3600)),
       mode = mode,
+      scope = RateLimitScope.EdgeWide,
+      burst = 1,
+      cost = 1,
     )
 
   private val keys = RateLimitKeys(client = "web")
@@ -77,6 +81,8 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
         limits = List(RateLimitWindow(limit = 40, windowSeconds = 60)),
         burst = 4,
         mode = GuardMode.Enforce,
+        scope = RateLimitScope.EdgeWide,
+        cost = 1,
       )
       for
         alone <- RateLimiter.make()

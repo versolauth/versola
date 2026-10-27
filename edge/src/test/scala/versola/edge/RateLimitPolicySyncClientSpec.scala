@@ -5,6 +5,8 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.test.*
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
 
 object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
   private val syncToken = "sync-token"
@@ -44,8 +46,8 @@ object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
       request <- seen.get.someOrFail(RuntimeException("no request captured"))
     yield (policy, request)
 
-  private val policy = RateLimitPolicy(name = "per-client", by = List(RateLimitDimension.Client), limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)), burst = 5)
-  private val policies = RateLimitPolicies(List(policy))
+  private val policy = RateLimitPolicy(name = "per-client", by = List(RateLimitDimension.Client), limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)), burst = 5, scope = RateLimitScope.EdgeWide, cost = 1, mode = GuardMode.Shadow)
+  private val policies = RateLimitPolicies(List(policy), replicas = 1)
 
   def spec = suite("RateLimitPolicySyncClient")(
     test("reads this edge's rate-limits policy off central, as itself") {

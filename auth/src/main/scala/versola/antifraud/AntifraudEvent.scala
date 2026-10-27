@@ -28,8 +28,8 @@ case class AntifraudEvent(
     /** The decision, score and rules that produced this outcome. Filled in once decisions exist (P0-1 of #771);
       * an event written before then carries none. */
     decision: Option[String] = None,
-    score: Option[Int] = None,
-    rules: List[String] = Nil,
+    score: Option[Int],
+    rules: List[String],
 )
 
 enum AntifraudAction:

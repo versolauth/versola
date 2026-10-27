@@ -3224,6 +3224,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       scope = scope,
       limits = List(RateLimitWindow(limit = 1, windowSeconds = 3600)),
       mode = GuardMode.Shadow,
+      burst = 1,
+      cost = 1,
     )
 
   /** What a policy has counted so far: admitted, and would-have-been-refused. */

@@ -6332,12 +6332,13 @@ components:
           description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
     RateLimitPolicies:
       type: object
+      description: Every field is required; nothing has an implicit value.
+      required: [policies, replicas]
       properties:
         replicas:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: |
             How many edge pods share the traffic. Each pod enforces `limit / replicas` of every window (and `burst / replicas`,
             rounded up, never below `cost`), so the edge as a whole allows about the limit written here. As exact as the balancer
@@ -6349,7 +6350,7 @@ components:
             $ref: '#/components/schemas/RateLimitPolicy'
     RateLimitPolicy:
       type: object
-      required: [name, limits]
+      required: [name, by, scope, limits, burst, cost, mode]
       properties:
         name:
           type: string
@@ -6370,7 +6371,6 @@ components:
         scope:
           type: string
           enum: [edge-wide, resource, endpoint]
-          default: edge-wide
           description: |
             `edge-wide` keeps one bucket per key; `resource` and `endpoint` one per key and resource, or per key and
             registered endpoint template. A policy narrower than the edge is checked after the caller's permissions are
@@ -6395,18 +6395,15 @@ components:
         burst:
           type: integer
           minimum: 1
-          default: 1
           description: How many requests may arrive together. Not above the smallest `limit`. `1` is strict spacing.
         cost:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: What one request takes from the bucket. Not above `burst`.
         mode:
           type: string
           enum: [off, shadow, enforce]
-          default: shadow
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     EdgePolicies:
       type: object

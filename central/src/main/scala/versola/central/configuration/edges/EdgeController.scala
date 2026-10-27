@@ -273,9 +273,9 @@ case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
-    overloadPolicy: Option[OverloadPolicy] = None,
-    accessLogPolicy: Option[AccessLogPolicy] = None,
-    rateLimitPolicies: Option[RateLimitPolicies] = None,
+    overloadPolicy: Option[OverloadPolicy],
+    accessLogPolicy: Option[AccessLogPolicy],
+    rateLimitPolicies: Option[RateLimitPolicies],
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
     policyRevisions: Map[String, Int] = Map.empty,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
@@ -306,11 +306,11 @@ case class EdgeRateLimitSyncResponse(
 /** The policy sections of an edge: absent when none is set, with how often and when each section last changed. */
 case class EdgePoliciesResponse(
     edgeId: EdgeId,
-    overload: Option[OverloadPolicy] = None,
-    accessLog: Option[AccessLogPolicy] = None,
-    rateLimits: Option[RateLimitPolicies] = None,
-    revisions: Map[String, Int] = Map.empty,
-    updatedAt: Map[String, Instant] = Map.empty,
+    overload: Option[OverloadPolicy],
+    accessLog: Option[AccessLogPolicy],
+    rateLimits: Option[RateLimitPolicies],
+    revisions: Map[String, Int],
+    updatedAt: Map[String, Instant],
 ) derives Schema, JsonCodec
 
 object EdgePoliciesResponse:

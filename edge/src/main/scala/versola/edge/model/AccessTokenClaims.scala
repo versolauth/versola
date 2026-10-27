@@ -33,6 +33,6 @@ case class AccessTokenClaims(
   * unreadable, before anything about its binding was ever looked at.
   */
 case class Confirmation(
-    jkt: Option[String] = None,
+    jkt: Option[String],
     @jsonField("x5t#S256") certificateThumbprint: Option[String] = None,
 ) derives JsonCodec

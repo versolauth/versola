@@ -39,6 +39,8 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
     subjectHash = "hash-1",
     destPrefix = Some("491512"),
     userAgent = Some("Mozilla/5.0"),
+    score = None,
+    rules = Nil,
   )
 
   private def partitions(xa: TransactorZIO): Task[List[String]] =
