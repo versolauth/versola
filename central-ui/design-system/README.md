@@ -330,6 +330,14 @@ and removing a row moves focus to the row that took its place, or to Add entry. 
 like the other text fields. A save that replaces several groups reads the record without the read cache first (`fresh`) so a
 stale copy never puts back what another admin changed.
 
+Each editor ends, above its Cancel and Save, with a **Send a test message** box: a recipient field of its own, a secondary
+button and a `role="status"` result (`.banner.ok` or `.banner.warn`, never the words of the other side: central answers a code
+and a sentence). The test uses what is on the page, saved or not, and the typed password, or the saved one for the server it
+was saved for; because Enter in the recipient field sends the test and must never save the form, that input handles its own
+Enter. A saved password stays with its server, so a draft that changes the server, port, account or STARTTLS (for SMS the
+origin or the account) and leaves the password empty is refused beside the Password field, for Save and for the test alike,
+before any request. The result and the recipient are forgotten when the editor is left.
+
 ## Component catalogue
 
 | Component | Element | Use it for | Not for |

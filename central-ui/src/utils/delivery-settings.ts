@@ -85,7 +85,45 @@ export function otpProviderDraftFrom(stored: OtpProviderDeliverySettings | undef
   };
 }
 
-export function validateSmtpDraft(draft: SmtpDraft): FieldErrors {
+/** What the form knows of a block that is already saved, to tell whether its password may follow the settings. */
+export interface SavedBlock<T> {
+  settings: T;
+  hasPassword: boolean;
+}
+
+export const PASSWORD_AGAIN = 'Enter the password again: it stays only with the server it was saved for.';
+
+/** Whether the draft reaches another server, port, account or STARTTLS setting than the saved block does. Central keeps a
+ * saved password only for the server it was saved for, so a change that leaves the password empty is refused there. */
+export function smtpServerChanged(saved: SmtpDeliverySettings, draft: SmtpDraft): boolean {
+  return saved.host.trim().toLowerCase() !== draft.host.trim().toLowerCase()
+    || saved.port !== Number(draft.port.trim())
+    || saved.username !== draft.username.trim()
+    || saved.startTls !== draft.startTls;
+}
+
+/** Likewise for the SMS provider: the origin (scheme, host and port, default ports as they are written) and the account. */
+export function otpEndpointChanged(saved: OtpProviderDeliverySettings, draft: OtpProviderDraft): boolean {
+  let before: string;
+  let after: string;
+  try {
+    before = new URL(saved.url).origin;
+    after = new URL(draft.url.trim()).origin;
+  } catch {
+    return true;
+  }
+  return before !== after || (saved.username ?? '') !== draft.username.trim();
+}
+
+/** The address or number a test message goes to; `null` when it will do. */
+export function validateTestRecipient(channel: 'email' | 'sms', value: string): string | null {
+  const to = value.trim();
+  if (!to) return channel === 'email' ? 'Enter the address the test goes to.' : 'Enter the phone number the test goes to.';
+  if (channel === 'email') return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) ? null : 'Enter an email address, such as you@example.com.';
+  return /^\+?\d{9,15}$/.test(to) ? null : 'Enter a phone number with its country code, such as +12025551234.';
+}
+
+export function validateSmtpDraft(draft: SmtpDraft, saved?: SavedBlock<SmtpDeliverySettings>): FieldErrors {
   const errors: FieldErrors = {};
   const host = draft.host.trim();
   if (!host) errors.host = 'The server address is required.';
@@ -97,10 +135,11 @@ export function validateSmtpDraft(draft: SmtpDraft): FieldErrors {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.from.trim())) errors.from = 'Enter an email address, such as noreply@example.com.';
   if (!draft.subject.trim()) errors.subject = 'The subject is required.';
   else if (CONTROL_CHARACTER.test(draft.subject.trim())) errors.subject = 'The subject must be one line.';
+  if (saved?.hasPassword && smtpServerChanged(saved.settings, draft) && draft.password === '' && !draft.clearPassword) errors.password = PASSWORD_AGAIN;
   return errors;
 }
 
-export function validateOtpProviderDraft(draft: OtpProviderDraft): FieldErrors {
+export function validateOtpProviderDraft(draft: OtpProviderDraft, saved?: SavedBlock<OtpProviderDeliverySettings>): FieldErrors {
   const errors: FieldErrors = {};
   if (!(OTP_METHODS as readonly string[]).includes(draft.method)) errors.method = 'Pick GET, POST, PUT or PATCH.';
   const url = draft.url.trim();
@@ -120,6 +159,7 @@ export function validateOtpProviderDraft(draft: OtpProviderDraft): FieldErrors {
   const keys = draft.body.map(entry => entry.key.trim());
   if (keys.some(key => !key)) errors.body = 'Every body entry needs a name.';
   else if (new Set(keys).size !== keys.length) errors.body = 'Two body entries have the same name.';
+  if (saved?.hasPassword && otpEndpointChanged(saved.settings, draft) && draft.password === '' && !draft.clearPassword) errors.password = PASSWORD_AGAIN;
   return errors;
 }
 
