@@ -400,12 +400,19 @@ export interface PaginatedResponse<T> {
 // Edge
 export type { OverloadPolicy } from '../utils/overload-policy';
 import type { OverloadPolicy } from '../utils/overload-policy';
+export type { AccessLogPolicy } from '../utils/access-log-policy';
+import type { AccessLogPolicy } from '../utils/access-log-policy';
+export type { RateLimitPolicies, RateLimitPolicy } from '../utils/rate-limit-policies';
+import type { RateLimitPolicies } from '../utils/rate-limit-policies';
 import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
   requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
   overloadPolicy?: OverloadPolicy;  // absent when none is set: the edge uses its deployment's values
+  accessLogPolicy?: AccessLogPolicy;  // absent when none is set: the edge uses its built-in defaults
+  rateLimitPolicies?: RateLimitPolicies;  // absent when none are set: the edge applies no rate limit
+  policyRevisions?: Record<string, number>;  // how often each policy section changed, for the compare-and-set of the policies patch
 }
 
 export interface ServiceKey {

@@ -19,6 +19,7 @@ enum RateDecision:
   */
 final class RateLimitKeys(
     val ip: String = "",
+    val certificate: String = "",
     val client: String = "",
     val subject: String = "",
     val session: String = "",
@@ -61,8 +62,12 @@ object RateLimiterSettings:
   * Metrics, published by [[publish]]: `edge_rate_limit_decisions_total{policy,result}` (`allowed`, `limited`, `would_limit`),
   * `edge_rate_limit_tracked_keys{policy}` and `edge_rate_limit_overflow_hits_total{policy}`. A key is never a label.
   */
-final class RateLimiter private (settings: RateLimiterSettings, installed: AtomicReference[RateLimiter.Installed]):
+final class RateLimiter private (settings: RateLimiterSettings, installed: AtomicReference[RateLimiter.Installed], metricPrefix: String):
   import RateLimiter.*
+
+  private val decisions = Metric.counter(s"${metricPrefix}_rate_limit_decisions_total")
+  private val overflowHitsMetric = Metric.counter(s"${metricPrefix}_rate_limit_overflow_hits_total")
+  private val trackedKeys = Metric.gauge(s"${metricPrefix}_rate_limit_tracked_keys")
 
   /** Whether any policy applies at `point`: one volatile read, which is all a deployment with no policies pays. */
   def active(point: Checkpoint): Boolean = installed.get.at(point.ordinal).length > 0
@@ -71,16 +76,28 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
     * switching a mode or an unrelated policy does not hand every key a full bucket. The policies are expected to have passed
     * [[RateLimitPolicy.validateAll]].
     */
-  def update(policies: List[RateLimitPolicy]): UIO[Unit] =
+  def update(policies: List[RateLimitPolicy], replicas: Int = 1): UIO[Unit] =
     publish *> ZIO.succeed:
       val before = installed.get
       val runtimes = policies.filter(_.mode != GuardMode.Off).map: policy =>
-        val shape = Shape.of(policy, settings)
+        val shape = Shape.of(policy, settings, math.max(1, replicas))
         val reused = before.byName.get(policy.name).map(_.tracker).filter(_.shape == shape)
         new Policy(policy, reused.getOrElse(new Tracker(shape)))
       installed.set(Installed.of(runtimes))
       before.byName.keySet -- runtimes.map(_.policy.name)
     .flatMap(gone => ZIO.foreachDiscard(gone)(forget))
+
+  /** The `RateLimit-Policy` and `RateLimit` fields of a refusal (draft-ietf-httpapi-ratelimit-headers, a draft that is still
+    * moving: sent on `429` only, so a change of the draft cannot break a successful response). `q` and `w` are the quota and window
+    * of the policy's tightest rate; `r` is 0 and `t` is the wait in seconds. Never the key, never other policies.
+    */
+  def responseHeaders(limited: RateDecision.Limited): List[(String, String)] =
+    installed.get.byName.get(limited.policy).toList.flatMap: p =>
+      val tightest = p.policy.limits.minBy(window => window.limit.toDouble / window.windowSeconds)
+      List(
+        "RateLimit-Policy" -> s"\"${limited.policy}\";q=${tightest.limit};w=${tightest.windowSeconds}",
+        "RateLimit" -> s"\"${limited.policy}\";r=0;t=${limited.retryAfterSeconds}",
+      )
 
   /** The names of the policies being enforced or shadowed now. */
   def names: List[String] = installed.get.all.map(_.policy.name).toList
@@ -94,6 +111,57 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
       case 0 => RateDecision.Allowed
       case 1 => checkOne(policies(0), keys, nowNanos)
       case _ => checkAll(policies, keys, nowNanos)
+
+  /** Read-only: would a request at `point` be refused? Nothing is charged, so a refused or a passing request costs the key
+    * nothing; [[charge]] takes the cost afterwards, for a request that turns out to be a failed attempt. Counts `limited` or
+    * `would_limit` for the policies that refuse, and `allowed` when none does.
+    */
+  def gate(point: Checkpoint, keys: RateLimitKeys, nowNanos: Long): RateDecision =
+    val policies = installed.get.at(point.ordinal)
+    var worst: Policy = null
+    var worstWait = Pass
+    var i = 0
+    while i < policies.length do
+      val policy = policies(i)
+      val key = policy.keyOf(keys)
+      if !key.eq(Absent) then
+        val tracker = policy.tracker
+        var entry = tracker.lookup(key, nowNanos)
+        var wait = tracker.probe(entry, nowNanos)
+        while wait == Dead do
+          tracker.evict(key, entry)
+          entry = tracker.lookup(key, nowNanos)
+          wait = tracker.probe(entry, nowNanos)
+        if wait > Pass then
+          if policy.policy.mode == GuardMode.Enforce then
+            tracker.limited.increment()
+            if wait > worstWait then
+              worstWait = wait
+              worst = policy
+          else tracker.wouldLimit.increment()
+        else tracker.allowed.increment()
+      i += 1
+    if worst == null then RateDecision.Allowed else RateDecision.Limited(worst.policy.name, secondsOf(worstWait))
+
+  /** Takes the cost of one request at `point` from every policy that applies, whether or not it would pass: a failed attempt
+    * that arrives at an empty bucket changes nothing (the bucket is already as far ahead as it can usefully be). Counts nothing;
+    * [[gate]] did.
+    */
+  def charge(point: Checkpoint, keys: RateLimitKeys, nowNanos: Long): Unit =
+    val policies = installed.get.at(point.ordinal)
+    var i = 0
+    while i < policies.length do
+      val policy = policies(i)
+      val key = policy.keyOf(keys)
+      if !key.eq(Absent) && policy.policy.mode != GuardMode.Off then
+        val tracker = policy.tracker
+        var entry = tracker.lookup(key, nowNanos)
+        var r = tracker.charge(entry, nowNanos)
+        while r == Dead do
+          tracker.evict(key, entry)
+          entry = tracker.lookup(key, nowNanos)
+          r = tracker.charge(entry, nowNanos)
+      i += 1
 
   private def checkOne(policy: Policy, keys: RateLimitKeys, now: Long): RateDecision =
     val key = policy.keyOf(keys)
@@ -228,10 +296,6 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
 final case class RateLimitStats(allowed: Long, limited: Long, wouldLimit: Long, overflowHits: Long, trackedKeys: Int)
 
 object RateLimiter:
-  private val decisions = Metric.counter("edge_rate_limit_decisions_total")
-  private val overflowHitsMetric = Metric.counter("edge_rate_limit_overflow_hits_total")
-  private val trackedKeys = Metric.gauge("edge_rate_limit_tracked_keys")
-
   private def labels(policy: String, result: String): Set[MetricLabel] =
     Set(MetricLabel("policy", policy), MetricLabel("result", result))
 
@@ -254,8 +318,9 @@ object RateLimiter:
   private def secondsOf(retryNanos: Long): Int =
     math.max(1L, math.min(Int.MaxValue.toLong, (retryNanos + NanosPerSecond - 1) / NanosPerSecond)).toInt
 
-  def make(settings: RateLimiterSettings = RateLimiterSettings.default): UIO[RateLimiter] =
-    ZIO.succeed(new RateLimiter(settings, new AtomicReference(Installed.empty)))
+  /** @param metricPrefix the service that owns the limiter: `edge_rate_limit_decisions_total`, `auth_rate_limit_decisions_total` */
+  def make(settings: RateLimiterSettings = RateLimiterSettings.default, metricPrefix: String = "edge"): UIO[RateLimiter] =
+    ZIO.succeed(new RateLimiter(settings, new AtomicReference(Installed.empty), metricPrefix))
 
   /** Everything that decides what a bucket is: when this is equal, the buckets of the old policy remain valid. */
   private[http] final case class Shape(
@@ -265,11 +330,14 @@ object RateLimiter:
       burst: Int,
       cost: Int,
       maxKeys: Int,
-  )
+      replicas: Int,
+  ):
+    /** What each pod allows of one window: `limit / replicas` as a longer emission interval, and a burst that is at least the cost. */
+    def podBurst: Int = math.max(cost, (burst + replicas - 1) / replicas)
 
   private[http] object Shape:
-    def of(policy: RateLimitPolicy, settings: RateLimiterSettings): Shape =
-      Shape(policy.scope, policy.by, policy.limits, policy.burst, policy.cost, settings.maxKeysPerPolicy)
+    def of(policy: RateLimitPolicy, settings: RateLimiterSettings, replicas: Int = 1): Shape =
+      Shape(policy.scope, policy.by, policy.limits, policy.burst, policy.cost, settings.maxKeysPerPolicy, replicas)
 
   /** The state of one key: a `tat` per window, `Removed` in the first when the entry has left its map. */
   private[http] final class Entry(windows: Int):
@@ -320,14 +388,15 @@ object RateLimiter:
       case RateLimitDimension.Subject => keys.subject
       case RateLimitDimension.Session => keys.session
       case RateLimitDimension.Jkt => keys.jkt
+      case RateLimitDimension.Certificate => keys.certificate
 
   /** The buckets of one policy, and its counts. */
   private[http] final class Tracker(val shape: Shape):
     private val windows = shape.limits.size
     // per window: nanoseconds one cost unit takes, and how far `tat` may run ahead of the clock (burst tolerance)
-    private val emission = shape.limits.map(w => w.windowSeconds * NanosPerSecond / w.limit).toArray
+    private val emission = shape.limits.map(w => w.windowSeconds * NanosPerSecond * shape.replicas / w.limit).toArray
     private val increment = emission.map(_ * shape.cost)
-    private val tolerance = emission.map(_ * shape.burst)
+    private val tolerance = emission.map(_ * shape.podBurst)
 
     private val entries = new ConcurrentHashMap[String, Entry]()
     private val count = new AtomicInteger(0)

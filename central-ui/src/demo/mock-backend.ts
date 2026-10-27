@@ -67,7 +67,18 @@ type ResourceEndpointDto = {
 export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+/** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
+const RECOMMENDED_RATE_LIMITS = {
+  policies: [
+    { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, cost: 1, mode: 'shadow' },
+    { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, cost: 1, mode: 'shadow' },
+    { name: 'per-user-endpoint', by: ['subject'], scope: 'endpoint', limits: [{ limit: 120, windowSeconds: 60 }], burst: 30, cost: 1, mode: 'shadow' },
+    { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, cost: 1, mode: 'shadow' },
+    { name: 'per-certificate', by: ['certificate'], scope: 'edge-wide', limits: [{ limit: 60000, windowSeconds: 60 }], burst: 2000, cost: 1, mode: 'shadow' },
+  ],
+};
+
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -382,10 +393,20 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
-  /** Makes `PUT /configuration/edges/overload` answer 400 with this message, as central does for a policy that fails validation. */
+  /** Makes `PATCH /configuration/edges/policies` answer 400 for the `overload` section with this message, as central does for a policy that fails validation. */
   overloadRejection?: string;
-  /** Holds `PUT /configuration/edges/overload` for this long, to look at the saving state. */
+  /** Holds a `PATCH /configuration/edges/policies` that names `overload` for this long, to look at the saving state. */
   overloadDelayMs?: number;
+  /** Makes a `PATCH /configuration/edges/policies` that names `accessLog` answer 400 with this message. */
+  accessLogRejection?: string;
+  /** Holds a patch that names `accessLog` for this long. */
+  accessLogDelayMs?: number;
+  /** Makes a patch that names `rateLimits` answer 400 with this message. */
+  rateLimitRejection?: string;
+  /** Holds a patch that names `rateLimits` for this long. */
+  rateLimitDelayMs?: number;
+  /** Makes a policies patch that names this section answer 409, as if someone else had changed it after the console read it. */
+  policyConflict?: 'overload' | 'accessLog' | 'rateLimits';
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
@@ -502,6 +523,11 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     edges: clone(overrides.edges ?? defaultState.edges),
     overloadRejection: overrides.overloadRejection,
     overloadDelayMs: overrides.overloadDelayMs,
+    accessLogRejection: overrides.accessLogRejection,
+    accessLogDelayMs: overrides.accessLogDelayMs,
+    rateLimitRejection: overrides.rateLimitRejection,
+    rateLimitDelayMs: overrides.rateLimitDelayMs,
+    policyConflict: overrides.policyConflict,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
@@ -1276,22 +1302,65 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/configuration/edges/overload' && method === 'PUT') {
+    if (pathname === '/configuration/edges/policies' && (method === 'GET' || method === 'PATCH')) {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {
         await route.fulfill({ status: 404, body: '' });
         return;
       }
-      if (state.overloadDelayMs) await new Promise(resolve => setTimeout(resolve, state.overloadDelayMs));
-      if (state.overloadRejection) {
-        await route.fulfill(json({ error: state.overloadRejection }, 400));
+      const view = () => ({
+        edgeId: edge.id,
+        ...(edge.overloadPolicy ? { overload: edge.overloadPolicy } : {}),
+        ...(edge.accessLogPolicy ? { accessLog: edge.accessLogPolicy } : {}),
+        ...(edge.rateLimitPolicies ? { rateLimits: edge.rateLimitPolicies } : {}),
+        revisions: edge.policyRevisions ?? {},
+      });
+      if (method === 'GET') {
+        await route.fulfill(json(view()));
         return;
       }
-      const policy = body as Record<string, unknown>;
-      if (Object.keys(policy).length === 0) delete edge.overloadPolicy;
-      else edge.overloadPolicy = policy;
-      await route.fulfill({ status: 204, body: '' });
+      const patch = body as Record<string, unknown> & { expectedRevisions?: Record<string, number> };
+      const sections = (['overload', 'accessLog', 'rateLimits'] as const).filter(section => section in patch);
+      const delay = Math.max(0, ...sections.map(section => ({ overload: state.overloadDelayMs, accessLog: state.accessLogDelayMs, rateLimits: state.rateLimitDelayMs })[section] ?? 0));
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      for (const section of sections) {
+        const rejection = { overload: state.overloadRejection, accessLog: state.accessLogRejection, rateLimits: state.rateLimitRejection }[section];
+        if (rejection) {
+          await route.fulfill(json({ error: `${section}: ${rejection}`, section }, 400));
+          return;
+        }
+      }
+      const stale = Object.entries(patch.expectedRevisions ?? {}).find(([section, revision]) => (edge.policyRevisions?.[section] ?? 0) !== revision)?.[0]
+        ?? sections.find(section => section === state.policyConflict);
+      if (stale) {
+        await route.fulfill(json({ error: `${stale} has changed since it was read`, section: stale, current: view() }, 409));
+        return;
+      }
+      const dryRun = url.searchParams.get('dryRun') === 'true';
+      const stored = { overload: 'overloadPolicy', accessLog: 'accessLogPolicy', rateLimits: 'rateLimitPolicies' } as const;
+      const target = dryRun ? structuredClone(edge) : edge;
+      for (const section of sections) {
+        const value = patch[section] as Record<string, unknown> | null;
+        const field = stored[section];
+        const empty = value === null || Object.keys(value).length === 0 || (section === 'rateLimits' && (value as { policies?: unknown[] }).policies?.length === 0);
+        const before = JSON.stringify(target[field] ?? null);
+        if (empty) delete target[field];
+        else target[field] = value;
+        if (before !== JSON.stringify(target[field] ?? null)) target.policyRevisions = { ...(target.policyRevisions ?? {}), [section]: (target.policyRevisions?.[section] ?? 0) + 1 };
+      }
+      await route.fulfill(json({
+        edgeId: target.id,
+        ...(target.overloadPolicy ? { overload: target.overloadPolicy } : {}),
+        ...(target.accessLogPolicy ? { accessLog: target.accessLogPolicy } : {}),
+        ...(target.rateLimitPolicies ? { rateLimits: target.rateLimitPolicies } : {}),
+        revisions: target.policyRevisions ?? {},
+      }));
+      return;
+    }
+
+    if (pathname === '/configuration/edges/rate-limits/recommended' && method === 'GET') {
+      await route.fulfill(json(RECOMMENDED_RATE_LIMITS));
       return;
     }
 

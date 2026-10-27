@@ -851,6 +851,53 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/edge-access-log-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: { ...edgesState, edges: [{ ...edges[0], accessLogPolicy: { mode: 'sampled', successSampleRate: 0.1 } }] },
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Access log' })).toContainText('Sampled (set here)');
+    },
+  },
+  {
+    name: 'console/edge-access-log-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit access log', exact: true }).click();
+      await expect(sidePanel(page, 'Edit access log').getByRole('button', { name: 'Save access log' })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/edge-rate-limits-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: {
+      ...edgesState,
+      edges: [{
+        ...edges[0],
+        rateLimitPolicies: {
+          replicas: 3,
+          policies: [
+            { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, mode: 'shadow' },
+            { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, mode: 'enforce' },
+            { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, mode: 'shadow' },
+          ],
+        },
+      }],
+    },
+    before: async page => {
+      await page.setViewportSize({ width: 1440, height: 1500 });
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Rate limits' })).toContainText('3 policies');
+    },
+  },
+  {
+    // The empty editor: the recommended set is one click away.
+    name: 'console/edge-rate-limits-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit rate limits', exact: true }).click();
+      await expect(sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Add recommended policies' })).toBeVisible();
+    },
+  },
+  {
     name: 'console/edge-form', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Edge' }).click();

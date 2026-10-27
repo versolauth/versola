@@ -9,12 +9,15 @@ import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
+  AccessLogPolicyService,
+  AddressLimit,
   ClientCertificateFiles,
   ConfigurationSource,
   EdgeCertificateHolder,
   EdgeConfig,
   EdgeController,
   EdgeIdentity,
+  EdgeRateLimiter,
   EdgeService,
   InternalSurface,
   JwksService,
@@ -26,6 +29,8 @@ import versola.edge.{
   PostgresLoginRepository,
   PostgresRevocationNotifications,
   PostgresRevocationRepository,
+  RateLimitPolicyService,
+  RateLimitPolicySource,
   ResourceService,
   SSOClient,
   SSOClientWarmUp,
@@ -34,7 +39,7 @@ import versola.edge.{
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
-import versola.util.http.VersolaApp
+import versola.util.http.{RateLimiter, VersolaApp}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
@@ -58,6 +63,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeIdentity &
       DpopPolicyService &
       OverloadPolicyService &
+      AccessLogPolicyService &
+      RateLimitPolicyService &
+      RateLimiter &
       OAuthClientService &
       ResourceService &
       PermissionService &
@@ -87,7 +95,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     ZIO.serviceWith[EdgeConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
   // Per-request success lines are most of the edge's log and the metrics have them; failures and slow requests stay.
-  override protected def accessLogDefaultMode = versola.util.http.AccessLogMode.Off
+  // The only place these defaults are declared: there is no HTTP_ACCESS_LOG* environment. An operator's policy in central
+  // is applied over them as it changes. auth and central always log every request.
+  override protected def accessLogDefaults =
+    versola.util.http.AccessLogSettings.default.copy(mode = versola.util.http.AccessLogMode.Off)
+  override protected def accessLogPolicy = Some(ZIO.serviceWithZIO[AccessLogPolicyService](_.current))
 
   override protected def internalPeers =
     ZIO.serviceWith[EdgeConfig]: config =>
@@ -97,14 +109,17 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   /** The surface every mode serves. The internal one is added by [[mountedRoutes]], which is
     * where the mode is known. */
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
-    List(
-      EdgeController.routes,
-      NativeController.routes,
-    ).reduce(_ ++ _)
+    AddressLimit[Dependencies & Tracing & EnvName, Throwable](
+      List(
+        EdgeController.routes,
+        NativeController.routes,
+      ).reduce(_ ++ _),
+      AddressLimit.Listener.Plain,
+    )
 
   /** The proxy alone, on the listener that reads the caller's certificate (`EdgeConfig.mutualTls`). */
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    Some(EdgeController.resourceRoutes)
+    Some(AddressLimit[Dependencies & Tracing & EnvName, Throwable](EdgeController.resourceRoutes, AddressLimit.Listener.MutualTls))
 
   /** `ClientAuth.Required`, for the reason auth's listener gives (zio-http 3.6.0 drops a connection with an
     * optional certificate the peer did not present). A caller with no certificate has nothing to prove here
@@ -154,6 +169,10 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeIdentity.live >++>
       DpopPolicyService.live >++>
       OverloadPolicyService.live >++>
+      AccessLogPolicyService.live >++>
+      RateLimitPolicyService.live >++>
+      RateLimitPolicySource.fromCentral >++>
+      EdgeRateLimiter.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>
       PermissionService.live >++>

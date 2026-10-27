@@ -50,6 +50,8 @@ object EdgeSyncController extends Controller:
     jwksEndpoint,
     dpopEndpoint,
     overloadEndpoint,
+    accessLogEndpoint,
+    rateLimitEndpoint,
     presetsEndpoint,
     serverMetadataEndpoint,
     signEdgeCertificateEndpoint,
@@ -142,6 +144,26 @@ object EdgeSyncController extends Controller:
       for
         edge <- callerEdge(request)
         response = EdgeOverloadSyncResponse(overloadPolicy = edge.overloadPolicy)
+      yield Response.json(response.toJson)
+    }
+
+  /** The access-log policy an operator set for the calling edge (`edges.access_log_policy`); `null` when none is set. Served
+    * like [[overloadEndpoint]]: the edge's own row only. */
+  val accessLogEndpoint =
+    Method.GET / "edge" / "sync" / "access-log" -> handler { (request: Request) =>
+      for
+        edge <- callerEdge(request)
+        response = EdgeAccessLogSyncResponse(accessLogPolicy = edge.accessLogPolicy)
+      yield Response.json(response.toJson)
+    }
+
+  /** The rate limit policies an operator set for the calling edge (`edges.rate_limit_policies`); `null` when none are set.
+    * Served like [[overloadEndpoint]]: the edge's own row only. */
+  val rateLimitEndpoint =
+    Method.GET / "edge" / "sync" / "rate-limits" -> handler { (request: Request) =>
+      for
+        edge <- callerEdge(request)
+        response = EdgeRateLimitSyncResponse(rateLimitPolicies = edge.rateLimitPolicies)
       yield Response.json(response.toJson)
     }
 

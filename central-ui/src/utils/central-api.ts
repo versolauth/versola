@@ -8,6 +8,8 @@ import type {
   BackendProperty,
   Edge,
   OverloadPolicy,
+  AccessLogPolicy,
+  RateLimitPolicies,
   Locale,
   FormPreview,
   FormRecord,
@@ -109,7 +111,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number> };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1386,6 +1388,9 @@ export async function fetchEdges(): Promise<Edge[]> {
     // edge did before the setting existed.
     requireDpopNonce: edge.requireDpopNonce ?? true,
     ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
+    ...(edge.accessLogPolicy ? { accessLogPolicy: edge.accessLogPolicy } : {}),
+    ...(edge.rateLimitPolicies ? { rateLimitPolicies: edge.rateLimitPolicies } : {}),
+    ...(edge.policyRevisions && Object.keys(edge.policyRevisions).length > 0 ? { policyRevisions: edge.policyRevisions } : {}),
   })));
 }
 
@@ -1397,13 +1402,44 @@ export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean
   });
 }
 
-/** Replaces the edge's overload policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
-export async function setEdgeOverloadPolicy(edgeId: string, policy: OverloadPolicy): Promise<void> {
-  await requestVoid('/configuration/edges/overload', {
-    method: 'PUT',
-    query: { edgeId },
-    body: policy,
+export type EdgePolicySection = 'overload' | 'accessLog' | 'rateLimits';
+
+/** What `PATCH /configuration/edges/policies` takes: a section that is absent is kept, `null` removes it, an object replaces it as a whole.
+ *  `expectedRevisions` makes a section's change conditional on the revision the console read (`409` if it has moved on). */
+export interface EdgePoliciesPatch {
+  overload?: OverloadPolicy | null;
+  accessLog?: AccessLogPolicy | null;
+  rateLimits?: RateLimitPolicies | null;
+  expectedRevisions?: Partial<Record<EdgePolicySection, number>>;
+}
+
+export interface EdgePolicies {
+  edgeId: string;
+  overload?: OverloadPolicy;
+  accessLog?: AccessLogPolicy;
+  rateLimits?: RateLimitPolicies;
+  revisions?: Record<string, number>;
+  updatedAt?: Record<string, string>;
+}
+
+/** Changes the named policy sections of an edge and answers the new state, with the new revisions. Central answers 400 with the section
+ *  and the first thing wrong, and 409 when a section has changed since it was read. */
+export async function patchEdgePolicies(edgeId: string, patch: EdgePoliciesPatch, options: { dryRun?: boolean } = {}): Promise<EdgePolicies> {
+  return request<EdgePolicies>('/configuration/edges/policies', {
+    method: 'PATCH',
+    query: { edgeId, ...(options.dryRun ? { dryRun: 'true' } : {}) },
+    body: patch,
   });
+}
+
+/** Whether a failed save lost to another change of the same section. */
+export function isPolicyConflict(error: unknown): boolean {
+  return (error as ApiError | undefined)?.status === 409;
+}
+
+/** The recommended starting set of rate limit policies (all in `shadow`), the same for every edge. */
+export async function fetchRecommendedRateLimitPolicies(): Promise<RateLimitPolicies> {
+  return request<RateLimitPolicies>('/configuration/edges/rate-limits/recommended');
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {

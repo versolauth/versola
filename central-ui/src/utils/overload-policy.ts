@@ -1,5 +1,5 @@
 /**
- * The overload policy of an edge (`PUT /configuration/edges/overload`): the wire form, the field
+ * The overload policy of an edge (the `overload` section of `PATCH /configuration/edges/policies`): the wire form, the field
  * table the editor is drawn from, and the pure helpers around it. The ranges and messages mirror
  * `OverloadPolicy.validate` in `util/.../OverloadPolicy.scala`: central refuses a policy that
  * fails it and an edge does not apply one, so the editor says the same thing before the request.
