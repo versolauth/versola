@@ -31,7 +31,10 @@ object DeliverySettingsService:
       smtpPassword: Option[String],
       otpProvider: Option[OtpProviderDeliverySettings],
       otpProviderPassword: Option[String],
-  ) derives JsonDecoder // No encoder on purpose: the type holds the plaintext passwords.
+  ) derives JsonDecoder: // No encoder on purpose: the type holds the plaintext passwords.
+    override def toString: String =
+      s"Update(smtp=$smtp, smtpPassword=${smtpPassword.fold("none")(_ => "***")}, otpProvider=$otpProvider, " +
+        s"otpProviderPassword=${otpProviderPassword.fold("none")(_ => "***")})"
 
   /** Names the field and the rule, never a value, so the message is safe in a response and in the error context. */
   case class ValidationError(message: String)
@@ -84,7 +87,33 @@ object DeliverySettingsService:
     override def upsertSettings(update: Update): Task[Either[ValidationError, Unit]] =
       update.smtp.flatMap(SmtpDeliverySettings.validate).orElse(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate)) match
         case Some(reason) => ZIO.left(ValidationError(reason))
-        case None => store(update).asRight
+        case None =>
+          // Read from the repository, not the cache: this decides whether a stored password may follow the settings.
+          repository.getAll.flatMap: stored =>
+            passwordWouldFollowToAnotherServer(update, stored) match
+              case Some(reason) => ZIO.left(ValidationError(reason))
+              case None => store(update).asRight
+
+    /** A password that is kept (left out of the update) stays with the server it was saved for. A save that changes the
+      * server, or the account, has to bring the password again: otherwise the saved one would be sent to wherever the
+      * new address points, and an administrator who may change the address but not read the password could collect it.
+      */
+    private def passwordWouldFollowToAnotherServer(update: Update, stored: Option[DeliverySettingsRecord]): Option[String] =
+      val smtp =
+        for
+          block <- update.smtp if update.smtpPassword.isEmpty
+          record <- stored
+          previous <- record.smtp
+          _ <- record.smtpPassword if !SmtpDeliverySettings.sameServer(previous, block)
+        yield "smtp.password must be entered again when the server address, port or username changes"
+      val otpProvider =
+        for
+          block <- update.otpProvider if update.otpProviderPassword.isEmpty
+          record <- stored
+          previous <- record.otpProvider
+          _ <- record.otpProviderPassword if !OtpProviderDeliverySettings.sameEndpoint(previous, block)
+        yield "otpProvider.password must be entered again when the address, its host or port, or the username changes"
+      smtp.orElse(otpProvider)
 
     private def store(update: Update): Task[Unit] =
       for
@@ -116,10 +145,11 @@ object DeliverySettingsService:
       repository.delete() *> refreshNow
 
     /** A write is read back at once, so an admin's next read on this instance shows it instead of waiting for the change
-      * notification. A failed read here only costs that: the write is done, and the notification refreshes the cache anyway.
+      * notification. A failed read here only costs that: the write is done, and the notification refreshes the cache anyway,
+      * so it is logged and not raised.
       */
     private def refreshNow: Task[Unit] =
-      sync().ignoreLogged
+      sync().catchAllCause(cause => ZIO.logWarningCause("Could not read the delivery settings back after a write", cause))
 
     override def sync(): Task[Unit] =
       source.getAll.flatMap(cache.set)

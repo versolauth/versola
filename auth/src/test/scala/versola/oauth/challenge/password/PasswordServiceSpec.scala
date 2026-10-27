@@ -8,6 +8,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{OtpTemplateChannel, PasswordHistorySettings, TenantId}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
+import versola.oauth.delivery.ChannelUnavailable
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.*
@@ -54,7 +55,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
       expiresAt = Some(expiresAt),
     )
 
-  class Env(secureRandom: SecureRandom, env: EnvName = EnvName.Test("dev")):
+  class Env(secureRandom: SecureRandom, env: EnvName = EnvName.Test("dev"), config: CoreConfig = coreConfig):
     val passwordRepo = stub[PasswordRepository]
     val configuration = stub[OAuthConfigurationService]
     val securityService = stub[SecurityService]
@@ -65,7 +66,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
       passwordRepo,
       securityService,
       secureRandom,
-      coreConfig,
+      config,
       configuration,
       env,
       userRepo,
@@ -271,6 +272,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
           _ <- env.emailProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
           sendCalls = env.emailProvider.send.calls
@@ -282,6 +284,118 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.smsProvider.send.calls.isEmpty,
         )
       },
+      test("delivers nothing outside production by default, whatever channel is asked for") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Test("local"))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
+        yield assertTrue(
+          env.passwordRepo.createTemporary.calls.length == 1,
+          env.userRepo.find.calls.isEmpty,
+          env.emailProvider.send.calls.isEmpty,
+          env.smsProvider.send.calls.isEmpty,
+        )
+      },
+      test("delivers via email outside production when deliver-outside-prod is on") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Test("local"), coreConfig.copy(deliverOutsideProd = Some(true)))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}, hours: {{expiresHours}}"))
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
+          _ <- env.emailProvider.send.succeedsWith(())
+          revealed <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
+          sendCalls = env.emailProvider.send.calls
+        yield assertTrue(
+          revealed.isEmpty,
+          sendCalls.length == 1,
+          sendCalls.head._1 == email,
+          sendCalls.head._2.contains("hours: 1"),
+          env.smsProvider.send.calls.isEmpty,
+        )
+      },
+      test("removes the temporary password when delivery outside production fails") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Test("local"), coreConfig.copy(deliverOutsideProd = Some(true)))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.deleteTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
+          _ <- env.emailProvider.send.failsWith(RuntimeException("smtp down"))
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
+        yield assertTrue(result.isFailure, env.passwordRepo.deleteTemporary.calls == List(userId))
+      },
+      test("still shows the password outside production with deliver-outside-prod on, and sends nothing for it") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Test("local"), coreConfig.copy(deliverOutsideProd = Some(true)))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          revealed <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
+        yield assertTrue(revealed.isDefined, env.emailProvider.send.calls.isEmpty, env.smsProvider.send.calls.isEmpty)
+      },
+      test("still refuses to show the password in production, with deliver-outside-prod on or off") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod, coreConfig.copy(deliverOutsideProd = Some(true)))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show)).exit
+        yield assertTrue(result.isFailure, env.passwordRepo.createTemporary.calls.isEmpty)
+      },
+      test("stores nothing and fails when the email channel is not available, so no password is left that nobody was told") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.emailProvider.available.succeedsWith(false)
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
+        yield assertTrue(
+          result.isFailure,
+          result.causeOption.exists(_.failureOption.exists(_.isInstanceOf[PasswordChannelUnavailable])),
+          env.passwordRepo.createTemporary.calls.isEmpty,
+          env.emailProvider.send.calls.isEmpty,
+        )
+      },
+      test("takes the temporary password back when the channel goes away between the check and the send") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.deleteTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
+          _ <- env.emailProvider.send.failsWith(ChannelUnavailable("email"))
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
+        yield assertTrue(result.isFailure, env.passwordRepo.deleteTemporary.calls == List(userId))
+      },
+      test("stores nothing and fails when the SMS channel is not available") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.smsProvider.available.succeedsWith(false)
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.sms)).exit
+        yield assertTrue(
+          result.causeOption.exists(_.failureOption.exists(_.isInstanceOf[PasswordChannelUnavailable])),
+          env.passwordRepo.createTemporary.calls.isEmpty,
+        )
+      },
       test("delivers via SMS in prod when the channel is sms") {
         for
           secureRandom <- ZIO.service[SecureRandom]
@@ -291,6 +405,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.smsProvider.available.succeedsWith(true)
           _ <- env.smsProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.sms))
           sendCalls = env.smsProvider.send.calls
@@ -373,6 +488,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
           _ <- env.emailProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
           delivered = env.emailProvider.send.calls.head._2
@@ -438,6 +554,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           _ <- env.passwordRepo.deleteTemporary.succeedsWith(())
+          _ <- env.emailProvider.available.succeedsWith(true)
           _ <- env.emailProvider.send.failsWith(new RuntimeException("smtp down"))
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
         yield assert(result)(fails(anything)) &&

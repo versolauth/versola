@@ -111,6 +111,7 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             DeliverySettingsController.routes.provideEnvironment(
               ZEnvironment[DeliverySettingsService](service) ++
+                ZEnvironment[DeliveryTestService](stub[DeliveryTestService]) ++
                 tracing ++ security ++ ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[ResourceService](resourceService),
@@ -126,6 +127,49 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verifyResult <- verify(response, service, security.get[SecurityService])
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** The test endpoint, with the service behind it stubbed: what it has to settle is who may call it and what a request
+    * and an answer look like. */
+  private def testEndpointCase(
+      description: String,
+      request: Request,
+      expectedStatus: Status,
+      setup: Stub[DeliveryTestService] => UIO[Unit] = _ => ZIO.unit,
+      verify: (Response, Stub[DeliveryTestService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+      anonymous: Boolean = false,
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        service = stub[DeliveryTestService]
+        edgeService = stub[EdgeService]
+        resourceService = stub[ResourceService]
+        tracing <- tracingLayer.build
+        security <- securityLayer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            DeliverySettingsController.routes.provideEnvironment(
+              ZEnvironment[DeliverySettingsService](stub[DeliverySettingsService]) ++
+                ZEnvironment[DeliveryTestService](service) ++
+                tracing ++ security ++ ZEnvironment[CentralConfig](config) ++
+                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[ResourceService](resourceService),
+            ),
+          ),
+        )
+        _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- setup(service)
+        requestWithAuth = if anonymous then request else request.addHeader(TestAdminAuth.basicAuthHeader)
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
+        verifyResult <- verify(response, service)
+      yield assertTrue(response.status == expectedStatus) && verifyResult
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  private def post(body: String): Request =
+    Request(method = Method.POST, url = path / "test", body = Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
+
+  private val emailTestBody =
+    "{\"channel\":\"email\",\"to\":\"admin@example.com\",\"smtp\":{\"host\":\"smtp.example.com\",\"port\":587,\"username\":\"mailer\",\"from\":\"noreply@example.com\",\"subject\":\"Your code\",\"startTls\":true,\"enabled\":true},\"password\":\"typed-secret\"}"
 
   private def put(body: String): Request =
     Request(method = Method.PUT, url = path, body = Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
@@ -298,6 +342,72 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Unauthorized,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
+      anonymous = true,
+    ),
+    testEndpointCase(
+      description = "POST test hands the block under test and the typed password to the service, and answers 200 delivered",
+      request = post(emailTestBody),
+      expectedStatus = Status.Ok,
+      setup = svc => svc.send.succeedsWith(Right(DeliveryTestService.Outcome.Delivered)),
+      verify = (response, svc) =>
+        for payload <- decode[DeliverySettingsController.TestResult](response)
+        yield assertTrue(
+          payload == DeliverySettingsController.TestResult(delivered = true, code = None, message = None),
+          svc.send.calls.map(r => (r.channel, r.to, r.smtp, r.password)) == List(("email", "admin@example.com", Some(smtp), Some("typed-secret"))),
+        ),
+    ),
+    testEndpointCase(
+      description = "POST test answers 200 with a code and a sentence when the attempt fails, and repeats nothing the other side said",
+      request = post(emailTestBody),
+      expectedStatus = Status.Ok,
+      setup = svc =>
+        svc.send.succeedsWith(Right(DeliveryTestService.Outcome.Failed(
+          code = "authentication_failed",
+          message = "The server refused the username or the password.",
+        ))),
+      verify = (response, _) =>
+        for payload <- decode[DeliverySettingsController.TestResult](response)
+        yield assertTrue(
+          payload == DeliverySettingsController.TestResult(
+            delivered = false,
+            code = Some("authentication_failed"),
+            message = Some("The server refused the username or the password."),
+          ),
+        ),
+    ),
+    testEndpointCase(
+      description = "POST test returns 400 with the reason when the request cannot be tried",
+      request = post(emailTestBody),
+      expectedStatus = Status.BadRequest,
+      setup = svc => svc.send.succeedsWith(Left(DeliveryTestService.Refused("to must be an email address"))),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("to must be an email address"))),
+    ),
+    testEndpointCase(
+      description = "POST test returns 429 with Retry-After when the limit is reached",
+      request = post(emailTestBody),
+      expectedStatus = Status.TooManyRequests,
+      setup = svc =>
+        svc.send.succeedsWith(Left(DeliveryTestService.Refused(message = "too many test messages, try again in a minute", rateLimited = true))),
+      verify = (response, _) => ZIO.succeed(assertTrue(response.rawHeader("Retry-After").contains("60"))),
+    ),
+    testEndpointCase(
+      description = "POST test returns 400 for a body that is not a test request, and calls nothing",
+      request = post("{\"channel\":42}"),
+      expectedStatus = Status.BadRequest,
+      verify = (_, svc) => ZIO.succeed(assertTrue(svc.send.calls.isEmpty)),
+    ),
+    testEndpointCase(
+      description = "POST test returns 401 without the admin credential, and calls nothing",
+      request = post(emailTestBody),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, svc) => ZIO.succeed(assertTrue(svc.send.calls.isEmpty)),
+      anonymous = true,
+    ),
+    testEndpointCase(
+      description = "POST test returns 401 for an auth sync token: only the admin credential may send a message from central",
+      request = post(emailTestBody).addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, svc) => ZIO.succeed(assertTrue(svc.send.calls.isEmpty)),
       anonymous = true,
     ),
   )

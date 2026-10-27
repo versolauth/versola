@@ -6,7 +6,7 @@ import versola.oauth.client.model.{ClientId, OtpType}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
-import versola.util.{Email, EnvName, Phone}
+import versola.util.{CoreConfig, Email, EnvName, Phone}
 import zio.{Task, UIO, ZIO, ZLayer}
 
 trait OtpService:
@@ -29,7 +29,7 @@ trait OtpService:
   def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult]
 
 object OtpService:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   class Impl(
       otpGenerationService: OtpGenerationService,
@@ -38,6 +38,7 @@ object OtpService:
       smsOtpProvider: SmsOtpProvider,
       configService: OAuthConfigurationService,
       envName: EnvName,
+      config: CoreConfig,
   ) extends OtpService:
 
     override def prepareOtp(
@@ -72,11 +73,11 @@ object OtpService:
         uiLocales: Option[List[String]],
     ): Task[Unit] =
       (otp.real, credential) match
-        case (Some(otp), Left(email)) if envName.isProd =>
+        case (Some(otp), Left(email)) if config.delivers(envName) =>
           configService.getClientTemplate(clientId, OtpType.email, uiLocales).flatMap: template =>
             emailOtpProvider.sendOtp(email, otp.code, template)
 
-        case (Some(otp), Right(phone)) if envName.isProd =>
+        case (Some(otp), Right(phone)) if config.delivers(envName) =>
           configService.getClientTemplate(clientId, OtpType.sms, uiLocales).flatMap: template =>
             smsOtpProvider.sendOtp(phone, otp.code, template)
 
