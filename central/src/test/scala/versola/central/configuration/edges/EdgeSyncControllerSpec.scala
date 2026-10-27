@@ -39,6 +39,8 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
 import versola.util.http.{
   AccessLogPolicy,
   InboundPolicy,
@@ -63,8 +65,6 @@ import java.security.cert.Certificate
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.UUID
-import versola.util.http.GuardMode
-import versola.util.http.RateLimitScope
 
 /** The edge-facing surface (#554). What matters here is who gets what: an edge is served the
   * tenants bound to it and nothing of another's, every secret is encrypted to that edge's own
@@ -104,7 +104,18 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroupId("partner-acme"))),
   )
 
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
     * `CentralSyncTokenService` mints it. */
@@ -333,19 +344,32 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
-  private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
-    name = "per-client",
-    by = List(RateLimitDimension.Client),
-    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-    burst = 5,
-    scope = RateLimitScope.EdgeWide,
-    cost = 1,
-    mode = GuardMode.Shadow,
-  )), replicas = 1)
+  private val rateLimits = RateLimitPolicies(
+    List(RateLimitPolicy(
+      name = "per-client",
+      by = List(RateLimitDimension.Client),
+      limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+      burst = 5,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+      mode = GuardMode.Shadow,
+    )),
+    replicas = 1,
+  )
 
   private val accessLogPolicy = AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100), continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
+  private val overloadPolicy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(100),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   private val syncResources =
     List(

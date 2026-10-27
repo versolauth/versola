@@ -77,7 +77,9 @@ object EdgeRateLimiter:
         resolved <- config.replicasFrom match
           case None => ZIO.succeed(ZIO.succeed(Option.empty[Int]))
           case Some(spec) =>
-            ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name => ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds).provideEnvironment(ZEnvironment(scope)))
+            ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name =>
+              ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds).provideEnvironment(ZEnvironment(scope)),
+            )
         limiter <- RateLimiter.make()
         _ <- RateLimitPolicyApplier.run(source.current, limiter, ReplicaCounter.effective(resolved, source.replicas)).forkIn(scope)
         _ <- limiter.run.forkIn(scope)

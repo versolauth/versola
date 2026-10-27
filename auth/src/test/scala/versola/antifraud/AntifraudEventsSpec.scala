@@ -410,14 +410,24 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val vsettings = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
         val velocity = VelocityCounters(vsettings)
         val engine = Antifraud.Impl(
-          Antifraud.Settings(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          Antifraud.Settings(
+            enabled = true,
+            blockAt = 50,
+            delayAt = 0,
+            challengeAt = 0,
+            reviewAt = 0,
+            delay = 1.second,
+            timeout = 1.second,
+            failureAction = DecisionAction.Challenge,
+          ),
           List(VelocityRules.ruleSet(vsettings)),
         )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            events <-
+              build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
             first <- events.decideOtpRequest(clientId, None, Right(phone))
             second <- events.decideOtpRequest(clientId, None, Right(phone))
             third <- events.decideOtpRequest(clientId, None, Right(phone))

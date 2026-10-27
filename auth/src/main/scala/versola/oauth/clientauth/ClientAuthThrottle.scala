@@ -6,12 +6,12 @@ import versola.util.http.{
   ClientIpSource,
   GuardMode,
   IpAddress,
-  RateLimitScope,
   Observability,
   RateDecision,
   RateLimitDimension,
   RateLimitKeys,
   RateLimitPolicy,
+  RateLimitScope,
   RateLimitWindow,
   RateLimiter,
 }

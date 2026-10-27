@@ -1,9 +1,9 @@
 package versola.edge
 
+import versola.util.http.RateLimitScope
 import versola.util.http.{Checkpoint, GuardMode, RateDecision, RateLimitDimension, RateLimitKeys, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import zio.*
 import zio.test.*
-import versola.util.http.RateLimitScope
 
 object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
 

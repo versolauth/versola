@@ -48,7 +48,9 @@ object ReplicaCounter:
           case other =>
             val why = other.fold(_.getMessage, _ => "no address")
             // reported once until it recovers, and the last count stays
-            failing.getAndSet(true).flatMap(already => ZIO.logWarning(s"rate limit replicas: dns:$name gave no count ($why); keeping the last one").unless(already))
+            failing.getAndSet(true).flatMap(already =>
+              ZIO.logWarning(s"rate limit replicas: dns:$name gave no count ($why); keeping the last one").unless(already),
+            )
       _ <- (step *> ZIO.sleep(interval)).forever.forkScoped
     yield last.get
 

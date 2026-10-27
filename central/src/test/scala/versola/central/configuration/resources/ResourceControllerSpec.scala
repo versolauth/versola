@@ -4,6 +4,8 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.*
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.EdgeGroup
+import versola.central.configuration.edges.EdgeGroupKind
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
@@ -20,8 +22,6 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.util.UUID
-import versola.central.configuration.edges.EdgeGroup
-import versola.central.configuration.edges.EdgeGroupKind
 
 object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
@@ -136,7 +136,18 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       publicKey = pair.getPublic.asInstanceOf[RSAPublicKey],
       privateKey = pair.getPrivate.asInstanceOf[RSAPrivateKey],
     )
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   private val config = TestCentralConfig.config
 

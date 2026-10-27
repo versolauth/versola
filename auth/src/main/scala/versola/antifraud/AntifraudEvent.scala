@@ -39,20 +39,27 @@ enum AntifraudAction:
 enum AntifraudOutcome:
   /** A code was handed to the provider. */
   case sent
+
   /** No code was sent for a destination that is not a known user, so nothing reveals which numbers are. */
   case suppressed
+
   /** The request was refused by a rate limit or a ban before anything was sent. */
   case throttled
+
   /** The provider could not be reached or refused the message. */
   case provider_error
   case verified
   case wrong_code
+
   /** The code was not even looked at: the destination is banned from submitting. */
   case locked
+
   /** The antifraud decision refused the request before anything was sent. */
   case blocked
+
   /** The antifraud decision was `Fake`: the answer was that of a send and nothing was sent. */
   case faked
+
   /** A code was entered after a fake send: nobody received one, so whoever entered it guessed or is a script. */
   case fake_verify
 

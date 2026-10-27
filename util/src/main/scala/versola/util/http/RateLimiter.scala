@@ -300,7 +300,8 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
       _ <- reported.set(now)
       _ <- ZIO.foreachDiscard(now.toList.sortBy(_._1)): (name, total) =>
         // counts restart when a policy is replaced by one with other buckets
-        val last = before.get(name).filter(b => b.limited <= total.limited && b.wouldLimit <= total.wouldLimit).getOrElse(RateLimitStats(0, 0, 0, 0, 0))
+        val last =
+          before.get(name).filter(b => b.limited <= total.limited && b.wouldLimit <= total.wouldLimit).getOrElse(RateLimitStats(0, 0, 0, 0, 0))
         val refused = total.limited - last.limited
         val counted = total.wouldLimit - last.wouldLimit
         val overflow = total.overflowHits - last.overflowHits

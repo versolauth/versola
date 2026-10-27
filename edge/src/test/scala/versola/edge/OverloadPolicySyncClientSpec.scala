@@ -44,7 +44,17 @@ object OverloadPolicySyncClientSpec extends ZIOSpecDefault:
       request <- seen.get.someOrFail(RuntimeException("no request captured"))
     yield (policy, request)
 
-  private val policy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(128), continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
+  private val policy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(128),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   def spec = suite("OverloadPolicySyncClient")(
     test("reads this edge's overload policy off central, as itself") {

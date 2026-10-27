@@ -53,9 +53,16 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
       test("an unknown dimension, scope or mode is refused with a message that names the choices") {
-        val dim = """{"name":"a","by":["user"],"scope":"edge-wide","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
-        val scope = """{"name":"a","by":[],"scope":"pod","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
-        val mode = """{"name":"a","by":[],"scope":"edge-wide","burst":1,"cost":1,"mode":"loud","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
+        val dim =
+          """{"name":"a","by":["user"],"scope":"edge-wide","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+            RateLimitPolicy,
+          ]
+        val scope = """{"name":"a","by":[],"scope":"pod","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+          RateLimitPolicy,
+        ]
+        val mode = """{"name":"a","by":[],"scope":"edge-wide","burst":1,"cost":1,"mode":"loud","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+          RateLimitPolicy,
+        ]
         assertTrue(
           dim.left.exists(_.contains("dimension must be one of ip, client, subject, session, jkt")),
           scope.left.exists(_.contains("scope must be one of edge-wide, resource, endpoint")),

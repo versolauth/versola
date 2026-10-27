@@ -9,8 +9,23 @@ object OverloadPolicyApplierSpec extends ZIOSpecDefault:
   private val outboundBase = OutboundGuardSettings(GuardMode.Shadow, 128, 256, 1.second, 10.seconds)
 
   private val enforcing = OverloadPolicy(
-    inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(64), continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)),
-    outbound = Some(OutboundPolicy(mode = Some("enforce"), requestTimeoutMillis = Some(2000), maxConcurrent = None, maxQueue = None, queueTimeoutMillis = None, breaker = None, retryBudget = None)),
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(64),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = Some(OutboundPolicy(
+      mode = Some("enforce"),
+      requestTimeoutMillis = Some(2000),
+      maxConcurrent = None,
+      maxQueue = None,
+      queueTimeoutMillis = None,
+      breaker = None,
+      retryBudget = None,
+    )),
   )
 
   private def fixture =
@@ -44,7 +59,17 @@ object OverloadPolicyApplierSpec extends ZIOSpecDefault:
       yield assertTrue(admission.current == inboundBase, outbound == outboundBase)
     },
     test("a policy that does not validate is not applied, and what was in force stays") {
-      val bad = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(0), mode = None, continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
+      val bad = OverloadPolicy(
+        inbound = Some(InboundPolicy(
+          maxInFlight = Some(0),
+          mode = None,
+          continuationShare = None,
+          startShare = None,
+          retryAfterSeconds = None,
+          adaptive = None,
+        )),
+        outbound = None,
+      )
       for
         (admission, guard) <- fixture
         _ <- OverloadPolicyApplier(Some(enforcing), admission, guard, inboundBase, outboundBase)
@@ -65,7 +90,17 @@ object OverloadPolicyApplierSpec extends ZIOSpecDefault:
         _ <- source.set(Some(enforcing))
         _ <- TestClock.adjust(1.second)
         applied = admission.current.maxInFlight
-        _ <- source.set(Some(OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(-5), mode = None, continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)))
+        _ <- source.set(Some(OverloadPolicy(
+          inbound = Some(InboundPolicy(
+            maxInFlight = Some(-5),
+            mode = None,
+            continuationShare = None,
+            startShare = None,
+            retryAfterSeconds = None,
+            adaptive = None,
+          )),
+          outbound = None,
+        )))
         _ <- TestClock.adjust(1.second)
         _ <- fiber.interrupt
       yield assertTrue(applied == 64, admission.current.maxInFlight == 64)

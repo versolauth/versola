@@ -102,7 +102,17 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
         yield assertTrue(found.exists(_.requireDpopNonce))
       },
       test("patchPolicies stores sections for the named edge only, keeps the others, counts revisions, and None clears") {
-        val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64), mode = None, continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
+        val overload = OverloadPolicy(
+          inbound = Some(InboundPolicy(
+            maxInFlight = Some(64),
+            mode = None,
+            continuationShare = None,
+            startShare = None,
+            retryAfterSeconds = None,
+            adaptive = None,
+          )),
+          outbound = None,
+        )
         val log = AccessLogPolicy(mode = Some("sampled"), slowMillis = Some(250), successSampleRate = Some(0.2))
         val limits = RateLimitPolicies(
           List(
@@ -115,7 +125,15 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
               scope = RateLimitScope.EdgeWide,
               cost = 1,
             ),
-            RateLimitPolicy(name = "per-endpoint", scope = RateLimitScope.Endpoint, limits = List(RateLimitWindow(10, 1), RateLimitWindow(500, 3600)), by = Nil, burst = 1, cost = 1, mode = GuardMode.Shadow),
+            RateLimitPolicy(
+              name = "per-endpoint",
+              scope = RateLimitScope.Endpoint,
+              limits = List(RateLimitWindow(10, 1), RateLimitWindow(500, 3600)),
+              by = Nil,
+              burst = 1,
+              cost = 1,
+              mode = GuardMode.Shadow,
+            ),
           ),
           replicas = 3,
         )
@@ -154,7 +172,17 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
         )
       },
       test("a refused change writes nothing, and a missing edge is None") {
-        val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64), mode = None, continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None)
+        val overload = OverloadPolicy(
+          inbound = Some(InboundPolicy(
+            maxInFlight = Some(64),
+            mode = None,
+            continuationShare = None,
+            startShare = None,
+            retryAfterSeconds = None,
+            adaptive = None,
+          )),
+          outbound = None,
+        )
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
           refused <- env.repository.patchPolicies(edgeId, record => Left(PolicyPatchError.Conflict(PolicySection.Overload, record)))
@@ -177,7 +205,19 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
             edgeId,
             EdgePoliciesPatch(
               _,
-              EdgePoliciesPatch(overload = Change.Replace(OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(n), mode = None, continuationShare = None, startShare = None, retryAfterSeconds = None, adaptive = None)), outbound = None))),
+              EdgePoliciesPatch(overload =
+                Change.Replace(OverloadPolicy(
+                  inbound = Some(InboundPolicy(
+                    maxInFlight = Some(n),
+                    mode = None,
+                    continuationShare = None,
+                    startShare = None,
+                    retryAfterSeconds = None,
+                    adaptive = None,
+                  )),
+                  outbound = None,
+                )),
+              ),
               java.time.Instant.EPOCH,
             ),
           )

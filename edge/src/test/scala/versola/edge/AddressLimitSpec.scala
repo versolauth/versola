@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
+import versola.util.http.RateLimitScope
 import versola.util.http.{Checkpoint, ClientIpSource, GuardMode, RateLimitDimension, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import versola.util.{Secret, TestCertificates}
 import zio.*
@@ -9,7 +10,6 @@ import zio.test.*
 
 import java.net.InetAddress
 import java.security.KeyPairGenerator
-import versola.util.http.RateLimitScope
 
 /** R1 on the edge's two listeners: the address of a plain-listener caller (failed and unauthenticated attempts only) and the
   * certificate of a mutual-TLS caller (every call). The routes are stand-ins with the patterns of the real ones, so what is
@@ -39,7 +39,15 @@ object AddressLimitSpec extends ZIOSpecDefault:
   )
 
   private def policy(name: String, by: RateLimitDimension, limit: Int, mode: GuardMode = GuardMode.Enforce) =
-    RateLimitPolicy(name = name, by = List(by), limits = List(RateLimitWindow(limit = limit, windowSeconds = 3600)), burst = limit, mode = mode, scope = RateLimitScope.EdgeWide, cost = 1)
+    RateLimitPolicy(
+      name = name,
+      by = List(by),
+      limits = List(RateLimitWindow(limit = limit, windowSeconds = 3600)),
+      burst = limit,
+      mode = mode,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+    )
 
   /** The answer a proxied call gets, set per test; `/login` always redirects. */
   private def routes(proxied: Ref[Response]): Routes[RateLimiter & EdgeConfig, Nothing] =

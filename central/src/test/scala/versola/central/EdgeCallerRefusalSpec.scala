@@ -2,6 +2,8 @@ package versola.central
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.edges.EdgeGroup
+import versola.central.configuration.edges.EdgeGroupKind
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataService}
@@ -20,8 +22,6 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.util.UUID
-import versola.central.configuration.edges.EdgeGroup
-import versola.central.configuration.edges.EdgeGroupKind
 
 /** `refuseEdgeCallers` (#554), applied to a sample of the controllers it wraps in
   * `PostgresCentralApp`: the ones the issue names (`jwks/signing-keys/sync`,
@@ -44,7 +44,18 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
       privateKey = pair.getPrivate.asInstanceOf[RSAPrivateKey],
     )
 
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true, overloadPolicy = None, accessLogPolicy = None, rateLimitPolicies = None, policyMeta = None, groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   private val edgeToken: Task[String] =
     JWT.serialize(
