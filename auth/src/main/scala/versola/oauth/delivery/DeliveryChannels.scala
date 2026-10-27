@@ -155,7 +155,9 @@ object DeliveryChannels:
       s"Delivery settings: email from ${resolved.emailOrigin}, sms from ${resolved.smsOrigin}" +
         (if resolved.emailOverridesConfig then "; the smtp block of auth.conf is ignored" else "") +
         (if resolved.smsOverridesConfig then "; the otp-provider block of auth.conf is ignored" else "") +
-        (if unreadable.nonEmpty then s"; ${unreadable.mkString(" and ")} saved in central cannot be read, check the shared secret and the saved values" else "")
+        (if unreadable.nonEmpty then
+           s"; ${unreadable.mkString(" and ")} saved in central cannot be read, check the shared secret and the saved values"
+         else "")
     val log = if unreadable.nonEmpty then ZIO.logWarning(summary) else ZIO.logInfo(summary)
     announced.getAndSet(Some(origins)).flatMap(previous => log.unless(previous.contains(origins)).unit)
 

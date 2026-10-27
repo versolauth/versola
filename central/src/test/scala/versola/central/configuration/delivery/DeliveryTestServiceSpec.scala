@@ -1,7 +1,7 @@
 package versola.central.configuration.delivery
 
-import org.scalamock.stubs.ZIOStubs
 import jakarta.mail.{AuthenticationFailedException, SendFailedException}
+import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.delivery.DeliveryTestService.{Outcome, Refused, Request as TestRequest}
 import versola.util.Secret
 import versola.util.delivery.FakeSmtpServer
@@ -119,9 +119,10 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env = Env(Some(saved(smtp = Some(block), smtpPassword = Some("saved-secret"))))
           client <- ZIO.service[Client]
           service <- env.service(client)
-          results <- ZIO.foreach(List(block.copy(host = "127.0.0.1"), block.copy(port = smtp.port + 1), block.copy(username = "someone-else")))(other =>
-            service.send(emailRequest(other)),
-          )
+          results <-
+            ZIO.foreach(List(block.copy(host = "127.0.0.1"), block.copy(port = smtp.port + 1), block.copy(username = "someone-else")))(other =>
+              service.send(emailRequest(other)),
+            )
         yield assertTrue(
           results == List.fill(3)(Left(Refused("password must be entered again when the server address, port or username changes"))),
           smtp.messages.isEmpty,
@@ -146,7 +147,10 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
           client <- ZIO.service[Client]
           service <- env.service(client)
           result <- service.send(emailRequest(smtpBlock(port)))
-        yield assertTrue(result == Right(Outcome.Failed(code = "connection_failed", message = "The server could not be reached at that address and port.")))
+        yield assertTrue(result == Right(Outcome.Failed(
+          code = "connection_failed",
+          message = "The server could not be reached at that address and port.",
+        )))
       },
       test("refuses what cannot be tried, naming the field, and sends nothing") {
         val env = Env(None)
@@ -201,7 +205,10 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
           service <- env.service(client)
           result <- service.send(smsRequest(smsBlock.copy(url = "https://sms.example.com/v2/send")))
           (request, _) <- seen.get.someOrFail(RuntimeException("no request captured"))
-        yield assertTrue(result == Right(Outcome.Delivered), request.header(Header.Authorization).contains(Header.Authorization.Basic("sms", "saved-secret")))
+        yield assertTrue(
+          result == Right(Outcome.Delivered),
+          request.header(Header.Authorization).contains(Header.Authorization.Basic("sms", "saved-secret")),
+        )
       },
       test("refuses to send the saved password to another host or account, and sends nothing") {
         val env = Env(Some(saved(otpProvider = Some(smsBlock), otpProviderPassword = Some("saved-secret"))))
@@ -209,9 +216,10 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
           seen <- provider()
           client <- ZIO.service[Client]
           service <- env.service(client)
-          results <- ZIO.foreach(List(smsBlock.copy(url = "https://sms.attacker.example/send"), smsBlock.copy(username = Some("someone-else"))))(other =>
-            service.send(smsRequest(other)),
-          )
+          results <-
+            ZIO.foreach(List(smsBlock.copy(url = "https://sms.attacker.example/send"), smsBlock.copy(username = Some("someone-else"))))(other =>
+              service.send(smsRequest(other)),
+            )
           captured <- seen.get
         yield assertTrue(
           results.forall(_.left.exists(_.message.startsWith("password must be entered again"))),
@@ -244,7 +252,12 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
           ))(service.send)
           captured <- seen.get
         yield assertTrue(
-          results.map(_.left.map(_.message.takeWhile(_ != ' '))) == List(Left("otpProvider.url"), Left("otpProvider.method"), Left("to"), Left("otpProvider")),
+          results.map(_.left.map(_.message.takeWhile(_ != ' '))) == List(
+            Left("otpProvider.url"),
+            Left("otpProvider.method"),
+            Left("to"),
+            Left("otpProvider"),
+          ),
           captured.isEmpty,
         )
       },
@@ -295,7 +308,10 @@ object DeliveryTestServiceSpec extends ZIOSpecDefault, ZIOStubs:
     suite("failed")(
       test("names what to look at, from a closed set") {
         assertTrue(
-          DeliveryTestService.failed(RuntimeException("outer", AuthenticationFailedException("535 bad credentials for admin@corp"))).code == "authentication_failed",
+          DeliveryTestService.failed(RuntimeException(
+            "outer",
+            AuthenticationFailedException("535 bad credentials for admin@corp"),
+          )).code == "authentication_failed",
           DeliveryTestService.failed(RuntimeException("outer", UnknownHostException("smtp.nowhere.example"))).code == "unknown_host",
           DeliveryTestService.failed(RuntimeException("outer", SocketTimeoutException("read timed out"))).code == "timeout",
           DeliveryTestService.failed(RuntimeException("outer", ConnectException("refused"))).code == "connection_failed",

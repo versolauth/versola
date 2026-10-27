@@ -128,7 +128,9 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         smsPassword <- transportEncrypted("sms-s3cret")
         _ <- serve(
           Status.Ok,
-          s"""{"stored":true,"smtp":$smtp,"smtpPassword":"${Base64.urlEncode(Array.fill(40)(1.toByte))}","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
+          s"""{"stored":true,"smtp":$smtp,"smtpPassword":"${Base64.urlEncode(
+              Array.fill(40)(1.toByte),
+            )}","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
         )
         fetched <- fetch
       yield assertTrue(

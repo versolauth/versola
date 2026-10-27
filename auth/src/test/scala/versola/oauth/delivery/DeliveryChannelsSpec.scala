@@ -144,7 +144,8 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
           client <- ZIO.service[Client]
           current <- Ref.make(Fetched.empty)
           source = new CacheSource[DeliveryChannels.Resolved]:
-            override def getAll: Task[DeliveryChannels.Resolved] = current.get.map(fetched => DeliveryChannels.resolve(config = withNeither, client = client, central = fetched))
+            override def getAll: Task[DeliveryChannels.Resolved] =
+              current.get.map(fetched => DeliveryChannels.resolve(config = withNeither, client = client, central = fetched))
           channels <- DeliveryChannels.make(source, 1.hour)
           before <- channels.email
           _ <- current.set(Fetched(Some(Saved.Usable(centralSmtp, enabled = true)), None))
