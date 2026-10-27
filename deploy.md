@@ -192,7 +192,9 @@ three services. The first start with an empty data directory creates the role (t
 the database (`--postgres-db`, `auth` by default) and the three schemas owned by that role; a later start
 finds the data directory and initialises nothing. The password reaches the container through
 `postgres.secrets.env` (`POSTGRES_PASSWORD` only), written by `versola-cli` from the same value it stores
-in OpenBao. The services connect with `sslmode=disable`, which is what the loopback rule above writes.
+in OpenBao. `env_file` makes it part of the container's configuration, so `docker inspect` shows it to
+anyone who can use Docker on the VM; it is in no image layer, log line or generator output. The services
+connect with `sslmode=disable`, which is what the loopback rule above writes.
 
 The data lives in the external Docker volume `versola-postgres-data-vps` on the VM, created by
 `versola-cli` before the first start, so it survives container recreation, `compose down --volumes`,
