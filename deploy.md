@@ -1208,6 +1208,12 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
   policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
   has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
+- **The operator's view of refusals is the log, once a minute per policy.** Each edge and auth logs one line per policy that
+  refused something in the last minute (`... rate limit 'per-client' in the last 60 s: refused 12, would refuse (shadow) 0, ...`):
+  `WARN` when the policy enforced, `INFO` when it only counted in shadow, nothing when it did neither. It names no key, so it holds
+  nothing about a caller, and it is bounded by the number of policies however hard the edge is hit. A single refused request is not
+  logged by itself (a flood of them would be a flood of lines); its `429` names the policy in `RateLimit-Policy`, and a request
+  log line, when the access log is `full`, carries the error `rate_limited` with the same policy name.
 - **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
   protection refuses whoever is there, by priority, with `503`.
 - **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request

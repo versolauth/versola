@@ -179,6 +179,43 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(refused.forall(_.isInstanceOf[RateDecision.Limited]), ok == RateDecision.Allowed)
       },
     ),
+    suite("refusal summary")(
+      test("one line per policy that refused, WARN when it enforced and INFO when it only counted, and never a key") {
+        for
+          l <- limiter(
+            policy(name = "hard", limits = List(RateLimitWindow(1, 60))),
+            policy(name = "soft", limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Shadow, by = List(RateLimitDimension.Subject)),
+            policy(name = "quiet", limits = List(RateLimitWindow(1000, 60)), burst = 1000, by = List(RateLimitDimension.Session)),
+          )()
+          reported <- Ref.make(Map.empty[String, RateLimitStats])
+          keys = RateLimitKeys(client = "secret-client", subject = "secret-subject", session = "sid")
+          _ = (1 to 3).foreach(_ => l.check(Checkpoint.Identity, keys, 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          first <- ZTestLogger.logOutput
+          _ <- l.logSummary(reported, 1.minute)
+          second <- ZTestLogger.logOutput
+          line = (name: String) => first.find(_.message().contains(s"'$name'"))
+        yield assertTrue(
+          line("hard").exists(e => e.logLevel == LogLevel.Warning && e.message().contains("refused 2")),
+          line("soft").exists(e => e.logLevel == LogLevel.Info && e.message().contains("would refuse (shadow) ")),
+          line("quiet").isEmpty,
+          first.forall(e => !e.message().contains("secret")),
+          second.size == first.size,
+        ).label("nothing new happened, so the second summary adds no line")
+      },
+      test("a policy replaced by one with other buckets restarts its counts instead of reporting a negative number") {
+        for
+          l <- limiter(policy(name = "hard", limits = List(RateLimitWindow(1, 60))))()
+          reported <- Ref.make(Map.empty[String, RateLimitStats])
+          _ = (1 to 4).foreach(_ => l.check(Checkpoint.Identity, client("a"), 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          _ <- l.update(List(policy(name = "hard", limits = List(RateLimitWindow(2, 60)))))
+          _ = (1 to 2).foreach(_ => l.check(Checkpoint.Identity, client("a"), 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          lines <- ZTestLogger.logOutput.map(_.map(_.message()))
+        yield assertTrue(lines.size == 2, lines.last.contains("refused 1,"), lines.forall(!_.contains("refused -")))
+      },
+    ),
     suite("modes")(
       test("shadow refuses nothing and counts what enforce would refuse") {
         for

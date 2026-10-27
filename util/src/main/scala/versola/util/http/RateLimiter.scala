@@ -288,9 +288,36 @@ final class RateLimiter private (settings: RateLimiterSettings, installed: Atomi
 
   private def forget(name: String): UIO[Unit] = trackedKeys.tagged(MetricLabel("policy", name)).set(0.0)
 
-  /** Sweeps and publishes once a second, for the life of the service. */
+  /** One line per policy that refused something (or ran out of room for keys) since the last call, for an operator who reads the
+    * log and not the metrics: which policy, how many calls it refused, how many it only counted in shadow. It names no key, so
+    * it holds nothing about a caller, and it is one line a minute per policy however hard it is hit, so a flood cannot flood the
+    * log. A line is `WARN` when a policy enforced, `INFO` when it only counted.
+    */
+  private[http] def logSummary(reported: Ref[Map[String, RateLimitStats]], interval: Duration): UIO[Unit] =
+    for
+      before <- reported.get
+      now = installed.get.all.toList.flatMap(p => stats(p.policy.name).map(p.policy.name -> _)).toMap
+      _ <- reported.set(now)
+      _ <- ZIO.foreachDiscard(now.toList.sortBy(_._1)): (name, total) =>
+        // counts restart when a policy is replaced by one with other buckets
+        val last = before.get(name).filter(b => b.limited <= total.limited && b.wouldLimit <= total.wouldLimit).getOrElse(RateLimitStats(0, 0, 0, 0, 0))
+        val refused = total.limited - last.limited
+        val counted = total.wouldLimit - last.wouldLimit
+        val overflow = total.overflowHits - last.overflowHits
+        val line =
+          s"${metricPrefix} rate limit '$name' in the last ${interval.toSeconds} s: refused $refused, would refuse (shadow) $counted, " +
+            s"allowed ${total.allowed - last.allowed}, tracked keys ${total.trackedKeys}, keys over the cap $overflow"
+        if refused > 0 || overflow > 0 then ZIO.logWarning(line)
+        else if counted > 0 then ZIO.logInfo(line)
+        else ZIO.unit
+    yield ()
+
+  /** Sweeps and publishes once a second, and summarises the refusals once a minute, for the life of the service. */
   val run: UIO[Nothing] =
-    (Clock.nanoTime.flatMap(sweep) *> publish).repeat(Schedule.fixed(1.second)).forever
+    Ref.make(Map.empty[String, RateLimitStats]).flatMap: reported =>
+      (Clock.nanoTime.flatMap(sweep) *> publish).repeat(Schedule.fixed(1.second)).forever
+        .zipPar(ZIO.sleep(SummaryInterval) *> logSummary(reported, SummaryInterval).repeat(Schedule.fixed(SummaryInterval)).forever)
+        *> ZIO.never
 
 /** Cumulative counts of one policy; the metrics carry the same numbers. */
 final case class RateLimitStats(allowed: Long, limited: Long, wouldLimit: Long, overflowHits: Long, trackedKeys: Int)
@@ -311,6 +338,7 @@ object RateLimiter:
 
   private final val NanosPerSecond = 1_000_000_000L
   private final val SweepIntervalNanos = NanosPerSecond
+  private[http] val SummaryInterval: Duration = 1.minute
 
   /** A stand-in for "this request has no value for a dimension the policy needs"; compared by reference. */
   private val Absent: String = new String("absent")
