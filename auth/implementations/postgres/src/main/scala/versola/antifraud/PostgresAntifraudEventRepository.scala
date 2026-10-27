@@ -44,7 +44,8 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
           INSERT INTO af_dest_stats (tenant_id, dest_prefix, minute, requests, sent, suppressed, throttled,
                                      provider_errors, verified, wrong_codes, fake_verifies)
           SELECT COALESCE(tenant_id, ''), left(dest_prefix, $prefixLength), date_trunc('minute', at),
-                 COUNT(*) FILTER (WHERE action = 'otp_request'),
+                 -- A challenge is a step of a request, not a request: the code that follows it is the one counted.
+                 COUNT(*) FILTER (WHERE action = 'otp_request' AND outcome NOT IN ('challenged', 'challenge_passed', 'challenge_failed')),
                  COUNT(*) FILTER (WHERE outcome = 'sent'),
                  COUNT(*) FILTER (WHERE outcome = 'suppressed'),
                  COUNT(*) FILTER (WHERE outcome IN ('throttled', 'locked')),

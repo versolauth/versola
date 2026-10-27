@@ -744,6 +744,10 @@ object Observability:
       rules: List[String],
       destPrefix: Option[String],
       outcome: Option[String],
+      /** The kind of challenge the client was put to (`pow`), when the request was challenged or answered one. */
+      challenge: Option[String],
+      /** How hard it was, as the kind measures it (zero bits for `pow`). */
+      challengeLevel: Option[Int],
   ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key

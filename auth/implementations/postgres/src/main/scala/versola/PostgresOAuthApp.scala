@@ -14,11 +14,13 @@ import versola.antifraud.{
   AntifraudSettingsRepository,
   AntifraudTuning,
   AntifraudTuningStore,
+  ChallengeVerifier,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
   PostgresAntifraudSettingsRepository,
   PostgresVelocityRepository,
+  PowChallengeVerifier,
   VelocityCounters,
   VelocityRepository,
   VelocityRules,
@@ -124,6 +126,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter &
       ConversationService &
       AntifraudEvents &
+      ChallengeVerifier &
       AntifraudEventRepository &
       VelocityRepository &
       VelocityCounters &
@@ -268,6 +271,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings])))
 
+  /** `antifraud.challenge` */
+  private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(Config.Nested("antifraud", Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings]))),
+      )
+
   /** `antifraud.lists` */
   private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
     ZLayer.fromZIO:
@@ -361,6 +371,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>
       AntifraudDetectors.live >++>
+      antifraudChallengeSettings >++>
+      PowChallengeVerifier.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>

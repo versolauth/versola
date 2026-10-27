@@ -29,6 +29,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     blockAt = Some(80),
     delayMillis = None,
     fakeSendDelayMillis = None,
+    pow = None,
     thresholds = None,
     smsLimits = None,
     ruleWeights = None,

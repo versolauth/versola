@@ -18,6 +18,9 @@ object AntifraudTestSettings:
   val detectors: AntifraudDetectors.Settings =
     load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings])))
 
+  val challenge: PowChallengeVerifier.Settings =
+    load(Config.Nested("antifraud", Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings])))
+
   val smsBudget: SmsBudget.Settings = events.smsBudget
   val decision: Antifraud.Settings = events.decision
   val velocity: VelocityCounters.Settings = events.velocity

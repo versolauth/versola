@@ -348,6 +348,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         blockAt = Some(80),
         delayMillis = None,
         fakeSendDelayMillis = None,
+        pow = None,
         thresholds = None,
         smsLimits = None,
         ruleWeights = None,

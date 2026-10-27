@@ -22,6 +22,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       smsLimits: Option[SmsLimits] = None,
       ruleWeights: Option[Map[String, Int]] = None,
       shadowRules: Option[Set[String]] = None,
+      pow: Option[PowDifficulty] = None,
   ) =
     TuningPatch(
       delayAt = delayAt,
@@ -30,6 +31,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       blockAt = blockAt,
       delayMillis = delayMillis,
       fakeSendDelayMillis = None,
+      pow = pow,
       thresholds = thresholds,
       smsLimits = smsLimits,
       ruleWeights = ruleWeights,
@@ -92,7 +94,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
         warm <- engine.evaluate(ctx)
       yield assertTrue(
         !before,
-        cold == Decision(DecisionAction.Challenge, 0, List("antifraud_tuning_unavailable")),
+        cold == Decision(DecisionAction.Delay, 0, List("antifraud_tuning_unavailable")),
         tuning.available,
         warm == Decision(DecisionAction.Allow, 1, List("a")),
       )
@@ -168,6 +170,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
         !refused(patch(smsLimits = Some(SmsLimits(SmsLimit(0, 0, 0.1), Map("49" -> SmsLimit(5, 0, 0.1)))))),
         refused(patch(ruleWeights = Some(Map("Bad Name" -> 5)))),
         refused(patch(shadowRules = Some(Set("")))),
+        refused(patch(pow = Some(PowDifficulty(minDifficulty = 20, maxDifficulty = 18, scoreStep = 15)))),
+        refused(patch(pow = Some(PowDifficulty(minDifficulty = 14, maxDifficulty = 99, scoreStep = 15)))),
+        !refused(patch(pow = Some(PowDifficulty(minDifficulty = 10, maxDifficulty = 20, scoreStep = 0)))),
       )
     },
     test("put does not store what is refused") {

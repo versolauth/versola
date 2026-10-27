@@ -15,6 +15,7 @@ import zio.json.*
   * @param blockAt        score from which a step is refused
   * @param delayMillis    how long a `Delay` holds a request back
   * @param fakeSendDelayMillis how long a fake send waits; 0 waits as long as the recent real sends took
+  * @param pow            how much work a proof-of-work challenge asks (see [[PowChallengeVerifier]])
   * @param thresholds     the limits (and weights) of the velocity rules
   * @param smsLimits      the limits on codes sent to a range of numbers
   * @param ruleWeights    the weight of a rule by its name, in place of the one it has; a rule that forces an action is not
@@ -29,12 +30,18 @@ case class Tuning(
     blockAt: Int,
     delayMillis: Long,
     fakeSendDelayMillis: Long,
+    pow: PowDifficulty,
     thresholds: VelocityRules.Thresholds,
     smsLimits: SmsLimits,
     ruleWeights: Map[String, Int],
     shadowRules: Set[String],
 ) derives JsonCodec:
   def delay: Duration = Duration.fromMillis(delayMillis)
+
+/** Zero bits asked of a request that only just reached the challenge score (`minDifficulty`), of any request at most
+  * (`maxDifficulty`: each bit doubles the work, and a phone has to do it), and the score above `challengeAt` that adds one
+  * bit (`scoreStep`; 0 adds none). */
+case class PowDifficulty(minDifficulty: Int, maxDifficulty: Int, scoreStep: Int) derives JsonCodec
 
 /** The limit on codes sent to one range of numbers, see [[SmsBudget]]. 0 is no limit. */
 case class SmsLimit(sentPerHour: Int, minVolume: Int, minConversion: Double) derives JsonCodec:
@@ -59,6 +66,7 @@ object Tuning:
     blockAt = 0,
     delayMillis = 2000,
     fakeSendDelayMillis = 0,
+    pow = PowDifficulty(minDifficulty = 14, maxDifficulty = 18, scoreStep = 15),
     thresholds = VelocityRules.Thresholds(
       phone = VelocityRules.Limit(perMinute = 0, perTenMinutes = 0, perHour = 0, perDay = 0, weight = 50),
       ip = VelocityRules.Limit(perMinute = 0, perTenMinutes = 0, perHour = 0, perDay = 0, weight = 20),

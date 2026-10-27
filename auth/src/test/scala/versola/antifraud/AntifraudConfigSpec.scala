@@ -33,16 +33,18 @@ object AntifraudConfigSpec extends UnitSpecBase:
   def spec = suite("Antifraud config")(
     test("every key is there without any config, and nothing is on") {
       val all = AntifraudTestSettings.events
+      val challenge = AntifraudTestSettings.challenge
       assertTrue(
         all.queueCapacity == 20000,
         all.retention == 14.days,
         all.statsPrefixLength == 4,
         all.smsBudget == SmsBudget.Settings(prefixLength = 4, maxRanges = 10000),
         !all.decision.enabled,
-        all.decision.failureAction == DecisionAction.Challenge,
+        all.decision.failureAction == DecisionAction.Delay,
         all.decision.timeout == 20.millis,
         !all.velocity.enabled,
         all.velocity.maxKeys == 20000,
+        challenge == PowChallengeVerifier.Settings(enabled = true, ttl = 2.minutes, maxAttempts = 5),
         !AntifraudTestSettings.lists.enabled,
         AntifraudTestSettings.lists.refreshInterval == 5.seconds,
         !AntifraudTestSettings.detectors.enabled,
@@ -61,6 +63,9 @@ object AntifraudConfigSpec extends UnitSpecBase:
         "sms-budget.sent-per-hour",
         "sms-budget.min-volume",
         "sms-budget.min-conversion",
+        "challenge.min-difficulty",
+        "challenge.max-difficulty",
+        "challenge.score-step",
       )
       assertTrue(tunables.forall(!keys.hasPath(_)))
     },

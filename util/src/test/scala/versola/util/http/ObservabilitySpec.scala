@@ -145,7 +145,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
             Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
           },
           Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
-            Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None))(
+            Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None, None, None))(
               _.copy(decision = "Block", score = 12, rules = List("deny_list"), outcome = Some("blocked")),
             ).as(Response.text("ok"))
           },
@@ -660,7 +660,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
             yield ()
           logs <- ZTestLogger.logOutput
           rendered <- ZIO.foreach(logs.filter(_.message() == "receive-http"))(l =>
-            ZIO.fromEither(l.call(authLogFormat.toJsonLogger).fromJson[AuthLoggedEntry]).mapError(new RuntimeException(_)))
+            ZIO.fromEither(l.call(authLogFormat.toJsonLogger).fromJson[AuthLoggedEntry]).mapError(new RuntimeException(_)),
+          )
         yield assertTrue(rendered.flatMap(_.auth.flatMap(_.id)).isEmpty)
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       test("a successful send-http line is not built or written when DEBUG is off") {

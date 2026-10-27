@@ -18,6 +18,7 @@ CREATE TABLE af_settings (
 INSERT INTO af_settings (tenant_id, settings, updated_by, updated_at) VALUES (
     '',
     '{"delayAt":0,"challengeAt":0,"reviewAt":0,"blockAt":0,"delayMillis":2000,"fakeSendDelayMillis":0,'
+        '"pow":{"minDifficulty":14,"maxDifficulty":18,"scoreStep":15},'
         '"thresholds":{'
             '"phone":{"perMinute":0,"perTenMinutes":0,"perHour":0,"perDay":0,"weight":50},'
             '"ip":{"perMinute":0,"perTenMinutes":0,"perHour":0,"perDay":0,"weight":20},'

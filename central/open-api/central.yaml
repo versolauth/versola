@@ -6484,6 +6484,14 @@ components:
         prefix: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
         trustedDiscount: { type: integer, minimum: 0 }
       required: [phone, ip, device, asn, prefix, trustedDiscount]
+    AntifraudPowDifficulty:
+      type: object
+      description: The work a proof-of-work challenge asks, in zero bits of a hash (each bit doubles it, and a phone has to do it). `minDifficulty` at the challenge score, at most `maxDifficulty`, one more bit for each `scoreStep` of score above it (0 for none).
+      properties:
+        minDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        maxDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        scoreStep: { type: integer, minimum: 0 }
+      required: [minDifficulty, maxDifficulty, scoreStep]
     AntifraudSmsLimit:
       type: object
       description: Codes allowed to one range of numbers per hour (0 for no limit), and the conversion below which a range with `minVolume` codes sent is closed (0 `minVolume` for no breaker).
@@ -6511,6 +6519,7 @@ components:
         blockAt: { type: integer, minimum: 0 }
         delayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a `Delay` holds a request back. Global row only. }
         fakeSendDelayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a fake send waits; 0 waits as long as recent real sends took. Global row only. }
+        pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
         thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
         smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
         ruleWeights:
@@ -6531,6 +6540,7 @@ components:
         blockAt: { type: integer }
         delayMillis: { type: integer }
         fakeSendDelayMillis: { type: integer }
+        pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
         thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
         smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
         ruleWeights:
@@ -6539,7 +6549,7 @@ components:
         shadowRules:
           type: array
           items: { type: string }
-      required: [delayAt, challengeAt, reviewAt, blockAt, delayMillis, fakeSendDelayMillis, thresholds, smsLimits, ruleWeights, shadowRules]
+      required: [delayAt, challengeAt, reviewAt, blockAt, delayMillis, fakeSendDelayMillis, pow, thresholds, smsLimits, ruleWeights, shadowRules]
     AntifraudSettingsResponse:
       type: object
       properties:

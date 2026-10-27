@@ -20,6 +20,10 @@ case class VelocityThresholdsDto(
     trustedDiscount: Int,
 ) derives JsonCodec, Schema
 
+/** The work a proof-of-work challenge asks, in zero bits of a hash: `minDifficulty` at the challenge score, up to
+  * `maxDifficulty`, one more bit for each `scoreStep` of score above it (0: none). */
+case class PowDifficultyDto(minDifficulty: Int, maxDifficulty: Int, scoreStep: Int) derives JsonCodec, Schema
+
 case class SmsLimitDto(sentPerHour: Int, minVolume: Int, minConversion: Double) derives JsonCodec, Schema
 
 /** `byPrefix` is keyed by the leading digits of a number, country code included; the longest key a number starts with
@@ -35,6 +39,7 @@ case class AntifraudSettingsPatch(
     blockAt: Option[Int],
     delayMillis: Option[Long],
     fakeSendDelayMillis: Option[Long],
+    pow: Option[PowDifficultyDto],
     thresholds: Option[VelocityThresholdsDto],
     smsLimits: Option[SmsLimitsDto],
     ruleWeights: Option[Map[String, Int]],
@@ -49,6 +54,7 @@ case class AntifraudSettingsValues(
     blockAt: Int,
     delayMillis: Long,
     fakeSendDelayMillis: Long,
+    pow: PowDifficultyDto,
     thresholds: VelocityThresholdsDto,
     smsLimits: SmsLimitsDto,
     ruleWeights: Map[String, Int],

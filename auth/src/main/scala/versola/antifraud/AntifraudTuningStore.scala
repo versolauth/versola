@@ -16,6 +16,7 @@ case class TuningPatch(
     blockAt: Option[Int],
     delayMillis: Option[Long],
     fakeSendDelayMillis: Option[Long],
+    pow: Option[PowDifficulty],
     thresholds: Option[VelocityRules.Thresholds],
     smsLimits: Option[SmsLimits],
     ruleWeights: Option[Map[String, Int]],
@@ -29,6 +30,7 @@ case class TuningPatch(
       blockAt = blockAt.getOrElse(base.blockAt),
       delayMillis = delayMillis.getOrElse(base.delayMillis),
       fakeSendDelayMillis = fakeSendDelayMillis.getOrElse(base.fakeSendDelayMillis),
+      pow = pow.getOrElse(base.pow),
       thresholds = thresholds.getOrElse(base.thresholds),
       smsLimits = smsLimits.getOrElse(base.smsLimits),
       ruleWeights = ruleWeights.getOrElse(base.ruleWeights),
@@ -44,11 +46,12 @@ case class TuningPatch(
       d <- blockAt
       e <- delayMillis
       f <- fakeSendDelayMillis
+      p <- pow
       g <- thresholds
       h <- smsLimits
       i <- ruleWeights
       j <- shadowRules
-    yield Tuning(a, b, c, d, e, f, g, h, i, j)
+    yield Tuning(a, b, c, d, e, f, p, g, h, i, j)
 
   /** The timings belong to the whole deployment: a request is held and a fake send waits where no tenant is known. */
   def setsTimings: Boolean = delayMillis.isDefined || fakeSendDelayMillis.isDefined
@@ -63,6 +66,7 @@ object TuningPatch:
       blockAt = Some(tuning.blockAt),
       delayMillis = Some(tuning.delayMillis),
       fakeSendDelayMillis = Some(tuning.fakeSendDelayMillis),
+      pow = Some(tuning.pow),
       thresholds = Some(tuning.thresholds),
       smsLimits = Some(tuning.smsLimits),
       ruleWeights = Some(tuning.ruleWeights),
@@ -121,6 +125,7 @@ object AntifraudTuningStore:
   private val MaxWeight = 100000
   private val MaxLimitValue = 100000000
   private val MaxDelayMillis = 60000L
+  private val MaxDifficulty = 32
 
   /** @param refreshInterval how often the version of the stored tuning is looked at, so how long a change takes to
     *                        reach another instance */
@@ -143,6 +148,9 @@ object AntifraudTuningStore:
       score("blockAt", patch.blockAt),
       patch.delayMillis.filter(v => v < 0 || v > MaxDelayMillis).map(_ => s"delayMillis must be between 0 and $MaxDelayMillis"),
       patch.fakeSendDelayMillis.filter(v => v < 0 || v > MaxDelayMillis).map(_ => s"fakeSendDelayMillis must be between 0 and $MaxDelayMillis"),
+      patch.pow.flatMap: p =>
+        Option.when(p.minDifficulty < 0 || p.maxDifficulty > MaxDifficulty || p.minDifficulty > p.maxDifficulty)(s"pow difficulty must satisfy 0 <= minDifficulty <= maxDifficulty <= $MaxDifficulty")
+          .orElse(Option.when(p.scoreStep < 0 || p.scoreStep > MaxScore)(s"pow scoreStep must be between 0 and $MaxScore")),
       Option.when(tenant && patch.setsTimings)("delayMillis and fakeSendDelayMillis are for the global settings only"),
       patch.thresholds.flatMap: t =>
         List("phone" -> t.phone, "ip" -> t.ip, "device" -> t.device, "asn" -> t.asn, "prefix" -> t.prefix).flatMap(limit.tupled).headOption

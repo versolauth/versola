@@ -23,6 +23,7 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
       blockAt = Some(blockAt),
       delayMillis = None,
       fakeSendDelayMillis = None,
+      pow = None,
       thresholds = None,
       smsLimits = Some(SmsLimits(SmsLimit(10, 0, 0.1), Map("49" -> SmsLimit(2, 5, 0.2)))),
       ruleWeights = Some(Map("velocity_phone_1h" -> 40)),
