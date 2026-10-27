@@ -2358,132 +2358,107 @@ paths:
         '404':
           description: No edge is registered under that id.
 
-  /configuration/edges/overload:
-    put:
+  /configuration/edges/policies:
+    get:
       tags: [Edges]
-      summary: Set what an edge does when it is asked for more than it can do
+      summary: Read the policies of an edge
       description: |
-        The overload policy of one edge: its inbound admission limits (with priorities, so a new
-        login is refused before work already begun, and the proxied calls last) held to a limit the
-        edge learns from its own call times inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
-        its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
-        removes it and returns the edge to the values of its own deployment.
-
-        Every field is optional and means "what the edge starts with" when absent, so a policy is
-        a patch over the deployment: the values of the edge's own environment (`HTTP_ADMISSION_*`,
-        `HTTP_CLIENT_GUARD_*`) when set, the built-in defaults below otherwise. `mode` is `off`, `shadow` (count what `enforce` would
-        refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
-        change up on its next configuration sync and, while central is unreachable, keeps the last
-        policy it received (the sync runs every configuration refresh interval, 5 minutes by default).
-
-        Fields the schema does not know are ignored, so a leftover `inbound.adaptive.enabled` from
-        an earlier draft has no effect: the limit is learned whenever the inbound mode is not `off`.
-        A value outside the documented range answers `400` with the first problem found.
-      operationId: setEdgeOverloadPolicy
+        The three policy sections of one edge as they are stored now (not the console's cached copy): `overload`, `accessLog` and
+        `rateLimits`, each absent when none is set, with the `revisions` and `updatedAt` of every section that has ever changed. A section
+        that never changed has revision 0.
+      operationId: getEdgePolicies
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '200':
+          description: The policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePolicies'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+    patch:
+      tags: [Edges]
+      summary: Change the policies of an edge
+      description: |
+        Changes the sections the body names and leaves the others as they are. A section that is absent is kept; `null` removes it (the
+        edge goes back to the values of its own deployment, or applies no rate limit); an object replaces it **as a whole**: a section is
+        never merged field by field, so the body of a section is the section. An empty object (an empty `policies` list for `rateLimits`)
+        is the same as `null`. A key that is not a section is refused, so a misspelled section is an error and not a silent no-op.
+
+        - `overload`: what the edge does when it is asked for more than it can do: inbound admission limits, with priorities, held to a limit
+          the edge learns inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of its outbound calls.
+          Every field is optional and means "what the edge starts with" when absent (the edge's `HTTP_ADMISSION_*` and
+          `HTTP_CLIENT_GUARD_*` environment when set, the built-in defaults otherwise).
+        - `accessLog`: which requests the edge writes a `receive-http` log line for. Every field is optional and means the edge's
+          built-in default when absent (`off`, 500 ms, 0.05). `auth` and `central` have no such setting.
+        - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
+
+        **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
+        named section is still at that revision; otherwise nothing is written and the answer is `409` with the current state in `current`. A
+        section that is not named has no precondition, so a client that only ever patches its own section needs none. A change that changes
+        nothing does not move the revision.
+
+        **Dry run.** With `dryRun=true` the body is checked by the rules the edge applies (and the revisions are checked) and the answer is
+        the state the patch would make; nothing is written.
+
+        The answer is the new state, with the new revisions. The edge picks a change up on its next configuration sync and, while central is
+        unreachable, keeps the last policy it received (the sync runs every configuration refresh interval, 5 minutes by default). A value
+        outside its documented range answers `400` with the section and the first problem found.
+      operationId: patchEdgePolicies
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+        - name: dryRun
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Check the body and answer the resulting state without writing it.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/OverloadPolicy'
+              $ref: '#/components/schemas/EdgePoliciesPatch'
+            examples:
+              rateLimitsAndRemoveOverload:
+                summary: Replace the rate limits, remove the overload policy, leave the access log alone
+                value:
+                  overload: null
+                  rateLimits:
+                    replicas: 3
+                    policies:
+                      - name: per-user
+                        by: [subject]
+                        limits: [{ limit: 300, windowSeconds: 60 }]
+                        burst: 60
+                        mode: enforce
+                  expectedRevisions: { rateLimits: 4 }
       responses:
-        '204':
-          description: Policy recorded.
-        '400':
-          description: The policy does not validate; the body names the first field that is wrong.
+        '200':
+          description: The new state (or, with `dryRun`, the state the patch would make).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OverloadPolicyError'
+                $ref: '#/components/schemas/EdgePolicies'
+        '400':
+          description: A key that is not a section, a section of the wrong shape, or a section that does not validate. `section` names it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePoliciesError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
-
-  /configuration/edges/access-log:
-    put:
-      tags: [Edges]
-      summary: Set which requests an edge writes a log line for
-      description: |
-        The access-log policy of one edge: whether it writes a `receive-http` line for every request, for a sample of the
-        successful ones, or only for failures and slow requests. The body replaces the stored policy as a whole; an empty
-        object `{}` removes it and returns the edge to the values of its own deployment. Independent of the edge's overload
-        policy.
-
-        Every field is optional and means "what the edge starts with" when absent, so a policy is a patch over the
-        deployment: the values of the edge's own environment (`HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS`,
-        `HTTP_ACCESS_LOG_SAMPLE_RATE`) when set, the edge's defaults otherwise (`off`, 500 ms, 0.05). The edge picks the change up
-        on its next configuration sync and, while central is unreachable, keeps the last policy it received (the sync runs
-        every configuration refresh interval, 5 minutes by default).
-
-        A request that failed (status 400 or above, or an error was recorded) is logged in every mode. `auth` and `central`
-        have no such setting: they always log every request.
-        A value outside the documented range answers `400` with the first problem found.
-      operationId: setEdgeAccessLogPolicy
-      parameters:
-        - $ref: '#/components/parameters/EdgeIdQuery'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AccessLogPolicy'
-      responses:
-        '204':
-          description: Policy recorded.
-        '400':
-          description: The policy does not validate; the body names the first field that is wrong.
+        '409':
+          description: A section named in `expectedRevisions` has changed since it was read. Nothing was written; `current` is the state.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AccessLogPolicyError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: No edge is registered under that id.
-
-  /configuration/edges/rate-limits:
-    put:
-      tags: [Edges]
-      summary: Set the rate limit policies of an edge
-      description: |
-        Who may send how much through one edge. The body replaces the stored set of policies as a whole; an empty list
-        removes them, and the edge applies no rate limit. Independent of the edge's overload and access-log policies.
-
-        A policy in mode `shadow` is checked on the proxy path and the edge counts what it would refuse
-        (`edge_rate_limit_decisions_total{policy,result="would_limit"}`); nothing is refused. A policy in mode `enforce`
-        refuses the call with `429 Too Many Requests` and `Retry-After` (whole seconds), before the call is sent to the resource
-        or `/userinfo`. Start from `GET /configuration/edges/rate-limits/recommended` in `shadow`. The edge picks the set up
-        on its next configuration sync (every configuration refresh interval, 5 minutes by default) and, while central is
-        unreachable, keeps the last set it received.
-
-        A set that does not validate answers `400` with the first problem found: a name is 1 to 48 characters, a lower-case
-        letter and then lower-case letters, digits, `_` or `-`, and unique; at most 64 policies; each policy has 1 to 8
-        windows with distinct `windowSeconds`; `burst` is not above the smallest `limit`, and `cost` is not above `burst`.
-      operationId: setEdgeRateLimitPolicies
-      parameters:
-        - $ref: '#/components/parameters/EdgeIdQuery'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RateLimitPolicies'
-      responses:
-        '204':
-          description: Policies recorded.
-        '400':
-          description: The set does not validate; the body names the first policy or field that is wrong.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RateLimitPoliciesError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: No edge is registered under that id.
+                $ref: '#/components/schemas/EdgePoliciesError'
 
   /configuration/edges/rate-limits/recommended:
     get:
@@ -2493,7 +2468,7 @@ paths:
         A starting set that is safe to add to any edge: `per-client`, `per-user`, `per-user-endpoint`, `per-address` and `per-certificate`, all in mode
         `shadow`, so the edge only counts what it would refuse. Read `edge_rate_limit_decisions_total{result="would_limit"}`
         for a while, adjust the limits, then switch a policy to `enforce`. The numbers are generous on purpose and are per
-        edge pod. Send the body to `PUT /configuration/edges/rate-limits` (the console's "Add recommended policies" does).
+        edge pod. Send the body as `rateLimits` of `PATCH /configuration/edges/policies` (the console's "Add recommended policies" does).
       operationId: getRecommendedRateLimitPolicies
       responses:
         '200':
@@ -6159,6 +6134,10 @@ components:
         rateLimitPolicies:
           $ref: '#/components/schemas/RateLimitPolicies'
           description: The edge's rate limit policies; absent when none are set.
+        policyRevisions:
+          type: object
+          additionalProperties: { type: integer }
+          description: The revision of each policy section that has ever changed (`overload`, `accessLog`, `rateLimits`); for `expectedRevisions` of `PATCH /configuration/edges/policies`.
         groupId:
           type: string
           description: The group of edges this edge belongs to.
@@ -6433,24 +6412,56 @@ components:
           enum: [off, shadow, enforce]
           default: shadow
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
-    RateLimitPoliciesError:
+    EdgePolicies:
       type: object
+      required: [edgeId]
       properties:
-        error:
-          type: string
-      required: [error]
-    AccessLogPolicyError:
+        edgeId: { type: string }
+        overload:
+          $ref: '#/components/schemas/OverloadPolicy'
+        accessLog:
+          $ref: '#/components/schemas/AccessLogPolicy'
+        rateLimits:
+          $ref: '#/components/schemas/RateLimitPolicies'
+        revisions:
+          type: object
+          additionalProperties: { type: integer }
+          description: How many times each section has changed, by section name. A section that never changed is absent (revision 0).
+        updatedAt:
+          type: object
+          additionalProperties: { type: string, format: date-time }
+          description: When each section last changed, by section name.
+    EdgePoliciesPatch:
       type: object
+      description: The sections to change. A key that is not listed here is refused.
       properties:
-        error:
-          type: string
-      required: [error]
-    OverloadPolicyError:
+        overload:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/OverloadPolicy' }]
+        accessLog:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/AccessLogPolicy' }]
+        rateLimits:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/RateLimitPolicies' }]
+        expectedRevisions:
+          type: object
+          description: The revision of each named section the client last read; the patch is applied only if all still match.
+          properties:
+            overload: { type: integer, minimum: 0 }
+            accessLog: { type: integer, minimum: 0 }
+            rateLimits: { type: integer, minimum: 0 }
+          additionalProperties: false
+    EdgePoliciesError:
       type: object
-      properties:
-        error:
-          type: string
       required: [error]
+      properties:
+        error: { type: string }
+        section:
+          type: string
+          enum: [overload, accessLog, rateLimits]
+        current:
+          $ref: '#/components/schemas/EdgePolicies'
     SetEdgeDpopRequest:
       type: object
       properties:

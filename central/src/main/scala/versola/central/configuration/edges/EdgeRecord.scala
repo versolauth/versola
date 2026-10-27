@@ -35,6 +35,9 @@ import java.security.interfaces.RSAPublicKey
  *
  * `rateLimitPolicies` is who may send how much through the edge, set the same way and independently; `None` means none set
  * and the edge applies no rate limit. See [[RateLimitPolicies]].
+ *
+ * `policyMeta` counts the changes of each of the three sections above, by the name of the section in the API, for the
+ * compare-and-set of `PATCH /configuration/edges/policies`; a section never set has no entry (revision 0).
  */
 case class EdgeRecord(
     id: EdgeId,
@@ -44,6 +47,7 @@ case class EdgeRecord(
     overloadPolicy: Option[OverloadPolicy] = None,
     accessLogPolicy: Option[AccessLogPolicy] = None,
     rateLimitPolicies: Option[RateLimitPolicies] = None,
+    policyMeta: Option[Map[String, PolicySectionMeta]] = None,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
 ):

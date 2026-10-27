@@ -16,6 +16,12 @@ const readOnly = { resources: { central: { permissions: ['edges:read', 'tenants:
 
 const panel = sidePanel;
 
+type Recorded = { method: string; pathname: string; body?: unknown };
+/** The policies patches that name `section` (they are one endpoint for the three sections). */
+const patchesOf = (requests: Recorded[], section: string) =>
+  requests.filter(request => request.method === 'PATCH' && request.pathname === '/configuration/edges/policies' && typeof request.body === 'object' && request.body !== null && section in request.body);
+const patchOf = (section: string) => (request: Recorded) => patchesOf([request], section).length > 0;
+
 test('lists edges with their tenants, key state and DPoP nonce, filters and searches', async ({ page }) => {
   await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge, bravoEdge], tenants } });
 
@@ -231,9 +237,9 @@ test.describe('overload protection', () => {
     await dialog.getByLabel('Highest limit').fill('1536');
     await dialog.getByRole('button', { name: 'Save overload protection' }).click();
 
-    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/overload');
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
     expect(request.searchParams.edgeId).toBe('edge-alpha');
-    expect(request.body).toEqual({ inbound: { mode: 'enforce', adaptive: { maxLimit: 1536 } } });
+    expect(request.body).toEqual({ overload: { inbound: { mode: 'enforce', adaptive: { maxLimit: 1536 } } }, expectedRevisions: { overload: 0 } });
     await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
     await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
   });
@@ -250,7 +256,7 @@ test.describe('overload protection', () => {
 
     await dialog.getByRole('button', { name: 'Save overload protection' }).click();
     await expect(dialog.getByLabel('Starting limit')).toBeFocused();
-    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
 
     await dialog.getByLabel('Starting limit').fill('8');
     await expect(dialog.getByText('The limit starts at 16, the lowest limit, not at 8.')).toBeVisible();
@@ -272,7 +278,7 @@ test.describe('overload protection', () => {
     await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
     await expect(dialog.getByLabel('Starting limit')).toBeDisabled();
     await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
-    expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toHaveLength(1);
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(1);
   });
 
   test('Reset to deployment defaults sends {} after a confirmation', async ({ page }) => {
@@ -281,7 +287,7 @@ test.describe('overload protection', () => {
     await card.getByRole('button', { name: 'Reset to deployment defaults' }).click();
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
 
-    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/overload')).body).toEqual({});
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ overload: null });
     await expect(card).toContainText('Nothing: every value comes from the deployment');
     await expect(panel(page, 'edge-alpha').getByText('returned to the deployment defaults')).toBeVisible();
   });
@@ -310,7 +316,7 @@ test.describe('access log', () => {
   const policy = { mode: 'sampled', successSampleRate: 0.1 };
   const editPath = '/?view=edges&id=edge-alpha&edit=access-log';
   const alpha = { ...alphaEdge, accessLogPolicy: policy };
-  const put = (request: { method: string; pathname: string }) => request.method === 'PUT' && request.pathname === '/configuration/edges/access-log';
+  const put = patchOf('accessLog');
 
   test('the edge panel says what is set here and what the edge defaults to', async ({ page }) => {
     await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, accessLogPolicy: policy }] } });
@@ -345,12 +351,12 @@ test.describe('access log', () => {
     await dialog.getByLabel('Slow threshold').fill('250');
     await dialog.getByRole('button', { name: 'Save access log' }).click();
 
-    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/access-log');
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
     expect(request.searchParams.edgeId).toBe('edge-alpha');
-    expect(request.body).toEqual({ mode: 'full', slowMillis: 250 });
+    expect(request.body).toEqual({ accessLog: { mode: 'full', slowMillis: 250 }, expectedRevisions: { accessLog: 0 } });
     await expect(panel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
     await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toContainText('Full (set here)');
-    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
   });
 
   test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
@@ -391,7 +397,7 @@ test.describe('access log', () => {
     await card.getByRole('button', { name: 'Reset to defaults' }).click();
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
 
-    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/access-log')).body).toEqual({});
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ accessLog: null });
     await expect(card).toContainText('Nothing: the edge uses its defaults');
     await expect(panel(page, 'edge-alpha').getByText('returned to the defaults')).toBeVisible();
   });
@@ -419,7 +425,7 @@ test.describe('rate limits', () => {
   const set = { policies: [{ name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, mode: 'shadow' }] };
   const editPath = '/?view=edges&id=edge-alpha&edit=rate-limits';
   const alpha = { ...alphaEdge, rateLimitPolicies: set };
-  const put = (request: { method: string; pathname: string }) => request.method === 'PUT' && request.pathname === '/configuration/edges/rate-limits';
+  const put = patchOf('rateLimits');
 
   test('the edge panel says what is set and that nothing is refused yet', async ({ page }) => {
     await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, rateLimitPolicies: set }] } });
@@ -451,14 +457,15 @@ test.describe('rate limits', () => {
     await dialog.getByLabel('Window 2: seconds').fill('3600');
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
 
-    const request = await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits');
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
     expect(request.searchParams.edgeId).toBe('edge-alpha');
     expect(request.body).toEqual({
-      policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], mode: 'shadow' }],
+      rateLimits: { policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], mode: 'shadow' }] },
+      expectedRevisions: { rateLimits: 0 },
     });
     await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
     await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Shadow · 10 / 1 s + 500 / 3600 s · by client, user, per endpoint');
-    expect(api.requests.some(request => request.method === 'PUT' && request.pathname === '/configuration/edges/overload')).toBe(false);
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
   });
 
   test('with no policy the editor offers the recommended set, all in shadow, and adds only what is missing', async ({ page }) => {
@@ -473,7 +480,8 @@ test.describe('rate limits', () => {
     await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
     await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(6);
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-    const body = (await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body as { policies: Array<{ name: string; mode: string }> };
+    const sent = (await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body as { rateLimits: { policies: Array<{ name: string; mode: string }> } };
+    const body = sent.rateLimits;
     expect(body.policies.map(policy => policy.name)).toEqual(['mine', 'per-user', 'per-user-endpoint', 'per-address', 'per-certificate', 'per-client']);
     expect(body.policies.every(policy => policy.mode === 'shadow')).toBe(true);
   });
@@ -493,7 +501,7 @@ test.describe('rate limits', () => {
     expect(api.requests.some(put)).toBe(false);
     await dialog.getByLabel('Scope').selectOption('edge-wide');
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client', by: ['ip'], scope: 'edge-wide' }] });
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client', by: ['ip'], scope: 'edge-wide' }] } });
   });
 
   test('Enforce is offered, says what it does, and is saved as chosen', async ({ page }) => {
@@ -505,7 +513,7 @@ test.describe('rate limits', () => {
     await dialog.getByRole('button', { name: 'Enforce', exact: true }).click();
     await expect(dialog.getByText('Refuses calls over the limit with 429 and Retry-After')).toBeVisible();
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client', mode: 'enforce' }] });
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client', mode: 'enforce' }] } });
     await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Enforce · 100 / 60 s');
   });
 
@@ -560,13 +568,13 @@ test.describe('rate limits', () => {
     const dialog = panel(page, 'Edit rate limits');
     await dialog.getByRole('button', { name: 'Remove policy second' }).click();
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-    expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ policies: [{ name: 'per-client' }] });
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client' }] } });
 
     const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
     await card.getByRole('button', { name: 'Remove all policies' }).click();
     await page.getByRole('button', { name: 'Remove all', exact: true }).click();
     await expect(card).toContainText('Nothing: this edge applies no rate limit');
-    expect(api.requests.filter(put).at(-1)?.body).toEqual({ policies: [] });
+    expect(api.requests.filter(put).at(-1)?.body).toMatchObject({ rateLimits: null });
   });
 
   test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
@@ -597,6 +605,44 @@ test('rate limits: the number of edge pods is saved with the set and shown on th
   await expect(dialog.getByText('replicas must be between 1 and 1000')).toBeVisible();
   await dialog.getByLabel('Pods').fill('3');
   await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-  expect((await findRequest(api.requests, 'PUT', '/configuration/edges/rate-limits')).body).toMatchObject({ replicas: 3, policies: [{ name: 'per-client' }] });
+  expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { replicas: 3, policies: [{ name: 'per-client' }] } });
   await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('3 (each pod enforces 1/3 of a limit)');
+});
+
+test.describe('policies are one endpoint, with revisions', () => {
+  const alpha = { ...alphaEdge, accessLogPolicy: { mode: 'sampled' }, policyRevisions: { accessLog: 4 } };
+
+  test('a save names the revision the console read, and the next save names the one central answered with', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [alpha] } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    await sidePanel(page, 'edge-alpha').getByRole('button', { name: 'Edit access log', exact: true }).click();
+    await sidePanel(page, 'Edit access log').getByLabel('Slow threshold').fill('300');
+    await sidePanel(page, 'Edit access log').getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toContainText('slowMillis 300');
+    const bodies = patchesOf(api.requests, 'accessLog').map(request => request.body);
+    expect(bodies.map(body => (body as { expectedRevisions: unknown }).expectedRevisions)).toEqual([{ accessLog: 4 }, { accessLog: 5 }]);
+  });
+
+  test('a save that lost to someone else says so, writes nothing, and the editor shows what is stored when reopened', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [alpha], policyConflict: 'accessLog' } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Someone else changed this section' })).toBeVisible();
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toHaveCount(0);
+  });
+
+  test('a section saved alone leaves the others as they are, even when they are set', async ({ page }) => {
+    const both = { ...alpha, overloadPolicy: { inbound: { mode: 'enforce' } }, policyRevisions: { accessLog: 4, overload: 2 } };
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [both] } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
+  });
 });

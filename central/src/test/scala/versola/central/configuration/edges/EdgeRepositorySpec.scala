@@ -101,98 +101,89 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           found <- env.repository.find(edgeId)
         yield assertTrue(found.exists(_.requireDpopNonce))
       },
-      test("a new edge has no overload policy, setOverloadPolicy stores one for the named edge only, and None clears it") {
-        val policy = OverloadPolicy(
-          inbound = Some(InboundPolicy(
-            mode = Some("enforce"),
-            maxInFlight = Some(128),
-            adaptive = Some(AdaptivePolicy(minLimit = Some(16))),
-          )),
-          outbound =
-            Some(OutboundPolicy(requestTimeoutMillis = Some(2500), breaker = Some(BreakerPolicy(enabled = Some(true), openSeconds = Some(20))))),
+      test("patchPolicies stores sections for the named edge only, keeps the others, counts revisions, and None clears") {
+        val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64))))
+        val log = AccessLogPolicy(mode = Some("sampled"), slowMillis = Some(250), successSampleRate = Some(0.2))
+        val limits = RateLimitPolicies(
+          List(
+            RateLimitPolicy(
+              name = "per-client",
+              by = List(RateLimitDimension.Client),
+              limits = List(RateLimitWindow(100, 60)),
+              burst = 5,
+              mode = GuardMode.Enforce,
+            ),
+            RateLimitPolicy(name = "per-endpoint", scope = RateLimitScope.Endpoint, limits = List(RateLimitWindow(10, 1), RateLimitWindow(500, 3600))),
+          ),
+          replicas = 3,
         )
+        val at = java.time.Instant.parse("2026-10-27T10:00:00Z")
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
           _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
           fresh <- env.repository.find(edgeId)
-          _ <- env.repository.setOverloadPolicy(edgeId, Some(policy))
+          _ <- env.repository.patchPolicies(
+            edgeId,
+            EdgePoliciesPatch(_, EdgePoliciesPatch(overload = Change.Replace(overload), accessLog = Change.Replace(log)), at),
+          )
+          _ <- env.repository.patchPolicies(edgeId, EdgePoliciesPatch(_, EdgePoliciesPatch(rateLimits = Change.Replace(limits)), at.plusSeconds(60)))
           set <- env.repository.find(edgeId)
           other <- env.repository.find(edge2Id)
           all <- env.repository.getAll
-          _ <- env.repository.setOverloadPolicy(edgeId, None)
+          _ <- env.repository.patchPolicies(edgeId, EdgePoliciesPatch(_, EdgePoliciesPatch(overload = Change.Remove), at.plusSeconds(120)))
           cleared <- env.repository.find(edgeId)
         yield assertTrue(
-          fresh.exists(_.overloadPolicy.isEmpty),
-          set.flatMap(_.overloadPolicy) == Some(policy),
-          other.exists(_.overloadPolicy.isEmpty),
-          all.find(_.id == edgeId).flatMap(_.overloadPolicy) == Some(policy),
+          fresh.exists(r => r.overloadPolicy.isEmpty && r.accessLogPolicy.isEmpty && r.rateLimitPolicies.isEmpty && r.policyMeta.isEmpty),
+          set.flatMap(_.overloadPolicy) == Some(overload),
+          set.flatMap(_.accessLogPolicy) == Some(log),
+          set.flatMap(_.rateLimitPolicies) == Some(limits),
+          set.flatMap(_.policyMeta) == Some(
+            Map(
+              "overload" -> PolicySectionMeta(1, at),
+              "accessLog" -> PolicySectionMeta(1, at),
+              "rateLimits" -> PolicySectionMeta(1, at.plusSeconds(60)),
+            ),
+          ),
+          other.exists(r => r.overloadPolicy.isEmpty && r.rateLimitPolicies.isEmpty && r.policyMeta.isEmpty),
+          all.find(_.id == edgeId).flatMap(_.rateLimitPolicies) == Some(limits),
           cleared.exists(_.overloadPolicy.isEmpty),
+          cleared.flatMap(_.policyMeta).exists(_("overload").revision == 2),
+          cleared.flatMap(_.accessLogPolicy) == Some(log),
         )
       },
-      test(
-        "a new edge has no access-log policy, setAccessLogPolicy stores one for the named edge only, independent of the overload policy, and None clears it",
-      ) {
-        val policy = AccessLogPolicy(mode = Some("sampled"), slowMillis = Some(250), successSampleRate = Some(0.2))
+      test("a refused change writes nothing, and a missing edge is None") {
         val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64))))
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          fresh <- env.repository.find(edgeId)
-          _ <- env.repository.setOverloadPolicy(edgeId, Some(overload))
-          _ <- env.repository.setAccessLogPolicy(edgeId, Some(policy))
-          set <- env.repository.find(edgeId)
-          other <- env.repository.find(edge2Id)
-          all <- env.repository.getAll
-          _ <- env.repository.setAccessLogPolicy(edgeId, None)
-          cleared <- env.repository.find(edgeId)
+          refused <- env.repository.patchPolicies(edgeId, record => Left(PolicyPatchError.Conflict(PolicySection.Overload, record)))
+          after <- env.repository.find(edgeId)
+          missing <- env.repository.patchPolicies(EdgeId("edge-nobody"), record => Right(record))
+          stored <- env.repository.patchPolicies(
+            edgeId,
+            EdgePoliciesPatch(_, EdgePoliciesPatch(overload = Change.Replace(overload)), java.time.Instant.EPOCH),
+          )
         yield assertTrue(
-          fresh.exists(_.accessLogPolicy.isEmpty),
-          set.flatMap(_.accessLogPolicy) == Some(policy),
-          set.flatMap(_.overloadPolicy) == Some(overload),
-          other.exists(_.accessLogPolicy.isEmpty),
-          all.find(_.id == edgeId).flatMap(_.accessLogPolicy) == Some(policy),
-          cleared.exists(_.accessLogPolicy.isEmpty),
-          cleared.flatMap(_.overloadPolicy) == Some(overload),
+          refused.exists(_.isLeft),
+          after.exists(_.overloadPolicy.isEmpty),
+          missing.isEmpty,
+          stored.exists(_.isRight),
         )
       },
-      test(
-        "a new edge has no rate limit policies, setRateLimitPolicies stores a set for the named edge only, independent of the other policies, and None clears it",
-      ) {
-        val policies = RateLimitPolicies(List(
-          RateLimitPolicy(
-            name = "per-client",
-            by = List(RateLimitDimension.Client),
-            limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-            burst = 5,
-          ).copy(mode = GuardMode.Enforce),
-          RateLimitPolicy(
-            name = "per-client",
-            by = List(RateLimitDimension.Client),
-            limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-            burst = 5,
-          ).copy(name = "per-endpoint", scope = RateLimitScope.Endpoint, limits = List(RateLimitWindow(10, 1), RateLimitWindow(500, 3600))),
-        ))
-        val log = AccessLogPolicy(mode = Some("sampled"))
+      test("two patches of one edge at once are applied one after the other: no revision is lost") {
+        val bump = (n: Int) =>
+          env.repository.patchPolicies(
+            edgeId,
+            EdgePoliciesPatch(
+              _,
+              EdgePoliciesPatch(overload = Change.Replace(OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(n)))))),
+              java.time.Instant.EPOCH,
+            ),
+          )
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          fresh <- env.repository.find(edgeId)
-          _ <- env.repository.setAccessLogPolicy(edgeId, Some(log))
-          _ <- env.repository.setRateLimitPolicies(edgeId, Some(policies))
-          set <- env.repository.find(edgeId)
-          other <- env.repository.find(edge2Id)
-          all <- env.repository.getAll
-          _ <- env.repository.setRateLimitPolicies(edgeId, None)
-          cleared <- env.repository.find(edgeId)
-        yield assertTrue(
-          fresh.exists(_.rateLimitPolicies.isEmpty),
-          set.flatMap(_.rateLimitPolicies) == Some(policies),
-          set.flatMap(_.accessLogPolicy) == Some(log),
-          other.exists(_.rateLimitPolicies.isEmpty),
-          all.find(_.id == edgeId).flatMap(_.rateLimitPolicies) == Some(policies),
-          cleared.exists(_.rateLimitPolicies.isEmpty),
-          cleared.flatMap(_.accessLogPolicy) == Some(log),
-        )
+          _ <- ZIO.foreachParDiscard(1 to 12)(n => bump(n + 10))
+          after <- env.repository.find(edgeId)
+        yield assertTrue(after.flatMap(_.policyMeta).exists(_("overload").revision == 12))
       },
       test("setRequireDpopNonce changes only the named edge") {
         for

@@ -346,7 +346,7 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
 
 - **auth and central** always log every request, and have no setting for it.
 - **The edge** starts at `off` (failures and slow requests only; 500 ms, 0.05 when sampled) and is configured per edge in
-  central: the admin console (an edge's page, "Access log") or `PUT /configuration/edges/access-log?edgeId=...`. It reaches
+  central: the admin console (an edge's page, "Access log") or `PATCH /configuration/edges/policies?edgeId=...` with an `accessLog` section. It reaches
   the edge on its next configuration sync.
 - An edge that had `HTTP_ACCESS_LOG=full` or `sampled` returns to `off` until a policy is set for it. Set one after
   upgrading if you want the lines back.
@@ -1149,11 +1149,24 @@ endpoint, bursts of 30), `per-address` (600 a minute, bursts of 100; see R1) and
 `edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,
 then switch one policy at a time to `enforce`. Switching it back to `shadow` or `off` is the off switch.
 
-- **Policies per edge, in central**: `PUT /configuration/edges/rate-limits?edgeId=` with `{"policies": [...]}` replaces the
-  whole set (`[]` removes it; `400` names the first problem; `404` for an unknown edge). Stored in `edges.rate_limit_policies`
-  (nullable JSONB, migration `V1029`, additive: the previous release's inserts do not name it and a rollback works on the new
-  schema), listed as `rateLimitPolicies` by `GET /configuration/edges`, and served to the edge by `GET /edge/sync/rate-limits`
-  (the calling edge's own row only). Independent of the overload and access-log policies. The edge picks a change up on its
+- **Policies per edge, in central: one endpoint for all the edge's policies.** `GET` and `PATCH /configuration/edges/policies?edgeId=`
+  (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
+  - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
+    whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` also names the section and the first problem; `404` for
+    an unknown edge. The answer is the new state with the new `revisions`.
+  - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
+    (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
+    written and the answer is `409` with the current state in `current`. A section that is not named has no precondition, so a client
+    that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
+    it read and, on `409`, reads the edges again and says so.
+  - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
+    writing nothing: for CI and automation.
+  - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
+    `edges.policy_meta` (`V1030`), all nullable JSONB and additive: the previous release's inserts do not name them and a rollback works on
+    the new schema. The edge listing shows `rateLimitPolicies`, `overloadPolicy`, `accessLogPolicy` and `policyRevisions`; the edge gets a
+    section in its own sync (`GET /edge/sync/rate-limits`, `/overload`, `/access-log`; the calling edge's own row only). The sections are
+    independent. The edge picks a change up on its
   next configuration sync (the refresh interval, 5 minutes by default), keeps the last set while central is unreachable, and
   treats `404` from an older central as "none set". A set that fails validation on the edge is not applied and the previous
   one stays.
@@ -1264,8 +1277,8 @@ profile under load, almost all of it for successful requests.
   variable or console field to change that: their lines are few, and they are where an investigation of a login or an
   admin change ends up. A successful outbound call is `DEBUG` below 500 ms, as described further down.
 - **The edge** is the only service whose access log is set, and it is set **in central, per edge**: in the admin console
-  (an edge's page, section "Access log") or with `PUT /configuration/edges/access-log?edgeId=...` (the body is described
-  in `central/open-api/central.yaml`; `{}` removes the policy). There is no environment variable for it, and no value in
+  (an edge's page, section "Access log") or with `PATCH /configuration/edges/policies?edgeId=...` and an `accessLog` section (the body is described
+  in `central/open-api/central.yaml`; `null` removes the policy). There is no environment variable for it, and no value in
   the edge's own configuration. A fresh edge, or one that has never reached central, uses the built-in defaults:
   `mode` `off`, `slowMillis` 500, `successSampleRate` 0.05. A policy field that is absent means that default.
 - `mode` `full`: every request.

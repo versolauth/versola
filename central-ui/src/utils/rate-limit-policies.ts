@@ -1,5 +1,5 @@
 /**
- * The rate limit policies of an edge (`PUT /configuration/edges/rate-limits`): the wire form, the
+ * The rate limit policies of an edge (the `rateLimits` section of `PATCH /configuration/edges/policies`): the wire form, the
  * draft the editor works on and the pure helpers around it. The rules and messages mirror
  * `RateLimitPolicy.validate` and `validateAll` in `util/.../RateLimitPolicy.scala`: central refuses a
  * set that fails them and an edge does not apply one, so the editor says the same thing before the request.

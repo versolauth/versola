@@ -412,6 +412,7 @@ export interface Edge {
   overloadPolicy?: OverloadPolicy;  // absent when none is set: the edge uses its deployment's values
   accessLogPolicy?: AccessLogPolicy;  // absent when none is set: the edge uses its built-in defaults
   rateLimitPolicies?: RateLimitPolicies;  // absent when none are set: the edge applies no rate limit
+  policyRevisions?: Record<string, number>;  // how often each policy section changed, for the compare-and-set of the policies patch
 }
 
 export interface ServiceKey {

@@ -89,118 +89,63 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.setRequireDpopNonce(edgeId, false)
       yield assertTrue(env.repository.setRequireDpopNonce.calls == List((edgeId, false)))
     },
-    test("setOverloadPolicy records a valid policy against the named edge") {
+    test("patchPolicies hands the repository a change that applies the patch, and refreshes the cache after a write") {
       val env = Env()
-      val policy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+      val stored = EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true)
+      val patch = EdgePoliciesPatch(overload = Change.Replace(OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64))))))
       for
-        _ <- env.repository.setOverloadPolicy.succeedsWith(())
-        _ <- env.service.setOverloadPolicy(edgeId, policy)
-      yield assertTrue(env.repository.setOverloadPolicy.calls == List((edgeId, Some(policy))))
-    },
-    test("an empty policy is stored as none, returning the edge to its deployment's values") {
-      val env = Env()
-      for
-        _ <- env.repository.setOverloadPolicy.succeedsWith(())
-        _ <- env.service.setOverloadPolicy(edgeId, OverloadPolicy.empty)
-      yield assertTrue(env.repository.setOverloadPolicy.calls == List((edgeId, None)))
-    },
-    test("a policy that does not validate is refused with the field named, and nothing is written") {
-      val env = Env()
-      for
-        _ <- env.repository.setOverloadPolicy.succeedsWith(())
-        result <- env.service.setOverloadPolicy(edgeId, OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(0))))).exit
+        _ <- env.repository.patchPolicies.succeedsWith(Some(Right(stored)))
+        _ <- env.repository.getAll.succeedsWith(Vector(stored))
+        result <- env.service.patchPolicies(edgeId, patch, dryRun = false)
+        (id, change) = env.repository.patchPolicies.calls.head
+        applied = change(stored)
+        cached <- env.service.find(edgeId)
       yield assertTrue(
-        result match
-          case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidOverloadPolicy] && e.getMessage.contains("inbound.maxInFlight"))
-          case _ => false,
-        env.repository.setOverloadPolicy.calls.isEmpty,
+        result == Some(Right(stored)),
+        id == edgeId,
+        applied.toOption.flatMap(_.overloadPolicy).exists(_.inbound.exists(_.maxInFlight.contains(64))),
+        applied.toOption.flatMap(_.policyMeta).exists(_.get("overload").exists(_.revision == 1)),
+        env.repository.getAll.calls.size == 1,
+        cached.contains(stored),
       )
     },
-    test("setAccessLogPolicy records a valid policy against the named edge") {
+    test("a refused patch writes nothing and leaves the cache alone") {
       val env = Env()
-      val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+      val stored = EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true)
+      val refused = PolicyPatchError.Conflict(PolicySection.Overload, stored)
       for
-        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
-        _ <- env.service.setAccessLogPolicy(edgeId, policy)
-      yield assertTrue(env.repository.setAccessLogPolicy.calls == List((edgeId, Some(policy))))
+        _ <- env.repository.patchPolicies.succeedsWith(Some(Left(refused)))
+        result <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = false)
+      yield assertTrue(result == Some(Left(refused)), env.repository.getAll.calls.isEmpty)
     },
-    test("an empty access-log policy is stored as none, returning the edge to its deployment's values") {
+    test("dryRun answers the record the patch would make and writes nothing") {
       val env = Env()
+      val stored = EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true)
+      val patch = EdgePoliciesPatch(accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"))))
       for
-        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
-        _ <- env.service.setAccessLogPolicy(edgeId, AccessLogPolicy.empty)
-      yield assertTrue(env.repository.setAccessLogPolicy.calls == List((edgeId, None)))
-    },
-    test("an access-log policy that does not validate is refused with the field named, and nothing is written") {
-      val env = Env()
-      for
-        _ <- env.repository.setAccessLogPolicy.succeedsWith(())
-        result <- env.service.setAccessLogPolicy(edgeId, AccessLogPolicy(successSampleRate = Some(1.5))).exit
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        result <- env.service.patchPolicies(edgeId, patch, dryRun = true)
       yield assertTrue(
-        result match
-          case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidAccessLogPolicy] && e.getMessage.contains("successSampleRate"))
-          case _ => false,
-        env.repository.setAccessLogPolicy.calls.isEmpty,
+        result.flatMap(_.toOption).flatMap(_.accessLogPolicy).contains(AccessLogPolicy(mode = Some("full"))),
+        env.repository.patchPolicies.calls.isEmpty,
       )
     },
-    test("setRateLimitPolicies records a valid set against the named edge") {
+    test("an edge that does not exist answers None, with and without dryRun") {
       val env = Env()
-      val policies = RateLimitPolicies(List(RateLimitPolicy(
-        name = "per-client",
-        by = List(RateLimitDimension.Client),
-        limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-        burst = 5,
-      )))
       for
-        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
-        _ <- env.service.setRateLimitPolicies(edgeId, policies)
-      yield assertTrue(env.repository.setRateLimitPolicies.calls == List((edgeId, Some(policies))))
+        _ <- env.repository.find.succeedsWith(None)
+        _ <- env.repository.patchPolicies.succeedsWith(None)
+        dry <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = true)
+        real <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = false)
+      yield assertTrue(dry.isEmpty, real.isEmpty)
     },
-    test("an empty set of rate limit policies is stored as none, so the edge applies no rate limit") {
+    test("findFresh reads the repository, not the cache") {
       val env = Env()
+      val stored = EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true)
       for
-        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
-        _ <- env.service.setRateLimitPolicies(edgeId, RateLimitPolicies.empty)
-      yield assertTrue(env.repository.setRateLimitPolicies.calls == List((edgeId, None)))
-    },
-    test("rate limit policies that do not validate are refused with the policy named, and nothing is written") {
-      val env = Env()
-      val bad = RateLimitPolicies(List(RateLimitPolicy(
-        name = "per-client",
-        by = List(RateLimitDimension.Client),
-        limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-        burst = 5,
-      ).copy(burst = 500)))
-      for
-        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
-        result <- env.service.setRateLimitPolicies(edgeId, bad).exit
-      yield assertTrue(
-        result match
-          case Exit.Failure(c) => c.failureOption.exists(e => e.isInstanceOf[InvalidRateLimitPolicies] && e.getMessage.contains("per-client"))
-          case _ => false,
-        env.repository.setRateLimitPolicies.calls.isEmpty,
-      )
-    },
-    test("two policies with one name are refused, and nothing is written") {
-      val env = Env()
-      val dup = RateLimitPolicies(List(
-        RateLimitPolicy(
-          name = "per-client",
-          by = List(RateLimitDimension.Client),
-          limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-          burst = 5,
-        ),
-        RateLimitPolicy(
-          name = "per-client",
-          by = List(RateLimitDimension.Client),
-          limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-          burst = 5,
-        ),
-      ))
-      for
-        _ <- env.repository.setRateLimitPolicies.succeedsWith(())
-        result <- env.service.setRateLimitPolicies(edgeId, dup).exit
-      yield assertTrue(result.isFailure, env.repository.setRateLimitPolicies.calls.isEmpty)
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        fresh <- env.service.findFresh(edgeId)
+      yield assertTrue(fresh.contains(stored))
     },
     test("getAllEdges returns edges from cache") {
       val edges = Vector(

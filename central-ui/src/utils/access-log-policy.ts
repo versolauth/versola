@@ -1,5 +1,5 @@
 /**
- * The access-log policy of an edge (`PUT /configuration/edges/access-log`): the wire form, the
+ * The access-log policy of an edge (the `accessLog` section of `PATCH /configuration/edges/policies`): the wire form, the
  * field table the editor is drawn from, and the pure helpers around it. The ranges and messages
  * mirror `AccessLogPolicy.validate` in `util/.../AccessLog.scala`: central refuses a policy that
  * fails it and an edge does not apply one, so the editor says the same thing before the request.

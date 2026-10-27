@@ -3,7 +3,8 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type { AccessLogPolicy, Edge, OverloadPolicy, RateLimitPolicies, Tenant } from '../types';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, registerEdge, rotateEdgeKey, setEdgeAccessLogPolicy, setEdgeDpopNonce, setEdgeOverloadPolicy, setEdgeRateLimitPolicies } from '../utils/central-api';
+import type { EdgePolicySection } from '../utils/central-api';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
@@ -42,6 +43,13 @@ import './record-header';
 import './side-panel';
 
 type EdgeFilter = 'all' | 'rotation' | 'no-tenants';
+
+/** The edge with the revisions central answered a save with; absent revisions leave the ones it had. */
+function withRevisions(edge: Edge, revisions: Record<string, number> | undefined): Edge {
+  if (!revisions) return edge;
+  const { policyRevisions: _previous, ...rest } = edge;
+  return Object.keys(revisions).length > 0 ? { ...rest, policyRevisions: revisions } : rest;
+}
 type GeneratedKey = { edgeId: string; keyId: string; privateKey: string; action: 'created' | 'rotated' };
 
 /**
@@ -408,8 +416,8 @@ export class VersolaEdgesList extends LitElement {
           return;
         }
         const policy = policyFromDraft(this.draftOverload);
-        await setEdgeOverloadPolicy(edge.id, policy);
-        this.applyOverloadPolicy(edge.id, policy);
+        const saved = await patchEdgePolicies(edge.id, { overload: isEmptyPolicy(policy) ? null : policy, expectedRevisions: { overload: this.revisionOf(edge, 'overload') } });
+        this.applyOverloadPolicy(edge.id, policy, saved.revisions);
         dispatchRecordRoute(this, { edit: null, create: false });
       } else if (this.editTarget === 'access-log') {
         const edge = this.openEdge!;
@@ -419,8 +427,8 @@ export class VersolaEdgesList extends LitElement {
           return;
         }
         const policy = accessLogPolicyFromDraft(this.draftAccessLog);
-        await setEdgeAccessLogPolicy(edge.id, policy);
-        this.applyAccessLogPolicy(edge.id, policy);
+        const saved = await patchEdgePolicies(edge.id, { accessLog: isEmptyAccessLogPolicy(policy) ? null : policy, expectedRevisions: { accessLog: this.revisionOf(edge, 'accessLog') } });
+        this.applyAccessLogPolicy(edge.id, policy, saved.revisions);
         dispatchRecordRoute(this, { edit: null, create: false });
       } else if (this.editTarget === 'rate-limits') {
         const edge = this.openEdge!;
@@ -430,8 +438,8 @@ export class VersolaEdgesList extends LitElement {
           return;
         }
         const policies = rateLimitPoliciesFromDraft(this.draftRateLimit);
-        await setEdgeRateLimitPolicies(edge.id, policies);
-        this.applyRateLimitPolicies(edge.id, policies);
+        const saved = await patchEdgePolicies(edge.id, { rateLimits: isEmptyRateLimitPolicies(policies) ? null : policies, expectedRevisions: { rateLimits: this.revisionOf(edge, 'rateLimits') } });
+        this.applyRateLimitPolicies(edge.id, policies, saved.revisions);
         dispatchRecordRoute(this, { edit: null, create: false });
       } else {
         const edge = this.openEdge!;
@@ -440,18 +448,34 @@ export class VersolaEdgesList extends LitElement {
         dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
-      this.formError = error instanceof Error ? error.message : 'Failed to save edge';
+      this.formError = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to save edge';
     } finally {
       this.isSaving = false;
     }
   }
 
-  private applyOverloadPolicy(edgeId: string, policy: OverloadPolicy) {
+  /** The revision of a policy section as the console read it; a section never saved is at 0. */
+  private revisionOf(edge: Edge, section: EdgePolicySection): number {
+    return edge.policyRevisions?.[section] ?? 0;
+  }
+
+  /** A save that lost to someone else's change of the same section: nothing was written. The edges are read again so the editor, reopened,
+   *  shows what is stored now. */
+  private async handlePolicyConflict(): Promise<string> {
+    try {
+      this.edges = await fetchEdges();
+    } catch {
+      // the message below still tells the operator what to do
+    }
+    return 'Someone else changed this section after you opened it, so nothing was saved. Close the editor and open it again to see their change.';
+  }
+
+  private applyOverloadPolicy(edgeId: string, policy: OverloadPolicy, revisions?: Record<string, number>) {
     const empty = isEmptyPolicy(policy);
     this.edges = this.edges.map(candidate => {
       if (candidate.id !== edgeId) return candidate;
       const { overloadPolicy: _previous, ...rest } = candidate;
-      return empty ? rest : { ...rest, overloadPolicy: policy };
+      return withRevisions(empty ? rest : { ...rest, overloadPolicy: policy }, revisions);
     });
     this.policyNotice = {
       edgeId,
@@ -461,12 +485,12 @@ export class VersolaEdgesList extends LitElement {
     };
   }
 
-  private applyAccessLogPolicy(edgeId: string, policy: AccessLogPolicy) {
+  private applyAccessLogPolicy(edgeId: string, policy: AccessLogPolicy, revisions?: Record<string, number>) {
     const empty = isEmptyAccessLogPolicy(policy);
     this.edges = this.edges.map(candidate => {
       if (candidate.id !== edgeId) return candidate;
       const { accessLogPolicy: _previous, ...rest } = candidate;
-      return empty ? rest : { ...rest, accessLogPolicy: policy };
+      return withRevisions(empty ? rest : { ...rest, accessLogPolicy: policy }, revisions);
     });
     this.policyNotice = {
       edgeId,
@@ -476,12 +500,12 @@ export class VersolaEdgesList extends LitElement {
     };
   }
 
-  private applyRateLimitPolicies(edgeId: string, policies: RateLimitPolicies) {
+  private applyRateLimitPolicies(edgeId: string, policies: RateLimitPolicies, revisions?: Record<string, number>) {
     const empty = isEmptyRateLimitPolicies(policies);
     this.edges = this.edges.map(candidate => {
       if (candidate.id !== edgeId) return candidate;
       const { rateLimitPolicies: _previous, ...rest } = candidate;
-      return empty ? rest : { ...rest, rateLimitPolicies: policies };
+      return withRevisions(empty ? rest : { ...rest, rateLimitPolicies: policies }, revisions);
     });
     this.policyNotice = {
       edgeId,
@@ -506,13 +530,13 @@ export class VersolaEdgesList extends LitElement {
     this.formError = '';
     this.errorMessage = '';
     try {
-      await setEdgeRateLimitPolicies(edge.id, { policies: [] });
-      this.applyRateLimitPolicies(edge.id, { policies: [] });
+      const saved = await patchEdgePolicies(edge.id, { rateLimits: null, expectedRevisions: { rateLimits: this.revisionOf(edge, 'rateLimits') } });
+      this.applyRateLimitPolicies(edge.id, { policies: [] }, saved.revisions);
       this.draftRateLimit = emptyRateLimitDraft();
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'rate-limits') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to remove the rate limit policies';
+      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to remove the rate limit policies';
       if (this.editTarget === 'rate-limits') this.formError = message;
       else this.errorMessage = message;
     } finally {
@@ -535,13 +559,13 @@ export class VersolaEdgesList extends LitElement {
     this.formError = '';
     this.errorMessage = '';
     try {
-      await setEdgeAccessLogPolicy(edge.id, {});
-      this.applyAccessLogPolicy(edge.id, {});
+      const saved = await patchEdgePolicies(edge.id, { accessLog: null, expectedRevisions: { accessLog: this.revisionOf(edge, 'accessLog') } });
+      this.applyAccessLogPolicy(edge.id, {}, saved.revisions);
       this.draftAccessLog = emptyAccessLogDraft();
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'access-log') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to reset the access log';
+      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to reset the access log';
       if (this.editTarget === 'access-log') this.formError = message;
       else this.errorMessage = message;
     } finally {
@@ -564,13 +588,13 @@ export class VersolaEdgesList extends LitElement {
     this.formError = '';
     this.errorMessage = '';
     try {
-      await setEdgeOverloadPolicy(edge.id, {});
-      this.applyOverloadPolicy(edge.id, {});
+      const saved = await patchEdgePolicies(edge.id, { overload: null, expectedRevisions: { overload: this.revisionOf(edge, 'overload') } });
+      this.applyOverloadPolicy(edge.id, {}, saved.revisions);
       this.draftOverload = emptyDraft();
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'overload') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to reset overload protection';
+      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to reset overload protection';
       if (this.editTarget === 'overload') this.formError = message;
       else this.errorMessage = message;
     } finally {
