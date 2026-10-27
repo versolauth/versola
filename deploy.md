@@ -686,8 +686,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
   request again** with two more fields, `proof_token` and `proof_solution`; the code is sent only if they are right. The
   person sees nothing but the submit they made. The request is judged again with its answer (a block, a fake and the
-  lists still apply, and the answer only settles a `Challenge`) but is not counted a second time by the velocity counters;
-  it does take a second turn of the per-credential OTP request limit. Measured in headless Chromium (4 workers, 2.7 M
+  lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
+  nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
+  paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
+  charged again. The same holds on the pending step below (the post that leaves it pays; the page's own ask for the code and
+  its answer do not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is
+  refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
   hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
   phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
   higher is asked for more: `min-difficulty` (14) plus one bit per `score-step` (15) points above `challenge-at`, at most
@@ -699,12 +703,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
   count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
   hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
-  real bound is the per-credential OTP request limit, which every repeated request takes a turn of, and the token's
-  `ttl`; a guess costs the server one SHA-256.
+  real bound is the per-credential OTP request limit, which a wrong answer is charged against, and the token's `ttl`; a guess
+  costs the server one SHA-256. The page's ask for a code from the pending step is the one request that is free and can be
+  repeated: it only gets a challenge (a MAC), never a code, and a right answer sends one code and ends the step.
   **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
   form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
   step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
-  it can answer like the credential form does and which is the same request (not counted again). A client that
+  it can answer like the credential form does and which is the same request (not counted or charged again). When the code is sent the page shows it in place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
   cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
   off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
   challenges existed. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that

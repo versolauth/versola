@@ -194,7 +194,9 @@ object AntifraudFixture:
         // Without limits on OTP requests (the default of the suite's tenant, as every spec that changes it restores),
         // so that the only thing that can refuse a second request for a number is the antifraud decision. The
         // instances read the configuration when they start, which is after this.
-        _ <- oauth.upsertChallengeSettings()
+        //
+        // With a limit nothing can reach (1000 in an hour), so that the steps of it a request takes are recorded and can be counted.
+        _ <- oauth.upsertChallengeSettings(otpRequestLimits = """[{"maxAttempts":1000,"windowSeconds":3600}]""")
         setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
         // Both at once: each waits for central and loads the configuration.
         instances <- launch("antifraud-a", config, client, APorts) <&> launch("antifraud-b", config, client, BPorts)
@@ -212,6 +214,25 @@ object AntifraudFixture:
       expiresAt: Option[Instant] = None,
       shadow: Boolean = false,
   )
+
+  /** How many steps of the limit on codes asked for `credential` have been taken, as the throttle table has them. */
+  def otpRequestSteps(credential: String): Task[Int] =
+    for
+      url <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_URL"))).map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
+      user <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_USER"))).map(_.getOrElse("dev"))
+      password <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_PASSWORD"))).map(_.getOrElse("1234"))
+      steps <- ZIO.attemptBlocking:
+        val connection: Connection = DriverManager.getConnection(url, user, password).nn
+        try
+          val query = connection.prepareStatement(
+            "SELECT COALESCE(SUM(jsonb_array_length(attempts)), 0) FROM challenge_throttle WHERE subject = ? AND lower(challenge_type) = 'otprequest'",
+          ).nn
+          query.setString(1, credential)
+          val rows = query.executeQuery().nn
+          rows.next()
+          rows.getInt(1)
+        finally connection.close()
+    yield steps
 
   def seed(entries: List[ListEntry]): Task[Unit] =
     for

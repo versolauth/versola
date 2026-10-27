@@ -113,7 +113,8 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean) extends StepView
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean, resendInterval: Int)
+      extends StepView
 
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
@@ -758,6 +759,8 @@ object ConversationRenderService:
             destination = credential.map(_.fold(Email.mask, Phone.mask)),
             // No code was sent yet: the page asks for it by itself.
             pending = s.pending,
+            // The wait between two codes, which the page starts again when it shows a code that was just sent in place.
+            resendInterval = otp.resendAfter,
           )
 
         case s: ConversationStep.PasskeyEnroll =>

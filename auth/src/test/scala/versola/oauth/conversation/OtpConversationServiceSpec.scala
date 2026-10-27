@@ -171,7 +171,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   private val answered = ProofInput.Answered("issued-token", "42")
 
   /** What a request for a code came to, for a decision and a verifier: the result, the steps told to antifraud, and the env. */
-  private def request(env: Env, proof: ProofInput) =
+  private def request(env: Env, proof: ProofInput, conversation: ConversationRecord = initialConversation) =
     for
       _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
       _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
@@ -179,11 +179,75 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
       _ <- env.conversationRepository.overwrite.succeedsWith(true)
       _ <- env.otpService.sendOtp.succeedsWith(())
-      result <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, proof)
+      result <- env.service.prepareInitialOtp(authId, conversation, phone, factorIndex = 0, proof)
     yield result
 
   val spec = suite("OtpConversationService")(
     suite("proof of work")(
+      test("a plain send takes one step of the request limit") {
+        val env = Env()
+        for
+          _ <- request(env, ProofInput.NoScript)
+        yield assertTrue(env.submissionLimiter.tryAcquire.calls.size == 1)
+      },
+      test("a challenged send takes one step in all: the request that is challenged pays, the one that carries the answer does not") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          asked <- request(env, ProofInput.Asked)
+          afterAsk = env.submissionLimiter.tryAcquire.calls.size
+          sent <- request(env, answered)
+        yield assertTrue(
+          asked.isInstanceOf[ConversationResult.Challenged],
+          afterAsk == 1,
+          sent.isInstanceOf[ConversationResult.RenderStep],
+          env.submissionLimiter.tryAcquire.calls.size == 1,
+          env.otpService.sendOtp.calls.size == 1,
+        )
+      },
+      test("a request left pending takes one step in all: the page's own ask and the answer after it are not charged on top") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        val pendingStep = realOtp.copy(real = None, timesRequested = 0)
+        for
+          left <- request(env, ProofInput.NoScript)
+          afterLeft = env.submissionLimiter.tryAcquire.calls.size
+          asked <- request(env, ProofInput.Asked, initialConversation.copy(step = pendingStep))
+          sent <- request(env, answered, initialConversation.copy(step = pendingStep))
+        yield assertTrue(
+          left.isInstanceOf[ConversationResult.RenderStep],
+          afterLeft == 1,
+          asked.isInstanceOf[ConversationResult.Challenged],
+          sent.isInstanceOf[ConversationResult.RenderStep],
+          env.submissionLimiter.tryAcquire.calls.size == 1,
+          env.otpService.sendOtp.calls.size == 1,
+        )
+      },
+      test("an answer that is wrong or forged is charged like any request, from the pending step too") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Failed(1)))
+        val pendingStep = realOtp.copy(real = None, timesRequested = 0)
+        for
+          _ <- request(env, answered)
+          _ <- request(env, answered, initialConversation.copy(step = pendingStep))
+        yield assertTrue(env.submissionLimiter.tryAcquire.calls.size == 2, env.antifraud.decisions == List(false, false))
+      },
+      test("a request that is not asked for a proof from the pending step is charged: only the page's own ask is free") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        val pendingStep = realOtp.copy(real = None, timesRequested = 0)
+        for
+          _ <- request(env, ProofInput.NoScript, initialConversation.copy(step = pendingStep))
+        yield assertTrue(env.submissionLimiter.tryAcquire.calls.size == 1, env.antifraud.decisions == List(false))
+      },
+      test("a ban refuses even a request that carries a right answer, and charges nothing") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, answered)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.submissionLimiter.tryAcquire.calls.isEmpty,
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
       test("a Challenge decision asks a client that can answer for a proof, sending nothing, holding nothing and writing nothing") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for

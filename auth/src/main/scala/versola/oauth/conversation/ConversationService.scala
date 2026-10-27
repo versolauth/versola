@@ -405,6 +405,14 @@ object ConversationService:
           subject,
           List(ChallengeType.OtpSubmit),
         )
+        // Checked before the claim (a hash and a MAC, nothing stored), so that a request that was paid for already is not
+        // charged again: the one that carries the answer to a challenge it was given, and the page's own ask for a code
+        // from the step a request was left on. A forged or wrong answer proves nothing and is charged like any request.
+        verdict <- proof match
+          case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
+            challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).map(Some(_))
+          case _ => ZIO.none
+        paid = verdict.contains(ChallengeResult.Passed) || (pending(conversation) && proof == ProofInput.Asked)
         requestStatus <- submitStatus match
           // Claimed before anything is sent: were this left until after sendOtp, concurrent requests
           // for the same credential would all observe the pre-limit state and each send an OTP.
@@ -415,14 +423,17 @@ object ConversationService:
           // plausibly a double-clicked resend — burns an attempt without an OTP going out. Charging
           // later would avoid that, but only by doing the generation and the write for every request
           // in the flood first, which is exactly the work the limit exists to shed.
+          //
+          // A logical request takes one step of the limit: the one that is challenged pays, and what follows from it does not.
           case LimitStatus.Allowed =>
-            submissionLimiter.tryAcquire(conversation.clientId, subject, ChallengeType.OtpRequest)
+            if paid then ZIO.succeed(LimitStatus.Allowed)
+            else submissionLimiter.tryAcquire(conversation.clientId, subject, ChallengeType.OtpRequest)
           case denied => ZIO.succeed(denied)
         result <- requestStatus match
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
             otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *>
               accessDenied(authId, conversation)
-          case LimitStatus.Allowed => decideAndSend(authId, conversation, credential, factorIndex, proof)
+          case LimitStatus.Allowed => decideAndSend(authId, conversation, credential, factorIndex, proof, verdict, paid)
       yield result
 
     /** The one place a request for a code is judged. A solution is checked first, and the decision then made as for any
@@ -434,18 +445,14 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
         proof: ProofInput,
+        verdict: Option[ChallengeResult],
+        paid: Boolean,
     ): Task[ConversationResult.Render] =
+      val solved = verdict.contains(ChallengeResult.Passed)
       for
-        verdict <- proof match
-          case ProofInput.Answered(token, solution) =>
-            challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).map(Some(_))
-          case _ => ZIO.none
-        // Only a genuine answer makes a request the second turn of one that was counted. A wrong or forged token does not:
-        // were it to, any request could opt out of the counters by attaching one.
-        solved = verdict.contains(ChallengeResult.Passed)
-        // The request of a code that was left pending is the one already counted, asked for again by the page.
-        decision <-
-          antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = solved || pending(conversation))
+        // A request that was paid for is the one already counted, made again; a wrong or forged answer is not, or any
+        // request could opt out of the counters by attaching one.
+        decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = paid)
         result <-
           if decision.action == DecisionAction.Block then
             otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
