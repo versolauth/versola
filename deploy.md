@@ -696,14 +696,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
   is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
   the last one was sent): **sending a code spends every challenge made before it**, which is what makes a solution
-  single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made; the
-  `max-attempts`th (5) refuses the request (`blocked`).
+  single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
+  count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
+  hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
+  real bound is the per-credential OTP request limit, which every repeated request takes a turn of, and the token's
+  `ttl`; a guess costs the server one SHA-256.
   **A challenged request that cannot answer is refused, not sent:** a plain form post (no JavaScript, the password forms
   that lead on to a code, `/authorize` with `login_hint`) or a page that cannot solve the kind gets "access denied" as a
   blocked request does, since sending it would be a way round the challenge for any script. Only a verifier that is
-  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before challenges
-  existed; **a failed evaluation (`antifraud_error`, `failure-action`) is a `Challenge` by default**, so an engine that
-  times out now costs every request a proof, or a refusal where it cannot be answered, instead of a pause.
+  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
+  challenges existed, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
+  for a request that cannot answer, so that an outage of the engine does not lock out the second factor after a password or
+  `login_hint`. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that times out
+  to ask every request that can answer for a proof. Routing those two paths through a page that can solve is a follow-up.
   The keys of the optional `antifraud.challenge` block are `enabled` (`true`), `min-difficulty`, `max-difficulty`,
   `score-step`, `ttl` and `max-attempts`, **read whole: set every key, or none** (a block that leaves one out is not read at
   all). The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text

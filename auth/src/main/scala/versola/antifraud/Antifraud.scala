@@ -29,14 +29,19 @@ case class AntifraudContext(
 enum DecisionAction:
   /** Go on. */
   case Allow
+
   /** Ask for proof first (a proof-of-work or a captcha token, P1-2). */
   case Challenge
+
   /** Go on, slowly: the answer is held back (a tarpit). */
   case Delay
+
   /** Answer as if the step succeeded and do nothing (P0-6). */
   case Fake
+
   /** Refuse. */
   case Block
+
   /** Go on or refuse as configured, and put it in front of a person. */
   case Review
 
@@ -85,13 +90,16 @@ object Antifraud:
       blockAt: Int = 0,
       delay: Duration = 2.seconds,
       timeout: Duration = 20.millis,
-      failureAction: DecisionAction = DecisionAction.Challenge,
+      failureAction: DecisionAction = DecisionAction.Delay,
   )
 
   /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer
     * is assembled. */
   def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings, Antifraud] =
     ZLayer.fromFunction((settings: AntifraudEvents.Settings) => Impl(settings.decision, ruleSets): Antifraud)
+
+  /** The rule a decision made of a failed evaluation names. */
+  val ErrorRule = "antifraud_error"
 
   val off: Antifraud = _ => ZIO.succeed(Decision.allow)
 
@@ -109,7 +117,7 @@ object Antifraud:
           .timeoutTo(failed)(identity)(settings.timeout)
           .catchAllCause(_ => ZIO.succeed(failed))
 
-    private def failed: Decision = Decision(settings.failureAction, 0, List("antifraud_error"))
+    private def failed: Decision = Decision(settings.failureAction, 0, List(ErrorRule))
 
     private[antifraud] def decide(ctx: AntifraudContext, rules: List[AntifraudRule]): Decision =
       val fired = rules.filter(_.test(ctx))

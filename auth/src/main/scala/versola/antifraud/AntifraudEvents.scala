@@ -282,7 +282,7 @@ object AntifraudEvents:
           )
         yield decision).catchAllCause: cause =>
           ZIO.logDebugCause("could not build the antifraud context", cause) *>
-            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List("antifraud_error")))
+            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List(Antifraud.ErrorRule)))
 
     private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
       AntifraudDetails(

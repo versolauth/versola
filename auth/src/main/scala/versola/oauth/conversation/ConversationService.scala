@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.antifraud.{
+  Antifraud,
   AntifraudEvents,
   AntifraudOutcome,
   ChallengeResult,
@@ -440,8 +441,10 @@ object ConversationService:
           case ProofInput.Answered(token, solution) =>
             challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).map(Some(_))
           case _ => ZIO.none
+        // Only a genuine answer makes a request the second turn of one that was counted. A wrong or forged token does not:
+        // were it to, any request could opt out of the counters by attaching one.
         solved = verdict.contains(ChallengeResult.Passed)
-        decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = verdict.isDefined)
+        decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = solved)
         result <-
           if decision.action == DecisionAction.Block then
             otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
@@ -509,7 +512,10 @@ object ConversationService:
       for
         _ <- ZIO.when(attempts > 0)(challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_failed, decision, level = None))
         result <-
-          if !challengeVerifier.enabled then sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+          // A challenge that came of the engine failing, not of a score, is not a reason to lock out a request that cannot
+          // answer (the second factor after a password, `login_hint`): the pause it was before challenges.
+          if !challengeVerifier.enabled || (proof == ProofInput.NoScript && decision.firedRules.contains(Antifraud.ErrorRule)) then
+            sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
           else if proof == ProofInput.NoScript || attempts >= challengeVerifier.maxAttempts then refuse
           else
             challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.issue(_, decision.score, attempts)).flatMap:
