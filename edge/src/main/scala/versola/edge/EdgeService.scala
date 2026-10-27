@@ -310,7 +310,10 @@ object EdgeService:
     private def findOwnLogin(state: State, browserBinding: Option[String]): IO[Throwable | AuthConversationNotFound, LoginRecord] =
       loginRepository.findByState(state)
         .someOrFail(AuthConversationNotFound())
-        .filterOrFail(record => BrowserBinding.accepts(record.browserBindingHash, browserBinding))(AuthConversationNotFound())
+        .tapError(_ => Observability.setError("login_not_found"))
+        .filterOrElse(record => BrowserBinding.accepts(record.browserBindingHash, browserBinding))(
+          Observability.setError("login_binding_mismatch") *> ZIO.fail(AuthConversationNotFound()),
+        )
 
     override def complete(
         code: Code,
