@@ -174,7 +174,11 @@ enum SubmitOutcome:
   * then carries only `client_id` and `request_uri`, and `state` lives inside the pushed request,
   * so there is nothing to compare until auth echoes it on the redirect back.
   */
-case class EdgeLoginStarted(authorizeUrl: String, state: Option[String])
+case class EdgeLoginStarted(authorizeUrl: String, state: Option[String], loginCookie: Option[LoginCookie] = None)
+
+/** The `EDGE_LOGIN_<state>` cookie edge's `/login` sets on the browser, which `/complete` must get back: it
+  * is what ties a login to the browser that began it, so a driver that dropped it would be refused. */
+case class LoginCookie(name: String, value: String)
 
 /** What auth answered at the `/authorize` URL edge sent the browser to (§8.4 hop 2): a
   * conversation to walk, or -- when the `SSO_SESSION` the browser presented already satisfies the

@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.dpop.DpopVerifier
-import versola.edge.login.{LoginRecord, LoginRepository, ReturnTo}
+import versola.edge.login.{BrowserBinding, LoginRecord, LoginRepository, ReturnTo}
 import versola.edge.model.{
   AccessToken,
   AccessTokenClaims,
@@ -54,11 +54,13 @@ trait EdgeService:
       presetId: PresetId,
       overrideParams: Map[String, String] = Map.empty,
       returnTo: Option[String] = None,
-  ): IO[Throwable | PresetNotFound, URL]
+  ): IO[Throwable | PresetNotFound, EdgeService.LoginStart]
 
+  /** `browserBinding` is the value of the browser's `EDGE_LOGIN_<state>` cookie, if it sent one. */
   def complete(
       code: Code,
       state: State,
+      browserBinding: Option[String] = None,
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginCompletion]
 
   def completeError(
@@ -66,7 +68,8 @@ trait EdgeService:
       error: String,
       errorDescription: Option[String],
       errorUri: Option[String],
-  ): IO[Throwable | AuthConversationNotFound, URL]
+      browserBinding: Option[String] = None,
+  ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginErrorRedirect]
 
   def proxy(
       resourceId: ResourceId,
@@ -112,9 +115,23 @@ object EdgeService:
       returnTo: Option[String] = None,
       cookieDomain: Option[String],
       cookiePath: Option[String],
+      loginCookiePath: Path,
   ):
     /** Where the browser goes: the page that asked for the login when there is one, else the preset's. */
     def redirectUrl: URL = ReturnTo.onto(postLoginRedirectUri.toUrl, returnTo)
+
+  /** Where to send the browser to log in, and the secret to hand it so that only it can finish this login:
+    * `/login` sets it as `EDGE_LOGIN_<state>` ([[EdgeLoginCookie]]). */
+  case class LoginStart(
+      url: URL,
+      state: State,
+      browserBinding: String,
+      loginCookiePath: Path,
+      loginTtl: Duration,
+  )
+
+  /** A login that ended in an OAuth error: where the browser goes, and the path its login cookie is cleared at. */
+  case class LoginErrorRedirect(url: URL, loginCookiePath: Path)
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
@@ -239,7 +256,7 @@ object EdgeService:
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
         returnTo: Option[String] = None,
-    ): IO[Throwable | PresetNotFound, URL] =
+    ): IO[Throwable | PresetNotFound, LoginStart] =
       clientService.findPreset(presetId).someOrFail(PresetNotFound())
         .flatMap(prepareAuthorizeUrl(_, overrideParams, returnTo.flatMap(ReturnTo.parse)))
 
@@ -247,7 +264,7 @@ object EdgeService:
         preset: AuthorizationPreset,
         overrideParams: Map[String, String],
         returnTo: Option[String],
-    ): zio.Task[URL] =
+    ): zio.Task[LoginStart] =
       for
         // The client, not just the preset: what the authorization request may look like is
         // the client's registration (RFC 9101 §10.5, RFC 9126 §6.2), and the credential that
@@ -262,25 +279,46 @@ object EdgeService:
 
         state <- secureRandom.nextBytes(16).map(State.fromBytes)
 
+        browserBinding <- secureRandom.nextBytes(16).map(Base64.urlEncode)
+
         _ <- loginRepository.create(
           record = LoginRecord(
             codeVerifier = codeVerifier,
             presetId = preset.id,
             state = state,
             returnTo = returnTo,
+            browserBindingHash = Some(BrowserBinding.hash(browserBinding)),
           ),
           ttl = loginTtl,
         )
 
         authUrl <- ssoClient.authorizeUri(preset, client, codeChallenge, state, overrideParams)
-      yield authUrl
+      yield LoginStart(
+        url = authUrl,
+        state = state,
+        browserBinding = browserBinding,
+        loginCookiePath = loginCookiePath(preset),
+        loginTtl = loginTtl,
+      )
+
+    // Where the browser comes back to, so the only path the login cookie is sent to and cleared at.
+    private def loginCookiePath(preset: AuthorizationPreset): Path = preset.redirectUri.toUrl.path
+
+    // A login that is not this browser's is indistinguishable from one that does not exist. It is
+    // not deleted: whoever sent the wrong cookie must not be able to burn the owner's login by
+    // replaying its state.
+    private def findOwnLogin(state: State, browserBinding: Option[String]): IO[Throwable | AuthConversationNotFound, LoginRecord] =
+      loginRepository.findByState(state)
+        .someOrFail(AuthConversationNotFound())
+        .filterOrFail(record => BrowserBinding.accepts(record.browserBindingHash, browserBinding))(AuthConversationNotFound())
 
     override def complete(
         code: Code,
         state: State,
+        browserBinding: Option[String],
     ): IO[Throwable | AuthConversationNotFound, LoginCompletion] =
       for
-        record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
+        record <- findOwnLogin(state, browserBinding)
         preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
         client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
         tokens <- ssoClient.exchangeAuthorizationCode(
@@ -301,6 +339,7 @@ object EdgeService:
         returnTo = record.returnTo,
         cookieDomain = preset.cookieDomain,
         cookiePath = preset.cookiePath,
+        loginCookiePath = loginCookiePath(preset),
       )
 
     override def completeError(
@@ -308,15 +347,19 @@ object EdgeService:
         error: String,
         errorDescription: Option[String],
         errorUri: Option[String],
-    ): IO[Throwable | AuthConversationNotFound, URL] =
+        browserBinding: Option[String],
+    ): IO[Throwable | AuthConversationNotFound, LoginErrorRedirect] =
       for
-        record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
+        record <- findOwnLogin(state, browserBinding)
         preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
         _ <- loginRepository.deleteByState(state)
-      yield ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
-        List("error" -> error) ++
-          errorDescription.map("error_description" -> _) ++
-          errorUri.map("error_uri" -> _),
+      yield LoginErrorRedirect(
+        url = ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
+          List("error" -> error) ++
+            errorDescription.map("error_description" -> _) ++
+            errorUri.map("error_uri" -> _),
+        ),
+        loginCookiePath = loginCookiePath(preset),
       )
 
     /** Records this preset's participation in the SSO session. Written on every login

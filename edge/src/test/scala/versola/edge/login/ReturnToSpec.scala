@@ -4,7 +4,7 @@ import versola.edge.EdgeService.LoginCompletion
 import versola.edge.model.{AccessToken, PresetId}
 import versola.util.{RedirectUri, UnitSpecBase}
 import zio.*
-import zio.http.URL
+import zio.http.{Path, URL}
 import zio.test.*
 
 object ReturnToSpec extends UnitSpecBase:
@@ -61,6 +61,7 @@ object ReturnToSpec extends UnitSpecBase:
           returnTo = returnTo,
           cookieDomain = None,
           cookiePath = None,
+          loginCookiePath = Path.root,
         )
         assertTrue(
           completion(Some("/resources/auth/settings")).redirectUrl.encode == "https://app.example:8443/resources/auth/settings",

@@ -42,9 +42,19 @@ trait LoginRepositorySpec extends DatabaseSpecBase[LoginRepositorySpec.Env]:
           foundPlain <- env.repository.findByState(state2)
         yield assertTrue(foundReturning == Some(returning), foundPlain.map(_.returnTo) == Some(None))
       },
+      test("create stores the browser binding hash, and a login begun without one reads back with none") {
+        val bound = record(state1, "verifier-1", "preset-1").copy(browserBindingHash = Some("hash-1"))
+        val legacy = record(state2, "verifier-2", "preset-1")
+        for
+          _ <- env.repository.create(bound, ttl = 1.hour)
+          _ <- env.repository.create(legacy, ttl = 1.hour)
+          foundBound <- env.repository.findByState(state1)
+          foundLegacy <- env.repository.findByState(state2)
+        yield assertTrue(foundBound == Some(bound), foundLegacy.map(_.browserBindingHash) == Some(None))
+      },
       test("create upserts on state, replacing codeVerifier and presetId") {
         val first = record(state1, "verifier-1", "preset-1")
-        val second = record(state1, "verifier-2", "preset-2")
+        val second = record(state1, "verifier-2", "preset-2").copy(browserBindingHash = Some("hash-2"))
         for
           _ <- env.repository.create(first, ttl = 1.hour)
           _ <- env.repository.create(second, ttl = 1.hour)

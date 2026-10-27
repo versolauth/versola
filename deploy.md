@@ -339,6 +339,24 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
+
+`/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
+the path of the preset's `redirect-uri`, `Max-Age` 10 minutes) and `/complete` finishes a login only for a
+request that brings it back; any other gets the `400` an unknown `state` gets. Before, whoever held a valid
+`/complete?code&state` link was signed in as the account that produced it. Edge stores only a SHA-256 hash of
+the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullable).
+
+- **Migration.** Additive, so the previous release keeps serving on the new schema and a rollback works.
+- **Rolling out.** A login begun before the upgrade has no hash and no cookie; it is accepted without the
+  cookie until it expires (10 minutes). There is no setting for this. Edges of both releases behind one
+  balancer are safe: rows written by the old one have no hash.
+- **What to check.** The cookie is host-only and is sent to the path of `redirect-uri`, so `/login` and the
+  redirect URI must be on the same host, as in the table above. A proxy or CDN that strips `Set-Cookie`
+  from the `/login` redirect, or a client that does not keep cookies between `/login` and `/complete`
+  (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
+- The native flow (`/native/*`) never used the pending login and is unaffected.
+
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,

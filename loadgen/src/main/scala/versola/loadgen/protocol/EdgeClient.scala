@@ -44,9 +44,10 @@ trait EdgeClient extends ActionClient:
     * driver's back and answers the redirect that sets `EDGE_SESSION`.
     *
     * Both parameters come off the redirect auth ended the conversation with -- the `state` is
-    * edge's own, echoed back.
+    * edge's own, echoed back. `loginCookie` is the one [[login]] was answered with: edge finishes
+    * a login only for the browser that began it.
     */
-  def complete(state: String, code: AuthCode): IO[ProtocolError, EdgeCookie]
+  def complete(state: String, code: AuthCode, loginCookie: Option[LoginCookie] = None): IO[ProtocolError, EdgeCookie]
 
   /** `GET {edge}/complete?error=...&state=...`: the other redirect auth can end a web
     * conversation with, and the branch of edge's `/complete` that consumes the `pending_logins`
@@ -55,7 +56,7 @@ trait EdgeClient extends ActionClient:
     * Not a way to report the refusal -- the flow fails with the SUT's `error` either way. This
     * exists so the refusal does not also leave a row behind in the SUT.
     */
-  def completeError(state: String, error: String): IO[ProtocolError, Unit]
+  def completeError(state: String, error: String, loginCookie: Option[LoginCookie] = None): IO[ProtocolError, Unit]
 
   /** `GET {edge}/logout/{presetId}`: the browser being handed on to auth's RP-initiated logout.
     *

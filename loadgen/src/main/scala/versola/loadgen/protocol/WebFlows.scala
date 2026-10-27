@@ -77,9 +77,9 @@ final class WebFlows(
         outcome <- authorized match
           case EdgeAuthorization.Conversation(cookie) => conversation.walk(flow, credentials, cookie)
           case EdgeAuthorization.Answered(answer) => ZIO.succeed(answer)
-        completed <- refusalCompleted(flow, outcome)
+        completed <- refusalCompleted(flow, started, outcome)
         state <- echoedState(started, completed)
-        cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code))
+        cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code, started.loginCookie))
       yield (cookie, completed.ssoSession)
 
   /** §8.6 on the web path: the same proxied action the mobile flows make, with the cookie in
@@ -154,11 +154,11 @@ final class WebFlows(
     * not allowed to replace the refusal: what the report needs is the SUT's `error` code, not a
     * secondary complaint about the cleanup.
     */
-  private def refusalCompleted(flow: FlowName, outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
+  private def refusalCompleted(flow: FlowName, started: EdgeLoginStarted, outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
     outcome match
       case ConversationOutcome.Refused(error, Some(state)) =>
         FlowTiming
-          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state, error))
+          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state, error, started.loginCookie))
           .ignore *> ChallengeConversation.orFail(outcome)
       case other => ChallengeConversation.orFail(other)
 

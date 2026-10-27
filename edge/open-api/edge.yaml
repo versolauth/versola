@@ -111,6 +111,11 @@ paths:
         parameters: `acr_values`, `max_age`, `prompt`, `login_hint` and `ui_locales`. Any other
         query parameter is ignored. Everything that decides the security of the flow
         (`client_id`, `redirect_uri`, `state`, PKCE) belongs to the preset and edge.
+
+        The login is bound to the browser that started it (RFC 9700 §4.7): the redirect sets an
+        `EDGE_LOGIN_<state>` cookie holding a random secret, and `/complete` finishes the login
+        only for a request that brings it back. Without it, a callback link made in the
+        attacker's browser would sign a victim in as the attacker.
       tags: [Login]
       security: []
       parameters:
@@ -159,6 +164,16 @@ paths:
               schema:
                 type: string
                 format: uri
+            Set-Cookie:
+              description: |
+                `EDGE_LOGIN_<state>=<secret>`. `Secure`, `HttpOnly`, `SameSite=Lax` (not `Strict`:
+                the OP's redirect to `/complete` is a cross-site top-level navigation, which a
+                `Strict` cookie does not accompany). `Path` is the path of the preset's
+                `redirectUri`, there is no `Domain`, and `Max-Age` is the login's lifetime
+                (10 minutes). One cookie per login, so logins begun side by side in one browser do
+                not replace each other. Edge stores only a SHA-256 hash of the secret.
+              schema:
+                type: string
         '404':
           description: No preset has this identifier.
 
@@ -176,6 +191,12 @@ paths:
         With an `error`, edge discards the login and redirects to the same post-login URI with
         `error`, `error_description` and `error_uri` appended as query parameters, so the
         application can render the failure itself.
+
+        Either way the request must carry the `EDGE_LOGIN_<state>` cookie that `/login/{presetId}`
+        set on the browser that began the login. A request without it, or with another value, gets
+        the same `400` as an unknown `state`, and the login stays in place for its owner. A login
+        begun before edge started binding logins has no secret and is accepted without the cookie
+        until it expires.
       tags: [Login]
       security: []
       parameters:
@@ -218,6 +239,7 @@ paths:
                 format: uri
             Set-Cookie:
               description: |
+                `EDGE_LOGIN_<state>` expired, on success and on error. And
                 `EDGE_SESSION=<presetId>:<accessToken>` on success only. `Secure`, `HttpOnly`,
                 `SameSite=Strict`; `Domain` and `Path` come from the preset (`Path` defaults to
                 `/`) and `Max-Age` from the refresh token's lifetime.
@@ -226,7 +248,8 @@ paths:
         '400':
           description: |
             Neither or both of `code` and `error` were supplied, or `state` matches no login in
-            progress (unknown, already used, or expired).
+            progress (unknown, already used, or expired), or the request does not carry the
+            `EDGE_LOGIN_<state>` cookie of the browser that began the login.
 
   /logout/{presetId}:
     get:

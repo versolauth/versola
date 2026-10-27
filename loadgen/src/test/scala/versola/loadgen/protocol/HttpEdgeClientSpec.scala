@@ -40,7 +40,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         started <- edge.login(preset, None)
         paths <- recorder.paths
       yield assertTrue(
-        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)),
+        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState), Some(StubSut.edgeLoginCookie)),
         paths == Vector("GET /login/" + StubSut.preset),
       )
     },
@@ -141,11 +141,20 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        cookie <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code))
+        cookie <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code), Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
       yield assertTrue(
         cookie == EdgeCookie(EdgeSession(StubSut.edgeSession), Some(StubSut.edgeCookieTtl)),
         paths == Vector("GET /complete"),
+      )
+    },
+    test("complete without the login cookie edge set is refused: the login belongs to the browser that began it") {
+      for
+        both <- edgeForStub
+        (_, edge) = both
+        failure <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code)).either
+      yield assertTrue(
+        failure == Left(ProtocolError.UnexpectedStatus(Set(Status.SeeOther), Status.BadRequest, "/complete")),
       )
     },
     test("a state edge has no pending login for is a 400, and stays an unexpected status") {
@@ -169,10 +178,10 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError, Some(StubSut.edgeLoginCookie))
         // Edge answers the second one 400 (`AuthConversationNotFound`). Nothing is left to
         // consume, which is the only thing this hop is for, so it is not a failure.
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError, Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
         params <- recorder.queryOf("/complete")
       yield assertTrue(

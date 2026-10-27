@@ -8,6 +8,7 @@ import versola.edge.model.{
   AuthConversationNotFound,
   AuthorizationPreset,
   ClientId,
+  Code,
   EdgeId,
   InvalidLogoutToken,
   PermissionId,
@@ -16,6 +17,7 @@ import versola.edge.model.{
   ResourceId,
   RoleId,
   SessionId,
+  State,
   TenantId,
 }
 import versola.edge.revocation.TokenRevocationService
@@ -350,13 +352,22 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val loginPath = Path.decode("/complete")
+  private def loginStart(url: URL) = EdgeService.LoginStart(
+    url = url,
+    state = State("s-1"),
+    browserBinding = "secret-1",
+    loginCookiePath = loginPath,
+    loginTtl = 10.minutes,
+  )
+
   private val loginSuite = suite("GET /login/{presetId}")(
     test("redirects to the SSO authorize URL on a known preset") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/preset-1").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -364,12 +375,30 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String], None)),
       )
     },
+    test("binds the login to the browser with an EDGE_LOGIN_<state> cookie that Lax-scopes to /complete") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/login/preset-1").toOption.get),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
+        )
+        cookie = response.headers.getAll(Header.SetCookie).map(_.value).find(_.name == "EDGE_LOGIN_s-1")
+      yield assertTrue(
+        cookie.map(_.content).contains("secret-1"),
+        cookie.exists(_.isHttpOnly),
+        cookie.exists(_.isSecure),
+        cookie.flatMap(_.sameSite).contains(Cookie.SameSite.Lax),
+        cookie.flatMap(_.path).contains(loginPath),
+        cookie.flatMap(_.maxAge).contains(10.minutes),
+        cookie.flatMap(_.domain).isEmpty,
+      )
+    },
     test("passes whitelisted query params to authorize") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/preset-1?acr_values=mfa&prompt=login&unknown=ignored").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -381,7 +410,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/preset-1?acr_values=sensitive&return_to=%2Fresources%2Fauth%2Fsettings").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -488,16 +517,45 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         postLoginRedirectUri = RedirectUri("https://app.example/home"),
         cookieDomain = Some("app.example"),
         cookiePath = Some("/"),
+        loginCookiePath = loginPath,
       )
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/complete?code=c-1&state=s-1").toOption.get),
           (s, _) => s.complete.succeedsWith(completion),
         )
+        cookies = response.headers.getAll(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url.encode).contains("https://app.example/home"),
-        response.header(Header.SetCookie).map(_.value.name).contains(EdgeSessionCookie.name),
+        cookies.exists(_.name == EdgeSessionCookie.name),
+        cookies.exists(cookie => cookie.name == "EDGE_LOGIN_s-1" && cookie.maxAge.contains(Duration.Zero) && cookie.path.contains(loginPath)),
+      )
+    },
+    test("hands the EDGE_LOGIN_<state> cookie of the request to complete") {
+      val completion = EdgeService.LoginCompletion(
+        presetId = PresetId("preset-default"),
+        accessToken = AccessToken("header.payload.sig"),
+        cookieTtl = 1.hour,
+        postLoginRedirectUri = RedirectUri("https://app.example/home"),
+        cookieDomain = None,
+        cookiePath = None,
+        loginCookiePath = loginPath,
+      )
+      def complete(request: Request) =
+        run(request, (s, _) => s.complete.succeedsWith(completion)).map(_._2.complete.calls)
+      val url = URL.decode("/complete?code=c-1&state=s-1").toOption.get
+      def withCookie(name: String, value: String) =
+        Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(name, value))))
+      for
+        own <- complete(withCookie("EDGE_LOGIN_s-1", "secret-1"))
+        // a secret held for another login of the same browser is not this login's
+        other <- complete(withCookie("EDGE_LOGIN_s-2", "secret-2"))
+        none <- complete(Request.get(url))
+      yield assertTrue(
+        own == List((Code("c-1"), State("s-1"), Some("secret-1"))),
+        other == List((Code("c-1"), State("s-1"), None)),
+        none == List((Code("c-1"), State("s-1"), None)),
       )
     },
     test("returns 400 when the auth conversation is unknown") {
@@ -534,7 +592,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(response.status == Status.InternalServerError)
     },
-    test("redirects OAuth errors to the post-login URL without setting a session cookie") {
+    test("redirects OAuth errors to the post-login URL, clearing the login cookie and setting no session cookie") {
       val redirectUrl = URL.decode("https://app.example/home?from=login").toOption.get.addQueryParams(
         List(
           "error" -> "access_denied",
@@ -547,13 +605,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Request.get(URL.decode(
             "/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1",
           ).toOption.get),
-          (s, _) => s.completeError.succeedsWith(redirectUrl),
+          (s, _) => s.completeError.succeedsWith(EdgeService.LoginErrorRedirect(redirectUrl, loginPath)),
         )
         location = response.header(Header.Location).map(_.url)
+        cookies = response.headers.getAll(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.SeeOther,
         location.contains(redirectUrl),
-        response.header(Header.SetCookie).isEmpty,
+        cookies.map(_.name) == List("EDGE_LOGIN_s-1"),
+        cookies.forall(_.maxAge.contains(Duration.Zero)),
         service.complete.calls.isEmpty,
         service.completeError.calls.size == 1,
       )

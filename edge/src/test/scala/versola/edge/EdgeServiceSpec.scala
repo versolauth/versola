@@ -6,12 +6,12 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.edge.EdgeServiceSpec.Fixtures
-import versola.edge.login.{LoginRecord, LoginRepository}
+import versola.edge.login.{BrowserBinding, LoginRecord, LoginRepository}
 import versola.edge.model.*
 import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
-import versola.util.{EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -62,6 +62,15 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val stateBytes = Array.fill[Byte](16)(9)
 
     val state = State.fromBytes(stateBytes)
+
+    val bindingBytes = Array.fill[Byte](16)(5)
+    val binding = Base64.urlEncode(bindingBytes)
+    val boundRecord = LoginRecord(
+      codeVerifier = CodeVerifier.fromBytes(codeVerifierBytes),
+      presetId = presetId,
+      state = state,
+      browserBindingHash = Some(BrowserBinding.hash(binding)),
+    )
 
     val tokens = TokenResponse(
       accessToken = AccessToken("header.payload.sig"),
@@ -260,23 +269,28 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withClients(Fixtures.client)
         _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
           case 1 => ZIO.succeed(Fixtures.codeVerifierBytes)
-          case _ => ZIO.succeed(Fixtures.stateBytes)
+          case 2 => ZIO.succeed(Fixtures.stateBytes)
+          case _ => ZIO.succeed(Fixtures.bindingBytes)
         _ <- env.loginRepository.create.succeedsWith(())
         _ <- env.ssoClient.authorizeUri.succeedsWith(Fixtures.authorizeUrl)
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        url <- service.authorize(Fixtures.presetId)
+        start <- service.authorize(Fixtures.presetId)
         createCalls = env.loginRepository.create.calls
         authorizeCalls = env.ssoClient.authorizeUri.calls
       yield assertTrue(
-        url == Fixtures.authorizeUrl,
-        createCalls.size == 1,
-        createCalls.head._1 == LoginRecord(
-          codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
-          presetId = Fixtures.presetId,
+        start == EdgeService.LoginStart(
+          url = Fixtures.authorizeUrl,
           state = Fixtures.state,
+          browserBinding = Fixtures.binding,
+          loginCookiePath = Path.decode("/complete"),
+          loginTtl = 10.minutes,
         ),
+        createCalls.size == 1,
+        // only the hash of the browser's secret is stored, never the secret
+        createCalls.head._1 == Fixtures.boundRecord,
+        !createCalls.head._1.browserBindingHash.contains(Fixtures.binding),
         createCalls.head._2 == 10.minutes,
         authorizeCalls.size == 1,
         authorizeCalls.head._1 == Fixtures.preset,
@@ -392,10 +406,78 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
           )
         yield assertTrue(
-          redirectUrl == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
+          redirectUrl.url == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
             List("error" -> "access_denied", "error_description" -> "User cancelled"),
           ),
           env.loginRepository.deleteByState.calls == List(Fixtures.state),
+        )
+      },
+      test("completeError refuses a browser that does not hold the login's secret, and keeps the login") {
+        def attempt(presented: Option[String]) =
+          val env = new Env
+          for
+            _ <- env.withPresets(Fixtures.preset)
+            _ <- env.loginRepository.findByState.succeedsWith(Some(Fixtures.boundRecord))
+            _ <- env.loginRepository.deleteByState.succeedsWith(())
+            security <- ZIO.service[SecurityService]
+            client <- ZIO.service[Client]
+            result <- env.buildService(client, security)
+              .completeError(Fixtures.state, "access_denied", None, None, presented).either
+          yield (result, env.loginRepository.deleteByState.calls)
+        for
+          missing <- attempt(None)
+          wrong <- attempt(Some("not-the-secret"))
+          own <- attempt(Some(Fixtures.binding))
+        yield assertTrue(
+          missing == (Left(AuthConversationNotFound()), Nil),
+          wrong == (Left(AuthConversationNotFound()), Nil),
+          own._1.isRight,
+          own._2 == List(Fixtures.state),
+        )
+      },
+      test("complete refuses a browser that does not hold the login's secret, without spending the code or the login") {
+        def attempt(presented: Option[String]) =
+          val env = new Env
+          for
+            _ <- env.withPresets(Fixtures.preset)
+            _ <- env.withClients(Fixtures.client)
+            _ <- env.loginRepository.findByState.succeedsWith(Some(Fixtures.boundRecord))
+            _ <- env.loginRepository.deleteByState.succeedsWith(())
+            security <- ZIO.service[SecurityService]
+            client <- ZIO.service[Client]
+            result <- env.buildService(client, security).complete(code, Fixtures.state, presented).either
+          yield (result, env.loginRepository.deleteByState.calls, env.ssoClient.exchangeAuthorizationCode.calls)
+        for
+          missing <- attempt(None)
+          wrong <- attempt(Some("not-the-secret"))
+        yield assertTrue(
+          missing == (Left(AuthConversationNotFound()), Nil, Nil),
+          wrong == (Left(AuthConversationNotFound()), Nil, Nil),
+        )
+      },
+      test("complete finishes a login for the browser that holds its secret, and for a login begun before the binding existed") {
+        def attempt(record: LoginRecord, presented: Option[String]) =
+          val env = new Env
+          for
+            _ <- env.withPresets(Fixtures.preset)
+            _ <- env.withClients(Fixtures.client)
+            _ <- env.loginRepository.findByState.succeedsWith(Some(record))
+            _ <- env.loginRepository.deleteByState.succeedsWith(())
+            _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+            _ <- env.sessionRepository.create.succeedsWith(())
+            _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(7.toByte))
+            security <- ZIO.service[SecurityService]
+            client <- ZIO.service[Client]
+            accessToken <- env.signToken()
+            _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(Fixtures.tokens.copy(accessToken = accessToken))
+            completion <- env.buildService(client, security).complete(code, Fixtures.state, presented)
+          yield (completion.loginCookiePath, env.loginRepository.deleteByState.calls)
+        for
+          bound <- attempt(Fixtures.boundRecord, Some(Fixtures.binding))
+          legacy <- attempt(Fixtures.boundRecord.copy(browserBindingHash = None), None)
+        yield assertTrue(
+          bound == (Path.decode("/complete"), List(Fixtures.state)),
+          legacy == (Path.decode("/complete"), List(Fixtures.state)),
         )
       },
       test("returns an OAuth error to the page that asked for the login, on the preset's origin") {
@@ -418,7 +500,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
           )
         yield assertTrue(
-          redirectUrl.encode == "https://app.example/resources/auth/settings?error=unmet_authentication_requirements",
+          redirectUrl.url.encode == "https://app.example/resources/auth/settings?error=unmet_authentication_requirements",
         )
       },
       test("completeError fails with AuthConversationNotFound when the login record is absent") {
@@ -467,7 +549,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Some("https://idp.example/errors/access_denied"),
           )
         yield assertTrue(
-          redirectUrl == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
+          redirectUrl.url == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
             List("error" -> "access_denied", "error_uri" -> "https://idp.example/errors/access_denied"),
           ),
         )
