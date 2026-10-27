@@ -52,7 +52,41 @@ object DeliverySettingsRecordSpec extends UnitSpecBase:
     ("an empty body key", otpProvider.copy(body = Map("" -> "{{phone}}")), "otpProvider.body"),
   )
 
+  private val sameServerCases: List[(String, SmtpDeliverySettings, Boolean)] = List(
+    ("the same server and account", smtp.copy(subject = "Another subject", from = "other@example.com"), true),
+    ("the same host written in another case", smtp.copy(host = "SMTP.Example.com"), true),
+    ("another host", smtp.copy(host = "smtp.attacker.example"), false),
+    ("another port", smtp.copy(port = 2525), false),
+    ("another account", smtp.copy(username = "someone-else"), false),
+    ("STARTTLS switched off, which would send the password in the clear", smtp.copy(startTls = false), false),
+  )
+
+  private val sameEndpointCases: List[(String, OtpProviderDeliverySettings, Boolean)] = List(
+    ("the same origin and account, another path", otpProvider.copy(url = "https://sms.example.com/v2/send"), true),
+    ("the same origin written with its default port", otpProvider.copy(url = "https://SMS.example.com:443/send"), true),
+    ("another host", otpProvider.copy(url = "https://sms.attacker.example/send"), false),
+    ("another scheme", otpProvider.copy(url = "http://sms.example.com/send"), false),
+    ("another port", otpProvider.copy(url = "https://sms.example.com:8443/send"), false),
+    ("another account", otpProvider.copy(username = Some("someone-else")), false),
+    ("no account", otpProvider.copy(username = None), false),
+    ("an address that is not a URL", otpProvider.copy(url = "not a url"), false),
+  )
+
   def spec = suite("DeliverySettingsRecord")(
+    suite("SmtpDeliverySettings.sameServer")(
+      sameServerCases.map { (what, other, same) =>
+        test(s"is ${if same then "" else "not "}the same for $what") {
+          assertTrue(SmtpDeliverySettings.sameServer(smtp, other) == same)
+        }
+      }*,
+    ),
+    suite("OtpProviderDeliverySettings.sameEndpoint")(
+      sameEndpointCases.map { (what, other, same) =>
+        test(s"is ${if same then "" else "not "}the same for $what") {
+          assertTrue(OtpProviderDeliverySettings.sameEndpoint(otpProvider, other) == same)
+        }
+      }*,
+    ),
     suite("SmtpDeliverySettings.validate")(
       (test("accepts a complete block") {
         assertTrue(SmtpDeliverySettings.validate(smtp).isEmpty)

@@ -2,6 +2,7 @@ package versola.central.configuration.delivery
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.{DatabaseSpecBase, Secret}
+import zio.ZIO
 import zio.test.*
 
 /** Conformance suite for any [[DeliverySettingsRepository]] implementation; see
@@ -45,6 +46,76 @@ trait DeliverySettingsRepositorySpec extends DatabaseSpecBase[DeliverySettingsRe
 
   override def testCases(env: DeliverySettingsRepositorySpec.Env) =
     List(
+      test("a kept password is written as none when the SMTP server, port, account or STARTTLS changes") {
+        val keep = DeliverySettingsRepository.StoredPassword.Keep
+        val others = List(
+          smtp.copy(host = "smtp.attacker.example"),
+          smtp.copy(port = 2525),
+          smtp.copy(username = "someone-else"),
+          smtp.copy(startTls = false),
+        )
+        for
+          results <- ZIO.foreach(others): other =>
+            for
+              _ <- env.repository.upsert(both)
+              _ <- env.repository.upsert(both.copy(smtp = Some(other), smtpPassword = keep))
+              record <- env.repository.getAll
+            yield bytes(record)._1
+          sameServer <- (env.repository.upsert(both) *> env.repository.upsert(both.copy(
+            smtp = Some(smtp.copy(subject = "New")),
+            smtpPassword = keep,
+          )) *> env.repository.getAll)
+        yield assertTrue(results.forall(_.isEmpty), bytes(sameServer)._1.contains(smtpPassword.toSeq))
+      },
+      test(
+        "a kept password is written as none when the SMS address moves to another host, scheme or port or the account changes, and kept for another path",
+      ) {
+        val keep = DeliverySettingsRepository.StoredPassword.Keep
+        val others = List(
+          otpProvider.copy(url = "https://sms.attacker.example/send"),
+          otpProvider.copy(url = "http://sms.example.com/send"),
+          otpProvider.copy(url = "https://sms.example.com:8443/send"),
+          otpProvider.copy(username = Some("someone-else")),
+        )
+        for
+          results <- ZIO.foreach(others): other =>
+            for
+              _ <- env.repository.upsert(both)
+              _ <- env.repository.upsert(both.copy(otpProvider = Some(other), otpProviderPassword = keep))
+              record <- env.repository.getAll
+            yield bytes(record)._2
+          samePlace <- (env.repository.upsert(both) *> env.repository.upsert(both.copy(
+            otpProvider = Some(otpProvider.copy(url = "https://sms.example.com/v2/send")),
+            otpProviderPassword = keep,
+          )) *> env.repository.getAll)
+        yield assertTrue(results.forall(_.isEmpty), bytes(samePlace)._2.contains(otpProviderPassword.toSeq))
+      },
+      test("two saves at once never leave the old password with the new server") {
+        val keep = DeliverySettingsRepository.StoredPassword.Keep
+        val moved = both.copy(smtp = Some(smtp.copy(host = "smtp.attacker.example")), smtpPassword = keep)
+        val renamed = both.copy(smtp = Some(smtp.copy(subject = "New subject")), smtpPassword = keep)
+        for
+          _ <- ZIO.foreachDiscard(1 to 20): _ =>
+            for
+              _ <- env.repository.upsert(both)
+              _ <- env.repository.upsert(moved) <&> env.repository.upsert(renamed)
+              record <- env.repository.getAll
+              _ <- ZIO.when(record.flatMap(_.smtp).exists(_.host == "smtp.attacker.example") && record.flatMap(_.smtpPassword).isDefined)(
+                ZIO.fail(AssertionError("the saved password went to the new server")),
+              )
+            yield ()
+        yield assertCompletes
+      },
+      test("changing one block's server leaves the other block's kept password alone") {
+        val keep = DeliverySettingsRepository.StoredPassword.Keep
+        for
+          _ <- env.repository.upsert(both)
+          _ <- env.repository.upsert(
+            both.copy(smtp = Some(smtp.copy(host = "smtp.attacker.example")), smtpPassword = keep, otpProviderPassword = keep),
+          )
+          record <- env.repository.getAll
+        yield assertTrue(bytes(record) == (None, Some(otpProviderPassword.toSeq)))
+      },
       test("getAll is None until something is stored") {
         for result <- env.repository.getAll
         yield assertTrue(result.isEmpty)

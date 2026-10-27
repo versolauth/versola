@@ -124,6 +124,117 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           written = env.repository.upsert.calls.head
         yield assertTrue(written.otpProvider.isEmpty, written.otpProviderPassword == DeliverySettingsRepository.StoredPassword.Clear)
       },
+      test("serves its own write at once, without waiting for the change notification") {
+        val env = Env()
+        val saved = DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = None, otpProvider = None, otpProviderPassword = None)
+        for
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          before <- service.getSettings
+          _ <- env.repository.getAll.succeedsWith(Some(saved))
+          _ <- service.upsertSettings(update(smtp = Some(smtp)))
+          after <- service.getSettings
+        yield assertTrue(before.isEmpty, after.flatMap(_.smtp) == Some(smtp))
+      },
+      test("still succeeds when reading the record back fails after the write") {
+        for
+          reads <- Ref.make(0)
+          writes <- Ref.make(0)
+          // The first read is the cache's own load, the second is the check on a kept password, the third the read-back.
+          repository = new DeliverySettingsRepository:
+            override def getAll: Task[Option[DeliverySettingsRecord]] =
+              reads.updateAndGet(_ + 1).flatMap(n => if n > 2 then ZIO.fail(RuntimeException("database unreachable")) else ZIO.none)
+            override def upsert(write: DeliverySettingsRepository.Write): Task[Unit] = writes.update(_ + 1)
+            override def delete(): Task[Unit] = ZIO.unit
+          service <- ZIO.service[DeliverySettingsService].provideSome[Scope](
+            ZLayer.succeed[DeliverySettingsRepository](repository),
+            securityLayer,
+            ZLayer.succeed(config),
+            DeliverySettingsService.live,
+          )
+          result <- service.upsertSettings(update(smtp = Some(smtp)))
+          written <- writes.get
+        yield assertTrue(result == Right(()), written == 1)
+      },
+      test("refuses to keep a saved password when the SMTP server, port or account changes, and writes nothing") {
+        val env = Env()
+        for
+          security <- ZIO.service[SecurityService].provideLayer(securityLayer)
+          saved <- encrypted(security, plaintext)
+          _ <- env.repository.getAll.succeedsWith(Some(DeliverySettingsRecord(Some(smtp), Some(saved), None, None)))
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          results <- ZIO.foreach(List(
+            smtp.copy(host = "smtp.attacker.example"),
+            smtp.copy(port = 2525),
+            smtp.copy(username = "someone-else"),
+          ))(block => service.upsertSettings(update(smtp = Some(block))))
+        yield assertTrue(
+          results.map(
+            _.left.map(_.message),
+          ) == List.fill(3)(Left("smtp.password must be entered again when the server address, port or username changes")),
+          env.repository.upsert.calls.isEmpty,
+        )
+      },
+      test("keeps a saved SMTP password for the same server, and takes a new or an empty one for another") {
+        val env = Env()
+        for
+          security <- ZIO.service[SecurityService].provideLayer(securityLayer)
+          saved <- encrypted(security, plaintext)
+          _ <- env.repository.getAll.succeedsWith(Some(DeliverySettingsRecord(Some(smtp), Some(saved), None, None)))
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          sameServer <- service.upsertSettings(update(smtp = Some(smtp.copy(subject = "New subject"))))
+          withNewPassword <- service.upsertSettings(update(smtp = Some(smtp.copy(host = "smtp.other.example")), smtpPassword = Some("new")))
+          withClearedPassword <- service.upsertSettings(update(smtp = Some(smtp.copy(host = "smtp.other.example")), smtpPassword = Some("")))
+        yield assertTrue(sameServer.isRight, withNewPassword.isRight, withClearedPassword.isRight, env.repository.upsert.calls.length == 3)
+      },
+      test("has nothing to protect when no password is saved, so another server is accepted without one") {
+        val env = Env()
+        for
+          _ <- env.repository.getAll.succeedsWith(Some(DeliverySettingsRecord(Some(smtp), None, Some(otpProvider), None)))
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          result <- service.upsertSettings(update(
+            smtp = Some(smtp.copy(host = "smtp.other.example")),
+            otpProvider = Some(otpProvider.copy(url = "https://sms.other.example/send")),
+          ))
+        yield assertTrue(result.isRight)
+      },
+      test("refuses to keep a saved SMS password when the address changes to another host or account, but not for another path") {
+        val env = Env()
+        for
+          security <- ZIO.service[SecurityService].provideLayer(securityLayer)
+          saved <- encrypted(security, plaintext)
+          _ <- env.repository.getAll.succeedsWith(Some(DeliverySettingsRecord(None, None, Some(otpProvider), Some(saved))))
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          otherHost <- service.upsertSettings(update(otpProvider = Some(otpProvider.copy(url = "https://sms.attacker.example/send"))))
+          otherAccount <- service.upsertSettings(update(otpProvider = Some(otpProvider.copy(username = Some("someone-else")))))
+          otherPath <- service.upsertSettings(update(otpProvider = Some(otpProvider.copy(url = "https://sms.example.com/v2/send"))))
+        yield assertTrue(
+          otherHost.left.map(_.message.takeWhile(_ != ' ')) == Left("otpProvider.password"),
+          otherAccount.left.map(_.message.takeWhile(_ != ' ')) == Left("otpProvider.password"),
+          otherPath.isRight,
+          env.repository.upsert.calls.length == 1,
+        )
+      },
+      test("refuses to keep a saved password when STARTTLS is switched off, and writes nothing") {
+        val env = Env()
+        for
+          security <- ZIO.service[SecurityService].provideLayer(securityLayer)
+          saved <- encrypted(security, plaintext)
+          _ <- env.repository.getAll.succeedsWith(Some(DeliverySettingsRecord(Some(smtp), Some(saved), None, None)))
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          result <- service.upsertSettings(update(smtp = Some(smtp.copy(startTls = false))))
+        yield assertTrue(result.isLeft, env.repository.upsert.calls.isEmpty)
+      },
+      test("does not print the passwords of an update") {
+        val printed = update(smtp = Some(smtp), smtpPassword = Some(plaintext), otpProviderPassword = Some("sms-s3cret")).toString
+        assertTrue(!printed.contains(plaintext), !printed.contains("sms-s3cret"))
+      },
       test("refuses an invalid block and writes nothing") {
         val env = Env()
         val invalid = List(
@@ -150,6 +261,19 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           (service, _) <- env.service
           _ <- service.deleteSettings()
         yield assertTrue((() => env.repository.delete()).calls.length == 1)
+      },
+      test("serves the empty record at once after the removal") {
+        val env = Env()
+        val saved = DeliverySettingsRecord(smtp = Some(smtp), smtpPassword = None, otpProvider = None, otpProviderPassword = None)
+        for
+          _ <- env.repository.getAll.succeedsWith(Some(saved))
+          _ <- (() => env.repository.delete()).succeedsWith(())
+          (service, _) <- env.service
+          before <- service.getSettings
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- service.deleteSettings()
+          after <- service.getSettings
+        yield assertTrue(before.flatMap(_.smtp) == Some(smtp), after.isEmpty)
       },
     ),
     suite("getSettings")(

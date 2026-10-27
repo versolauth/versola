@@ -1871,12 +1871,19 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
   // ── Build config files ────────────────────────────────────────────────────────
 
+  // Outside production auth sends no code or temporary password at all (`env` is not `prod`). The local stack is the one
+  // target that is never anybody's real deployment and that tests delivery end to end (the e2e job stages it), so it
+  // alone turns delivery on: through the SMTP server or SMS provider configured below or saved in the console, and doing
+  // nothing, with a warning, while there is none. No other target gets the key.
+  val deliverOutsideProdBlock =
+    if isLocal then "deliver-outside-prod = true\n\n" else ""
+
   val authConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
-       |# otel-exporter = "http://localhost:4317"
+       |${deliverOutsideProdBlock}# otel-exporter = "http://localhost:4317"
        |
        |bootstrap {
        |  login = "$bootstrapLogin"
