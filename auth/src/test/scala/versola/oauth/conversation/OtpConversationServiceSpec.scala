@@ -1,6 +1,16 @@
 package versola.oauth.conversation
 
-import versola.antifraud.{AntifraudAction, AntifraudOutcome, Decision, DecisionAction, RecordingAntifraudEvents}
+import versola.antifraud.{
+  AntifraudAction,
+  AntifraudOutcome,
+  Challenge,
+  ChallengeResult,
+  ChallengeSubject,
+  ChallengeVerifier,
+  Decision,
+  DecisionAction,
+  RecordingAntifraudEvents,
+}
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
@@ -53,7 +63,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeChallengeMethod = CodeChallengeMethod.S256
 
-  class Env(smsAllowed: Boolean = true, afterRequested: zio.UIO[Unit] = ZIO.unit, decision: Decision = Decision.allow, fakeDelay: zio.Duration = zio.Duration.Zero):
+  class Env(
+      smsAllowed: Boolean = true,
+      afterRequested: zio.UIO[Unit] = ZIO.unit,
+      decision: Decision = Decision.allow,
+      fakeDelay: zio.Duration = zio.Duration.Zero,
+      val challengeVerifier: ChallengeVerifier = ChallengeVerifier.off,
+  ):
     val otpService = stub[OtpService]
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
@@ -95,6 +111,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       userService,
       consentService,
       antifraud,
+      challengeVerifier,
     )
 
   val initialConversation = ConversationRecord(
@@ -141,7 +158,170 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   )
   val submittedOtp = realOtp.copy(timesRequested = 1)
 
+  /** Issues one challenge whatever the score (unless `issues` is false, as when it fails), and answers every solution with `verdict`. */
+  class FakeVerifier(verdict: ChallengeResult, limit: Int = 3, issues: Boolean = true) extends ChallengeVerifier:
+    val challenge: Challenge = Challenge(kind = "pow", token = "issued-token", level = 17, params = Map("seed" -> "s", "difficulty" -> "17"))
+    override def issue(subject: ChallengeSubject, score: Int, attempts: Int): zio.UIO[Option[Challenge]] = ZIO.succeed(Option.when(issues)(challenge))
+    override def verify(subject: ChallengeSubject, token: String, solution: String): zio.UIO[ChallengeResult] = ZIO.succeed(verdict)
+    override def enabled: Boolean = true
+    override def maxAttempts: Int = limit
+
+  private val challenging = Decision(DecisionAction.Challenge, 61, List("phone_velocity"))
+  private val phone = Right(Phone("+491512345678"))
+  private val answered = ProofInput.Answered("issued-token", "42")
+
+  /** What a request for a code came to, for a decision and a verifier: the result, the steps told to antifraud, and the env. */
+  private def request(env: Env, proof: ProofInput) =
+    for
+      _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+      _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+      _ <- env.configService.find.succeedsWith(None)
+      _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+      _ <- env.conversationRepository.overwrite.succeedsWith(true)
+      _ <- env.otpService.sendOtp.succeedsWith(())
+      result <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, proof)
+    yield result
+
   val spec = suite("OtpConversationService")(
+    suite("proof of work")(
+      test("a Challenge decision asks a client that can answer for a proof, sending nothing, holding nothing and writing nothing") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          result <- request(env, ProofInput.Asked)
+          steps = env.antifraud.steps
+        yield assertTrue(
+          result == ConversationResult.Challenged(env.challengeVerifier.asInstanceOf[FakeVerifier].challenge),
+          steps.map(_.outcome) == List(AntifraudOutcome.challenged),
+          steps.flatMap(_.decision) == List(challenging),
+          env.antifraud.smsAsked.isEmpty,
+          env.antifraud.holds == 0,
+          env.conversationRepository.overwrite.calls.isEmpty,
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("a Challenge decision for a request that cannot answer is refused like a blocked one, and never sent") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          result <- request(env, ProofInput.NoScript)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.blocked),
+          env.otpService.sendOtp.calls.isEmpty,
+          env.antifraud.smsAsked.isEmpty,
+        )
+      },
+      test("with the verifier off a Challenge stays the pause it was: held and sent, whoever asks") {
+        val env = Env(decision = challenging)
+        for
+          _ <- request(env, ProofInput.NoScript)
+        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+      },
+      test("a verifier that fails to make a challenge fails open the same way") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed, issues = false))
+        for
+          _ <- request(env, ProofInput.Asked)
+        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+      },
+      test("a right solution sends the code once, without the pause, judging the request again but not counting it again") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          result <- request(env, answered)
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.RenderStep],
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenge_passed, AntifraudOutcome.sent),
+          env.antifraud.decisions == List(true),
+          env.antifraud.holds == 0,
+          env.otpService.sendOtp.calls.size == 1,
+        )
+      },
+      test("a solution does not override a block: the request is judged again, and Block still refuses it") {
+        val env = Env(decision = Decision(DecisionAction.Block, 90, List("deny_list")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          result <- request(env, answered)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.blocked),
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("a solution to a challenge the request no longer needs sends as any request would") {
+        val env = Env(challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          _ <- request(env, answered)
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent), env.antifraud.holds == 0)
+      },
+      test("a request with a garbage proof is counted like any other, and the proof does not lower its decision") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Failed(1)))
+        for
+          result <- request(env, ProofInput.Answered("junk", "1"))
+        yield assertTrue(
+          env.antifraud.decisions == List(false),
+          result.isInstanceOf[ConversationResult.Challenged],
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("a challenge that came of the engine failing does not lock out a request that cannot answer: held and sent as before") {
+        val env =
+          Env(decision = Decision(DecisionAction.Challenge, 0, List("antifraud_error")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          _ <- request(env, ProofInput.NoScript)
+        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+      },
+      test("a real score is refused for a request that cannot answer, even while the engine is failing elsewhere") {
+        val env =
+          Env(decision = Decision(DecisionAction.Challenge, 70, List("phone_velocity")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          result <- request(env, ProofInput.NoScript)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied), env.otpService.sendOtp.calls.isEmpty)
+      },
+      test("two callers racing with the same solved token send one code, record one send, and the loser gives its charge back") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
+        for
+          taken <- Ref.make(false)
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.find.succeedsWith(None)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          // The versioned write: whoever gets there first wins, the other finds the version moved on.
+          _ <- env.conversationRepository.overwrite.returnsZIO(_ => taken.getAndSet(true).map(!_))
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          results <- ZIO.collectAllPar(List.fill(2)(env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, answered)))
+        yield assertTrue(
+          results.count(_.isInstanceOf[ConversationResult.RenderStep]) == 1,
+          results.contains(ConversationResult.WriteConflict),
+          env.otpService.sendOtp.calls.size == 1,
+          env.antifraud.steps.count(_.outcome == AntifraudOutcome.sent) == 1,
+          env.antifraud.smsAsked.size == 2,
+          env.antifraud.smsReleased == 1,
+        )
+      },
+      test("a wrong solution is recorded and the challenge put again, and sends nothing") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Failed(1)))
+        for
+          result <- request(env, answered)
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Challenged],
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenge_failed, AntifraudOutcome.challenged),
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("the wrong solution that reaches the limit refuses the request") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Failed(3), limit = 3))
+        for
+          result <- request(env, answered)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenge_failed, AntifraudOutcome.blocked),
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("a solution that came too late is a new challenge, not a failure") {
+        val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Expired))
+        for
+          result <- request(env, answered)
+        yield assertTrue(result.isInstanceOf[ConversationResult.Challenged], env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenged))
+      },
+    ),
     suite("antifraud decision")(
       test("a Block decision refuses the request, records it as blocked with the decision, and sends nothing") {
         val blocked = Decision(DecisionAction.Block, 12, List("deny_list"))
@@ -150,7 +330,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0)
+          result <-
+            env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
           steps = env.antifraud.steps
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
@@ -168,7 +349,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0)
+          result <-
+            env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
           steps = env.antifraud.steps
         yield assertTrue(
           result.isInstanceOf[ConversationResult.RenderStep],
@@ -187,7 +369,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             _ <- env.otpService.prepareOtp.succeedsWith(otp)
             _ <- env.conversationRepository.overwrite.succeedsWith(true)
             _ <- env.otpService.sendOtp.succeedsWith(())
-            fiber <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0).fork
+            fiber <- env.service.prepareInitialOtp(
+              authId,
+              initialConversation,
+              Right(Phone("+491512345678")),
+              factorIndex = 0,
+              proof = ProofInput.NoScript,
+            ).fork
             _ <- TestClock.adjust(2.seconds)
             early <- fiber.poll
             _ <- TestClock.adjust(2.seconds)
@@ -220,11 +408,19 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          _ <- env.service.prepareInitialOtp(authId, conversation, Left(email), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, conversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           steps = env.antifraud.steps
         yield assertTrue(
           steps == List(
-            RecordingAntifraudEvents.Step(AntifraudAction.otp_request, authId, clientId, Some("Mozilla/5.0"), Left(email), AntifraudOutcome.sent, None),
+            RecordingAntifraudEvents.Step(
+              AntifraudAction.otp_request,
+              authId,
+              clientId,
+              Some("Mozilla/5.0"),
+              Left(email),
+              AntifraudOutcome.sent,
+              None,
+            ),
           ),
         )
       },
@@ -236,7 +432,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           outcomes = env.antifraud.steps.map(_.outcome)
         yield assertTrue(outcomes == List(AntifraudOutcome.suppressed))
       },
@@ -248,7 +444,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
               _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
               _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Banned)
               _ <- env.conversationRepository.overwrite.succeedsWith(true)
-              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
             yield env.antifraud.steps.map(_.outcome)
           }
           limited <- {
@@ -257,7 +453,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
               _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
               _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.RateLimited(30L))
               _ <- env.conversationRepository.overwrite.succeedsWith(true)
-              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
             yield env.antifraud.steps.map(_.outcome)
           }
           submitBan <- {
@@ -265,7 +461,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             for
               _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
               _ <- env.conversationRepository.overwrite.succeedsWith(true)
-              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+              _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
             yield env.antifraud.steps.map(_.outcome)
           }
         yield assertTrue(
@@ -282,7 +478,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.failsWith(RuntimeException("OTP provider responded with 503"))
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0).exit
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript).exit
           outcomes = env.antifraud.steps.map(_.outcome)
         yield assertTrue(result.isFailure, outcomes == List(AntifraudOutcome.provider_error))
       },
@@ -294,7 +490,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
             _ <- env.otpService.prepareOtp.succeedsWith(otp)
             _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            result <- env.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+            result <- env.service.prepareInitialOtp(
+              authId,
+              initialConversation,
+              Right(versola.util.Phone("+4915123456789")),
+              factorIndex = 0,
+              proof = ProofInput.NoScript,
+            )
           yield (result, env.otpService.sendOtp.calls.isEmpty, env.antifraud.steps.map(_.outcome), env.antifraud.smsAsked)
         for
           real <- refused(realOtp)
@@ -302,7 +504,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           real._1 == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           fake._1 == real._1,
-          real._2, fake._2,
+          real._2,
+          fake._2,
           real._3 == List(AntifraudOutcome.throttled),
           fake._3 == real._3,
           real._4 == List(true),
@@ -318,12 +521,24 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- failing.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- failing.conversationRepository.overwrite.succeedsWith(true)
           _ <- failing.otpService.sendOtp.failsWith(RuntimeException("503"))
-          _ <- failing.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0).exit
+          _ <- failing.service.prepareInitialOtp(
+            authId,
+            initialConversation,
+            Right(versola.util.Phone("+4915123456789")),
+            factorIndex = 0,
+            proof = ProofInput.NoScript,
+          ).exit
           _ <- lost.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- lost.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- lost.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- lost.conversationRepository.overwrite.succeedsWith(false)
-          _ <- lost.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+          _ <- lost.service.prepareInitialOtp(
+            authId,
+            initialConversation,
+            Right(versola.util.Phone("+4915123456789")),
+            factorIndex = 0,
+            proof = ProofInput.NoScript,
+          )
         yield assertTrue(failing.antifraud.smsReleased == 1, lost.antifraud.smsReleased == 1)
       },
       test("a code that was charged is given back when the write fails or the request is interrupted, not only on the expected branches") {
@@ -334,13 +549,19 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- broken.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- broken.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- broken.conversationRepository.overwrite.failsWith(RuntimeException("database is down"))
-          _ <- broken.service.prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0).exit
+          _ <- broken.service.prepareInitialOtp(
+            authId,
+            initialConversation,
+            Right(versola.util.Phone("+4915123456789")),
+            factorIndex = 0,
+            proof = ProofInput.NoScript,
+          ).exit
           _ <- interrupted.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- interrupted.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- interrupted.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- interrupted.conversationRepository.overwrite.returnsZIO(_ => ZIO.never)
           fiber <- interrupted.service
-            .prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0)
+            .prepareInitialOtp(authId, initialConversation, Right(versola.util.Phone("+4915123456789")), factorIndex = 0, proof = ProofInput.NoScript)
             .fork
           _ <- Live.live(ZIO.sleep(zio.Duration.fromMillis(200)))
           _ <- fiber.interrupt
@@ -354,7 +575,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
             _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
             _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            fiber <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0).fork
+            fiber <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, proof = ProofInput.NoScript).fork
             _ <- Live.live(ZIO.sleep(zio.Duration.fromMillis(200)))
             _ <- fiber.interrupt
           yield env.antifraud.smsReleased
@@ -375,7 +596,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
         yield assertTrue(env.antifraud.smsAsked.isEmpty, env.antifraud.smsReleased == 0)
       },
       test("a request that lost the write race and sent nothing records nothing") {
@@ -385,7 +606,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
-          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           steps = env.antifraud.steps
         yield assertTrue(steps.isEmpty)
       },
@@ -456,7 +677,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           resultSentAt = result match
             case ConversationResult.RenderStep(otp: ConversationStep.Otp) => otp.lastSentAt
             case _ => None
@@ -496,7 +717,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, resolvedConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, resolvedConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           overwriteCalls = env.conversationRepository.overwrite.calls
         yield assertTrue(
           result.isInstanceOf[ConversationResult.RenderStep],
@@ -515,7 +736,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           overwriteCalls = env.conversationRepository.overwrite.calls
         yield assertTrue(
           result.isInstanceOf[ConversationResult.RenderStep],
@@ -540,7 +761,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.returnsZIO: _ =>
             trace.update(_ :+ "sendOtp")
-          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
           order <- trace.get
         yield assertTrue(
           order == List("tryAcquire", "sendOtp"),
@@ -556,7 +777,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.otpService.sendOtp.calls.isEmpty,
@@ -568,7 +789,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.otpService.sendOtp.calls.isEmpty,
@@ -581,7 +802,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             case (_, _, types) if types.contains(ChallengeType.OtpSubmit) => ZIO.succeed(LimitStatus.Banned)
             case _ => ZIO.succeed(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           // A submit ban must not cost the subject a request attempt on top.
@@ -596,7 +817,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
         yield assertTrue(result == ConversationResult.WriteConflict)
       },
     ),

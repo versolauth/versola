@@ -5,6 +5,8 @@ import versola.e2e.support.AntifraudInstance.Decision
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.http.Client
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.util.UUID
@@ -39,7 +41,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   /** An address of its own, so that the line of a request can be told from the others and no count is shared. */
   private def randomIp(): String =
     val bits = UUID.randomUUID().getLeastSignificantBits
-    s"10.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${(bits & 0xff) max 3}"
+    s"10.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${(bits & 0xff).max(3)}"
 
   /** Waits until `probe` answers, which is what an asynchronous effect (a log line, a reload) is awaited with. */
   private def awaited[A](what: String, timeout: Duration = 20.seconds, every: Duration = 200.millis)(probe: Task[Option[A]]): Task[A] =
@@ -107,7 +109,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         onA <- untilRefused(f.a, s, probes)
         (probed, refusal) = fromB
       yield assertTrue(
-        firsts.forall(a => a.answeredWithCodeStep && a.decision.decision == "Allow" && a.decision.rules.isEmpty && a.decision.outcome.contains("sent")),
+        firsts.forall(a =>
+          a.answeredWithCodeStep && a.decision.decision == "Allow" && a.decision.rules.isEmpty && a.decision.outcome.contains("sent"),
+        ),
       ) &&
         assertTrue(refusal.isDefined).label("B must refuse a request within the probes: the count of A reached it") &&
         assertTrue(probed < probes).label("B alone would have refused only after more probes than were made") &&
@@ -131,7 +135,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         other <- attempt(f.a, s, randomIp())
       yield assertTrue(
         within.forall(a => a.answeredWithCodeStep && a.decision.decision == "Allow" && a.decision.outcome.contains("sent")),
-        refused.forall(a => a.refused && a.decision.decision == "Block" && a.decision.rules == List("velocity_ip_1h") && a.decision.outcome.contains("blocked")),
+        refused.forall(a =>
+          a.refused && a.decision.decision == "Block" && a.decision.rules == List("velocity_ip_1h") && a.decision.outcome.contains("blocked"),
+        ),
         other.answeredWithCodeStep,
         other.decision.decision == "Allow",
         other.decision.outcome.contains("sent"),
@@ -247,5 +253,109 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
     },
   )
 
-  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite) @@
+  /** What a page that can answer a challenge sends: `proof_inline`, and on the second turn the token and its solution. */
+  private val Inline = Map("proof_inline" -> "1")
+
+  /** Finds the number the page would: SHA-256 of `seed:number` with `difficulty` leading zero bits. */
+  private def solved(seed: String, difficulty: Int): String =
+    def zeroBits(digest: Array[Byte]): Int =
+      val first = digest.indexWhere(_ != 0)
+      if first < 0 then digest.length * 8 else first * 8 + Integer.numberOfLeadingZeros(digest(first) & 0xff) - 24
+    Iterator.from(0).map(_.toString).find: nonce =>
+      zeroBits(java.security.MessageDigest.getInstance("SHA-256").nn.digest(s"$seed:$nonce".getBytes("UTF-8")).nn) >= difficulty
+    .get
+
+  /** The answer to a request sent as the page does: the JSON of the inline shape. */
+  private def inlineAnswer(result: SubmitResult): Task[Json.Obj] =
+    result.response.body.asString.flatMap(body => ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_)))
+
+  /** The challenge in an inline answer, as the fields that answer it: the token and its solution. */
+  private def answerOf(answer: Json.Obj): Task[Map[String, String]] =
+    ZIO.fromOption(for
+      challenge <- answer.obj("challenge")
+      token <- challenge.str("token")
+      params <- challenge.obj("params")
+      seed <- params.str("seed")
+      difficulty <- params.str("difficulty").flatMap(_.toIntOption)
+    yield Map("proof_token" -> token, "proof_solution" -> solved(seed, difficulty))).orElseFail(RuntimeException(s"no challenge in $answer"))
+
+  /** The decision a request logged on `path` from `ip`, the `nth` (from 0) such request. */
+  private def line(instance: AntifraudInstance, ip: String, path: String, nth: Int): Task[Decision] =
+    awaited(s"the receive-http line of request $nth to $path from $ip")(
+      instance.decisions.map(_.filter(d => d.ip.contains(ip) && d.path == path).drop(nth).headOption),
+    )
+
+  private def challengeSuite = suite("challenge over HTTP")(
+    test("a request that can answer is asked for a proof and sent nothing; the same request with the solution sends the code once") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        ip = randomIp()
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        auth = f.a.auth
+        authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        csrf <- auth.getChallenge(cookie).map(_.csrf)
+        asked <- auth.submitPhoneWith(cookie, s.phone.get, csrf, Some(ip), Inline).flatMap(inlineAnswer)
+        stepAfterAsk <- auth.getChallenge(cookie).map(_.step)
+        askedLine <- line(f.a, ip, Path, 0)
+        answer <- answerOf(asked)
+        answered <- auth.submitPhoneWith(cookie, s.phone.get, csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
+        stepAfterAnswer <- auth.getChallenge(cookie).map(_.step)
+        answeredLine <- line(f.a, ip, Path, 1)
+        // The code is sent: the token is spent, and a resend is asked for a proof again, whatever it presents.
+        replay <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
+      yield assertTrue(
+        asked.obj("challenge").flatMap(_.str("kind")).contains("pow"),
+        asked.str("next").isEmpty,
+        stepAfterAsk.contains(ConversationStep.Credential),
+        askedLine.decision == "Challenge",
+        askedLine.rules.contains("watch_list:ip"),
+        askedLine.outcome.contains("challenged"),
+        answered.str("next").isDefined,
+        stepAfterAnswer.contains(ConversationStep.Otp),
+        answeredLine.decision == "Challenge",
+        answeredLine.outcome.contains("sent"),
+        replay.obj("challenge").isDefined,
+        replay.str("next").isEmpty,
+      )
+    },
+    test("a request that cannot answer is refused, not sent, and a wrong solution is asked again") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        plainIp = randomIp()
+        wrongIp = randomIp()
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", plainIp), ListEntry("watch", "ip", wrongIp))
+        auth = f.a.auth
+        plain <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        plainCookie = plain.conversationCookie.get
+        plainCsrf <- auth.getChallenge(plainCookie).map(_.csrf)
+        _ <- auth.submitPhone(plainCookie, s.phone.get, plainCsrf, Some(plainIp))
+        plainStep <- auth.getChallenge(plainCookie).map(_.step)
+        plainLine <- line(f.a, plainIp, Path, 0)
+        wrong <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        wrongCookie = wrong.conversationCookie.get
+        wrongCsrf <- auth.getChallenge(wrongCookie).map(_.csrf)
+        asked <- auth.submitPhoneWith(wrongCookie, s.phone.get, wrongCsrf, Some(wrongIp), Inline).flatMap(inlineAnswer)
+        token <- ZIO.fromOption(asked.obj("challenge").flatMap(_.str("token"))).orElseFail(RuntimeException("no token"))
+        again <- auth.submitPhoneWith(
+          wrongCookie,
+          s.phone.get,
+          wrongCsrf,
+          Some(wrongIp),
+          Inline ++ Map("proof_token" -> token, "proof_solution" -> "not-a-number"),
+        ).flatMap(inlineAnswer)
+        wrongStep <- auth.getChallenge(wrongCookie).map(_.step)
+      yield assertTrue(
+        plainStep.contains(ConversationStep.AccessDenied),
+        plainLine.decision == "Challenge",
+        plainLine.outcome.contains("blocked"),
+        again.obj("challenge").isDefined,
+        wrongStep.contains(ConversationStep.Credential),
+      )
+    },
+  )
+
+  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, challengeSuite) @@
     TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(15.minutes)

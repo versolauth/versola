@@ -678,6 +678,46 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is no way yet to approve a proposal: that, and creating the entry (`AntifraudProposal.toNewListEntry`), is a
   follow-up.
 
+- **Challenges (a proof of work before a code is sent; no table, no new page).** A request for a code that the decision
+  engine scores at or above `antifraud.decision.challenge-at` (and below `block-at`) is no longer only held for
+  `antifraud.decision.delay`: nothing is sent until the client has done some work. The credential (email, phone) and
+  OTP-resend forms send their request from script (`proof_inline=1` among the fields) and auth answers
+  `{"challenge": {"kind", "token", "params"}}` instead of a redirect, leaving the conversation where it was. The page
+  finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
+  request again** with two more fields, `proof_token` and `proof_solution`; the code is sent only if they are right. The
+  person sees nothing but the submit they made. The request is judged again with its answer (a block, a fake and the
+  lists still apply, and the answer only settles a `Challenge`) but is not counted a second time by the velocity counters;
+  it does take a second turn of the per-credential OTP request limit. Measured in headless Chromium (4 workers, 2.7 M
+  hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
+  phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
+  higher is asked for more: `min-difficulty` (14) plus one bit per `score-step` (15) points above `challenge-at`, at most
+  `max-difficulty` (18).
+  The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
+  names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
+  is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
+  the last one was sent): **sending a code spends every challenge made before it**, which is what makes a solution
+  single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
+  count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
+  hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
+  real bound is the per-credential OTP request limit, which every repeated request takes a turn of, and the token's
+  `ttl`; a guess costs the server one SHA-256.
+  **A challenged request that cannot answer is refused, not sent:** a plain form post (no JavaScript, the password forms
+  that lead on to a code, `/authorize` with `login_hint`) or a page that cannot solve the kind gets "access denied" as a
+  blocked request does, since sending it would be a way round the challenge for any script. Only a verifier that is
+  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
+  challenges existed, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
+  for a request that cannot answer, so that an outage of the engine does not lock out the second factor after a password or
+  `login_hint`. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that times out
+  to ask every request that can answer for a proof. Routing those two paths through a page that can solve is a follow-up.
+  The keys of the optional `antifraud.challenge` block are `enabled` (`true`), `min-difficulty`, `max-difficulty`,
+  `score-step`, `ttl` and `max-attempts`, **read whole: set every key, or none** (a block that leaves one out is not read at
+  all). The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
+  column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
+  `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and `antifraud_challenges_total{kind,outcome}`
+  counts them. A script that does the work gets its code: the proof makes an attack cost CPU, it does not stop one, so keep
+  the lists, the velocity limits and the SMS budget. Only the proof of work is built; the `ChallengeVerifier` interface and
+  the `kind` and `params` of the answer are where a provider's check (Turnstile and the like, drawn by the same page) is added.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

@@ -186,6 +186,10 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
             at(5, AntifraudOutcome.wrong_code, AntifraudAction.otp_verify),
             at(5, AntifraudOutcome.fake_verify, AntifraudAction.otp_verify),
             at(6, AntifraudOutcome.sent, prefix = "491612"),
+            // the steps of a challenge are not requests of their own: the send that follows is the one counted
+            at(8, AntifraudOutcome.challenged),
+            at(9, AntifraudOutcome.challenge_failed),
+            at(10, AntifraudOutcome.challenge_passed),
             // an address, and a minute outside the window
             event(minute.plusSeconds(7), AntifraudOutcome.sent).copy(channel = AntifraudChannel.email, destPrefix = None),
             at(70, AntifraudOutcome.sent),
