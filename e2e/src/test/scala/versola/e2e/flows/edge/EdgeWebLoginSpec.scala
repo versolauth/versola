@@ -2,7 +2,7 @@ package versola.e2e.flows.edge
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Header, Method, Status, URL}
+import zio.http.{Cookie, Header, Method, Status, URL}
 import zio.test.*
 
 /** The edge's own web login: the `/login/{presetId}` → OP → `/complete` round trip that turns
@@ -131,7 +131,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         ).orElseFail(RuntimeException("no EDGE_SESSION cookie on the completed login"))
       yield assertTrue(cookie.isHttpOnly).label("script must not be able to read the session") &&
         assertTrue(cookie.isSecure) &&
-        assertTrue(cookie.sameSite.contains(zio.http.Cookie.SameSite.Strict))
+        assertTrue(cookie.sameSite.contains(Cookie.SameSite.Strict))
           .label("SameSite=Strict is what keeps the cookie off cross-site requests")
     },
     test("two logins of the same user produce two distinct sessions") {
@@ -288,7 +288,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
           started.headers.getAll(Header.SetCookie).collectFirst { case h if h.value.name == s"EDGE_LOGIN_$state" => h.value },
         ).orElseFail(RuntimeException("no EDGE_LOGIN_<state> cookie on the redirect to the OP"))
       yield assertTrue(cookie.content.nonEmpty, cookie.isHttpOnly, cookie.isSecure) &&
-        assertTrue(cookie.sameSite.contains(zio.http.Cookie.SameSite.Lax))
+        assertTrue(cookie.sameSite.contains(Cookie.SameSite.Lax))
           .label("Lax, not Strict: /complete is a cross-site top-level GET from the OP, which Strict would not accompany")
     },
     test("a callback replayed from another browser is refused and starts no session") {

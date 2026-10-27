@@ -546,7 +546,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         run(request, (s, _) => s.complete.succeedsWith(completion)).map(_._2.complete.calls)
       val url = URL.decode("/complete?code=c-1&state=s-1").toOption.get
       def withCookie(name: String, value: String) =
-        Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(name, value))))
+        Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(name = name, content = value))))
       for
         own <- complete(withCookie("EDGE_LOGIN_s-1", "secret-1"))
         // a secret held for another login of the same browser is not this login's

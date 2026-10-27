@@ -68,7 +68,12 @@ object EdgeController extends Controller:
             case Right(start) =>
               ZIO.succeed(
                 Response.seeOther(start.url).addCookie(
-                  EdgeLoginCookie(start.state, start.browserBinding, start.loginCookiePath, start.loginTtl),
+                  EdgeLoginCookie(
+                    state = start.state,
+                    secret = start.browserBinding,
+                    path = start.loginCookiePath,
+                    ttl = start.loginTtl,
+                  ),
                 ),
               )
       yield response
@@ -103,7 +108,7 @@ object EdgeController extends Controller:
 
         response <- (code, error) match
           case (Some(code), None) =>
-            edgeService.complete(code, state, browserBinding)
+            edgeService.complete(code = code, state = state, browserBinding = browserBinding)
               .either.flatMap:
                 case Left(_: AuthConversationNotFound) =>
                   ZIO.succeed(Response.badRequest)
@@ -129,7 +134,13 @@ object EdgeController extends Controller:
                     .addCookie(EdgeLoginCookie.clear(state, completion.loginCookiePath))
 
           case (None, Some(error)) =>
-            edgeService.completeError(state, error, errorDescription, errorUri, browserBinding)
+            edgeService.completeError(
+              state = state,
+              error = error,
+              errorDescription = errorDescription,
+              errorUri = errorUri,
+              browserBinding = browserBinding,
+            )
               .either.flatMap:
                 case Left(_: AuthConversationNotFound) =>
                   ZIO.succeed(Response.badRequest)

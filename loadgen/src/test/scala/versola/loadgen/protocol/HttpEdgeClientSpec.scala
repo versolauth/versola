@@ -40,7 +40,11 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         started <- edge.login(preset, None)
         paths <- recorder.paths
       yield assertTrue(
-        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState), Some(StubSut.edgeLoginCookie)),
+        started == EdgeLoginStarted(
+          authorizeUrl = StubSut.authorizeUrl,
+          state = Some(StubSut.edgeState),
+          loginCookie = Some(StubSut.edgeLoginCookie),
+        ),
         paths == Vector("GET /login/" + StubSut.preset),
       )
     },
@@ -141,7 +145,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        cookie <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code), Some(StubSut.edgeLoginCookie))
+        cookie <- edge.complete(state = StubSut.edgeState, code = AuthCode(StubSut.code), loginCookie = Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
       yield assertTrue(
         cookie == EdgeCookie(EdgeSession(StubSut.edgeSession), Some(StubSut.edgeCookieTtl)),
@@ -178,10 +182,10 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError, Some(StubSut.edgeLoginCookie))
+        _ <- edge.completeError(state = StubSut.edgeState, error = StubSut.refusalError, loginCookie = Some(StubSut.edgeLoginCookie))
         // Edge answers the second one 400 (`AuthConversationNotFound`). Nothing is left to
         // consume, which is the only thing this hop is for, so it is not a failure.
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError, Some(StubSut.edgeLoginCookie))
+        _ <- edge.completeError(state = StubSut.edgeState, error = StubSut.refusalError, loginCookie = Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
         params <- recorder.queryOf("/complete")
       yield assertTrue(

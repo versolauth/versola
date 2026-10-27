@@ -69,7 +69,7 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           authorizeUrl = location,
           state = state,
           loginCookie = received.response.headers.getAll(Header.SetCookie).collectFirst:
-            case header if header.value.name.startsWith(loginCookiePrefix) => LoginCookie(header.value.name, header.value.content),
+            case header if header.value.name.startsWith(loginCookiePrefix) => LoginCookie(name = header.value.name, value = header.value.content),
         )
 
   override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, EdgeAuthorization] =

@@ -422,7 +422,13 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             security <- ZIO.service[SecurityService]
             client <- ZIO.service[Client]
             result <- env.buildService(client, security)
-              .completeError(Fixtures.state, "access_denied", None, None, presented).either
+              .completeError(
+                state = Fixtures.state,
+                error = "access_denied",
+                errorDescription = None,
+                errorUri = None,
+                browserBinding = presented,
+              ).either
           yield (result, env.loginRepository.deleteByState.calls)
         for
           missing <- attempt(None)
@@ -445,7 +451,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             _ <- env.loginRepository.deleteByState.succeedsWith(())
             security <- ZIO.service[SecurityService]
             client <- ZIO.service[Client]
-            result <- env.buildService(client, security).complete(code, Fixtures.state, presented).either
+            result <- env.buildService(client, security).complete(code = code, state = Fixtures.state, browserBinding = presented).either
           yield (result, env.loginRepository.deleteByState.calls, env.ssoClient.exchangeAuthorizationCode.calls)
         for
           missing <- attempt(None)
@@ -470,7 +476,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             client <- ZIO.service[Client]
             accessToken <- env.signToken()
             _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(Fixtures.tokens.copy(accessToken = accessToken))
-            completion <- env.buildService(client, security).complete(code, Fixtures.state, presented)
+            completion <- env.buildService(client, security).complete(code = code, state = Fixtures.state, browserBinding = presented)
           yield (completion.loginCookiePath, env.loginRepository.deleteByState.calls)
         for
           bound <- attempt(Fixtures.boundRecord, Some(Fixtures.binding))

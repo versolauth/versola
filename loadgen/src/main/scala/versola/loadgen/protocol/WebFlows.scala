@@ -79,7 +79,11 @@ final class WebFlows(
           case EdgeAuthorization.Answered(answer) => ZIO.succeed(answer)
         completed <- refusalCompleted(flow, started, outcome)
         state <- echoedState(started, completed)
-        cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code, started.loginCookie))
+        cookie <- FlowTiming.step(
+          observer,
+          flow,
+          StepName.EdgeComplete,
+        )(edge.complete(state = state, code = completed.code, loginCookie = started.loginCookie))
       yield (cookie, completed.ssoSession)
 
   /** §8.6 on the web path: the same proxied action the mobile flows make, with the cookie in
@@ -158,7 +162,7 @@ final class WebFlows(
     outcome match
       case ConversationOutcome.Refused(error, Some(state)) =>
         FlowTiming
-          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state, error, started.loginCookie))
+          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state = state, error = error, loginCookie = started.loginCookie))
           .ignore *> ChallengeConversation.orFail(outcome)
       case other => ChallengeConversation.orFail(other)
 

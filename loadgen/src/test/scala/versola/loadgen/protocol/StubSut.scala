@@ -30,7 +30,7 @@ object StubSut:
   val edgeState = "edge-state-1"
   // What edge's `/login` sets on the browser, and `/complete` refuses to go on without: the login is bound
   // to the browser that began it.
-  val edgeLoginCookie = LoginCookie("EDGE_LOGIN_" + edgeState, "login-secret-1")
+  val edgeLoginCookie = LoginCookie(name = "EDGE_LOGIN_" + edgeState, value = "login-secret-1")
   val edgeSession = "web-preset:access-token-1"
   val rotatedEdgeSession = "web-preset:access-token-2"
   val edgeCookieTtl: Duration = 30.minutes

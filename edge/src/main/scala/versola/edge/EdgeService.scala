@@ -308,12 +308,13 @@ object EdgeService:
     // not deleted: whoever sent the wrong cookie must not be able to burn the owner's login by
     // replaying its state.
     private def findOwnLogin(state: State, browserBinding: Option[String]): IO[Throwable | AuthConversationNotFound, LoginRecord] =
-      loginRepository.findByState(state)
-        .someOrFail(AuthConversationNotFound())
-        .tapError(_ => Observability.setError("login_not_found"))
-        .filterOrElse(record => BrowserBinding.accepts(record.browserBindingHash, browserBinding))(
-          Observability.setError("login_binding_mismatch") *> ZIO.fail(AuthConversationNotFound()),
-        )
+      loginRepository.findByState(state).flatMap:
+        case None =>
+          Observability.setError("login_not_found") *> ZIO.fail(AuthConversationNotFound())
+        case Some(record) if BrowserBinding.accepts(record.browserBindingHash, browserBinding) =>
+          ZIO.succeed(record)
+        case Some(_) =>
+          Observability.setError("login_binding_mismatch") *> ZIO.fail(AuthConversationNotFound())
 
     override def complete(
         code: Code,
