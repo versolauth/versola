@@ -48,6 +48,16 @@ describe('validateSmtpDraft', () => {
 });
 
 describe('validateOtpProviderDraft', () => {
+  it.each([
+    ['a placeholder in the query', 'https://sms.example/send?to={{phone}}'],
+    ['a space', 'https://sms.example/send me'],
+    ['a pipe', 'https://sms.example/a|b'],
+    ['a backslash', 'https://sms.example/a\\b'],
+    ['an angle bracket', 'https://sms.example/<x>'],
+  ])('refuses %s, which central refuses too', (_name, url) => {
+    expect(validateOtpProviderDraft(provider({ url })).url).toMatch(/must not contain spaces/);
+  });
+
   it('accepts a complete block, with or without a username, over http or https', () => {
     expect(validateOtpProviderDraft(provider())).toEqual({});
     expect(validateOtpProviderDraft(provider({ username: 'sms' }))).toEqual({});

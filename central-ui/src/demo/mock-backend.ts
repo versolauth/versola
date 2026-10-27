@@ -411,6 +411,8 @@ export type MockConfigState = {
   deliveryDelayMs?: number;
   // Makes `GET /configuration/delivery-settings` answer 500 with this message, to look at the load failure.
   deliveryFailure?: string;
+  // Makes `GET /configuration/delivery-settings` carry the stored passwords too, as central never does: a hostile answer, to prove the page renders none.
+  deliveryLeaksPasswords?: boolean;
   // Makes `DELETE /configuration/delivery-settings` answer 500 with this message.
   deliveryDeleteFailure?: string;
   // What `POST /configuration/delivery-settings/test` answers: by default the message is delivered. `status` answers an error
@@ -724,6 +726,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           hasSmtpPassword: !!stored?.smtpPassword,
           ...(stored?.otpProvider ? { otpProvider: stored.otpProvider } : {}),
           hasOtpProviderPassword: !!stored?.otpProviderPassword,
+          ...(state.deliveryLeaksPasswords ? { smtpPassword: stored?.smtpPassword, otpProviderPassword: stored?.otpProviderPassword } : {}),
         }));
         return;
       }

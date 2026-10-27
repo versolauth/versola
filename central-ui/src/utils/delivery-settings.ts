@@ -139,6 +139,9 @@ export function validateSmtpDraft(draft: SmtpDraft, saved?: SavedBlock<SmtpDeliv
   return errors;
 }
 
+// Central parses the address with java.net.URI, which refuses these; the form says so before the round trip.
+const URL_CHARACTER_CENTRAL_REFUSES = /[\s{}|\\^`<>"]/;
+
 export function validateOtpProviderDraft(draft: OtpProviderDraft, saved?: SavedBlock<OtpProviderDeliverySettings>): FieldErrors {
   const errors: FieldErrors = {};
   if (!(OTP_METHODS as readonly string[]).includes(draft.method)) errors.method = 'Pick GET, POST, PUT or PATCH.';
@@ -153,6 +156,8 @@ export function validateOtpProviderDraft(draft: OtpProviderDraft, saved?: SavedB
     errors.url = 'An absolute http:// or https:// address.';
   } else if (parsed.username || parsed.password) {
     errors.url = 'The address must not carry a username or password. Use the fields below.';
+  } else if (URL_CHARACTER_CENTRAL_REFUSES.test(url)) {
+    errors.url = 'The address must not contain spaces or any of { } | \\ ^ ` < > ". Placeholders such as {{phone}} belong in the body.';
   }
   if (draft.username !== '' && !draft.username.trim()) errors.username = 'Leave the username empty or give it a value.';
   else if (CONTROL_CHARACTER.test(draft.username.trim())) errors.username = 'The username must not contain control characters.';

@@ -28,7 +28,8 @@ test('says nothing is saved yet and offers to configure each block', async ({ pa
 });
 
 test('shows both blocks and whether a password is saved, never the password', async ({ page }) => {
-  await loadAdminApp(page, { path, state: { deliverySettings: stored } });
+  // The backend is made hostile: its answer carries the passwords, so the check below fails if the page ever renders them.
+  await loadAdminApp(page, { path, state: { deliverySettings: stored, deliveryLeaksPasswords: true } });
 
   const email = page.getByRole('region', { name: 'Email' });
   await expect(email).toContainText('smtp.example.com:587');
