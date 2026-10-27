@@ -87,7 +87,7 @@ healthy_after=$(grep -A1 '^      postgres:$' "$frag" | grep -c 'condition: servi
 has 'start_period: 30s' && pass "bundled: the healthcheck has a start period" || fail "bundled: the healthcheck has a start period"
 if grep -q '#@PG@\|@POSTGRES_\|\${VERSION}' "$frag"; then fail "bundled: no placeholder is left"; else pass "bundled: no placeholder is left"; fi
 cmp -s "$tools/postgres-init-schemas.sh" "$work/out.d/postgres-init-schemas.sh" && pass "bundled: the init script is in the bundle" || fail "bundled: the init script is in the bundle"
-mode=$(stat -f %Lp "$work/out.d/postgres-init-schemas.sh" 2>/dev/null || stat -c %a "$work/out.d/postgres-init-schemas.sh")
+mode=$(stat -c %a "$work/out.d/postgres-init-schemas.sh" 2>/dev/null || stat -f %Lp "$work/out.d/postgres-init-schemas.sh")
 [ "$mode" = 644 ] && pass "bundled: the init script is readable by the container" || fail "bundled: the init script is readable by the container"
 for s in auth central edge; do
   grep -q "CREATE SCHEMA IF NOT EXISTS $s AUTHORIZATION" "$tools/postgres-init-schemas.sh" && pass "init script: schema $s" || fail "init script: schema $s"
