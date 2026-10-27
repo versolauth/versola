@@ -1178,7 +1178,11 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
     header named by `client-ip-header`, default `X-Real-IP`). Set `forwarded` only when the edge is reachable **only** through the
     proxy that sets the header (compose network, chart network policy): anything else could write the header and choose its own
     bucket. nginx (`versola-proxy`) and ingress-nginx already resolve the client chain and set `X-Real-IP`. A header that is
-    missing or not an IP literal falls back to the peer. Behind a proxy with `socket`, every caller is the proxy: the address limit
+    missing or not an IP literal falls back to the peer. **Inside a Kubernetes cluster** a call through a Service (or an internal load balancer)
+    from a pod on another node reaches the backend with the caller's *node* address as its source (measured on the test cluster; only a
+    caller on the same node with `externalTrafficPolicy: Local` kept its own address). So behind kube-proxy, pods on one node share one
+    address, and `socket` cannot tell them apart: put a proxy that sets the header in front (ingress-nginx does) and use `forwarded`. The
+    address a real internet client has through a cloud load balancer was not measured (the cloud's address quota blocked creating one). Behind a proxy with `socket`, every caller is the proxy: the address limit
     would count the whole world as one caller. Check `edge_client_address_total{source}` (`socket`, `forwarded`,
     `forwarded_missing`) before enforcing an address policy; the edge logs a warning at start when `forwarded` is set. Whether a
     cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
