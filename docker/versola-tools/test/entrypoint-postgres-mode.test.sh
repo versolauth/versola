@@ -72,7 +72,7 @@ grep -q "POSTGRES_HOST is required" "$work/out" && pass "external: POSTGRES_HOST
 run_entrypoint POSTGRES_MODE=bundled
 [ "$(cat "$work/java.host")" = "127.0.0.1:5432" ] && pass "bundled: gen-env gets the loopback address, so the URLs say sslmode=disable" || fail "bundled: gen-env gets the loopback address"
 has '  postgres:' && pass "bundled: the postgres service" || fail "bundled: the postgres service"
-grep -qE '^    image: postgres:[0-9]+\.[0-9]+$' "$frag" && pass "bundled: the image is pinned to major.minor" || fail "bundled: the image is pinned to major.minor"
+grep -qE '^    image: postgres:[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' "$frag" && pass "bundled: the image is pinned to major.minor and a digest" || fail "bundled: the image is pinned to major.minor and a digest"
 has 'listen_addresses=127.0.0.1' && pass "bundled: listens on loopback only" || fail "bundled: listens on loopback only"
 if grep -q '^    ports:' "$frag"; then fail "bundled: no published port"; else pass "bundled: no published port"; fi
 has 'pg_isready' && has 'restart: unless-stopped' && pass "bundled: healthcheck and restart policy" || fail "bundled: healthcheck and restart policy"

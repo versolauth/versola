@@ -56,7 +56,7 @@ services:
 #@PG@  # interface: with network_mode: host there is no `ports:` to restrict. The pinned tag is the
 #@PG@  # PostgreSQL release the project verifies against; a major upgrade is not automatic.
 #@PG@  postgres:
-#@PG@    image: postgres:18.4
+#@PG@    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
 #@PG@    container_name: versola-postgres-vps
 #@PG@    restart: unless-stopped
 #@PG@    network_mode: host

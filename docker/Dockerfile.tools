@@ -221,7 +221,7 @@ RUN OUT_DIR=/tmp/smoke-out TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGR
 RUN OUT_DIR=/tmp/smoke-bundled TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGRES_MODE=bundled ./entrypoint.sh \
  && test -f /tmp/smoke-bundled/postgres-init-schemas.sh \
  && grep -q 'listen_addresses=127.0.0.1' /tmp/smoke-bundled/compose.fragment.yml \
- && grep -Eq '^    image: postgres:[0-9]+\.[0-9]+$' /tmp/smoke-bundled/compose.fragment.yml \
+ && grep -Eq '^    image: postgres:[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' /tmp/smoke-bundled/compose.fragment.yml \
  && rm -rf /tmp/smoke-bundled .local
 
 ENTRYPOINT ["./entrypoint.sh"]
