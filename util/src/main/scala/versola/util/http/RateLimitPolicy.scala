@@ -155,7 +155,7 @@ object RateLimitPolicies:
     * before switching one to `enforce`. The numbers are deliberately generous (a runaway client or user, not a busy one) and
     * are per edge pod:
     *
-    *   - `per-client`: one OAuth client may not take the edge over (200 calls a second sustained, bursts of 500);
+    *   - `per-client`: one OAuth client may not take the edge over (2,000 calls a second sustained, bursts of 5,000: a web app with thousands of users is one client; 200 a second was refusing about 2% of the load generator's calls in a cluster run);
     *   - `per-user`: one user, short and long window (5 a second sustained, bursts of 60: a page load fires dozens of calls);
     *   - `per-user-endpoint`: one user on one endpoint (2 a second sustained, bursts of 30), the cheap guard against a loop
     *     on a single route;
@@ -171,8 +171,8 @@ object RateLimitPolicies:
       RateLimitPolicy(
         name = "per-client",
         by = List(RateLimitDimension.Client),
-        limits = List(RateLimitWindow(limit = 12000, windowSeconds = 60)),
-        burst = 500,
+        limits = List(RateLimitWindow(limit = 120000, windowSeconds = 60)),
+        burst = 5000,
       ),
       RateLimitPolicy(
         name = "per-user",

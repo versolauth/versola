@@ -57,15 +57,19 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
       "mode" -> Json.Str(mode),
     )
 
+  /** `PATCH /configuration/edges/policies` with the `rateLimits` section: the policies, or `null` (none) when there are none. */
   private def setPolicies(policies: Json*) =
-    ZIO.serviceWithZIO[CentralApi](_.put("/configuration/edges/rate-limits", Json.Obj("policies" -> Json.Arr(policies*)), "edgeId" -> edgeId))
+    patchSection(if policies.isEmpty then Json.Null else Json.Obj("policies" -> Json.Arr(policies*)))
+
+  private def patchSection(section: Json, query: (String, String)*) =
+    ZIO.serviceWithZIO[CentralApi](_.patch("/configuration/edges/policies", Json.Obj("rateLimits" -> section), ("edgeId" -> edgeId) +: query*))
 
   /** Reloads the edge's configuration, then waits out the limiter's own once-a-second poll of what was loaded. */
   private val reachEdge = ZIO.serviceWithZIO[EdgeApi](_.syncConfiguration) *> ZIO.sleep(3.seconds)
 
   private def withPolicies[R, A](policies: Json*)(effect: ZIO[R, Throwable, A]): ZIO[R & CentralApi & EdgeApi, Throwable, A] =
     (setPolicies(policies*).flatMap(r =>
-      ZIO.fail(RuntimeException(s"PUT rate-limits: ${r.status} ${r.body}")).unless(r.status == Status.NoContent),
+      ZIO.fail(RuntimeException(s"PATCH policies: ${r.status} ${r.body}")).unless(r.status == Status.Ok),
     ) *>
       reachEdge *> effect).ensuring((setPolicies() *> reachEdge).ignore)
 
@@ -76,7 +80,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         tooBig <- setPolicies(policy("burst-too-big", "shadow", 10).add("burst", Json.Num(11)))
       yield assertTrue(
         refused.status == Status.BadRequest,
-        refused.body.contains("name"),
+        refused.body.contains("rateLimits") && refused.body.contains("name"),
         tooBig.status == Status.BadRequest,
         tooBig.body.contains("burst"),
       )
@@ -86,7 +90,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         central <- ZIO.service[CentralApi]
         recommended <- central.get("/configuration/edges/rate-limits/recommended")
         policies <- recommended.items("policies")
-        stored <- central.put("/configuration/edges/rate-limits", Json.Obj("policies" -> Json.Arr(policies*)), "edgeId" -> edgeId)
+        stored <- patchSection(Json.Obj("policies" -> Json.Arr(policies*)))
         _ <- setPolicies()
       yield assertTrue(
         recommended.status == Status.Ok,
@@ -98,7 +102,31 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
           Some("per-certificate"),
         ),
         policies.forall(_.str("mode").contains("shadow")),
-        stored.status == Status.NoContent,
+        stored.status == Status.Ok,
+      )
+    },
+    test("a patch that names a revision is refused with 409 when the section has moved on, and a dry run writes nothing") {
+      for
+        central <- ZIO.service[CentralApi]
+        first <- patchSection(Json.Obj("policies" -> Json.Arr(policy("e2e-revision", "shadow", 10))))
+        revision <- first.obj.map(_.obj("revisions").flatMap(_.num("rateLimits")).map(_.intValue).getOrElse(-1))
+        stale <- central.patch(
+          "/configuration/edges/policies",
+          Json.Obj("rateLimits" -> Json.Null, "expectedRevisions" -> Json.Obj("rateLimits" -> Json.Num(revision - 1))),
+          "edgeId" -> edgeId,
+        )
+        dry <- patchSection(Json.Null, "dryRun" -> "true")
+        stored <- central.get("/configuration/edges/policies", "edgeId" -> edgeId)
+        unknown <- central.patch("/configuration/edges/policies", Json.Obj("rateLimit" -> Json.Null), "edgeId" -> edgeId)
+        _ <- setPolicies()
+      yield assertTrue(
+        first.status == Status.Ok,
+        stale.status == Status.Conflict,
+        stale.body.contains("e2e-revision"),
+        dry.status == Status.Ok,
+        stored.body.contains("e2e-revision"),
+        unknown.status == Status.BadRequest,
+        unknown.body.contains("unknown section"),
       )
     },
     test("an enforced policy answers 429 with Retry-After, and the upstream never sees the refused call") {

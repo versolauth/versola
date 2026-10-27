@@ -9,8 +9,8 @@ middleware emits **one `receive-http` line per request** (logger `versola.http.H
 request, response, timing, and two accumulated annotations. Enrich that line; do not add more lines.
 
 The line is not guaranteed for a successful request on the edge: it starts at `off` (`PostgresEdgeApp.accessLogDefaults`; there is
-no `HTTP_ACCESS_LOG*` environment) and an operator sets `full|sampled|off` per edge in central (`AccessLogPolicy`, `PUT
-/configuration/edges/access-log`), which drops most of them. auth and central always log every request. A request with
+no `HTTP_ACCESS_LOG*` environment) and an operator sets `full|sampled|off` per edge in central (`AccessLogPolicy`, `PATCH
+/configuration/edges/policies`, section `accessLog`), which drops most of them. auth and central always log every request. A request with
 status 400 or above (except `429`, a rate-limit refusal, which follows the success rules so a flood of refusals is not a flood of lines), or an unhandled error, is always logged, so everything above about `setError` still holds; never rely
 on a successful request's line being in the log, use metrics for that. Successful
 `send-http` lines to the deployment's own services are `DEBUG`; to any other peer (a message provider, a third-party

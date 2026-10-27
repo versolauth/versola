@@ -2,7 +2,7 @@ package versola.configuration.edges
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind, EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind, EdgeId, EdgeRecord, EdgeRepository, PolicyPatchError, PolicySectionMeta}
 import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import versola.util.postgres.BasicCodecs
 import zio.json.ast.Json
@@ -15,6 +15,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   given DbCodec[OverloadPolicy] = jsonCodec[OverloadPolicy]
   given DbCodec[AccessLogPolicy] = jsonCodec[AccessLogPolicy]
   given DbCodec[RateLimitPolicies] = jsonCodec[RateLimitPolicies]
+  given policyMetaCodec: DbCodec[Map[String, PolicySectionMeta]] = jsonCodec[Map[String, PolicySectionMeta]]
   given DbCodec[EdgeGroupId] = DbCodec.StringCodec.biMap(EdgeGroupId(_), identity[String])
   given DbCodec[EdgeGroupKind] =
     DbCodec.StringCodec.biMap(code => EdgeGroupKind.from(code).fold(message => throw IllegalStateException(message), identity), _.code)
@@ -23,7 +24,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
       """.query[EdgeRecord].run()
@@ -31,7 +32,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
         WHERE e.id = $id
@@ -64,32 +65,30 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
       """.update.run()
     .unit
 
-  override def setOverloadPolicy(id: EdgeId, policy: Option[OverloadPolicy]): Task[Unit] =
-    xa.connectMeasured("set-edge-overload-policy"):
-      sql"""
-        UPDATE edges
-        SET overload_policy = $policy
-        WHERE id = $id
-      """.update.run()
-    .unit
-
-  override def setAccessLogPolicy(id: EdgeId, policy: Option[AccessLogPolicy]): Task[Unit] =
-    xa.connectMeasured("set-edge-access-log-policy"):
-      sql"""
-        UPDATE edges
-        SET access_log_policy = $policy
-        WHERE id = $id
-      """.update.run()
-    .unit
-
-  override def setRateLimitPolicies(id: EdgeId, policies: Option[RateLimitPolicies]): Task[Unit] =
-    xa.connectMeasured("set-edge-rate-limit-policies"):
-      sql"""
-        UPDATE edges
-        SET rate_limit_policies = $policies
-        WHERE id = $id
-      """.update.run()
-    .unit
+  override def patchPolicies(
+      id: EdgeId,
+      change: EdgeRecord => Either[PolicyPatchError, EdgeRecord],
+  ): Task[Option[Either[PolicyPatchError, EdgeRecord]]] =
+    xa.transactMeasured("patch-edge-policies"):
+      val current =
+        sql"""
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
+        FROM edges e
+        JOIN edge_groups g ON g.id = e.group_id
+        WHERE e.id = $id
+        FOR UPDATE OF e
+      """.query[EdgeRecord].run().headOption
+      current.map: record =>
+        change(record).map: updated =>
+          sql"""
+            UPDATE edges
+            SET overload_policy = ${updated.overloadPolicy},
+                access_log_policy = ${updated.accessLogPolicy},
+                rate_limit_policies = ${updated.rateLimitPolicies},
+                policy_meta = ${updated.policyMeta}
+            WHERE id = $id
+          """.update.run()
+          updated
 
   override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
     xa.connectMeasured("delete-old-edge-key"):
