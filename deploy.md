@@ -1142,8 +1142,8 @@ central; a policy in `shadow` only counts what it would refuse, a policy in `enf
 the limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask).
 
 **Start from the recommended set.** `GET /configuration/edges/rate-limits/recommended` (and "Add recommended policies" in the
-console, on the edge page under *Rate limits*) gives five generous policies, all in `shadow`: `per-client` (12,000 a minute,
-bursts of 500), `per-user` (300 a minute and 5,000 an hour, bursts of 60), `per-user-endpoint` (120 a minute per user and
+console, on the edge page under *Rate limits*) gives five generous policies, all in `shadow`: `per-client` (120,000 a minute,
+bursts of 5,000), `per-user` (300 a minute and 5,000 an hour, bursts of 60), `per-user-endpoint` (120 a minute per user and
 endpoint, bursts of 30), `per-address` (600 a minute, bursts of 100; see R1) and `per-certificate` (60,000 a minute, bursts of
 2,000; mutual-TLS listener). They are meant to catch a runaway client, user, address or certificate, not a busy one. Add them, read
 `edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,

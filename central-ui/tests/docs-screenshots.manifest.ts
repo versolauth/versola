@@ -875,7 +875,7 @@ const consoleShots: DocsShot[] = [
         rateLimitPolicies: {
           replicas: 3,
           policies: [
-            { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 12000, windowSeconds: 60 }], burst: 500, mode: 'shadow' },
+            { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, mode: 'shadow' },
             { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, mode: 'enforce' },
             { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, mode: 'shadow' },
           ],
