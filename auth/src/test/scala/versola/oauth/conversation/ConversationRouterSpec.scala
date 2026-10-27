@@ -253,12 +253,12 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(None)
-          exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
+          exit <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None).exit
         yield assertTrue(exit == Exit.fail(Error.ConversationExpired))
       },
       test("handle email submission") {
         val env = Env()
-        val submission = EmailSubmission(email, "test-csrf")
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
         val emailRecord = initialRecord.copy(
           step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
           authFlow = otpAuthFlow.copy(
@@ -286,7 +286,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
           accessDeniedTimes = env.otpConversationService.accessDenied.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -302,7 +302,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           accessDeniedTimes = env.otpConversationService.accessDenied.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -313,7 +313,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("handle phone submission") {
         val env = Env()
-        val submission = PhoneSubmission(phone, "test-csrf")
+        val submission = PhoneSubmission(phone, ProofInput.NoScript, "test-csrf")
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
@@ -332,7 +332,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val boom = new RuntimeException("db down")
         for
           _ <- env.otpConversationService.find.failsWith(boom)
-          exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
+          exit <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None).exit
         yield assertTrue(exit == Exit.fail(Error.ServiceUnavailable))
       },
       test("handle OTP submission and complete conversation on success") {
@@ -364,25 +364,14 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 1,
         )
       },
-      test("a proof submitted to a conversation that is on the proof step is handed to the service") {
+      test("the proof a request carries is handed to the service with the credential, for a resend as for a phone") {
         val env = Env()
-        val proof = ConversationStep.Proof("pow", "tok", 16, Map("seed" -> "s"), factorIndex = 0, score = 61, rules = Nil, attempts = 0)
-        val proofRecord = otpRecord.copy(step = proof)
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(proofRecord))
-          _ <- env.otpConversationService.solveProof.succeedsWith(ConversationResult.RenderStep(proof))
-          (result, _) <- env.router.submit(authId, ProofSubmission("tok", "42", "test-csrf"), None, None)
-        yield assertTrue(
-          result == ConversationResult.RenderStep(proof),
-          env.otpConversationService.solveProof.calls.map(_._5) == List("tok"),
-        )
-      },
-      test("a proof submitted to a conversation that is not on the proof step is a step mismatch") {
-        val env = Env()
+        val answered = ProofInput.Answered("tok", "42")
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
-          (result, _) <- env.router.submit(authId, ProofSubmission("tok", "42", "test-csrf"), None, None)
-        yield assertTrue(result == ConversationResult.BadRequest, env.otpConversationService.solveProof.calls.isEmpty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, OtpResendSubmission(answered, "test-csrf"), None, None)
+        yield assertTrue(env.otpConversationService.prepareInitialOtp.calls.map(_._5) == List(answered))
       },
       test("return BadRequest when the submission does not match the current step") {
         val env = Env()
@@ -425,7 +414,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           finishTimes = env.otpConversationService.finish.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -520,7 +509,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
           lookupTimes = env.userRepository.findByCredential.times
         yield assertTrue(
@@ -543,7 +532,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
           accessDeniedTimes = env.otpConversationService.accessDenied.times
@@ -566,7 +555,7 @@ object ConversationRouterSpec extends UnitSpecBase:
             ),
           )
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == conversationResult,
@@ -580,7 +569,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(ConversationResult.WriteConflict)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == ConversationResult.WriteConflict,
@@ -599,7 +588,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(RegistrationEntry.Registering(registering))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(result == conversationResult)
       },
       test("a credential on the registration path enters registration") {
@@ -612,7 +601,7 @@ object ConversationRouterSpec extends UnitSpecBase:
             RegistrationEntry.Registering(registrationRecord.copy(registrationStep = Some(0), credential = Some(Right(phone)))),
           )
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(
           result == conversationResult,
         )
@@ -625,7 +614,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
         yield assertTrue(result == conversationResult, startTimes == 0)
       },
@@ -643,7 +632,7 @@ object ConversationRouterSpec extends UnitSpecBase:
             RegistrationEntry.Registering(emailRecord.copy(registrationStep = Some(0), credential = Some(Left(email)))),
           )
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
         yield assertTrue(result == conversationResult, startTimes == 1)
       },
@@ -655,7 +644,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(Some(existingUser))
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
         yield assertTrue(
           result == conversationResult,
@@ -669,7 +658,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           startTimes = env.otpConversationService.startRegistration.times
         yield assertTrue(
           result == accessDeniedResult,
@@ -778,7 +767,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(poDenied)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           prepared = env.otpConversationService.prepareInitialOtp.calls
         yield assertTrue(result == poDenied, prepared.isEmpty)
       },
@@ -1217,7 +1206,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, OtpResendSubmission("test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, OtpResendSubmission(ProofInput.NoScript, "test-csrf"), None, None)
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(result == conversationResult, prepareTimes == 1)
       },
@@ -1476,7 +1465,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.userRepository.findByCredential.failsWith(boom)
-          (result, record) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, record) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(result == ConversationResult.ServiceUnavailable, record == initialRecord)
       },
     ),
@@ -1492,7 +1481,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialPassword.succeedsWith(conversationResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
           prepareTimes = env.otpConversationService.prepareInitialPassword.times
         yield assertTrue(result == conversationResult, prepareTimes == 1)
       },
@@ -1508,7 +1497,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(result == accessDeniedResult)
       },
       test("finishes directly when the auth flow has no further factors after the credential") {
@@ -1529,7 +1518,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(result == completeResult)
       },
     ),

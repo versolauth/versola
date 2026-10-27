@@ -13,7 +13,6 @@ object FormPreviewsSpec extends ZIOSpecDefault:
   private val builtInForms = Set(
     "credential",
     "otp",
-    "proof",
     "password",
     "set-password",
     "consent",

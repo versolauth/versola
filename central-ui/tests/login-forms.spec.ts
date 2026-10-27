@@ -231,20 +231,25 @@ test.describe('credential', () => {
     expect(submitted[0].fields.get('csrf')).toBe(CSRF);
   });
 
-  /** Answers `pattern` with `body` as JSON and keeps what was sent to it, which the form harness's own route no longer sees. */
-  const answerWith = async (page: Page, pattern: string, body: object, seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }>) =>
+  type Seen = { path: string; query: URLSearchParams; fields: URLSearchParams };
+
+  /** Answers `pattern` with the next of `bodies` as JSON, and keeps what was sent, which the form harness's own route no longer sees. */
+  const answerWith = async (page: Page, pattern: string, bodies: object[], seen: Seen[]) =>
     page.route(pattern, (route) => {
       const request = route.request();
+      // Only what a script sends is answered here; a plain form post goes on to the harness's route.
+      if (!request.postData()?.includes('proof_inline')) return route.fallback();
       const url = new URL(request.url());
-      seen.push({ path: url.pathname, query: url.searchParams, fields: new URLSearchParams(request.postData() ?? ''), header: request.headers()['versola-inline'] });
-      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+      seen.push({ path: url.pathname, query: url.searchParams, fields: new URLSearchParams(request.postData() ?? '') });
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(bodies[Math.min(seen.length, bodies.length) - 1]) });
     });
 
-  test('email: a proof the server asks for is solved unseen, sent, and the page goes on to where the submit led', async ({ page }) => {
+  const challenge = (params: object, kind = 'pow') => ({ challenge: { kind, token: 'signed.token', params } });
+
+  test('email: a request that must prove itself solves it unseen and makes the same request again with the answer', async ({ page }) => {
     const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
-    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
-    await answerWith(page, '**/challenge/email*', { next: '/challenge', challenge: { kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '12' } } }, seen);
-    await answerWith(page, '**/challenge/proof*', { next: '/challenge' }, seen);
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [challenge({ seed: 'abc', difficulty: '12' }), { next: '/challenge' }], seen);
     const screens: string[] = [];
     page.on('framenavigated', (frame) => frame === page.mainFrame() && screens.push(new URL(frame.url()).pathname));
 
@@ -252,41 +257,46 @@ test.describe('credential', () => {
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText('next page')).toBeVisible();
-    // Two POSTs from the credential page itself, then the one navigation to the next step: no screen of its own for the proof.
-    expect(seen.map((request) => request.path)).toEqual(['/challenge/email', '/challenge/proof']);
-    expect(screens.filter((path) => path.includes('proof'))).toEqual([]);
-    const proof = seen[1];
-    expect(proof.query.get('ui_locale')).toBe('en');
-    expect(proof.fields.get('token')).toBe('signed.token');
-    expect(proof.fields.get('csrf')).toBe(CSRF);
-    const digest = createHash('sha256').update(`abc:${proof.fields.get('solution')}`).digest();
+    // The same POST twice, from the credential page itself, then the one navigation to the next step.
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/email', '/challenge/email']);
+    expect(screens).not.toContain('/challenge/proof');
+    const [asked, answered] = seen.map((request) => request.fields);
+    expect(asked.get('proof_inline')).toBe('1');
+    expect(asked.has('proof_token')).toBe(false);
+    for (const fields of [asked, answered]) {
+      expect(fields.get('email')).toBe('ada@example.com');
+      expect(fields.get('csrf')).toBe(CSRF);
+    }
+    expect(answered.get('proof_token')).toBe('signed.token');
+    const digest = createHash('sha256').update(`abc:${answered.get('proof_solution')}`).digest();
     expect(digest[0]).toBe(0);
     expect(digest[1] >> 4).toBe(0);
   });
 
-  test('email: a challenge of a kind the page cannot solve is left to the page the answer names', async ({ page }) => {
+  test('email: a challenge the page cannot answer ends in the plain form post, which the server refuses', async ({ page }) => {
     const { t, submitted } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
-    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
-    await answerWith(page, '**/challenge/email*', { next: '/challenge', challenge: { kind: 'widget', token: 't', params: {} } }, seen);
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [challenge({}, 'widget')], seen);
 
     await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText('next page')).toBeVisible();
-    expect(seen.map((request) => request.path)).toEqual(['/challenge/email']);
-    expect(submitted.map((request) => request.path)).toEqual(['/challenge']);
+    expect(seen).toHaveLength(1);
+    expect(submitted.map((request) => request.path)).toEqual(['/challenge/email']);
+    expect(submitted[0].fields.has('proof_inline')).toBe(false);
   });
 
-  test('email: the submit says it is from script, so that a redirect comes back as data', async ({ page }) => {
+  test('email: a redirect comes back as data, so that a submit sent from script follows it', async ({ page }) => {
     const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
-    const seen: Array<{ path: string; query: URLSearchParams; fields: URLSearchParams; header?: string }> = [];
-    await answerWith(page, '**/challenge/email*', { next: '/challenge' }, seen);
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [{ next: '/challenge' }], seen);
 
     await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText('next page')).toBeVisible();
-    expect(seen.map((request) => request.header)).toEqual(['1']);
+    expect(seen.map((request) => request.fields.get('proof_inline'))).toEqual(['1']);
   });
 
   test('login: asks for a password too and posts both', async ({ page }) => {
@@ -580,48 +590,6 @@ test.describe('credential', () => {
       await renderForm(fresh, id, { step });
       await expect(fresh.locator('.page-brand')).toHaveCount(1);
     }
-  });
-});
-
-test.describe('proof', () => {
-  // Sixteen zero bits: a few tens of milliseconds, so the page is seen before it moves on. 40 is never found within a test.
-  const step = { type: 'proof', kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '16' } };
-  const unsolvable = { ...step, params: { seed: 'abc', difficulty: '40' } };
-
-  test('solves the challenge by itself and sends the token with the solution', async ({ page }) => {
-    const { submitted } = await renderForm(page, 'proof', { step });
-
-    await expectSubmissions(submitted, 1);
-    expect(submitted[0]).toMatchObject({ method: 'POST', path: '/challenge/proof' });
-    expect(submitted[0].query.get('ui_locale')).toBe('en');
-    expect(submitted[0].fields.get('token')).toBe('signed.token');
-    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
-    // What it sent really is a solution: SHA-256 of `seed:nonce` starts with sixteen zero bits.
-    const nonce = submitted[0].fields.get('solution')!;
-    expect(nonce).toMatch(/^\d+$/);
-    const digest = createHash('sha256').update(`abc:${nonce}`).digest();
-    expect(digest[0]).toBe(0);
-    expect(digest[1]).toBe(0);
-  });
-
-  test('says what it is doing', async ({ page }) => {
-    const { t } = await renderForm(page, 'proof', { step: unsolvable });
-
-    await expect(page.getByRole('heading', { name: t.title })).toBeVisible();
-    await expect(page.getByText(t.working)).toBeVisible();
-  });
-
-  test('shows why it is asking again after a solution was refused', async ({ page }) => {
-    const { t } = await renderForm(page, 'proof', { step: unsolvable, error: 'proof_failed' });
-
-    await expect(page.getByText(t.proof_failed)).toBeVisible();
-  });
-
-  test('a kind it cannot solve says so, and sends nothing', async ({ page }) => {
-    const { t, submitted } = await renderForm(page, 'proof', { step: { ...step, kind: 'widget' } });
-
-    await expect(page.getByText(t.unsupported)).toBeVisible();
-    expect(submitted).toHaveLength(0);
   });
 });
 
@@ -926,7 +894,6 @@ test.describe('terminal screens', () => {
  */
 const accessibilityCases: Array<[string, FormConfig]> = [
   ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' } }],
-  ['proof', { step: { type: 'proof', kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '40' } } }],
   ['password', { step: { type: 'password' } }],
   ['set-password', { step: { type: 'set-password' } }],
   ['credential', { step: { type: 'credential', primaryCredentials: ['login'], passkey: true } }],

@@ -36,22 +36,6 @@ object ConversationStep:
   object Otp:
     case class Real(code: OtpCode)
 
-  /** An OTP request the antifraud decision wants a proof from the client for, which is asked before any code is sent.
-    * What the OTP step needs to go on once the proof is given is kept here: where it was going (`factorIndex`) and
-    * what decided it (`score`, `rules`); the credential is on the conversation.
-    */
-  case class Proof(
-      kind: String,
-      token: String,
-      level: Int,
-      params: Map[String, String],
-      factorIndex: Int,
-      score: Int,
-      rules: List[String],
-      /** Wrong solutions so far. */
-      attempts: Int,
-  ) extends ConversationStep(StepId.Proof)
-
   case class Password(
       timesSubmitted: Int,
       oldPasswordChangedAt: Option[Instant], // Set when user enters old password

@@ -140,7 +140,7 @@ function CredentialForm(props: { config: FormConfig }) {
       if (submitting) return;
       submitting = true;
       const action = formAction();
-      submitInline(action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>), props.config.csrf ?? '', currentLocale()).catch(() => {
+      submitInline(action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>)).catch(() => {
         form.action = action;
         HTMLFormElement.prototype.submit.call(form);
       });

@@ -25,7 +25,6 @@ object ConversationController extends Controller:
     submitLoginPasswordRoute,
     submitOtpRoute,
     submitResendOtpRoute,
-    submitProofRoute,
     getPasskeyOptionsRoute,
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
@@ -86,9 +85,6 @@ object ConversationController extends Controller:
 
   val submitResendOtpRoute =
     submit[OtpResendSubmission](Method.POST / "challenge" / "otp" / "resend")
-
-  val submitProofRoute =
-    submit[ProofSubmission](Method.POST / "challenge" / "proof")
 
   /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
     * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
@@ -162,7 +158,10 @@ object ConversationController extends Controller:
         uiLocale = UiLocales.submitted(request)
         (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
         response <- conversationRenderService.renderSubmit(result, record, uiLocale)
-      yield if request.headers.get(InlineStep.Header).contains("1") then asInlineStep(result, response) else response)
+      yield body match
+        case request: CodeRequest if request.proof != ProofInput.NoScript => forScript(result, response)
+        case _ => response
+      )
         .catchAll {
           case Error.ConversationExpired => expiredResponse(request)
           case Error.ServiceUnavailable => serviceUnavailableResponse(request)
@@ -171,20 +170,23 @@ object ConversationController extends Controller:
         }
     }
 
-  /** The answer to a script's submit: the redirect the browser would have followed, as data (a cross-origin one, to the
-    * client's own redirect URI, could not be followed by `fetch`), with the cookies it sets, and the challenge if there is one. */
-  private def asInlineStep(result: ConversationResult.Render, response: Response): Response =
-    response.header(Header.Location) match
-      case Some(location) if response.status == Status.SeeOther =>
-        val challenge = result match
-          case ConversationResult.RenderStep(proof: ConversationStep.Proof) => Some(InlineChallenge(proof.kind, proof.token, proof.params))
-          case _ => None
-        response
-          .removeHeader(Header.Location)
-          .copy(status = Status.Ok, body = Body.fromString(InlineStep(location.renderedValue, challenge).toJson))
-          .addHeader(Header.ContentType(MediaType.application.json))
-          .addHeader(Header.CacheControl.NoStore)
-      case _ => response
+  /** The answer to a script's submit: a challenge to answer, or the redirect the browser would have followed as data (a
+    * cross-origin one, to the client's own redirect URI, could not be followed by `fetch`), with the cookies it sets. */
+  private def forScript(result: ConversationResult.Render, response: Response): Response =
+    result match
+      case ConversationResult.Challenged(challenge) =>
+        json(InlineStep(next = None, challenge = Some(InlineChallenge(challenge.kind, challenge.token, challenge.params))))
+      case _ =>
+        response.header(Header.Location) match
+          case Some(location) if response.status == Status.SeeOther =>
+            json(InlineStep(next = Some(location.renderedValue), challenge = None), response.removeHeader(Header.Location))
+          case _ => response
+
+  private def json(step: InlineStep, base: Response = Response.ok): Response =
+    base
+      .copy(status = Status.Ok, body = Body.fromString(step.toJson))
+      .addHeader(Header.ContentType(MediaType.application.json))
+      .addHeader(Header.CacheControl.NoStore)
 
   /** Validate submission payloads against tenant config using the trusted clientId from the signed
    *  cookie. Runs against the in-memory cache — no DB call required.
@@ -257,33 +259,41 @@ object ConversationController extends Controller:
       )
     yield response
 
+  /** The optional proof fields of a request for a code, the same on every form that sends one. */
+  private def proofInput(form: Form): IO[String, ProofInput] =
+    for
+      inline <- FormDecoder.optional[String](form, ProofInput.InlineField, Right(_))
+      token <- FormDecoder.optional[String](form, ProofInput.TokenField, Right(_))
+      solution <- FormDecoder.optional[String](form, ProofInput.SolutionField, Right(_))
+    yield (token, solution) match
+      case (Some(token), Some(solution)) => ProofInput.Answered(token, solution)
+      case _ => if inline.isDefined then ProofInput.Asked else ProofInput.NoScript
+
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for
       phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
+      proof <- proofInput(form)
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield PhoneSubmission(phone, csrf)
+    yield PhoneSubmission(phone, proof, csrf)
 
   given FormDecoder[EmailSubmission] = (form: Form) =>
     for
       email <- FormDecoder.single[Email](form, "email", Email.from)
+      proof <- proofInput(form)
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield EmailSubmission(email, csrf)
+    yield EmailSubmission(email, proof, csrf)
 
   given FormDecoder[OtpResendSubmission] = (form: Form) =>
-    FormDecoder.single[String](form, "csrf", Right(_)).map(OtpResendSubmission(_))
+    for
+      proof <- proofInput(form)
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield OtpResendSubmission(proof, csrf)
 
   given FormDecoder[OtpSubmission] = (form: Form) =>
     for
       code <- FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield OtpSubmission(code, csrf)
-
-  given FormDecoder[ProofSubmission] = (form: Form) =>
-    for
-      token <- FormDecoder.single[String](form, "token", Right(_))
-      solution <- FormDecoder.single[String](form, "solution", Right(_))
-      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield ProofSubmission(token, solution, csrf)
 
   given FormDecoder[PasswordSubmission] = (form: Form) =>
     for

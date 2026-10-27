@@ -47,6 +47,8 @@ object PowChallengeVerifier:
       tenant: Option[String],
       client: String,
       conversation: String,
+      generation: Long,
+      attempts: Int,
       subject: String,
       expires: Long,
       difficulty: Int,
@@ -97,9 +99,11 @@ object PowChallengeVerifier:
       key: Secret,
   ) extends ChallengeVerifier:
 
+    override def enabled: Boolean = true
+
     override def maxAttempts: Int = settings.maxAttempts
 
-    override def issue(subject: ChallengeSubject, score: Int): UIO[Option[Challenge]] =
+    override def issue(subject: ChallengeSubject, score: Int, attempts: Int): UIO[Option[Challenge]] =
       (for
         now <- Clock.instant
         seed <- secureRandom.nextBytes(16).map(Base64.urlEncode)
@@ -108,6 +112,8 @@ object PowChallengeVerifier:
           tenant = subject.tenantId.map(_.toString),
           client = subject.clientId.toString,
           conversation = subject.conversationId.toString,
+          generation = subject.generation,
+          attempts = attempts,
           subject = subject.subjectHash,
           expires = now.plusSeconds(settings.ttl.toSeconds).getEpochSecond,
           difficulty = difficulty,
@@ -128,15 +134,16 @@ object PowChallengeVerifier:
       (for
         now <- Clock.instant
         result <- parse(token) match
-          case None => ZIO.succeed(ChallengeResult.Failed)
+          case None => ZIO.succeed(ChallengeResult.Failed(1))
           case Some((body, signature, payload)) =>
             securityService.mac(Secret(body), key).map: expected =>
-              if !MessageDigest.isEqual(expected, signature) then ChallengeResult.Failed
+              if !MessageDigest.isEqual(expected, signature) then ChallengeResult.Failed(1)
               else if !Instant.ofEpochSecond(payload.expires).isAfter(now) then ChallengeResult.Expired
-              else if !boundTo(payload, subject) || !solves(payload, solution) then ChallengeResult.Failed
+              else if !boundTo(payload, subject) then ChallengeResult.Failed(1)
+              else if !solves(payload, solution) then ChallengeResult.Failed(payload.attempts + 1)
               else ChallengeResult.Passed
       yield result).catchAllCause(cause =>
-        ZIO.logDebugCause("could not check a proof-of-work solution", cause).as(ChallengeResult.Failed),
+        ZIO.logDebugCause("could not check a proof-of-work solution", cause).as(ChallengeResult.Failed(1)),
       )
 
     private def parse(token: String): Option[(Array[Byte], Array[Byte], Payload)] =
@@ -153,6 +160,7 @@ object PowChallengeVerifier:
       payload.tenant == subject.tenantId.map(_.toString) &&
         payload.client == subject.clientId.toString &&
         payload.conversation == subject.conversationId.toString &&
+        payload.generation == subject.generation &&
         payload.subject == subject.subjectHash
 
     private def solves(payload: Payload, solution: String): Boolean =

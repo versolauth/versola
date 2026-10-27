@@ -285,6 +285,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ),
             Left(email),
             0,
+            versola.oauth.conversation.ProofInput.NoScript,
           )
         yield assertTrue(result == ConversationResult.RenderStep(otpStep))
       },
@@ -293,7 +294,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0)
+          result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0, versola.oauth.conversation.ProofInput.NoScript)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),

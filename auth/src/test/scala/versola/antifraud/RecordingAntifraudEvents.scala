@@ -52,10 +52,16 @@ final class RecordingAntifraudEvents(
   /** How many times a decision asked to hold a request back. */
   def holds: Int = held.get
 
-  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
-    zio.ZIO.succeed(decision)
+  private val decided = scala.collection.mutable.ListBuffer.empty[Boolean]
 
-  override def hold(decision: Decision): UIO[Unit] = zio.ZIO.succeed(held.incrementAndGet()).unit
+  /** The `repeated` flag of each [[decideOtpRequest]] call, in order. */
+  def decisions: List[Boolean] = synchronized(decided.toList)
+
+  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
+    zio.ZIO.succeed(synchronized(decided += repeated)) *> zio.ZIO.succeed(decision)
+
+  override def hold(decision: Decision): UIO[Unit] =
+    zio.ZIO.succeed(held.incrementAndGet()).when(decision.action == DecisionAction.Delay || decision.action == DecisionAction.Challenge).unit
 
   override def sendTook(took: zio.Duration): UIO[Unit] = zio.ZIO.unit
 
@@ -87,7 +93,7 @@ final class RecordingAntifraudEvents(
       outcome: AntifraudOutcome,
       decision: Decision,
       kind: String,
-      level: Int,
+      level: Option[Int],
   ): UIO[Unit] =
     zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, Some(decision)))).unit
 

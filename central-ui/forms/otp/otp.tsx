@@ -125,7 +125,7 @@ function OtpForm(props: { config: FormConfig }) {
             const form = e.currentTarget;
             if (resending) return;
             resending = true;
-            submitInline(form.action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>), props.config.csrf ?? '', currentLocale()).catch(() => {
+            submitInline(form.action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>)).catch(() => {
               HTMLFormElement.prototype.submit.call(form);
             });
           }}

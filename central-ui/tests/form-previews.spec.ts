@@ -39,6 +39,6 @@ for (const form of golden.previews) {
 
 test('lists a state for every built-in form the console can preview', () => {
   expect(golden.previews.map(p => p.formId).sort()).toEqual(
-    ['access-denied', 'confirm-logout', 'consent', 'conversation-expired', 'credential', 'otp', 'passkey-enroll', 'password', 'proof', 'service-unavailable', 'set-password', 'signed-out'],
+    ['access-denied', 'confirm-logout', 'consent', 'conversation-expired', 'credential', 'otp', 'passkey-enroll', 'password', 'service-unavailable', 'set-password', 'signed-out'],
   );
 });

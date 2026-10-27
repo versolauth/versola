@@ -1,29 +1,37 @@
-import { solve } from '../proof/pow';
+import { solve } from './pow';
 
-/** What `auth` answers a submit that carries `Versola-Inline: 1`: where a plain one would have redirected, and, when
- * the request must prove itself first, the challenge to answer meanwhile. */
-type InlineStep = { next: string; challenge?: { kind: string; token: string; params: Record<string, string> } };
+/** What `auth` answers a submit sent from script: the challenge to answer (nothing was sent), or where a plain submit
+ * would have redirected. */
+type InlineStep = { next?: string; challenge?: { kind: string; token: string; params: Record<string, string> } };
+
+const INLINE = 'proof_inline';
+const TOKEN = 'proof_token';
+const SOLUTION = 'proof_solution';
 
 const post = (url: string, params: URLSearchParams) =>
   fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Versola-Inline': '1' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params,
     credentials: 'same-origin',
   });
 
-/** Challenges answered in a row before the page is left to the `proof` form. */
+/** Challenges answered in a row before the page gives up. */
 const ROUNDS = 3;
 
 /**
  * Submits a step from script, so that a challenge can be answered without the person seeing anything but the submit
- * they made: the answer to the POST says where to go next (`next`) and, if the request has to prove itself, what to
- * solve. A kind it cannot solve (a visible widget, say) is left to the page `next` names, which draws it.
+ * they made. If the server asks for a proof, nothing has been sent yet: the page solves it and makes the same request
+ * again with the token and the solution added, and the answer to that says where to go.
  *
- * Rejects only if the first request could not be made, when the caller submits the form the plain way.
+ * Rejects when the request cannot be completed here (no way to make it, or a challenge of a kind this page cannot
+ * answer, which a widget would be): the caller then submits the form the plain way, which the server refuses if a
+ * challenge is due, so that a client that cannot answer is no better off than one that would not.
  */
-export async function submitInline(action: string, params: URLSearchParams, csrf: string, locale: string): Promise<void> {
-  let response = await post(action, params);
+export async function submitInline(action: string, params: URLSearchParams): Promise<void> {
+  const base = new URLSearchParams(params);
+  base.set(INLINE, '1');
+  let response = await post(action, base);
   for (let round = 0; ; round++) {
     if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
       // Not an answer in the inline shape (an error page, say): show it as the page.
@@ -33,19 +41,18 @@ export async function submitInline(action: string, params: URLSearchParams, csrf
       return;
     }
     const step: InlineStep = await response.json();
-    const challenge = step.challenge;
-    if (!challenge || challenge.kind !== 'pow' || round >= ROUNDS) {
+    if (step.next) {
       location.assign(step.next);
       return;
     }
+    const challenge = step.challenge;
+    if (!challenge || challenge.kind !== 'pow' || round >= ROUNDS) throw new Error('challenge not answered');
     const nonce = await solve(challenge.params.seed, Number(challenge.params.difficulty));
     if (nonce === null) return;
-    try {
-      response = await post(`/challenge/proof?ui_locale=${locale}`, new URLSearchParams({ token: challenge.token, solution: nonce, csrf }));
-    } catch (_) {
-      location.assign(step.next);
-      return;
-    }
+    const answered = new URLSearchParams(base);
+    answered.set(TOKEN, challenge.token);
+    answered.set(SOLUTION, nonce);
+    response = await post(action, answered);
   }
 }
 

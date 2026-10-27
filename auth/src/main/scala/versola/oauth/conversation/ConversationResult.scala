@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.antifraud.Challenge
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, State, UserAgentData}
@@ -27,6 +28,10 @@ object ConversationResult:
   case object ServiceUnavailable extends Render
 
   case class RenderStep(step: ConversationStep) extends Render
+
+  /** The request needs a proof before a code is sent: nothing was sent, and the conversation stays where it was. Only a
+    * submit sent from script is answered with one; any other that would have been challenged is refused. */
+  case class Challenged(challenge: Challenge) extends Render
 
   case class IdTokenData(
       userId: UserId,

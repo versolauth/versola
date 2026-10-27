@@ -18,7 +18,7 @@ await mkdir(outDir, { recursive: true });
 const baseStylesheetDir = resolve(here, '../../util/src/main/resources/versola/forms');
 await mkdir(baseStylesheetDir, { recursive: true });
 
-const forms = ['credential', 'otp', 'proof', 'password', 'access-denied', 'conversation-expired', 'service-unavailable', 'passkey-enroll', 'set-password', 'confirm-logout', 'signed-out', 'consent', 'auth-settings'];
+const forms = ['credential', 'otp', 'password', 'access-denied', 'conversation-expired', 'service-unavailable', 'passkey-enroll', 'set-password', 'confirm-logout', 'signed-out', 'consent', 'auth-settings'];
 const sharedAssets = ['common.css'];
 
 for (const id of forms) {

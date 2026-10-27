@@ -36,12 +36,14 @@ trait AntifraudEvents:
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
-    * request's log context carries. Never fails; always
-    * [[Decision.allow]] while the decision engine is off. */
+    * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
+    * A `repeated` request is one that was challenged and is made again with its answer: it is judged, but not counted
+    * a second time. */
   def decideOtpRequest(
       clientId: ClientId,
       userAgent: Option[String],
       credential: Either[Email, Phone],
+      repeated: Boolean,
   ): UIO[Decision]
 
   /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, when no challenge could be put to the
@@ -75,7 +77,7 @@ trait AntifraudEvents:
       outcome: AntifraudOutcome,
       decision: Decision,
       kind: String,
-      level: Int,
+      level: Option[Int],
   ): UIO[Unit]
 
   /** A submitted OTP was checked and this is how it ended. */
@@ -132,7 +134,7 @@ object AntifraudEvents:
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
-    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
+    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
 
     override def hold(decision: Decision): UIO[Unit] = ZIO.unit
@@ -158,7 +160,7 @@ object AntifraudEvents:
         outcome: AntifraudOutcome,
         decision: Decision,
         kind: String,
-        level: Int,
+        level: Option[Int],
     ): UIO[Unit] = ZIO.unit
 
     override def otpChecked(
@@ -247,6 +249,7 @@ object AntifraudEvents:
         clientId: ClientId,
         userAgent: Option[String],
         credential: Either[Email, Phone],
+        repeated: Boolean,
     ): UIO[Decision] =
       if !settings.decision.enabled then ZIO.succeed(Decision.allow)
       else
@@ -271,7 +274,7 @@ object AntifraudEvents:
           // refused, or one aimed at somebody else's number, must not raise the count used against that number's owner.
           counted <- velocity.snapshot(context)
           decision <- antifraud.evaluate(counted)
-          _ <- ZIO.unless(decision.action == DecisionAction.Block)(velocity.record(context))
+          _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context))
           _ <- AntifraudMetrics.decided(decision.action)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
@@ -348,7 +351,7 @@ object AntifraudEvents:
         outcome: AntifraudOutcome,
         decision: Decision,
         kind: String,
-        level: Int,
+        level: Option[Int],
     ): UIO[Unit] =
       AntifraudMetrics.challenge(kind, outcome) *>
         Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
@@ -357,7 +360,7 @@ object AntifraudEvents:
             score = decision.score,
             rules = decision.firedRules,
             challenge = Some(kind),
-            challengeLevel = Some(level),
+            challengeLevel = level,
           ),
         ) *>
         event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, Some(decision))

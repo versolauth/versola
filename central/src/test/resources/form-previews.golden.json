@@ -221,44 +221,6 @@
       ]
     },
     {
-      "formId" : "proof",
-      "scenarios" : [
-        {
-          "id" : "checking",
-          "title" : {
-            "en" : "Checking the request",
-            "ru" : "Проверка запроса"
-          },
-          "step" : {
-            "type" : "proof",
-            "kind" : "pow",
-            "token" : "preview",
-            "params" : {
-              "seed" : "preview",
-              "difficulty" : "40"
-            }
-          }
-        },
-        {
-          "id" : "refused",
-          "title" : {
-            "en" : "Solution refused",
-            "ru" : "Решение не принято"
-          },
-          "step" : {
-            "type" : "proof",
-            "kind" : "pow",
-            "token" : "preview",
-            "params" : {
-              "seed" : "preview",
-              "difficulty" : "40"
-            }
-          },
-          "error" : "proof_failed"
-        }
-      ]
-    },
-    {
       "formId" : "password",
       "scenarios" : [
         {
