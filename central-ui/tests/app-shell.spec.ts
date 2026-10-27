@@ -26,6 +26,7 @@ test('switches navigation views and keeps the url in sync', async ({ page }) => 
     { navText: 'Authorization details', heading: 'Authorization details', url: /view=authorization-details/ },
     { navText: 'Keys & metadata', heading: 'Keys & metadata', url: /view=keys/ },
     { navText: 'System settings', heading: 'System settings', url: /view=system-settings/ },
+    { navText: 'Delivery', heading: 'Delivery', url: /view=delivery/ },
   ];
 
   for (const view of views) {
@@ -96,7 +97,7 @@ test('the navigation lists the tenant items, then the global ones, in the agreed
   const labels = (await links.allInnerTexts()).map(text => text.trim()).filter(Boolean);
   expect(labels).toEqual([
     'Security', 'Clients', 'Resources', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
-    'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Forms', 'Themes',
+    'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes',
   ]);
 });
 

@@ -106,6 +106,8 @@ type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto; variables?:
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number };
+type SmtpDeliverySettings = { host: string; port: number; username: string; from: string; subject: string; startTls: boolean; enabled: boolean };
+type OtpProviderDeliverySettings = { method: string; url: string; username?: string | null; body: Record<string, string>; enabled: boolean };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -400,6 +402,17 @@ export type MockConfigState = {
   // When set, central refuses to render a stylesheet with this message (a 500), to see how a preview shows it.
   themeRenderError: string | null;
   systemSettings: SystemSettingsDto;
+  // The delivery settings central stores; null stands for nothing saved yet. The passwords are kept only so the mock can
+  // answer the has-a-password flags the way central does: no response carries one.
+  deliverySettings: { smtp?: SmtpDeliverySettings; smtpPassword?: string; otpProvider?: OtpProviderDeliverySettings; otpProviderPassword?: string } | null;
+  // Makes `PUT /configuration/delivery-settings` answer 400 with this message, as central does for a block that fails validation.
+  deliveryRejection?: string;
+  // Holds `PUT` and `DELETE /configuration/delivery-settings` for this long, to look at the pending state.
+  deliveryDelayMs?: number;
+  // Makes `GET /configuration/delivery-settings` answer 500 with this message, to look at the load failure.
+  deliveryFailure?: string;
+  // Makes `DELETE /configuration/delivery-settings` answer 500 with this message.
+  deliveryDeleteFailure?: string;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
   jwksKeys: JwksKeyDto[];
@@ -477,6 +490,7 @@ const defaultState: MockConfigState = {
     passwordHistorySize: 5,
     passwordNumDifferent: 3,
   },
+  deliverySettings: null,
   otpTemplates: {},
   challengeSettings: {},
   jwksKeys: defaultJwksKeys,
@@ -512,6 +526,11 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     themeVariables: clone(overrides.themeVariables === undefined ? defaultState.themeVariables : overrides.themeVariables),
     themeRenderError: overrides.themeRenderError ?? null,
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
+    deliverySettings: clone(overrides.deliverySettings === undefined ? defaultState.deliverySettings : overrides.deliverySettings),
+    deliveryRejection: overrides.deliveryRejection,
+    deliveryDelayMs: overrides.deliveryDelayMs,
+    deliveryFailure: overrides.deliveryFailure,
+    deliveryDeleteFailure: overrides.deliveryDeleteFailure,
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
     jwksKeys: clone(overrides.jwksKeys ?? defaultState.jwksKeys),
@@ -658,6 +677,55 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         state.systemSettings = clone(body as SystemSettingsDto);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/delivery-settings') {
+      if (method === 'GET') {
+        if (state.deliveryFailure) {
+          await route.fulfill(json({ message: state.deliveryFailure }, 500));
+          return;
+        }
+        const stored = state.deliverySettings;
+        await route.fulfill(json({
+          ...(stored?.smtp ? { smtp: stored.smtp } : {}),
+          hasSmtpPassword: !!stored?.smtpPassword,
+          ...(stored?.otpProvider ? { otpProvider: stored.otpProvider } : {}),
+          hasOtpProviderPassword: !!stored?.otpProviderPassword,
+        }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        if (state.deliveryDelayMs) await new Promise(resolve => setTimeout(resolve, state.deliveryDelayMs));
+        if (state.deliveryRejection) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: state.deliveryRejection });
+          return;
+        }
+        const update = body as { smtp?: SmtpDeliverySettings; smtpPassword?: string | null; otpProvider?: OtpProviderDeliverySettings; otpProviderPassword?: string | null };
+        // A password left out or null keeps the stored one, '' clears it, a block left out goes with its password.
+        const password = (kept: string | undefined, sent: string | null | undefined, present: boolean) =>
+          !present ? undefined : sent === undefined || sent === null ? kept : sent === '' ? undefined : sent;
+        const previous = state.deliverySettings;
+        state.deliverySettings = {
+          smtp: update.smtp,
+          smtpPassword: password(previous?.smtpPassword, update.smtpPassword, !!update.smtp),
+          otpProvider: update.otpProvider,
+          otpProviderPassword: password(previous?.otpProviderPassword, update.otpProviderPassword, !!update.otpProvider),
+        };
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        if (state.deliveryDelayMs) await new Promise(resolve => setTimeout(resolve, state.deliveryDelayMs));
+        if (state.deliveryDeleteFailure) {
+          await route.fulfill(json({ message: state.deliveryDeleteFailure }, 500));
+          return;
+        }
+        state.deliverySettings = null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }

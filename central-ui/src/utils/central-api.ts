@@ -19,6 +19,8 @@ import type {
   JwksKeySummary,
   MutualTlsAuth,
   SystemSettingsRecord,
+  DeliverySettingsRecord,
+  DeliverySettingsUpdate,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -425,11 +427,14 @@ function redirectToLogin(response: Response): Promise<never> {
 
 async function request<T>(
   path: string,
-  options: { method?: string; query?: Record<string, QueryValue>; body?: unknown } = {},
+  options: { method?: string; query?: Record<string, QueryValue>; body?: unknown; fresh?: boolean } = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
   const url = buildUrl(path, options.query);
-  const useReadCache = method === 'GET' && !options.body;
+  const isRead = method === 'GET' && !options.body;
+  // `fresh` skips the 60 s read cache for this one read (a save that must start from what central holds now) and
+  // refreshes the entry with the answer. It does not join a read already in flight: the entry is last-write-wins.
+  const useReadCache = isRead && !options.fresh;
 
   if (useReadCache) {
     const cached = readCache.get(url);
@@ -494,7 +499,7 @@ async function request<T>(
   try {
     const result = await requestPromise;
 
-    if (useReadCache) {
+    if (isRead) {
       readCache.set(url, {
         expiresAt: Date.now() + READ_CACHE_TTL_MS,
         value: clone(result),
@@ -1678,3 +1683,18 @@ export async function upsertSystemSettings(settings: SystemSettingsRecord): Prom
   });
 }
 
+/** `fresh` reads past the 60 s read cache: a save replaces both blocks, so it starts from what central holds now. */
+export async function fetchDeliverySettings(options: { fresh?: boolean } = {}): Promise<DeliverySettingsRecord> {
+  return request<DeliverySettingsRecord>('/configuration/delivery-settings', { fresh: options.fresh });
+}
+
+export async function upsertDeliverySettings(update: DeliverySettingsUpdate): Promise<void> {
+  await requestVoid('/configuration/delivery-settings', {
+    method: 'PUT',
+    body: update,
+  });
+}
+
+export async function deleteDeliverySettings(): Promise<void> {
+  await requestVoid('/configuration/delivery-settings', { method: 'DELETE' });
+}
