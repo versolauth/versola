@@ -1216,6 +1216,11 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
   (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
   applies to each pod and N pods allow N times it. Change it when the number of pods changes.
+  **Counting pods automatically:** set `replicas-from = "dns:<name>"` in the edge config to count the pods from DNS instead. The
+  chart ships a headless Service `<release>-edge-headless` for this (ready pods only); the edge resolves it every 10 seconds, keeps
+  the last good count if a lookup fails, and uses the policy's `replicas` until the first answer. The count in force and where it came
+  from are the gauge `edge_rate_limit_replicas{source="dns|policy"}`. Nothing detects Kubernetes at runtime: without the key the
+  policy's `replicas` is used.
 - **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
   `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
 

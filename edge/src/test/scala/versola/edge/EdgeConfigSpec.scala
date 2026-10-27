@@ -224,6 +224,31 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .load(edgeConfigDescriptor)
         yield assertTrue(config.mode == EdgeMode.Partner)
       },
+      test("rate limit keys: client-ip, its header and replicas-from are read; a file without them is socket, X-Real-IP and no source") {
+        def load(extra: String) =
+          TypesafeConfigProvider.fromHoconString(hocon(includeInternalUrl = false) + "\n" + extra).kebabCase.load(edgeConfigDescriptor)
+        for
+          plain <- load("")
+          set <- load("""client-ip = "forwarded"
+                        |client-ip-header = "X-Client-IP"
+                        |replicas-from = "dns:versola-edge-headless"""".stripMargin)
+        yield assertTrue(
+          plain.clientIp == versola.util.http.ClientIpSource.Socket,
+          plain.clientIpHeader == "X-Real-IP",
+          plain.replicasFrom.isEmpty,
+          set.clientIp == versola.util.http.ClientIpSource.Forwarded,
+          set.clientIpHeader == "X-Client-IP",
+          set.replicasFrom.contains("dns:versola-edge-headless"),
+        )
+      },
+      test("client-ip other than socket or forwarded is refused, naming the choices") {
+        for error <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false) + "\nclient-ip = \"Forwarded\"")
+            .kebabCase
+            .load(edgeConfigDescriptor)
+            .flip
+        yield assertTrue(error.getMessage.contains("socket, forwarded"))
+      },
       test("refuses a mode it does not know, naming the ones it does") {
         for error <- TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false, modeLine = """mode = "Partner""""))
@@ -239,6 +264,15 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     // endpoint actually presents -- would accept any certificate that CA has ever issued, for
     // any host. `EdgeConfig.validated` is where that is refused instead.
     suite("validated")(
+      test("refuses a replicas-from that is not dns:<name>, and accepts one that is") {
+        def validate(from: Option[String]) =
+          ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None).copy(replicasFrom = from)) >>> EdgeConfig.validated).exit
+        for
+          bad <- validate(Some("kubernetes:edge"))
+          good <- validate(Some("dns:versola-edge-headless"))
+          absent <- validate(None)
+        yield assertTrue(bad.isFailure, good.isSuccess, absent.isSuccess)
+      },
       test("refuses a certificate authority named as the trust anchor") {
         ZIO.scoped:
           for

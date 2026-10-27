@@ -2297,6 +2297,10 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |# (deploy.md, Rate limits).
        |client-ip = "socket"
        |# client-ip-header = "X-Real-IP"
+       |# The number of edge pods a limit is divided by. With a headless Service the pods are
+       |# counted from DNS (the chart's `<release>-edge-headless`); without it the `replicas`
+       |# of the policy set in central is used (deploy.md, Rate limits).
+       |# replicas-from = "dns:<release>-edge-headless"
        |$edgeNativeBlock$edgeMutualTlsBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

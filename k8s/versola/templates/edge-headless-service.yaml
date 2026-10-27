@@ -1,0 +1,21 @@
+{{- if .Values.services.edge.enabled }}
+---
+# Lists the addresses of the ready edge pods and nothing else (`clusterIP: None`: a DNS name that answers with every pod, not a virtual
+# address). The edge resolves it to count its own replicas, so the per-pod share of a rate limit follows the autoscaler (set
+# `replicas-from = "dns:{{ include "versola.fullname" . }}-edge-headless"` in the edge's configuration). Nothing is routed through it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "versola.fullname" . }}-edge-headless
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "edge" "context" $) | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    {{- include "versola.componentSelectorLabels" (dict "component" "edge" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.edge.port }}
+      targetPort: http
+{{- end }}
