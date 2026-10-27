@@ -1,0 +1,95 @@
+package versola.util.http
+
+// the wire strings of GuardMode (`off`, `shadow`, `enforce`) are the ones of a policy; `derives` below reads them from here
+import RateLimitPolicy.given
+import zio.json.JsonCodec
+import zio.schema.{Schema, derived}
+
+/** What a limit declared by the owner of an API counts separately: one bucket per subject, per client, or for everyone who
+  * reaches it. Narrower than [[RateLimitDimension]] on purpose: the declaration is read by the owner of an API,
+  * who does not need session or `jkt`, and each value here is known at the point the limit runs.
+  */
+enum DeclaredRateLimitBy(val wire: String):
+  case Subject extends DeclaredRateLimitBy("subject")
+  case Client extends DeclaredRateLimitBy("client")
+
+  /** One bucket for the endpoint (or the client) as a whole. */
+  case None extends DeclaredRateLimitBy("none")
+
+object DeclaredRateLimitBy:
+  def parse(value: String): Option[DeclaredRateLimitBy] = values.find(_.wire == value.trim.toLowerCase)
+
+  given JsonCodec[DeclaredRateLimitBy] = JsonCodec.string.transformOrFail(
+    raw => parse(raw).toRight(s"by must be one of ${values.map(_.wire).mkString(", ")}"),
+    _.wire,
+  )
+  given Schema[DeclaredRateLimitBy] = Schema[String].transformOrFail(
+    raw => parse(raw).toRight(s"by must be one of ${values.map(_.wire).mkString(", ")}"),
+    by => Right(by.wire),
+  )
+
+/** What a [[DeclaredRateLimit]] is declared on. Its policy name is fixed (it is a metric label, so it never carries the id of
+  * the endpoint or the client), and it fixes where on the request path the limit runs.
+  */
+enum DeclaredOwner(val policyName: String):
+  /** A resource endpoint: counted at R3 per key and endpoint template, once the route is matched. */
+  case Endpoint extends DeclaredOwner("resource-endpoint")
+
+  /** A client of a resource's audience, declared by the resource: counted at R3 for the calls that client makes to that
+    * resource, so the owner of an API sets how much each of its clients may take, and a client's own owner does not.
+    */
+  case Audience extends DeclaredOwner("resource-client")
+
+/** A rate limit declared by the owner of an API (levels 2 and 3 of the design in issue #744 section 4), as central stores it on a
+  * resource endpoint, or on a client of a resource's audience, and sends it to the edge. Absent means no limit.
+  *
+  * It is a policy with the owner's part filled in: the same windows, burst and mode, and the same rules
+  * ([[RateLimitPolicy.validate]]). It applies together with the edge's own policies, and a request must pass every one, so
+  * the effective limit is the smallest.
+  *
+  * @param by
+  *   what the bucket is keyed on. On an endpoint `none` is one bucket for the endpoint, `client` one per client and `subject`
+  *   one per user. On an audience client `none` (and so `client`, which is the same) is one bucket for that client on the resource,
+  *   `subject` one per user of it, so `client` is refused there rather than left to mean two things
+  */
+final case class DeclaredRateLimit(
+    limits: List[RateLimitWindow],
+    burst: Int = 1,
+    by: DeclaredRateLimitBy = DeclaredRateLimitBy.None,
+    mode: GuardMode = GuardMode.Shadow,
+) derives JsonCodec, Schema:
+  /** The policy the limiter runs for this declaration. The scope narrows to the endpoint's template for an endpoint, and stays
+    * the resource for an audience client (the limiter keeps the declaration's own buckets, so nothing is shared with another owner).
+    */
+  def toPolicy(owner: DeclaredOwner): RateLimitPolicy =
+    val dimension = by match
+      case DeclaredRateLimitBy.Subject => List(RateLimitDimension.Subject)
+      case DeclaredRateLimitBy.Client => List(RateLimitDimension.Client)
+      case DeclaredRateLimitBy.None => Nil
+    RateLimitPolicy(
+      name = owner.policyName,
+      by = dimension,
+      scope = owner match
+        case DeclaredOwner.Endpoint => RateLimitScope.Endpoint
+        case DeclaredOwner.Audience => RateLimitScope.Resource
+      ,
+      limits = limits,
+      burst = burst,
+      cost = 1,
+      mode = mode,
+    )
+
+  /** The first thing wrong with it, if anything; central runs this before storing and the edge before applying. */
+  def validate(owner: DeclaredOwner): Either[String, DeclaredRateLimit] =
+    for
+      _ <- RateLimitPolicy.check(
+        !(owner == DeclaredOwner.Audience && by == DeclaredRateLimitBy.Client),
+        "by must be subject or none on an audience client: its limit is already counted for the client",
+      )
+      _ <- toPolicy(owner).validate
+    yield this
+
+/** One declaration, with the thing it is declared on: for an endpoint, the template (`GET /resources/{id}/path`, the same string
+  * the edge keys R3 on) as `selector`; for an audience client, the client id as `selector` and the resource id as `resource`.
+  */
+final case class DeclaredLimit(owner: DeclaredOwner, selector: String, limit: DeclaredRateLimit, resource: String = "")

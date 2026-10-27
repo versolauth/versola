@@ -1,5 +1,6 @@
 import { clientKindOf, type ClientKind } from './client-presets';
 import type { ThemeVariableCatalog } from './theme-variables';
+import type { AudienceRateLimit, DeclaredRateLimit } from './declared-rate-limit';
 import type {
   AuthFlow,
   AuthMethod,
@@ -80,11 +81,13 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge' | 'rateLimit'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
+  /** Left out when there is no limit: the endpoint is written whole, so absent removes it. */
+  rateLimit?: DeclaredRateLimit;
 };
 export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 export type ResourceEndpointWriteDto = {
@@ -97,6 +100,7 @@ export type ResourceEndpointWriteDto = {
   stepUpCondition?: string | null;
   stepUpAcr?: string | null;
   maxAge?: number | null;
+  rateLimit?: DeclaredRateLimit;
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
@@ -108,8 +112,9 @@ type ResourceEndpointDto = {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  rateLimit?: DeclaredRateLimit | null;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
+type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean; audienceRateLimits?: AudienceRateLimit[] };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number> };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -635,6 +640,7 @@ function serializeResourceEndpoint(
     stepUpCondition: endpoint.stepUpCondition ?? null,
     stepUpAcr: endpoint.stepUpAcr ?? null,
     maxAge: endpoint.maxAge ?? null,
+    ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
   };
 }
 
@@ -661,9 +667,11 @@ function mapResource(resource: ResourceResponseDto): Resource {
       ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
       ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+      ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
     })),
     hasSecret: resource.internal,
     hasPreviousSecret: resource.secretRotation,
+    ...(resource.audienceRateLimits?.length ? { audienceRateLimits: resource.audienceRateLimits.map(limit => ({ clientId: limit.clientId, rateLimit: limit.rateLimit })) } : {}),
   };
 }
 
@@ -931,6 +939,8 @@ export async function updateResource(
   patch: {
     resource?: string;
     audience?: { existing: string[]; next: string[] };
+    /** Replaces what the resource sets for its audience clients, as a whole; absent leaves it. */
+    audienceRateLimits?: AudienceRateLimit[];
     deleteEndpoints?: ResourceEndpointId[];
     createEndpoints?: SaveResourceEndpointPayload[];
   },
@@ -943,6 +953,7 @@ export async function updateResource(
       resourceId,
       ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
       audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      ...(patch.audienceRateLimits !== undefined ? { audienceRateLimits: patch.audienceRateLimits } : {}),
       deleteEndpoints: patch.deleteEndpoints ?? [],
       createEndpoints,
     },

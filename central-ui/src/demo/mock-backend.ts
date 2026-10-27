@@ -57,14 +57,16 @@ type ClientKindDto = 'web' | 'device' | 'service';
 export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
+export type DeclaredRateLimitDto = { limits: Array<{ limit: number; windowSeconds: number }>; burst?: number; by?: 'subject' | 'client' | 'none'; mode?: 'off' | 'shadow' | 'enforce' };
 type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
 type ResourceEndpointDto = {
   id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[];
-  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null;
+  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto;
 };
-export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
+export type AudienceRateLimitDto = { clientId: string; rateLimit: DeclaredRateLimitDto };
+export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean; audienceRateLimits?: AudienceRateLimitDto[] };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 /** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
@@ -158,15 +160,16 @@ type CreateResourceRequest = {
   resourceId: string;
   resource: string;
   audience?: string[];
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto }>;
   internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
   resource?: string;
   audience?: { add: string[]; remove: string[] };
+  audienceRateLimits?: AudienceRateLimitDto[];
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -1106,6 +1109,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
             ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
             ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+            ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
           })),
           internal: payload.internal ?? false,
           secretRotation: false,
@@ -1132,6 +1136,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (payload.audience) {
           resource.audience = [...(resource.audience ?? []).filter(id => !payload.audience!.remove.includes(id)), ...payload.audience.add];
         }
+        // As central does: the new set replaces the old one, and a client that left the audience keeps no limit.
+        if (payload.audienceRateLimits !== undefined) resource.audienceRateLimits = payload.audienceRateLimits;
+        if (resource.audienceRateLimits) {
+          resource.audienceRateLimits = resource.audienceRateLimits.filter(limit => (resource.audience ?? []).includes(limit.clientId));
+        }
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -1148,6 +1157,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
             ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
             ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+            ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
           })));
 
         await route.fulfill({ status: 204, body: '' });
