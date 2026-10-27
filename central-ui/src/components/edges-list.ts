@@ -448,7 +448,7 @@ export class VersolaEdgesList extends LitElement {
         dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
-      this.formError = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to save edge';
+      this.formError = await this.policySaveError(error, 'Failed to save edge');
     } finally {
       this.isSaving = false;
     }
@@ -457,6 +457,17 @@ export class VersolaEdgesList extends LitElement {
   /** The revision of a policy section as the console read it; a section never saved is at 0. */
   private revisionOf(edge: Edge, section: EdgePolicySection): number {
     return edge.policyRevisions?.[section] ?? 0;
+  }
+
+  /** What to tell the operator about a failed save of a policy section. Central answers `400` and `409` with no body (a body would be a contract),
+   *  so the words are the console's. The console validates what it sends, so a `400` means the rules of central and the console have moved
+   *  apart, and the reason is in central's log. */
+  private async policySaveError(error: unknown, fallback: string): Promise<string> {
+    if (isPolicyConflict(error)) return this.handlePolicyConflict();
+    if ((error as { status?: number } | undefined)?.status === 400) {
+      return 'Central did not accept these values, so nothing was saved. Check them and try again; central\'s log says what it refused.';
+    }
+    return error instanceof Error ? error.message : fallback;
   }
 
   /** A save that lost to someone else's change of the same section: nothing was written. The edges are read again so the editor, reopened,
@@ -536,7 +547,7 @@ export class VersolaEdgesList extends LitElement {
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'rate-limits') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to remove the rate limit policies';
+      const message = await this.policySaveError(error, 'Failed to remove the rate limit policies');
       if (this.editTarget === 'rate-limits') this.formError = message;
       else this.errorMessage = message;
     } finally {
@@ -565,7 +576,7 @@ export class VersolaEdgesList extends LitElement {
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'access-log') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to reset the access log';
+      const message = await this.policySaveError(error, 'Failed to reset the access log');
       if (this.editTarget === 'access-log') this.formError = message;
       else this.errorMessage = message;
     } finally {
@@ -594,7 +605,7 @@ export class VersolaEdgesList extends LitElement {
       this.draftBaseline = this.draftSnapshot;
       if (this.editTarget === 'overload') dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      const message = isPolicyConflict(error) ? await this.handlePolicyConflict() : error instanceof Error ? error.message : 'Failed to reset overload protection';
+      const message = await this.policySaveError(error, 'Failed to reset overload protection');
       if (this.editTarget === 'overload') this.formError = message;
       else this.errorMessage = message;
     } finally {

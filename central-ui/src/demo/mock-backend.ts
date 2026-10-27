@@ -1327,14 +1327,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       for (const section of sections) {
         const rejection = { overload: state.overloadRejection, accessLog: state.accessLogRejection, rateLimits: state.rateLimitRejection }[section];
         if (rejection) {
-          await route.fulfill(json({ error: `${section}: ${rejection}`, section }, 400));
+          await route.fulfill({ status: 400, body: '' }); // central gives no body: the reason is in its log
           return;
         }
       }
       const stale = Object.entries(patch.expectedRevisions ?? {}).find(([section, revision]) => (edge.policyRevisions?.[section] ?? 0) !== revision)?.[0]
         ?? sections.find(section => section === state.policyConflict);
       if (stale) {
-        await route.fulfill(json({ error: `${stale} has changed since it was read`, section: stale, current: view() }, 409));
+        await route.fulfill({ status: 409, body: '' }); // no body: the client reads the state again
         return;
       }
       const dryRun = url.searchParams.get('dryRun') === 'true';

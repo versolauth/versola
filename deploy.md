@@ -1153,13 +1153,14 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
   - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
     whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
-    (`400`), so a misspelled section is an error and not a silent no-op. `400` also names the section and the first problem; `404` for
-    an unknown edge. The answer is the new state with the new `revisions`.
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` and `409` come with **no body** (a body would be a
+    contract callers parse; the reason of a `400` is in central's log as `invalid_policy`, and `dryRun` answers whether a body is valid); `404`
+    for an unknown edge. The answer is the new state with the new `revisions`.
   - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
     (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
-    written and the answer is `409` with the current state in `current`. A section that is not named has no precondition, so a client
+    written and the answer is `409` with no body: read the state again. A section that is not named has no precondition, so a client
     that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
-    it read and, on `409`, reads the edges again and says so.
+    it read and, on `409`, reads the edges again and says so; on `400` (the console validates, so it should not happen) it says central did not accept the values.
   - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
     writing nothing: for CI and automation.
   - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
@@ -1201,7 +1202,7 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
     cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
     platform and is to be verified on the first real load balancer.
 - **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
-  caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
+  caller wait longest) and **no body**: a body would be a contract; everything a caller can act on is in the headers, and the policy is named only by `RateLimit-Policy`, never the key. A caller
   passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
   (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
   refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
@@ -1236,7 +1237,7 @@ absent):
 | failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
 | entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
 
-An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds) and `{"error":"rate_limited"}`
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds), the `RateLimit` fields and no body
 before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
 address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
 secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a

@@ -3480,8 +3480,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         second.rawHeader("RateLimit-Policy").contains("\"edge-enforce-r2\";q=1;w=3600"),
         second.rawHeader("RateLimit").contains("\"edge-enforce-r2\";r=0;t=3600"),
         first.rawHeader("RateLimit").isEmpty,
-        // the policy is named; no key, no other policy
-        body == """{"error":"rate_limited","policy":"edge-enforce-r2"}""",
+        // no body; the policy is named by the header, never a key or another policy
+        body.isEmpty,
         // the refused call reached neither the revocation check nor the upstream
         upstreamCalls == 1,
         revocationChecks == 1,

@@ -85,7 +85,7 @@ object AddressLimitSpec extends ZIOSpecDefault:
           third.rawHeader("RateLimit-Policy").contains("\"per-ip\";q=2;w=3600"),
           third.rawHeader("RateLimit").exists(_.startsWith("\"per-ip\";r=0;t=")),
           first.rawHeader("RateLimit").isEmpty,
-          body == """{"error":"rate_limited","policy":"per-ip"}""",
+          body.isEmpty,
           other.status == Status.Unauthorized,
         )
       },

@@ -246,6 +246,31 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    test("the edge policies API is reachable from the console: registered as endpoints, read with edges:read and changed with edges:manage") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      def grantedBy(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      assertTrue(
+        prod.contains("GET" -> "/configuration/edges/policies"),
+        prod.contains("PATCH" -> "/configuration/edges/policies"),
+        prod.contains("GET" -> "/configuration/edges/rate-limits/recommended"),
+        grantedBy("edges:read").contains(endpointId("GET", "/configuration/edges/policies")),
+        grantedBy("edges:read").contains(endpointId("GET", "/configuration/edges/rate-limits/recommended")),
+        grantedBy("edges:manage").contains(endpointId("PATCH", "/configuration/edges/policies")),
+        // reading is not changing: edges:read must not carry the patch
+        !grantedBy("edges:read").contains(endpointId("PATCH", "/configuration/edges/policies")),
+      )
+    },
+    test("every endpoint the edge permissions grant is registered as an endpoint of the central resource") {
+      val registered = BootstrapService.centralEndpoints(EnvName.Prod).toSet
+      val granted = BootstrapService.permissionCatalog
+        .filter(entry => Set("edges:read", "edges:manage").contains(entry._1.toString))
+        .flatMap(_._3)
+      val missing = granted.filterNot(id => registered.exists((method, path) => endpointId(method, path) == id))
+      assertTrue(granted.nonEmpty, missing.isEmpty)
+    },
     test("registers central's service endpoints outside production only") {
       val nonProd = BootstrapService.centralEndpoints(EnvName.Test("local"))
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)

@@ -397,7 +397,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "a section that does not validate is answered 400 with the section and what is wrong",
+      description = "a section that does not validate is answered 400 with no body",
       request = patch(s"""{"rateLimits":${rateLimits.toJson}}"""),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -405,34 +405,26 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           PolicySection.RateLimits,
           "policy per-client: burst must not exceed the smallest limit",
         )))),
-      verify = (response, _) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("rateLimits"), body.error.contains("per-client"), body.current.isEmpty),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
-      description = "a misspelled section, a section of the wrong shape and a body that is not an object are refused before the service is called",
+      description = "a misspelled section is refused with 400 and no body before the service is called",
       request = patch("""{"overlod":{}}"""),
       expectedStatus = Status.BadRequest,
-      verify = (response, service) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.error.contains("unknown section 'overlod'"), service.patchPolicies.calls.isEmpty),
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "a rate limit set with an unknown dimension is refused as malformed, naming the section",
+      description = "a rate limit set with an unknown dimension is refused as malformed with 400 and no body",
       request = patch("""{"rateLimits":{"policies":[{"name":"x","by":["ip-address"],"limits":[{"limit":1,"windowSeconds":1}]}]}}"""),
       expectedStatus = Status.BadRequest,
-      verify = (response, service) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("rateLimits"), service.patchPolicies.calls.isEmpty),
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "a revision that has moved on is answered 409 with the current state",
+      description = "a revision that has moved on is answered 409 with no body (the client reads the state again)",
       request = patch("""{"overload":{},"expectedRevisions":{"overload":1}}"""),
       expectedStatus = Status.Conflict,
       setup = service => service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Conflict(PolicySection.Overload, storedRecord)))),
-      verify = (response, _) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("overload"), body.current.exists(_.revisions.get("overload").contains(2))),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
       description = "PATCH policies of an unregistered edge returns 404",

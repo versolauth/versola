@@ -2398,7 +2398,7 @@ paths:
         - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
 
         **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
-        named section is still at that revision; otherwise nothing is written and the answer is `409` with the current state in `current`. A
+        named section is still at that revision; otherwise nothing is written and the answer is `409` with no body (read the state again). A
         section that is not named has no precondition, so a client that only ever patches its own section needs none. A change that changes
         nothing does not move the revision.
 
@@ -2444,21 +2444,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/EdgePolicies'
         '400':
-          description: A key that is not a section, a section of the wrong shape, or a section that does not validate. `section` names it.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A key that is not a section, a section of the wrong shape, or a section that does not validate. **No body**: a body would be a
+            contract. The console validates what it sends, so it should not meet this; the reason is in central's log (`invalid_policy`).
+            To find out whether a body is valid without writing it, use `dryRun=true`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
         '409':
-          description: A section named in `expectedRevisions` has changed since it was read. Nothing was written; `current` is the state.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A section named in `expectedRevisions` has changed since it was read. Nothing was written. No body: read the state again with `GET`.
 
   /configuration/edges/rate-limits/recommended:
     get:
@@ -6452,16 +6448,6 @@ components:
             accessLog: { type: integer, minimum: 0 }
             rateLimits: { type: integer, minimum: 0 }
           additionalProperties: false
-    EdgePoliciesError:
-      type: object
-      required: [error]
-      properties:
-        error: { type: string }
-        section:
-          type: string
-          enum: [overload, accessLog, rateLimits]
-        current:
-          $ref: '#/components/schemas/EdgePolicies'
     SetEdgeDpopRequest:
       type: object
       properties:

@@ -337,7 +337,7 @@ object BootstrapService:
       maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
     )
 
-  private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
+  private[versola] val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
     (
       Permission("oauth:read"),
       localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"),
@@ -536,6 +536,8 @@ object BootstrapService:
       localized("View edges", "Просмотр эджей"),
       Set(
         endpointId("GET", "/configuration/edges"),
+        endpointId("GET", "/configuration/edges/policies"),
+        endpointId("GET", "/configuration/edges/rate-limits/recommended"),
       ),
     ),
     (
@@ -546,6 +548,7 @@ object BootstrapService:
         endpointId("DELETE", "/configuration/edges"),
         endpointId("POST", "/configuration/edges/rotate-key"),
         endpointId("DELETE", "/configuration/edges/old-key"),
+        endpointId("PATCH", "/configuration/edges/policies"),
       ),
     ),
     (
@@ -921,6 +924,9 @@ object BootstrapService:
     "DELETE" -> "/configuration/edges",
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
+    "GET" -> "/configuration/edges/policies",
+    "PATCH" -> "/configuration/edges/policies",
+    "GET" -> "/configuration/edges/rate-limits/recommended",
     "GET" -> "/configuration/forms",
     "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
