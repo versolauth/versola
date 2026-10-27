@@ -244,4 +244,9 @@ object RateLimitPolicy:
       _ <- check(policies.size <= MaxPolicies, s"at most $MaxPolicies rate limit policies")
       _ <- policies.foldLeft[Either[String, Unit]](Right(()))((acc, p) => acc.flatMap(_ => p.validate.map(_ => ())))
       _ <- check(policies.map(_.name).distinct.size == policies.size, "two rate limit policies have the same name")
+      // the names of limits declared on endpoints and clients: they share them in metrics, so an edge policy must not
+      _ <- check(
+        policies.forall(p => !DeclaredOwner.values.exists(_.policyName == p.name)),
+        s"policy names ${DeclaredOwner.values.map(_.policyName).mkString(" and ")} are reserved for limits declared on an endpoint or a client",
+      )
     yield policies

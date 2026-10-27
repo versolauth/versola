@@ -743,6 +743,203 @@ test.describe('endpoints editor', () => {
   });
 });
 
+test.describe('rate limit declared on an endpoint', () => {
+  const limit = { limits: [{ limit: 30, windowSeconds: 60 }], burst: 5, by: 'subject', mode: 'enforce' };
+  const limitedState = {
+    ...shopState,
+    resources: { [shopTenant]: [{ ...ordersApi, secretRotation: false, endpoints: ordersApi.endpoints.map(e => (e.id === 5 ? { ...e, rateLimit: limit } : e)) }, catalogApi] },
+  };
+  const rateLimitPanel = (page: Page) => page.getByRole('region', { name: 'Rate limit' });
+  const refund = (page: Page) => endpointRow(page, 'POST /orders/{orderId}/refund');
+  const unfold = (page: Page) => rateLimitPanel(page).locator('summary').click();
+  const open = (page: Page, state: object = limitedState) => loadAdminApp(page, { path: recordPath('orders-api', 'endpoints'), state });
+
+  test('the record says which endpoint carries a limit, and the editor reads it back', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: limitedState });
+    await expect(page.locator('tr[data-endpoint="POST /orders/{orderId}/refund"]')).toContainText('Enforce · 30 / 60 s · each user · burst 5');
+    await expect(page.locator('tr[data-endpoint="GET /orders"]')).not.toContainText('limit:');
+
+    await page.goto(recordPath('orders-api', 'endpoints'));
+    await refund(page).click();
+    // rarely changed, so it starts folded, and the summary says what is set
+    await expect(rateLimitPanel(page).locator('details')).not.toHaveAttribute('open', '');
+    await expect(rateLimitPanel(page).locator('summary')).toContainText('Enforce · 30 / 60 s · each user · burst 5');
+    await expect(page.getByRole('button', { name: 'Enforce' })).toBeHidden();
+    await unfold(page);
+    await expect(page.getByRole('button', { name: 'Enforce' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Count by')).toHaveValue('subject');
+    await expect(page.getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('30');
+    await expect(page.getByLabel('Burst')).toHaveValue('5');
+    // an endpoint without one offers to set it
+    await endpointRow(page, 'GET /orders').click();
+    await expect(rateLimitPanel(page).locator('summary')).toContainText('No limit');
+    await unfold(page);
+    await expect(rateLimitPanel(page)).toContainText('No limit is set for the endpoint');
+  });
+
+  test('a limit set here is sent inside the endpoint, in shadow, and the endpoint stays whole', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await unfold(page);
+    await rateLimitPanel(page).getByRole('button', { name: 'Set a limit' }).click();
+    await expect(page.getByRole('button', { name: 'Shadow' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('120');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Count by').selectOption('client');
+    await expect(endpointRow(page, 'PUT /orders/{orderId}/address')).toContainText('Edited');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toEqual({
+      resourceId: 'orders-api',
+      audience: { add: [], remove: [] },
+      deleteEndpoints: [],
+      createEndpoints: [{
+        id: 4, method: 'PUT', path: '/orders/{orderId}/address', fetchUserInfo: false, allow: 'has(request.body.postalCode)', inject: [],
+        stepUpCondition: null, stepUpAcr: null, maxAge: null,
+        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], mode: 'shadow', by: 'client' },
+      }],
+    });
+  });
+
+  test('removing the limit writes the endpoint without one', async ({ page }) => {
+    const api = await open(page);
+    await refund(page).click();
+    await unfold(page);
+    await rateLimitPanel(page).getByRole('button', { name: 'Remove limit' }).click();
+    await expect(refund(page)).toContainText('Edited');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    const written = (await findRequest(api.requests, 'PUT', '/configuration/resources')).body as { createEndpoints: Array<Record<string, unknown>> };
+    expect(written.createEndpoints).toHaveLength(1);
+    expect(written.createEndpoints[0]).not.toHaveProperty('rateLimit');
+  });
+
+  test('an unsaved edit of another endpoint carries nothing about a limit it does not have', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await page.getByRole('textbox', { name: 'Allow expression' }).fill('has(request.body.city)');
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    const written = (await findRequest(api.requests, 'PUT', '/configuration/resources')).body as { createEndpoints: Array<Record<string, unknown>> };
+    expect(written.createEndpoints[0]).not.toHaveProperty('rateLimit');
+  });
+
+  test('refuses an invalid limit before sending, and names the endpoint', async ({ page }) => {
+    const api = await open(page, shopState);
+    await endpointRow(page, 'PUT /orders/{orderId}/address').click();
+    await unfold(page);
+    await rateLimitPanel(page).getByRole('button', { name: 'Set a limit' }).click();
+    await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('5');
+    await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByLabel('Burst').fill('9');
+    await expect(page.getByText('burst must not exceed the smallest limit')).toBeVisible();
+    await page.getByRole('button', { name: 'Save endpoints' }).click();
+    await expect(page.getByText('The rate limit is not valid in PUT /orders/{orderId}/address')).toBeVisible();
+    expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/resources')).toHaveLength(0);
+  });
+
+  test('the editor fits 375 without sideways scroll', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await open(page);
+    await refund(page).click();
+    await unfold(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+});
+
+test.describe('rate limits set for the audience', () => {
+  const limit = { limits: [{ limit: 600, windowSeconds: 60 }], burst: 50, by: 'subject', mode: 'enforce' };
+  const withLimits = (audienceRateLimits: object[]) => ({
+    ...shopState,
+    resources: { [shopTenant]: [{ ...ordersApi, secretRotation: false, audienceRateLimits }, catalogApi] },
+  });
+  const open = (page: Page, state: object) => loadAdminApp(page, { path: recordPath('orders-api', 'audience'), state });
+  const limitsBox = (page: Page) => page.getByRole('region', { name: 'Rate limits' });
+  const clientFold = (page: Page, id: string) => page.locator(`details[data-client="${id}"]`);
+  const audiencePut = (api: { requests: Array<{ method: string; pathname: string; body?: unknown }> }) => findRequest(api.requests, 'PUT', '/configuration/resources');
+
+  test('the record lists the limits it sets for clients, and says nothing when there are none', async ({ page }) => {
+    await loadAdminApp(page, { path: recordPath('orders-api'), state: withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]) });
+    const audience = card(page, 'Audience');
+    await expect(audience.getByRole('list', { name: 'Rate limits of audience clients' })).toContainText('shop-mobile');
+    await expect(audience).toContainText('Enforce · 600 / 60 s · each user · burst 50');
+    await page.goto(recordPath('catalog-api'));
+    await expect(card(page, 'Audience').getByRole('list', { name: 'Rate limits of audience clients' })).toHaveCount(0);
+  });
+
+  test('the editor starts folded, shows what is set, and a client opens on its own', async ({ page }) => {
+    await open(page, withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]));
+    await expect(limitsBox(page).locator('details.limits')).not.toHaveAttribute('open', '');
+    await expect(limitsBox(page).locator('summary').first()).toContainText('1 of 4 clients');
+    await limitsBox(page).locator('summary').first().click();
+    await expect(clientFold(page, 'shop-mobile').locator('summary')).toContainText('Enforce · 600 / 60 s · each user · burst 50');
+    await expect(clientFold(page, 'storefront-web').locator('summary')).toContainText('No limit');
+    await expect(clientFold(page, 'shop-mobile')).not.toHaveAttribute('open', '');
+    await clientFold(page, 'shop-mobile').locator('summary').click();
+    await expect(clientFold(page, 'shop-mobile').getByRole('textbox', { name: 'Window 1: requests' })).toHaveValue('600');
+  });
+
+  test('a limit set for one client is sent with the audience, in shadow, and only that one', async ({ page }) => {
+    const api = await open(page, withLimits([]));
+    await limitsBox(page).locator('summary').first().click();
+    await clientFold(page, 'storefront-web').locator('summary').click();
+    await clientFold(page, 'storefront-web').getByRole('button', { name: 'Set a limit' }).click();
+    await expect(clientFold(page, 'storefront-web').getByRole('button', { name: 'Shadow' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(clientFold(page, 'storefront-web').getByLabel('Count by').locator('option')).toHaveText(['The client as a whole', 'Each user']);
+    await clientFold(page, 'storefront-web').getByRole('textbox', { name: 'Window 1: requests' }).fill('120');
+    await clientFold(page, 'storefront-web').getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await page.getByRole('button', { name: 'Save audience' }).click();
+    expect((await audiencePut(api)).body).toMatchObject({
+      resourceId: 'orders-api',
+      audienceRateLimits: [{ clientId: 'storefront-web', rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], mode: 'shadow' } }],
+    });
+    await expect(card(page, 'Audience').getByRole('list', { name: 'Rate limits of audience clients' })).toContainText('storefront-web');
+  });
+
+  test('an audience saved without touching the limits does not send them, and removing one sends the list without it', async ({ page }) => {
+    const api = await open(page, withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]));
+    await page.getByRole('button', { name: 'Save audience' }).click();
+    // nothing changed: the button is for changes, but the PUT still goes with the audience patch alone
+    expect(audiencePut(api)).toBeTruthy();
+    const first = await audiencePut(api);
+    expect(first.body).not.toHaveProperty('audienceRateLimits');
+
+    const second = await open(page, withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]));
+    await limitsBox(page).locator('summary').first().click();
+    await clientFold(page, 'shop-mobile').locator('summary').click();
+    await clientFold(page, 'shop-mobile').getByRole('button', { name: 'Remove limit' }).click();
+    await page.getByRole('button', { name: 'Save audience' }).click();
+    expect((await audiencePut(second)).body).toMatchObject({ audienceRateLimits: [] });
+  });
+
+  test('an invalid limit is refused before sending, names the field and opens its client', async ({ page }) => {
+    const api = await open(page, withLimits([]));
+    await limitsBox(page).locator('summary').first().click();
+    await clientFold(page, 'storefront-web').locator('summary').click();
+    await clientFold(page, 'storefront-web').getByRole('button', { name: 'Set a limit' }).click();
+    await clientFold(page, 'storefront-web').getByRole('textbox', { name: 'Window 1: requests' }).fill('5');
+    await clientFold(page, 'storefront-web').getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+    await clientFold(page, 'storefront-web').getByLabel('Burst').fill('6');
+    await expect(page.getByText('burst must not exceed the smallest limit')).toBeVisible();
+    await page.getByRole('button', { name: 'Save audience' }).click();
+    await expect(clientFold(page, 'storefront-web').getByLabel('Burst')).toBeFocused();
+    expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/configuration/resources')).toHaveLength(0);
+  });
+
+  test('removing a client from the audience drops its limit from the record', async ({ page }) => {
+    await open(page, withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]));
+    await page.getByRole('checkbox', { name: /shop-mobile/ }).uncheck();
+    await page.getByRole('button', { name: 'Save audience' }).click();
+    await expect(card(page, 'Audience').getByRole('list', { name: 'Rate limits of audience clients' })).toHaveCount(0);
+  });
+
+  test('the audience editor fits 375 without sideways scroll', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await open(page, withLimits([{ clientId: 'shop-mobile', rateLimit: limit }]));
+    await limitsBox(page).locator('summary').first().click();
+    await clientFold(page, 'shop-mobile').locator('summary').click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+});
+
 test.describe('secret', () => {
   const quiet = { ...ordersApi, secretRotation: false };
   const state = { ...shopState, resources: { [shopTenant]: [quiet, catalogApi] } };

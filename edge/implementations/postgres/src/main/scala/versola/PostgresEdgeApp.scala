@@ -13,6 +13,7 @@ import versola.edge.{
   AddressLimit,
   ClientCertificateFiles,
   ConfigurationSource,
+  DeclaredRateLimitService,
   EdgeCertificateHolder,
   EdgeConfig,
   EdgeController,
@@ -64,6 +65,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopPolicyService &
       OverloadPolicyService &
       AccessLogPolicyService &
+      DeclaredRateLimitService &
       RateLimitPolicyService &
       RateLimiter &
       OAuthClientService &
@@ -170,11 +172,12 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopPolicyService.live >++>
       OverloadPolicyService.live >++>
       AccessLogPolicyService.live >++>
-      RateLimitPolicyService.live >++>
-      RateLimitPolicySource.fromCentral >++>
-      EdgeRateLimiter.live >++>
       OAuthClientService.live >++>
       ResourceService.live >++>
+      RateLimitPolicyService.live >++>
+      DeclaredRateLimitService.live >++>
+      RateLimitPolicySource.fromCentral >++>
+      EdgeRateLimiter.live >++>
       PermissionService.live >++>
       JwksService.live >++>
       TokenRevocationService.live >++>

@@ -123,10 +123,10 @@ object ConversationRouter:
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (submitted: EmailSubmission, _) =>
-          afterCredential(authId, conversation, Left(submitted.email)).tap(observeCredential)
+          afterCredential(authId, conversation, Left(submitted.email), submitted.proof).tap(observeCredential)
 
         case (submitted: PhoneSubmission, _) =>
-          afterCredential(authId, conversation, Right(submitted.phone)).tap(observeCredential)
+          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof).tap(observeCredential)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId)
@@ -139,8 +139,8 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
-        case (_: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
-          conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
+        case (submitted: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
+          conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex, submitted.proof)
 
         case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
           conversationService.checkPassword(conversation, password, submitted.password, authId)
@@ -232,7 +232,7 @@ object ConversationRouter:
         authId: AuthId,
         conversation: ConversationRecord,
     ): Task[ConversationResult.Render] =
-      runRegistrationStep(authId, conversation.copy(registrationStep = conversation.registrationStep.map(_ + 1)))
+      runRegistrationStep(authId, conversation.copy(registrationStep = conversation.registrationStep.map(_ + 1)), ProofInput.NoScript)
 
     /** Resolve the account only after OTP verification, immediately before an account-bound setup
       * step or successful completion.
@@ -267,12 +267,13 @@ object ConversationRouter:
     private def runRegistrationStep(
         authId: AuthId,
         conversation: ConversationRecord,
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       conversation.currentRegistrationStep match
         case Some(_: RegistrationStep.Otp) =>
           conversation.credential match
             case Some(credential) =>
-              conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0)
+              conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0, proof)
             case None =>
               conversationService.accessDenied(authId, conversation)
 
@@ -295,6 +296,7 @@ object ConversationRouter:
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       userRepository.findByCredential(credential).flatMap:
         case Some(user) =>
@@ -306,7 +308,7 @@ object ConversationRouter:
             userLogin = user.login,
             userClaims = Some(user.claims),
           )
-          afterAuthenticationCredential(authId, identified, credential)
+          afterAuthenticationCredential(authId, identified, credential, proof)
 
         // A new user: the tenant decides whether this address may create an account. When it may
         // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
@@ -315,29 +317,31 @@ object ConversationRouter:
             case Some(flow) =>
               conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
                 case RegistrationEntry.Registering(updated) =>
-                  runRegistrationStep(authId, updated)
+                  runRegistrationStep(authId, updated, proof)
                 case ConversationResult.WriteConflict =>
                   ZIO.succeed(ConversationResult.WriteConflict)
             case None =>
-              afterAuthenticationCredential(authId, conversation, credential)
+              afterAuthenticationCredential(authId, conversation, credential, proof)
 
     private def afterAuthenticationCredential(
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       passkeyPending(conversation).flatMap:
         case true => conversationService.promptPasskey(authId, conversation)
-        case false => afterAuthenticationCredentialFactors(authId, conversation, credential)
+        case false => afterAuthenticationCredentialFactors(authId, conversation, credential, proof)
 
     private def afterAuthenticationCredentialFactors(
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
-          conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx)
+          conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx, proof)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
           conversationService.prepareInitialPassword(authId, conversation, credential, factorIndex = idx)
@@ -388,7 +392,7 @@ object ConversationRouter:
               conversation.userPhone.map(Right(_))
 
           credential match
-            case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx)
+            case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx, ProofInput.NoScript)
             case _ => conversationService.accessDenied(authId, conversation)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>

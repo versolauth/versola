@@ -638,7 +638,10 @@ object EdgeService:
       */
     private def observeIdentity(claims: AccessTokenClaims): IO[Outcome, Unit] =
       if !rateLimiter.active(Checkpoint.Identity) then ZIO.unit
-      else Clock.nanoTime.flatMap(now => refuseIfLimited(rateLimiter.check(Checkpoint.Identity, identityKeys(claims), now)))
+      else
+        Clock.nanoTime.flatMap: now =>
+          val keys = identityKeys(claims)
+          refuseIfLimited(Checkpoint.Identity, keys, rateLimiter.check(Checkpoint.Identity, keys, now))
 
     private def observeRoute(
         claims: AccessTokenClaims,
@@ -654,17 +657,17 @@ object EdgeService:
             session = claims.sid.fold("")(_.toString),
             jkt = claims.confirmation.flatMap(_.jkt).getOrElse(""),
             resource = resourceId.toString,
-            endpoint = s"${endpoint.method} /resources/$resourceId${endpoint.path}",
+            endpoint = endpoint.template(resourceId),
           )
-          refuseIfLimited(rateLimiter.check(Checkpoint.Route, keys, now))
+          refuseIfLimited(Checkpoint.Route, keys, rateLimiter.check(Checkpoint.Route, keys, now))
 
     // The code is the closed `rate_limited`; the policy name is operator-chosen (a closed set per edge), not caller input.
-    private def refuseIfLimited(decision: RateDecision): IO[Outcome, Unit] =
+    private def refuseIfLimited(point: Checkpoint, keys: RateLimitKeys, decision: RateDecision): IO[Outcome, Unit] =
       decision match
         case RateDecision.Allowed => ZIO.unit
         case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
           Observability.setError("rate_limited", Some(policy)) *>
-            ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds, rateLimiter.responseHeaders(limited)))
+            ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds, rateLimiter.responseHeaders(limited, point, keys)))
 
     private def identityKeys(claims: AccessTokenClaims): RateLimitKeys =
       RateLimitKeys(

@@ -9,7 +9,7 @@ import versola.central.configuration.edges.EdgeGroupKind
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{DeclaredRateLimit, GuardMode, Observability, RateLimitWindow}
 import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -22,6 +22,7 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.util.UUID
+import versola.util.http.DeclaredRateLimitBy
 
 object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
@@ -53,6 +54,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
       CreateResourceEndpointRequest(
         usersCreateEndpointId,
@@ -64,6 +66,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
     ),
     internal = false,
@@ -85,6 +88,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
     ),
     internal = false,
@@ -106,6 +110,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
     ),
   )
@@ -124,6 +129,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       previousSecret = None,
     ),
   )
+  private val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
   private val syncSecret = Secret(Array.fill(32)(7.toByte))
   private val previousSyncSecret = Secret(Array.fill(32)(8.toByte))
   private val edgeId = EdgeId("edge-1")
@@ -223,8 +229,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 resource = createRequestBody.resource,
                 audience = audience,
                 endpoints = Vector(
-                  ResourceEndpointResponse(usersListEndpointId, "GET", "/users", true, allow, inject, None, None, None),
-                  ResourceEndpointResponse(usersCreateEndpointId, "POST", "/users/me", false, denyAware, Vector.empty, None, None, None),
+                  ResourceEndpointResponse(usersListEndpointId, "GET", "/users", true, allow, inject, None, None, None, rateLimit = None),
+                  ResourceEndpointResponse(usersCreateEndpointId, "POST", "/users/me", false, denyAware, Vector.empty, None, None, None, rateLimit = None),
                 ),
                 internal = false,
                 secretRotation = false,
@@ -232,6 +238,40 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           ),
         ),
+    ),
+    controllerTestCase(
+      description = "list the rate limit declared on an endpoint, and none for one without",
+      request = Request.get((URL.empty / "configuration" / "resources").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantResources.succeedsWith(
+          Vector(
+            resourceRecords.head.copy(endpoints =
+              Vector(
+                resourceRecords.head.endpoints.head.copy(rateLimit = Some(limit)),
+                resourceRecords.head.endpoints(1),
+              ),
+            ),
+          ),
+        ),
+      verify = (response, _) =>
+        for payload <- decodeJsonBody[GetAllResourcesResponse](response)
+        yield assertTrue(payload.resources.head.endpoints.map(e => e.id -> e.rateLimit).toMap == Map(
+          usersCreateEndpointId -> Some(limit),
+          usersListEndpointId -> None,
+        )),
+    ),
+    controllerTestCase(
+      description = "list the limits a resource sets for its audience",
+      request = Request.get((URL.empty / "configuration" / "resources").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantResources.succeedsWith(
+          Vector(resourceRecords.head.copy(audienceRateLimits = List(AudienceRateLimit(audience.head, limit)))),
+        ),
+      verify = (response, _) =>
+        for payload <- decodeJsonBody[GetAllResourcesResponse](response)
+        yield assertTrue(payload.resources.head.audienceRateLimits == List(AudienceRateLimit(audience.head, limit))),
     ),
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",

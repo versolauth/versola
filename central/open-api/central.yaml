@@ -4356,6 +4356,12 @@ components:
         maxAge:
           type: [integer, 'null']
           description: Maximum authentication age, in seconds, accepted for this endpoint.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, method, path, fetchUserInfo, inject]
     ResourceResponse:
       type: object
@@ -4378,6 +4384,12 @@ components:
           description: Internal resources are Versola's own services and are issued a secret.
         secretRotation:
           type: boolean
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            The limits the resource sets for its audience clients; empty when there are none.
       required: [resourceId, resource, audience, endpoints, internal, secretRotation]
     GetAllResourcesResponse:
       type: object
@@ -4410,6 +4422,12 @@ components:
           type: [string, 'null']
         maxAge:
           type: [integer, 'null']
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
@@ -4430,6 +4448,12 @@ components:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
         internal:
           type: boolean
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            The limits the resource sets for clients of `audience`: at most one per client, and only for a client in the audience.
       required: [tenantId, resourceId, resource, audience, endpoints, internal]
     UpdateResourceRequest:
       type: object
@@ -4451,6 +4475,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            Replaces the limits set for audience clients as a whole: absent leaves them (those of clients removed from the audience in this request are dropped), an empty list removes them all.
       required: [resourceId, audience, deleteEndpoints, createEndpoints]
     CreateResourceResponse:
       type: object
@@ -4519,6 +4549,24 @@ components:
             endpointId:
               $ref: '#/components/schemas/ResourceEndpointId'
           required: [endpointId]
+        InvalidRateLimit:
+          type: object
+          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            message:
+              type: string
+          required: [endpointId, message]
+        InvalidAudienceRateLimit:
+          type: object
+          description: A limit set for an audience client breaks a rule of a rate limit policy, names a client that is not in the audience, or repeats a client.
+          properties:
+            clientId:
+              $ref: '#/components/schemas/ClientId'
+            message:
+              type: string
+          required: [clientId, message]
         AmbiguousEndpointPath:
           type: object
           description: |
@@ -6405,6 +6453,59 @@ components:
           type: string
           enum: [off, shadow, enforce]
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
+    DeclaredRateLimit:
+      type: object
+      required: [limits, burst, by, mode]
+      description: |
+        A rate limit declared by the owner of an API (on a resource endpoint, or for a client of a resource's audience), not in the
+        edge's own set. The rules are those of `RateLimitPolicy` (windows, burst, mode); `cost` is always 1. It applies together
+        with the edge's policies and a request must pass all of them, so the smallest limit wins. In metrics it is the policy
+        `resource-endpoint` or `resource-client`, never an id.
+      properties:
+        limits:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: Every window must pass. Windows are distinct.
+          items:
+            type: object
+            required: [limit, windowSeconds]
+            properties:
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000000
+              windowSeconds:
+                type: integer
+                minimum: 1
+                maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          description: How many calls may arrive together. Not above the smallest `limit`. `1` is strict spacing.
+        by:
+          type: string
+          enum: [subject, client, none]
+          description: |
+            What a bucket is keyed on. On an endpoint, `none` is one bucket for the endpoint, `client` one per client and
+            `subject` one per user. On an audience client, `none` is one bucket for that client on the resource and `subject` one per
+            user of it; `client` is refused there, since it would mean the same as `none`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+          description: '`off` ignores the limit; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
+    AudienceRateLimit:
+      type: object
+      required: [clientId, rateLimit]
+      description: |
+        What the owner of a resource lets one client of its audience take from it. It applies to that client's calls to this resource,
+        checked together with the edge's own rate limit policies (the smaller limit wins). The client's own owner sets nothing.
+        In metrics it is the policy `resource-client`.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
     EdgePolicies:
       type: object
       required: [edgeId]

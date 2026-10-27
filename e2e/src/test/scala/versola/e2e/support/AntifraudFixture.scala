@@ -5,12 +5,12 @@ import zio.http.{Client, URL}
 import zio.json.*
 import zio.json.ast.Json
 
+import java.lang.System as JavaSystem
 import java.nio.file.{Files, Path}
 import java.sql.{Connection, DriverManager, Timestamp}
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import java.lang.System as JavaSystem
 
 /** One of the auth instances an antifraud spec starts: the way to talk to it (`auth`, which reaches it by its own
   * `authUrl`) and what it has written to its log.
@@ -27,7 +27,15 @@ final case class AntifraudInstance(name: String, auth: OAuthClient, diagnosticsU
 object AntifraudInstance:
 
   /** The antifraud check of one request, as its `receive-http` line says it. */
-  final case class Decision(path: String, ip: Option[String], action: String, decision: String, score: Int, rules: List[String], outcome: Option[String])
+  final case class Decision(
+      path: String,
+      ip: Option[String],
+      action: String,
+      decision: String,
+      score: Int,
+      rules: List[String],
+      outcome: Option[String],
+  )
 
   private def decision(line: String): Option[Decision] =
     for
@@ -93,7 +101,7 @@ object AntifraudFixture:
   private def antifraudConfig(sync: Duration): String =
     s"""
        |antifraud {
-       |  decision { enabled = true, block-at = 50, timeout = "5 seconds" }
+       |  decision { enabled = true, challenge-at = 15, block-at = 50, timeout = "5 seconds" }
        |  velocity {
        |    enabled = true
        |    flush-interval = "${sync.toMillis} millis"
@@ -141,7 +149,16 @@ object AntifraudFixture:
         builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
         // The specs read decisions from `receive-http` lines, which a sampled or off access log drops for a success.
         builder.environment().nn.put("HTTP_ACCESS_LOG", "full")
-        Started(builder.start().nn, log, AntifraudInstance(name, OAuthClient(client, config.copy(authUrl = s"http://localhost:${ports.port}")), s"http://localhost:${ports.diagnostics}", log)) -> conf,
+        Started(
+          builder.start().nn,
+          log,
+          AntifraudInstance(
+            name,
+            OAuthClient(client, config.copy(authUrl = s"http://localhost:${ports.port}")),
+            s"http://localhost:${ports.diagnostics}",
+            log,
+          ),
+        ) -> conf,
     )((started, conf) =>
       ZIO.attemptBlocking {
         started.process.destroy()

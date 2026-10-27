@@ -279,9 +279,11 @@ object EdgeSyncController extends Controller:
             stepUpCondition = endpoint.stepUpCondition,
             stepUpAcr = endpoint.stepUpAcr,
             maxAge = endpoint.maxAge,
+            rateLimit = endpoint.rateLimit,
           )
         },
         secret = encryptedSecret,
+        audienceRateLimits = record.audienceRateLimits,
       )
     }
 

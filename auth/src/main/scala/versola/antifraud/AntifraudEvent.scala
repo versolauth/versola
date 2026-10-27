@@ -63,5 +63,14 @@ enum AntifraudOutcome:
   /** A code was entered after a fake send: nobody received one, so whoever entered it guessed or is a script. */
   case fake_verify
 
+  /** The antifraud decision was `Challenge`: nothing was sent, and the client was asked for a proof of work first. */
+  case challenged
+
+  /** The client solved the challenge; the code is sent next, and is the event that follows. */
+  case challenge_passed
+
+  /** The client's solution was wrong. After too many of them the request is refused (`blocked`). */
+  case challenge_failed
+
 enum AntifraudChannel:
   case sms, email

@@ -371,6 +371,8 @@ export interface ResourceEndpoint {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  /** A limit on how often this endpoint is called, checked by the edge with its own policies (the smallest wins). Absent: none. */
+  rateLimit?: DeclaredRateLimit;
 }
 
 export interface Resource {
@@ -382,6 +384,8 @@ export interface Resource {
   // of forwarding the caller's own access token. Public resources have neither.
   hasSecret: boolean;
   hasPreviousSecret: boolean;
+  /** What the resource lets each of its audience clients take, one per client; absent when it sets none. */
+  audienceRateLimits?: AudienceRateLimit[];
 }
 
 // Pagination
@@ -403,6 +407,8 @@ import type { OverloadPolicy } from '../utils/overload-policy';
 export type { AccessLogPolicy } from '../utils/access-log-policy';
 import type { AccessLogPolicy } from '../utils/access-log-policy';
 export type { RateLimitPolicies, RateLimitPolicy } from '../utils/rate-limit-policies';
+export type { AudienceRateLimit, DeclaredRateLimit } from '../utils/declared-rate-limit';
+import type { AudienceRateLimit, DeclaredRateLimit } from '../utils/declared-rate-limit';
 import type { RateLimitPolicies } from '../utils/rate-limit-policies';
 import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {

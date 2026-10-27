@@ -1250,6 +1250,39 @@ const consoleShots: DocsShot[] = [
     },
   },
 
+  {
+    name: 'console/resource-endpoint-ratelimit', kind: 'crop', path: `${resourcePath}&edit=endpoints`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limit' }),
+    before: async page => {
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('region', { name: 'Rate limit' }).locator('summary').click();
+      await page.getByRole('button', { name: 'Set a limit' }).click();
+      await page.getByRole('button', { name: 'Enforce' }).click();
+      await page.getByLabel('Count by').selectOption('subject');
+      await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('30');
+      await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await page.getByLabel('Burst').fill('5');
+      await expect(page.getByLabel('Burst')).toHaveValue('5');
+    },
+  },
+
+  {
+    name: 'console/resource-audience-ratelimit', kind: 'crop', path: `${resourcePath}&edit=audience`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limits' }),
+    before: async page => {
+      await page.getByRole('region', { name: 'Rate limits' }).locator('summary').first().click();
+      const mobile = page.locator('details[data-client="storefront-web"]');
+      await mobile.locator('summary').click();
+      await mobile.getByRole('button', { name: 'Set a limit' }).click();
+      await mobile.getByRole('button', { name: 'Shadow' }).click();
+      await mobile.getByLabel('Count by').selectOption('subject');
+      await mobile.getByRole('textbox', { name: 'Window 1: requests' }).fill('600');
+      await mobile.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await mobile.getByLabel('Burst').fill('50');
+      await expect(mobile.getByLabel('Burst')).toHaveValue('50');
+    },
+  },
+
   // Tenants
   {
     name: 'entities/tenants-list', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`,
