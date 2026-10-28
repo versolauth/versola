@@ -304,7 +304,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.root / "configuration" / "edges",
-        body = Body.fromString(RegisterEdgeRequest(edgeId).toJson),
+        body = Body.fromString(RegisterEdgeRequest(edgeId, groupId = None).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service => service.registerEdge.succeedsWith(testKeyPair),

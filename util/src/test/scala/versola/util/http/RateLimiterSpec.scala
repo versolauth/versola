@@ -327,7 +327,7 @@ object RateLimiterSpec extends ZIOSpecDefault:
         def route(endpoint: String) = RateLimitKeys(subject = "u1", endpoint = endpoint)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
-          _ <- l.update(List(edge), declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", declared)))
+          _ <- l.update(List(edge), declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", declared, resource = "")))
           first = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
           second = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
           other = (1 to 5).map(_ => l.check(Checkpoint.Route, route("GET /resources/a/y"), 0L))
@@ -387,7 +387,7 @@ object RateLimiterSpec extends ZIOSpecDefault:
           _ <- l.update(
             List(edge),
             declared = List(
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/api/x", endpoint),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/api/x", endpoint, resource = ""),
               DeclaredLimit(DeclaredOwner.Audience, "plan", audience, resource = "api"),
             ),
           )
@@ -436,7 +436,10 @@ object RateLimiterSpec extends ZIOSpecDefault:
           _ = l.check(Checkpoint.Route, keys, 0L)
           _ <- l.update(
             Nil,
-            declared = List(limit.copy(limit = one.copy(mode = GuardMode.Shadow)), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one)),
+            declared = List(
+              limit.copy(limit = one.copy(mode = GuardMode.Shadow)),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one, resource = ""),
+            ),
           )
           kept = l.check(Checkpoint.Route, keys, 0L)
           _ <- l.update(Nil, declared = List(limit.copy(limit = one.copy(limits = List(RateLimitWindow(5, 60)), burst = 5))))
@@ -473,7 +476,10 @@ object RateLimiterSpec extends ZIOSpecDefault:
           _ <- l.update(
             Nil,
             declared =
-              List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one)),
+              List(
+                DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one, resource = ""),
+                DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one, resource = ""),
+              ),
           )
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x"), 0L)
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/y"), 0L)
@@ -494,8 +500,8 @@ object RateLimiterSpec extends ZIOSpecDefault:
           _ <- l.update(
             Nil,
             declared = List(
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow),
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow, resource = ""),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast, resource = ""),
             ),
           )
           limited: RateDecision.Limited = RateDecision.Limited("resource-endpoint", 60)

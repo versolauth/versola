@@ -3182,7 +3182,8 @@ components:
       required: [primary, equivalents, otpType]
     ConsentFlowDto:
       type: object
-      description: Whether and how the consent screen is shown before a grant is issued.
+      description: Whether and how the consent screen is shown before a grant is issued. Every member except `rememberDuration` is required.
+      required: [allowPartial, requiredScopes, offlineAccessOptional]
       properties:
         allowPartial:
           type: boolean
@@ -3194,7 +3195,6 @@ components:
           uniqueItems: true
           items:
             type: string
-          default: []
           description: |
             Scopes the user cannot deselect when the client requests them, on top of `openid`
             and `offline_access`, which are always required. The consent screen keeps them
@@ -3204,7 +3204,6 @@ components:
             granted or denied.
         offlineAccessOptional:
           type: boolean
-          default: false
           description: |
             Lets the user deselect `offline_access` ("long-lived access"). When they do, the
             client receives no refresh token and must be able to sign the user in again. A
@@ -3602,7 +3601,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, requireSignedRequestObject, requirePushedAuthorizationRequests, estEnrollment]
     CreateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -3727,7 +3726,7 @@ components:
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopSigningAlgs]
     CreateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -3836,7 +3835,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
+      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod, permissions, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, estEnrollment]
     UpdateWebClientRequest:
       type: object
       additionalProperties: false
@@ -3962,7 +3961,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -4053,7 +4052,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -4124,7 +4123,7 @@ components:
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
             assertions with. `null` means the client does not use the method.
-      required: [clientId]
+      required: [clientId, scope, permissions]
     CreateClientResponse:
       type: object
       description: |

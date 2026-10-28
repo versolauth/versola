@@ -588,7 +588,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
-    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides', 'estEnrollment',
   ],
   device: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
@@ -598,7 +598,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
   ],
   service: [
     'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
-    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks', 'estEnrollment',
   ],
 };
 

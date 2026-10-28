@@ -91,6 +91,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ),
     internal = false,
+    audienceRateLimits = Nil,
   )
 
   private val updateRequest = UpdateResourceRequest(

@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
   ClientCertificateIssuanceRepository,
@@ -183,6 +184,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     template = Some(ClientTemplate(ClientKind.web)),
     createdAt = registeredAt,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val clientA = client("web-a", tenantA)

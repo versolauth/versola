@@ -1167,11 +1167,11 @@ const SIGN_IN_FIELDS = [
 const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
   web: [
     ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
-    'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'estEnrollment',
   ],
   device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
   // Permissions are what a token issued to the client itself may call: only a service client has any.
-  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks', 'estEnrollment'],
 };
 
 const COMMON_UPDATE_FIELDS = [
@@ -1211,17 +1211,17 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
-      otpTemplateId: client.otpTemplateId ?? undefined,
+      otpTemplateId: client.otpTemplateId ?? 'default',
       authFlow: authFlowToBackend(client.authFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
-      frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+      frontChannelLogoutSessionRequired: !!client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
       refreshTokenTtl: client.refreshTokenTtl,
       logoUri: client.logoUri ?? null,
       policyUri: client.policyUri ?? null,
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
-      dpopBoundAccessTokens: client.dpopBoundAccessTokens,
+      dpopBoundAccessTokens: !!client.dpopBoundAccessTokens,
       dpopSigningAlgs: client.dpopSigningAlgs ?? [],
       dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
       authMethod: client.authMethod,
@@ -1233,6 +1233,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       themeOverrides: nonEmptyOverrides(client.themeOverrides) ?? undefined,
       issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
       enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
+      estEnrollment: false,
     }, CREATE_FIELDS[kind]),
   });
 

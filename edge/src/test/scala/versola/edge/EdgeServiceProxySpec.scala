@@ -87,12 +87,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
   private val svcClient = OAuthClient(
     id = ClientId("svc-1"),
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
@@ -479,7 +481,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
 
   private def usersResourceNamed(id: ResourceId, endpoints: ResourceEndpoint*) =
-    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None)
+    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None, audienceRateLimits = Nil)
 
   private def centralEndpoint() =
     ResourceEndpoint(
@@ -501,7 +503,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     * the caller's own token (see [[EdgeService.Impl.resolveAuthHeader]]).
     */
   private def centralResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector, secret = Some(centralResourceSecret))
+    Resource(
+      resourceId = ResourceId("central"),
+      resource = centralUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(centralResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private val accountResourceSecret = Secret(Array.fill(48)(4.toByte))
 
@@ -522,7 +530,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     * internal: edge authenticates with `Basic(resourceId, secret)` rather than forwarding the caller's token.
     */
   private def accountResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("auth"), resource = backendUrl, endpoints = endpoints.toVector, secret = Some(accountResourceSecret))
+    Resource(
+      resourceId = ResourceId("auth"),
+      resource = backendUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(accountResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
@@ -2718,6 +2732,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2753,6 +2768,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2788,6 +2804,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -3557,7 +3574,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withResources(usersResource(users, userByIdEndpoint()))
         _ <- env.rateLimiter.update(
           List(generous),
-          declared = List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared)),
+          declared =
+            List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared, resource = "")),
         )
         token <- env.signToken()
         service = env.buildService(client, security)

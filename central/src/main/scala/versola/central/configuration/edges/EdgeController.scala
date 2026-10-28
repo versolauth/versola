@@ -257,7 +257,7 @@ object EdgeController extends Controller:
 case class RegisterEdgeRequest(
     id: EdgeId,
     /** The group the edge joins and never leaves; absent means `default`. */
-    groupId: Option[EdgeGroupId] = None,
+    groupId: Option[EdgeGroupId],
 ) derives Schema, JsonCodec
 
 case class GetEdgeGroupsResponse(
@@ -278,7 +278,7 @@ case class EdgeResponse(
     rateLimitPolicies: Option[RateLimitPolicies],
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
     policyRevisions: Map[String, Int] = Map.empty,
-    groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    groupId: EdgeGroupId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
     identityChainEndsAt: Option[Instant] = None,
 ) derives Schema, JsonCodec

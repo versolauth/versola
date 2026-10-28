@@ -109,7 +109,7 @@ object BootstrapService:
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
       requirePushedAuthorizationRequests: Boolean,
-      issueEdgeClientCertificate: Boolean = false,
+      issueEdgeClientCertificate: Boolean,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
 
@@ -118,7 +118,13 @@ object BootstrapService:
   ): Either[String, CentralAdminCredential] =
     seed match
       case None =>
-        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
+        Right(CentralAdminCredential(
+          AuthMethod.client_secret,
+          None,
+          None,
+          requirePushedAuthorizationRequests = false,
+          issueEdgeClientCertificate = false,
+        ))
       case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, _, _)) =>
         Right(CentralAdminCredential(
           authMethod = AuthMethod.tls_client_auth,
@@ -137,6 +143,7 @@ object BootstrapService:
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
           edgeClientCertificate = Some(certificate),
           requirePushedAuthorizationRequests = true,
+          issueEdgeClientCertificate = false,
         )
 
   /** `central-admin` and `utils` are registered with the method bootstrap's configuration calls

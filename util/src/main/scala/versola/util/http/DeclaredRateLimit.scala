@@ -92,4 +92,4 @@ final case class DeclaredRateLimit(
 /** One declaration, with the thing it is declared on: for an endpoint, the template (`GET /resources/{id}/path`, the same string
   * the edge keys R3 on) as `selector`; for an audience client, the client id as `selector` and the resource id as `resource`.
   */
-final case class DeclaredLimit(owner: DeclaredOwner, selector: String, limit: DeclaredRateLimit, resource: String = "")
+final case class DeclaredLimit(owner: DeclaredOwner, selector: String, limit: DeclaredRateLimit, resource: String)

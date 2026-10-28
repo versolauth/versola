@@ -6,6 +6,7 @@ import com.nimbusds.jose.jwk.{Curve, JWK}
 import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.{
   AuthFactor,
   AuthFactorType,
@@ -81,6 +82,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = Instant.EPOCH,
       themeOverrides = None,
+      applicationType = ApplicationType.web,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()

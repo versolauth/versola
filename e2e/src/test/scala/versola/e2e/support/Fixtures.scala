@@ -110,6 +110,7 @@ object Fixtures:
         // their own certificate or none, never one central issues.
         "issueEdgeClientCertificate" -> Json.Bool(false),
         "enrollEdgeClientCertificate" -> Json.Bool(false),
+        "estEnrollment" -> Json.Bool(false),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),

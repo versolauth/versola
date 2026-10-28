@@ -201,6 +201,7 @@ final class HttpAdminClient(
           requirePushedAuthorizationRequests = spec.fapi2,
           issueEdgeClientCertificate = spec.fapi2,
           enrollEdgeClientCertificate = false,
+          estEnrollment = false,
         ).toJson
     send(Method.POST, central("configuration", "clients", kindOf(spec)), Some(body)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -791,6 +792,7 @@ object HttpAdminClient:
       // certificate mode it did not name.
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+      estEnrollment: Boolean,
   ) derives JsonEncoder
 
   private case class CreateNativeClientBody(

@@ -62,7 +62,7 @@ object ResourcesSyncClient:
         resource: zio.http.URL,
         endpoints: Vector[ResourceEndpoint],
         secret: Option[String],
-        audienceRateLimits: List[AudienceRateLimit] = Nil,
+        audienceRateLimits: List[AudienceRateLimit],
     ) derives JsonCodec
 
     private case class GetResourcesSyncResponse(

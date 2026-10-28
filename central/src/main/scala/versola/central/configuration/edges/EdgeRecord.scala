@@ -48,8 +48,8 @@ case class EdgeRecord(
     accessLogPolicy: Option[AccessLogPolicy],
     rateLimitPolicies: Option[RateLimitPolicies],
     policyMeta: Option[Map[String, PolicySectionMeta]],
-    groupId: EdgeGroupId = EdgeGroup.DefaultId,
-    groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
+    groupId: EdgeGroupId,
+    groupKind: EdgeGroupKind,
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

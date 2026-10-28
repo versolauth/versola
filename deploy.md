@@ -1090,6 +1090,38 @@ move together and `configure` is re-run)
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 
+### Request bodies state every field (breaking for API clients)
+
+`central`'s admin API no longer fills in values a caller leaves out. A field that has no meaning when missing used to
+decode to a default (`theme` to `"default"`, a missing boolean to `false`, a missing set to empty); it is now required, and a
+body that omits it is refused with `400`. A field typed as optional (`null` allowed) is still optional. The reason: a
+field left out by mistake used to become a security-relevant value (an unthrottled category, DPoP off, an empty scope patch)
+without anyone having chosen it.
+
+| Endpoint | Fields that must now be sent |
+|---|---|
+| `POST /configuration/clients/web` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `requireSignedRequestObject`, `requirePushedAuthorizationRequests`, `estEnrollment` (on top of the ones already required) |
+| `POST /configuration/clients/native` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopSigningAlgs` |
+| `POST /configuration/clients/service` | `permissions`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `estEnrollment` |
+| `PUT /configuration/clients/web`, `/native` | `redirectUris` and `scope` patches (`{"add":[],"remove":[]}` for no change) |
+| `PUT /configuration/clients/service` | `scope` and `permissions` patches |
+| `consentFlow` in any client body | `requiredScopes` (`[]`) and `offlineAccessOptional` (`false`) next to `allowPartial` |
+| `PATCH /configuration/edges/policies`, section `rateLimits` | `replicas`; and for every policy `by`, `scope`, `burst`, `cost`, `mode` |
+| `rateLimit` of a resource endpoint, and of an audience client | `burst`, `by`, `mode` next to `limits` |
+
+**Migrating a client of the API.** Send the fields above; the values to send for "as before" are the old defaults:
+`theme` and `otpTemplateId` `"default"`, the booleans `false`, `dpopSigningAlgs` and `permissions` `[]`, an unchanged patch
+`{"add":[],"remove":[]}`, a rate limit's `burst` `1`, `cost` `1`, `by` `[]` (policy) or `"none"` (declared limit), `scope`
+`"edge-wide"`, `mode` `"shadow"`, `replicas` `1`. The console, `versola-cli`, the load generator, `scripts/est-smoke.sh` and
+`openid-conformance/run.py` send them; a script of your own that posts a minimal body will start getting `400` and the reason is in
+`central`'s log. Read the new `required` lists in `central/open-api/central.yaml`.
+
+**Stored data.** Migration `V1032` adds `requiredScopes` and `offlineAccessOptional` to every stored `consent_flow`
+that lacks them, so no stored client is unreadable. `auth` and `edge` read configuration from `central` in the same shape:
+upgrade `central` first, then `auth` and `edge` (the configuration snapshot an `auth` or `edge` keeps for a start while `central` is unreachable is the raw answer
+of the older release and is decoded like a live one, so a snapshot that lacks a field cannot be used; start `central` first so the services
+refresh it).
+
 ### Overload protection
 
 When a service is asked for more than it can do, it should refuse the surplus quickly rather than queue it

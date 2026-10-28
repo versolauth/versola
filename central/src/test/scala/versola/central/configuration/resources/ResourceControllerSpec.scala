@@ -70,6 +70,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ),
     internal = false,
+    audienceRateLimits = Nil,
   )
 
   private val createRequestBodyWithNumericRule = CreateResourceRequest(
@@ -92,6 +93,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ),
     internal = false,
+    audienceRateLimits = Nil,
   )
 
   private val updateRequestBody = UpdateResourceRequest(
@@ -250,6 +252,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ),
                 internal = false,
                 secretRotation = false,
+                audienceRateLimits = Nil,
               ),
             ),
           ),

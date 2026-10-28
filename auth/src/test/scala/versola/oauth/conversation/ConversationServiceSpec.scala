@@ -176,14 +176,15 @@ object ConversationServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val consentingClient = registrationClient.copy(
-    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
+    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
   )
 
   private val partialConsentingClient = consentingClient.copy(
-    consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+    consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
   )
 
   private val requestedScope = conversationRecord.scope

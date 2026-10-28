@@ -147,7 +147,7 @@ case class ResourceResponse(
     internal: Boolean,
     secretRotation: Boolean,
     /** The limits the resource sets for its audience clients; empty when there are none. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -189,7 +189,7 @@ case class CreateResourceRequest(
     endpoints: Vector[CreateResourceEndpointRequest],
     internal: Boolean,
     /** The limits the resource sets for clients of `audience`: at most one per client. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
@@ -421,14 +421,14 @@ case class OAuthClientResponse(
     /** What this client changes in the theme it uses; absent when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
     /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
-    est: Option[ClientEstService.State] = None,
+    est: Option[ClientEstService.State],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
     allowPartial: Boolean,
     rememberDuration: Option[Long],
-    requiredScopes: Set[ScopeToken] = Set.empty,
-    offlineAccessOptional: Boolean = false,
+    requiredScopes: Set[ScopeToken],
+    offlineAccessOptional: Boolean,
 ) derives Schema, JsonCodec:
   def toDomain: ConsentFlow =
     ConsentFlow(
