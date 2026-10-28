@@ -21,8 +21,20 @@ trait AntifraudDetectors:
 
 object AntifraudDetectors:
 
-  /** @param enabled          off by default: no detector runs
-    * @param interval         how often the detectors run
+  /** What a deployment sets (`antifraud.detectors` of the config).
+    *
+    * @param enabled   off by default: no detector runs
+    * @param interval  how often the detectors run
+    * @param retention how long a decided or expired proposal is kept
+    */
+  case class Settings(
+      enabled: Boolean,
+      interval: Duration,
+      retention: Duration,
+  )
+
+  /** What is not configuration: the pace and the analytics of the detectors.
+    *
     * @param settle           how much of the newest rollup is left out: the rollup of a minute is rewritten for
     *                         `stats-lookback` after it, and a code is entered some time after it is sent
     * @param statementTimeout the longest a statement of a run may take
@@ -31,12 +43,9 @@ object AntifraudDetectors:
     * @param openFor          how long a proposal waits for a decision before it expires
     * @param cooldown         how long after it was approved or rejected a value is not proposed again
     * @param ttl              how long an entry lives that is made from a proposal
-    * @param retention        how long a decided or expired proposal is kept
     * @param batchSize        the most proposals expired, and the most removed, in one statement
     */
-  case class Settings(
-      enabled: Boolean,
-      interval: Duration,
+  case class Analytics(
       settle: Duration,
       statementTimeout: Duration,
       maxProposals: Int,
@@ -44,11 +53,35 @@ object AntifraudDetectors:
       openFor: Duration,
       cooldown: Duration,
       ttl: Duration,
-      retention: Duration,
       batchSize: Int,
       prefixAnomaly: PrefixAnomaly,
       fakeVerify: FakeVerify,
   )
+
+  object Analytics:
+    val standard: Analytics = Analytics(
+      settle = 2.minutes,
+      statementTimeout = 10.seconds,
+      maxProposals = 20,
+      candidates = 200,
+      openFor = 12.hours,
+      cooldown = 24.hours,
+      ttl = 24.hours,
+      batchSize = 1000,
+      prefixAnomaly = PrefixAnomaly(
+        enabled = true,
+        window = 15.minutes,
+        baseline = 24.hours,
+        minRequests = 50,
+        spikeFactor = 5.0,
+        baselineFloor = 5.0,
+        minSent = 20,
+        maxConversion = 0.2,
+        conversionDrop = 0.5,
+        minBaselineSent = 50,
+      ),
+      fakeVerify = FakeVerify(enabled = true, window = 30.minutes, minFakeVerifies = 5, maxVerified = 0),
+    )
 
   /** A range is proposed (as `fake`) when, in the last `window`, it was asked for at least `minRequests` codes,
     * that is `spikeFactor` times what the `baseline` before it gives for a window of that length (at least
@@ -84,22 +117,25 @@ object AntifraudDetectors:
   case class Run(settle: Duration, statementTimeout: Duration, maxProposals: Int, candidates: Int, cooldown: Duration, ttl: Duration)
 
   val live: ZLayer[AntifraudProposalRepository & Settings & Scope, Nothing, AntifraudDetectors] =
+    liveWith(Analytics.standard)
+
+  def liveWith(analytics: Analytics): ZLayer[AntifraudProposalRepository & Settings & Scope, Nothing, AntifraudDetectors] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AntifraudProposalRepository]
         settings <- ZIO.service[Settings]
-        detectors = Impl(repository, settings)
+        detectors = Impl(repository, settings, analytics)
         _ <- ZIO.when(settings.enabled)((ZIO.sleep(settings.interval) *> detectors.runOnce).forever.forkScoped)
       yield detectors
 
-  class Impl(repository: AntifraudProposalRepository, settings: Settings) extends AntifraudDetectors:
+  class Impl(repository: AntifraudProposalRepository, settings: Settings, analytics: Analytics) extends AntifraudDetectors:
     private val run = Run(
-      settle = settings.settle,
-      statementTimeout = settings.statementTimeout,
-      maxProposals = settings.maxProposals,
-      candidates = settings.candidates,
-      cooldown = settings.cooldown,
-      ttl = settings.ttl,
+      settle = analytics.settle,
+      statementTimeout = analytics.statementTimeout,
+      maxProposals = analytics.maxProposals,
+      candidates = analytics.candidates,
+      cooldown = analytics.cooldown,
+      ttl = analytics.ttl,
     )
 
     private def detect(kind: ProposalKind, made: Task[Option[Int]]): UIO[Unit] =
@@ -113,18 +149,18 @@ object AntifraudDetectors:
 
     override def runOnce: UIO[Unit] =
       Clock.instant.flatMap: now =>
-        ZIO.when(settings.prefixAnomaly.enabled)(
-          detect(ProposalKind.prefix_anomaly, repository.detectPrefixAnomalies(now, settings.prefixAnomaly, run)),
+        ZIO.when(analytics.prefixAnomaly.enabled)(
+          detect(ProposalKind.prefix_anomaly, repository.detectPrefixAnomalies(now, analytics.prefixAnomaly, run)),
         ) *>
-          ZIO.when(settings.fakeVerify.enabled)(
-            detect(ProposalKind.fake_verify, repository.detectFakeVerifies(now, settings.fakeVerify, run)),
+          ZIO.when(analytics.fakeVerify.enabled)(
+            detect(ProposalKind.fake_verify, repository.detectFakeVerifies(now, analytics.fakeVerify, run)),
           ) *>
           housekeeping(now)
 
     // Without this an open proposal that nobody decides would block its value for ever, and the table would only grow.
     private def housekeeping(now: java.time.Instant): UIO[Unit] =
-      (repository.expireOpen(now.minusSeconds(settings.openFor.getSeconds), settings.batchSize, settings.statementTimeout) *>
-        repository.prune(now.minusSeconds(settings.retention.getSeconds), settings.batchSize, settings.statementTimeout)).foldCauseZIO(
+      (repository.expireOpen(now.minusSeconds(analytics.openFor.getSeconds), analytics.batchSize, analytics.statementTimeout) *>
+        repository.prune(now.minusSeconds(settings.retention.getSeconds), analytics.batchSize, analytics.statementTimeout)).foldCauseZIO(
         cause => AntifraudDetectorMetrics.housekeepingFailed *> ZIO.logWarningCause("antifraud proposals could not be expired or removed", cause),
         _ => ZIO.unit,
       )

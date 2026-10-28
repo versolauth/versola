@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
   *   - at least `minVolume` were sent and fewer than `minConversion` of them were verified.
   * It opens again by itself as the hour moves on. Both limits are off while they are 0.
   */
-final class SmsBudget(settings: SmsBudget.Settings, limits: () => SmsLimits):
+final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, limits: () => SmsLimits):
   import SmsBudget.*
 
   private val windows = ConcurrentHashMap[Key, Window]()
@@ -42,7 +42,7 @@ final class SmsBudget(settings: SmsBudget.Settings, limits: () => SmsLimits):
       val existing = Option(windows.get(k))
       val window =
         if existing.isDefined || !charge then existing
-        else if windows.size >= settings.maxRanges then None
+        else if windows.size >= sizing.maxRanges then None
         else Some(windows.computeIfAbsent(k, _ => Window()))
       window match
         case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker, limit)) then Decision.Allowed else Decision.Refused
@@ -65,21 +65,25 @@ final class SmsBudget(settings: SmsBudget.Settings, limits: () => SmsLimits):
 
 object SmsBudget:
   /** A budget whose limits are `limits` everywhere, for where nothing is tuned. */
-  def apply(settings: Settings, limits: SmsLimits): SmsBudget = new SmsBudget(settings, () => limits)
+  def apply(settings: Settings, sizing: Sizing, limits: SmsLimits): SmsBudget = new SmsBudget(settings, sizing, () => limits)
 
   enum Decision:
     case Allowed, Refused, Untracked
 
-  /** The size of the budget, which a deployment sets; the limits themselves are tuned per range (see
-    * [[AntifraudTuning]]).
+  /** What a deployment sets (`antifraud.sms-budget` of the config); the limits themselves are tuned (see [[AntifraudTuning]]).
     *
-    * @param prefixLength   digits of the number, country code included, that make a range
-    * @param maxRanges      ranges tracked at once; beyond that new ones are let through untracked
+    * @param prefixLength digits of the number, country code included, that make a range; changing it starts the counts over
     */
-  case class Settings(
-      prefixLength: Int,
-      maxRanges: Int,
-  )
+  case class Settings(prefixLength: Int)
+
+  /** What is not configuration.
+    *
+    * @param maxRanges ranges tracked at once; beyond that new ones are let through untracked
+    */
+  case class Sizing(maxRanges: Int)
+
+  object Sizing:
+    val standard: Sizing = Sizing(maxRanges = 10000)
 
   private case class Key(tenantId: String, prefix: String)
 

@@ -93,7 +93,7 @@ object AntifraudListsSpec extends UnitSpecBase:
 
   private def make(repository: FakeRepository, config: AntifraudLists.Settings = settings) =
     val cache = AntifraudLists.ListCache()
-    (AntifraudLists.Impl(repository, config, cache), cache)
+    (AntifraudLists.Impl(repository, config, AntifraudTestSettings.listsPolicy, cache), cache)
 
   private def add(
       lists: AntifraudLists,
@@ -274,7 +274,7 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- TestClock.adjust(settings.refreshInterval) *> ZIO.yieldNow.repeatN(20)
           after <- decide(lists)(ctx(deviceId = Some("d")))
           _ <- decide(lists)(ctx(deviceId = Some("d")))
-          _ <- TestClock.adjust(settings.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
+          _ <- TestClock.adjust(AntifraudTestSettings.listsPolicy.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
           written <- ZIO.succeed(repository.written)
         yield assertTrue(before == Decision.allow, after.action == DecisionAction.Block, written.map(_.count) == List(2L))
     },

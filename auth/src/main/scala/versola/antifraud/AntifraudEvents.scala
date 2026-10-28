@@ -80,35 +80,56 @@ trait AntifraudEvents:
 
 object AntifraudEvents:
 
-  /** @param queueCapacity  events held while the writer catches up; one more is dropped and counted
-    * @param batchSize      the most events written in one round trip
-    * @param flushInterval  the writer rests this long after a batch that did not fill, which lets a trickle gather
-    *                       into one batch; a full batch is followed at once by the next
-    * @param retention      how long a day's partition is kept
-    * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
-    *                       leave the writer without a partition
-    * @param smsBudget      the limit on codes sent to one range of numbers, off by default
-    * @param decision       the rule engine that decides what to do with an OTP request, off by default
+  /** What a deployment sets (the `antifraud` block of the config).
+    *
+    * @param retention      how long a day's partition of the event log is kept; it bounds how long personal data is held
     * @param statsInterval  how often `af_dest_stats` is rolled up from the log
-    * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
-    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
-    * @param velocity       the velocity counters and the limits of their rules, off by default (see [[VelocityCounters]])
+    * @param smsBudget      the size of a range of numbers the SMS budget counts (see [[SmsBudget]])
+    * @param decision       the rule engine that decides what to do with an OTP request, off by default
+    * @param velocity       the velocity counters, off by default (see [[VelocityCounters]])
     */
   case class Settings(
+      retention: Duration,
+      statsInterval: Duration,
+      statsRetention: Duration,
+      smsBudget: SmsBudget.Settings,
+      decision: Antifraud.Settings,
+      velocity: VelocityCounters.Settings,
+  )
+
+  /** What is not configuration: the sizes and the pace of the writer.
+    *
+    * @param queueCapacity   events held while the writer catches up; one more is dropped and counted
+    * @param batchSize       the most events written in one round trip
+    * @param flushInterval   the writer rests this long after a batch that did not fill, which lets a trickle gather
+    *                        into one batch; a full batch is followed at once by the next
+    * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
+    *                        leave the writer without a partition
+    * @param statsLookback   how far back each rollup recomputes, so that events written late are still counted
+    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
+    * @param smsBudget       the size of the SMS budget
+    */
+  case class Sizing(
       queueCapacity: Int,
       batchSize: Int,
       flushInterval: Duration,
-      retention: Duration,
       partitionsAhead: Int,
-      smsBudget: SmsBudget.Settings,
-      decision: Antifraud.Settings,
-      statsInterval: Duration,
       statsLookback: Duration,
-      statsRetention: Duration,
       statsPrefixLength: Int,
-      velocity: VelocityCounters.Settings,
+      smsBudget: SmsBudget.Sizing,
   )
+
+  object Sizing:
+    val standard: Sizing = Sizing(
+      queueCapacity = 20000,
+      batchSize = 1000,
+      flushInterval = 1.second,
+      partitionsAhead = 3,
+      statsLookback = 2.minutes,
+      statsPrefixLength = 4,
+      smsBudget = SmsBudget.Sizing.standard,
+    )
 
   /** Records nothing. For tests of what calls it, and for a deployment that does not want the log. */
   object noop extends AntifraudEvents:
@@ -158,6 +179,13 @@ object AntifraudEvents:
     Nothing,
     AntifraudEvents,
   ] =
+    liveWith(Sizing.standard)
+
+  def liveWith(sizing: Sizing): ZLayer[
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    Nothing,
+    AntifraudEvents,
+  ] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AntifraudEventRepository]
@@ -169,16 +197,16 @@ object AntifraudEvents:
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
         configService <- ZIO.service[OAuthConfigurationService]
-        queue <- Queue.dropping[AntifraudEvent](settings.queueCapacity)
+        queue <- Queue.dropping[AntifraudEvent](sizing.queueCapacity)
         // The key of the destinations' hash, run through a fixed label so that what an event stores of a number
         // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
-        budget = new SmsBudget(settings.smsBudget, () => tuning.current.smsLimits)
+        budget = new SmsBudget(settings.smsBudget, sizing.smsBudget, () => tuning.current.smsLimits)
         events = Impl(
           queue,
-          settings.queueCapacity,
+          sizing.queueCapacity,
           budget,
           antifraud,
           velocity,
@@ -190,9 +218,9 @@ object AntifraudEvents:
           subjectKey,
         )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
-        _ <- Rollup(repository, settings).run
-        _ <- Maintenance(repository, settings).run
-        _ <- Writer(queue, repository, settings).run
+        _ <- Rollup(repository, settings, sizing).run
+        _ <- Maintenance(repository, settings, sizing).run
+        _ <- Writer(queue, repository, sizing).run
       yield events
 
   class Impl(
@@ -399,7 +427,7 @@ object AntifraudEvents:
     * fills up. */
   private val shedFirst: Set[AntifraudOutcome] = Set(AntifraudOutcome.throttled, AntifraudOutcome.locked)
 
-  private class Writer(queue: Queue[AntifraudEvent], repository: AntifraudEventRepository, settings: Settings):
+  private class Writer(queue: Queue[AntifraudEvent], repository: AntifraudEventRepository, sizing: Sizing):
 
     /** Takes what has gathered, writes it, rests, and again. A failed write drops that batch and the loop goes on:
       * the next batch may well succeed. It rests after a batch that did not fill, and after a failed one, so a
@@ -407,13 +435,13 @@ object AntifraudEvents:
     private def loop(failing: Ref[Boolean]): UIO[Nothing] =
       (for
         first <- queue.take
-        rest <- queue.takeUpTo(settings.batchSize - 1)
+        rest <- queue.takeUpTo(sizing.batchSize - 1)
         batch = (first +: rest).toList
         _ <- AntifraudMetrics.queueSize(queue)
         ok <- write(batch, failing).onInterrupt(AntifraudMetrics.dropped("shutdown", batch.size))
         // A backlog (which is what an attack makes) is written back to back, so the write rate is not capped at
         // one batch per interval when it matters.
-        _ <- ZIO.sleep(settings.flushInterval).when(!ok || batch.size < settings.batchSize)
+        _ <- ZIO.sleep(sizing.flushInterval).when(!ok || batch.size < sizing.batchSize)
       yield ()).forever
 
     /** Whether the batch was written. The warning, with its stack, is logged once when writes start failing and
@@ -449,13 +477,13 @@ object AntifraudEvents:
         _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
       yield ()
 
-  private class Rollup(repository: AntifraudEventRepository, settings: Settings):
+  private class Rollup(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
     private val once: UIO[Unit] =
       Clock.instant.flatMap: now =>
         val to = now.truncatedTo(ChronoUnit.MINUTES)
-        val from = to.minusSeconds(settings.statsLookback.toSeconds)
-        (repository.rollupStats(from, to, settings.statsPrefixLength) *>
+        val from = to.minusSeconds(sizing.statsLookback.toSeconds)
+        (repository.rollupStats(from, to, sizing.statsPrefixLength) *>
           repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
           cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
           _ => ZIO.unit,
@@ -464,13 +492,13 @@ object AntifraudEvents:
     val run: URIO[Scope, Unit] =
       (ZIO.sleep(settings.statsInterval) *> once).forever.forkScoped.unit
 
-  private class Maintenance(repository: AntifraudEventRepository, settings: Settings):
+  private class Maintenance(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
     private val once: IO[Unit, Unit] =
       Clock.instant.flatMap: now =>
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
-        repository.maintainPartitions(today, settings.partitionsAhead + 1, keepFrom).foldCauseZIO(
+        repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
           cause =>
             AntifraudMetrics.partitionMaintenanceFailed *>
               ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>

@@ -61,16 +61,17 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   */
 final class VelocityCounters(
     settings: VelocityCounters.Settings,
+    limits: VelocityCounters.Limits,
     thresholds: () => VelocityRules.Thresholds,
     ipKey: String => UIO[Option[String]],
 ):
   import VelocityCounters.*
 
-  private val stripes = Integer.highestOneBit(math.max(1, settings.stripes))
+  private val stripes = Integer.highestOneBit(math.max(1, limits.stripes))
   private val tables = VelocityKey.values.map(_ => ConcurrentHashMap[String, Entry]())
   // Keys in the order they were admitted, to find the junk among them when the table is full.
   private val admitted = VelocityKey.values.map(_ => ConcurrentLinkedQueue[Admitted]())
-  private val remote = Remote(settings.maxKeys * VelocityKey.values.length)
+  private val remote = Remote(limits.maxKeys * VelocityKey.values.length)
   private val untrackedCount = AtomicLong(0)
   private val evictedCount = AtomicLong(0)
 
@@ -97,7 +98,7 @@ final class VelocityCounters(
     else entry.add(minuteOf(at), 1, stripeOfThread)
 
   private def admit(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], key: String): Entry | Null =
-    if map.size >= settings.maxKeys && !evictJunk(keyType, map) then null
+    if map.size >= limits.maxKeys && !evictJunk(keyType, map) then null
     else
       val entry = map.computeIfAbsent(key, _ => Entry(stripes))
       admitted(keyType.ordinal).add(Admitted(key, entry))
@@ -196,7 +197,7 @@ final class VelocityCounters(
         entry = e.getValue
         if entry.dirtySince.get != Long.MaxValue
         total = entry.count(from, now)
-        if total >= settings.shareFrom
+        if total >= limits.shareFrom
       yield (keyType, e.getKey, entry, total)
     val out = ArrayBuffer.empty[(VelocityBucket, Long)]
     candidates.sortBy(-_._4).foreach: (keyType, key, entry, _) =>
@@ -222,34 +223,39 @@ final class VelocityCounters(
 
 object VelocityCounters:
 
-  /** @param enabled       off by default: nothing is counted, nothing is flushed, no rule fires
+  /** What a deployment sets (`antifraud.velocity` of the config).
+    *
+    * @param enabled       nothing is counted, nothing is flushed, no rule fires while it is false
+    * @param flushInterval how often this instance's changed buckets are written to the database
+    * @param loadInterval  how often what the other instances changed is read back
+    */
+  case class Settings(
+      enabled: Boolean,
+      flushInterval: Duration,
+      loadInterval: Duration,
+  )
+
+  /** What is not configuration: the sizes, which only the memory they bound would make anyone change.
+    *
     * @param maxKeys       keys tracked at once of each kind; beyond that a new key takes the place of a key seen once, or
     *                      is not counted when there is none (fail open)
     * @param stripes       independent bucket arrays per key, a power of two (rounded down to one); hot keys contend less
-    * @param flushInterval how often this instance's changed buckets are written to the database
-    * @param loadInterval  how often what the other instances changed is read back
     * @param shareFrom     requests of a key in the day before this instance shares it with the others; bounds what the
     *                      database holds (and what a load reads) to the keys that have any weight
     * @param maxFlushRows  buckets written per flush, at most; the busiest keys first, the rest follows at the next
     * @param maxLoadKeys   keys read per load, the busiest first; the others are left to the per-instance count
     */
-  case class Settings(
-      enabled: Boolean,
-      maxKeys: Int,
-      stripes: Int,
-      flushInterval: Duration,
-      loadInterval: Duration,
-      shareFrom: Int,
-      maxFlushRows: Int,
-      maxLoadKeys: Int,
-  )
+  case class Limits(maxKeys: Int, stripes: Int, shareFrom: Int, maxFlushRows: Int, maxLoadKeys: Int)
+
+  object Limits:
+    val standard: Limits = Limits(maxKeys = 20000, stripes = 8, shareFrom = 3, maxFlushRows = 20000, maxLoadKeys = 20000)
 
   /** Longest key kept; longer ones are cut, so the attacker's choice of length buys no memory. */
   val maxKeyLength = 128
 
   /** Counters that key an address by its network as it is: for tests, and where nothing is stored. */
-  def apply(settings: Settings, thresholds: VelocityRules.Thresholds): VelocityCounters =
-    new VelocityCounters(settings, () => thresholds, network => ZIO.succeed(Some(network)))
+  def apply(settings: Settings, limits: Limits, thresholds: VelocityRules.Thresholds): VelocityCounters =
+    new VelocityCounters(settings, limits, () => thresholds, network => ZIO.succeed(Some(network)))
 
   private def pack(minute: Long, count: Int): Long = (minute << 32) | (count.toLong & 0xffffffffL)
   private def minuteOf(packed: Long): Long = packed >>> 32
@@ -413,6 +419,9 @@ object VelocityCounters:
     * the antifraud subject secret under a label of its own, so the table holds no address, and the hash cannot be
     * matched against one made anywhere else with the same secret. */
   val live: ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
+    liveWith(Limits.standard)
+
+  def liveWith(limits: Limits): ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[VelocityRepository]
@@ -430,13 +439,13 @@ object VelocityCounters:
         counters <-
           if settings.enabled then
             for
-              counters <- ZIO.succeed(new VelocityCounters(settings, () => tuning.current.thresholds, hash))
+              counters <- ZIO.succeed(new VelocityCounters(settings, limits, () => tuning.current.thresholds, hash))
               instance <- ZIO.succeed(UUID.randomUUID())
               failing <- Ref.make(false)
               reported <- ZIO.foreach(List.fill(2)(0L))(Ref.make(_))
-              _ <- Flusher(counters, repository, settings, instance, failing, reported(0), reported(1)).run
+              _ <- Flusher(counters, repository, settings, limits, instance, failing, reported(0), reported(1)).run
             yield counters
-          else ZIO.succeed(new VelocityCounters(settings, () => tuning.current.thresholds, hash))
+          else ZIO.succeed(new VelocityCounters(settings, limits, () => tuning.current.thresholds, hash))
       yield counters
 
   /** Rows deleted per statement of the upkeep. */
@@ -446,6 +455,7 @@ object VelocityCounters:
       counters: VelocityCounters,
       repository: VelocityRepository,
       settings: Settings,
+      limits: Limits,
       instance: UUID,
       failing: Ref[Boolean],
       reportedUntracked: Ref[Long],
@@ -468,7 +478,7 @@ object VelocityCounters:
 
     private val flush: UIO[Unit] =
       Clock.instant.flatMap: now =>
-        val drained = counters.drain(now, settings.maxFlushRows)
+        val drained = counters.drain(now, limits.maxFlushRows)
         ZIO.when(drained.nonEmpty):
           repository.save(instance, drained.map(_._1)).foldCauseZIO(
             cause => ZIO.succeed(counters.unflushed(drained)) *> failed("flush", cause),
@@ -486,7 +496,7 @@ object VelocityCounters:
     private val Slices = 24
 
     private def loadRange(from: Long, to: Long): UIO[Boolean] =
-      repository.loadOthers(instance, from, to, settings.maxLoadKeys).foldCauseZIO(
+      repository.loadOthers(instance, from, to, limits.maxLoadKeys).foldCauseZIO(
         cause => failed("load", cause).as(false),
         buckets => ZIO.succeed(counters.loaded(buckets)).as(true),
       )

@@ -88,35 +88,56 @@ object AntifraudLists:
   /** The [[AntifraudContext.signals]] key a mail domain is read from (`email_domain` entries). */
   val EmailDomainSignal = "email_domain"
 
-  /** @param enabled          off by default: no entry is read and no rule is contributed
+  /** What a deployment sets (`antifraud.lists` of the config).
+    *
+    * @param enabled          off by default: no entry is read and no rule is contributed
     * @param refreshInterval  how often the snapshot is rebuilt from the table, so how long a change takes to reach another instance
-    * @param hitFlushInterval how often the hit counters are written
-    * @param watchWeight      what a matching `watch` entry adds to the score
-    * @param allowWeight      what a matching `allow` entry takes off it; larger than any score the other rules reach
-    * @param maxTrafficShare  an enforcing entry that would have matched more than this share of the last 24 hours of events is refused; 0 disables
-    * @param shareMinEvents   the share is judged only over at least this many events
     * @param auditRetention   how long the audit records of changes are kept
-    * @param startupTimeout   how long starting waits for the first successful load of the lists
     */
   case class Settings(
       enabled: Boolean,
       refreshInterval: Duration,
+      auditRetention: Duration,
+  )
+
+  /** What is not configuration.
+    *
+    * @param hitFlushInterval how often the hit counters are written
+    * @param watchWeight      what a matching `watch` entry adds to the score (`ruleWeights` of the tuned settings replaces it by rule name)
+    * @param allowWeight      what a matching `allow` entry takes off it; larger than any score the other rules reach
+    * @param maxTrafficShare  an enforcing entry that would have matched more than this share of the last 24 hours of events is refused; 0 disables
+    * @param shareMinEvents   the share is judged only over at least this many events
+    * @param startupTimeout   how long starting waits for the first successful load of the lists
+    */
+  case class Policy(
       hitFlushInterval: Duration,
       watchWeight: Int,
       allowWeight: Int,
       maxTrafficShare: Double,
       shareMinEvents: Long,
-      auditRetention: Duration,
       startupTimeout: Duration,
   )
 
+  object Policy:
+    val standard: Policy = Policy(
+      hitFlushInterval = 30.seconds,
+      watchWeight = 20,
+      allowWeight = 1000,
+      maxTrafficShare = 0.05,
+      shareMinEvents = 100,
+      startupTimeout = 30.seconds,
+    )
+
   val live: ZLayer[AntifraudListRepository & Settings & Scope, Nothing, AntifraudLists] =
+    liveWith(Policy.standard)
+
+  def liveWith(policy: Policy): ZLayer[AntifraudListRepository & Settings & Scope, Nothing, AntifraudLists] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AntifraudListRepository]
         settings <- ZIO.service[Settings]
         cache = ListCache()
-        lists = Impl(repository, settings, cache)
+        lists = Impl(repository, settings, policy, cache)
         _ <- ZIO.when(settings.enabled)(lists.start)
       yield lists
 
@@ -159,7 +180,7 @@ object AntifraudLists:
     def restore(failed: List[ListHit]): Unit =
       failed.foreach(h => hits.merge(h.id, h, add))
 
-  class Impl(repository: AntifraudListRepository, settings: Settings, cache: ListCache) extends AntifraudLists:
+  class Impl(repository: AntifraudListRepository, settings: Settings, policy: Policy, cache: ListCache) extends AntifraudLists:
 
     override val ruleSet: Antifraud.RuleSet = new Antifraud.RuleSet:
       override def rules: UIO[List[AntifraudRule]] =
@@ -216,12 +237,12 @@ object AntifraudLists:
           ),
           AntifraudRule(
             name = s"allow_list:$valueType",
-            weight = -settings.allowWeight,
+            weight = -policy.allowWeight,
             forces = None,
             test = decisive(AntifraudListType.allow, valueType),
           ),
           AntifraudRule(name = s"shadow_list:$valueType", weight = 0, forces = None, test = shadowed(valueType)),
-          AntifraudRule(name = s"watch_list:$valueType", weight = settings.watchWeight, forces = None, test = watched(valueType)),
+          AntifraudRule(name = s"watch_list:$valueType", weight = policy.watchWeight, forces = None, test = watched(valueType)),
         )
 
     /** Checks the value and the safety rules, and returns the canonical value. */
@@ -248,13 +269,13 @@ object AntifraudLists:
       for
         now <- Clock.instant
         value <- validate(entry, now)
-        _ <- ZIO.when(!entry.shadow && settings.maxTrafficShare > 0):
+        _ <- ZIO.when(!entry.shadow && policy.maxTrafficShare > 0):
           repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600)).flatMap: p =>
             ZIO
               .fail(
                 InvalidListEntry(s"it would have matched ${p.matched.get} of ${p.total} events of the last 24 hours: add it as a shadow entry first"),
               )
-              .when(p.total >= settings.shareMinEvents && p.matched.exists(_.toDouble / p.total > settings.maxTrafficShare))
+              .when(p.total >= policy.shareMinEvents && p.matched.exists(_.toDouble / p.total > policy.maxTrafficShare))
         stored <- repository.upsert(
           AntifraudListEntry(
             id = UUID.randomUUID(),
@@ -343,12 +364,12 @@ object AntifraudLists:
       * flush happens on the way out. */
     private[antifraud] val start: URIO[Scope, Unit] =
       for
-        loaded <- refresh.repeat(Schedule.spaced(1.second) *> Schedule.recurWhile[Boolean](!_)).timeout(settings.startupTimeout)
+        loaded <- refresh.repeat(Schedule.spaced(1.second) *> Schedule.recurWhile[Boolean](!_)).timeout(policy.startupTimeout)
         _ <- ZIO
           .logWarning("the antifraud lists could not be read in time: no list is enforced until a refresh succeeds")
           .when(!loaded.contains(true))
         _ <- (ZIO.sleep(if loaded.contains(true) then settings.refreshInterval else 1.second) *> refresh).forever.forkScoped
-        _ <- (ZIO.sleep(settings.hitFlushInterval) *> flushHits *> cleanUp).forever.forkScoped
+        _ <- (ZIO.sleep(policy.hitFlushInterval) *> flushHits *> cleanUp).forever.forkScoped
         _ <- ZIO.addFinalizer(flushHits.timeout(5.seconds))
       yield ()
 

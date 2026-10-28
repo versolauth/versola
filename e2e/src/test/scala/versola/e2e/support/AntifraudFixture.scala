@@ -96,7 +96,7 @@ object AntifraudFixture:
   private val APorts = Ports(9021, 9022, 9027, 9028)
   private val BPorts = Ports(9023, 9024, 9029, 9030)
 
-  /** Appended to the running auth's `env.conf`. `timeout` is lengthened from the 20 ms a production evaluation is held
+  /** Appended to the running auth's `env.conf`, which has the whole `antifraud` block (every key is required; see gen-env), so these only change what the specs need. `timeout` is lengthened from the 20 ms a production evaluation is held
     * to, so that a busy CI machine does not turn a decision into `antifraud_error` (a fail-open `Challenge`). */
   private def antifraudConfig(sync: Duration): String =
     s"""
@@ -107,19 +107,11 @@ object AntifraudFixture:
        |    enabled = true
        |    flush-interval = "${sync.toMillis} millis"
        |    load-interval = "${sync.toMillis} millis"
-       |    share-from = 1
        |  }
        |  # The thresholds are not configuration: `tuned` writes them to the row of af_settings.
        |  lists {
        |    enabled = true
        |    refresh-interval = "1 second"
-       |    hit-flush-interval = "30 seconds"
-       |    watch-weight = 20
-       |    allow-weight = 1000
-       |    max-traffic-share = 0.05
-       |    share-min-events = 100
-       |    audit-retention = "365 days"
-       |    startup-timeout = "30 seconds"
        |  }
        |}
        |""".stripMargin

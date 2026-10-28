@@ -160,7 +160,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (store, _, _) <- storeLayer
         _ <- store.put(base.copy(smsLimits = limits), "alice")
-        budget = new SmsBudget(AntifraudTestSettings.smsBudget.copy(prefixLength = 6), () => store.current.smsLimits)
+        budget = new SmsBudget(AntifraudTestSettings.smsBudget.copy(prefixLength = 6), AntifraudTestSettings.smsSizing, () => store.current.smsLimits)
         first = budget.decide(tenant, "491512", at, charge = true)
         second = budget.decide(tenant, "491512", at, charge = true)
         german = (budget.decide(tenant, "491612", at, charge = true), budget.decide(tenant, "491612", at, charge = true), budget.decide(tenant, "491612", at, charge = true))

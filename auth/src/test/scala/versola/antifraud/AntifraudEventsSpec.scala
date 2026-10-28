@@ -45,12 +45,13 @@ object AntifraudEventsSpec extends UnitSpecBase:
       antifraud: Antifraud = Antifraud.off,
       velocity: VelocityCounters = AntifraudTestSettings.velocityOff,
       tuning: Tuning = Tuning.off,
+      sizing: AntifraudEvents.Sizing = smallSizing,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
       _ <- e.repository.rollupStats.succeedsWith(true)
       _ <- e.repository.pruneStats.succeedsWith(())
-      events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents])
+      events <- AntifraudEvents.liveWith(sizing).build.map(_.get[AntifraudEvents])
     yield events).provideSome[Scope](
       ZLayer.succeed[AntifraudEventRepository](e.repository),
       ZLayer.succeed(settings),
@@ -65,7 +66,10 @@ object AntifraudEventsSpec extends UnitSpecBase:
 
   private val t0 = Instant.parse("2026-10-21T10:00:30Z")
 
-  private val small = AntifraudTestSettings.events.copy(queueCapacity = 3, batchSize = 10, flushInterval = 1.second, retention = 14.days, partitionsAhead = 3)
+  private val small = AntifraudTestSettings.events
+
+  /** A queue that fills up and batches that fill. */
+  private val smallSizing = AntifraudTestSettings.sizing.copy(queueCapacity = 3, batchSize = 10, flushInterval = 1.second, partitionsAhead = 3)
 
   def spec = suite("AntifraudEvents")(
     suite("the writer")(
@@ -154,7 +158,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.returnsZIO:
               case List(_) => started.succeed(()) *> release.await
               case _ => ZIO.unit
-            events <- build(e, small.copy(queueCapacity = 10, batchSize = 2))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10, batchSize = 2))
             _ <- events.record(event())
             _ <- started.await
             _ <- ZIO.foreachDiscard(List.fill(4)(event()))(events.record)
@@ -168,7 +172,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.repository.insertBatch.failsWith(RuntimeException("database is down"))
-            events <- build(e, small.copy(queueCapacity = 100, batchSize = 2))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 100, batchSize = 2))
             _ <- ZIO.foreachDiscard(List.fill(50)(event()))(events.record)
             _ <- TestClock.adjust(1.second)
             calls <- ZIO.succeed(e.repository.insertBatch.calls.size)
@@ -200,7 +204,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           _ <- e.repository.insertBatch.succeedsWith(())
           _ <- e.repository.rollupStats.succeedsWith(true)
           _ <- e.repository.pruneStats.succeedsWith(())
-          events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
+          events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
             ZLayer.succeed[AntifraudEventRepository](e.repository),
             ZLayer.succeed(small),
             ZLayer.succeed(TestEnvConfig.coreConfig),
@@ -257,7 +261,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.pruneStats.succeedsWith(())
-            _ <- AntifraudEvents.live.build.provideSome[Scope](
+            _ <- AntifraudEvents.liveWith(smallSizing).build.provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
@@ -284,7 +288,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.pruneStats.succeedsWith(())
-            events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
+            events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
@@ -442,7 +446,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
         )
         val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
-        val velocity = VelocityCounters(vsettings, tuned.thresholds)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
         val engine = AntifraudTestSettings.engine(
           AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
           List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
@@ -472,7 +476,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
         )
         val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
-        val velocity = VelocityCounters(vsettings, tuned.thresholds)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
         val engine = AntifraudTestSettings.engine(
           AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
           List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
@@ -531,7 +535,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.configService.find.succeedsWith(None)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(queueCapacity = 10))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
             _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
             _ <- events.otpRequested(authId, clientId, None, Right(Phone("+4915123456780")), AntifraudOutcome.sent)
@@ -572,7 +576,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.configService.find.succeedsWith(None)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(queueCapacity = 10))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
             long = "x" * 1000
             _ <- events.otpRequested(authId, clientId, Some(long), Left(Email("User@Example.com")), AntifraudOutcome.suppressed)
             _ <- events.otpRequested(authId, clientId, None, Left(Email("user@example.com")), AntifraudOutcome.suppressed)

@@ -526,26 +526,37 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
-- **Antifraud configuration.** Every key of the `antifraud` block of `auth`'s config has its default in the image
-  (`auth/src/main/resources/versola-defaults.conf`, the one place to read them; the Scala settings classes have none), and
-  **all of it is off**: the switches (`decision.enabled`, `velocity.enabled`, `lists.enabled`, `detectors.enabled`) are
-  `false`. A key is read from the first of these that has it:
-  `env.conf`, the overlay file (`CONFIG_OVERLAY_PATH`), the defaults.
+- **Antifraud configuration.** Each antifraud key has exactly one home.
+  1. **Tuned during an attack** (thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow
+     rules): the stored settings below, changed through central's admin API, with no restart.
+  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**, as
+     for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
+     before the block existed, makes `auth` refuse to start naming the missing key). The chart takes the config from the
+     Secret you give it, so there is nothing to set in the chart's values. The keys, with what the generator writes:
 
-  Only the **deployment-level** keys belong in configuration, and the chart exposes only those, as `services.auth.antifraud`
-  (an overlay ConfigMap; `auth` restarts when it changes, which also empties its in-memory velocity counters):
-  the switches above, `decision.timeout` and `decision.failure-action`, the sizes of the velocity counters
-  (`velocity.max-keys`, `stripes`, `max-flush-rows`, `max-load-keys`) and `detectors.statement-timeout`.
-
-  ```yaml
-  services:
-    auth:
-      antifraud:
-        decision: {enabled: true, timeout: "20 milliseconds", failure-action: allow}
-        velocity: {enabled: true, max-keys: 20000, stripes: 8, max-flush-rows: 20000, max-load-keys: 20000}
-        lists: {enabled: true}
-        detectors: {enabled: true, statement-timeout: "10 seconds"}
-  ```
+     ```hocon
+     antifraud {
+       retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
+       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up
+       stats-retention  = "30 days"
+       sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
+       decision {
+         enabled        = false        # the rule engine; off, nothing is evaluated
+         timeout        = "20 milliseconds"
+         failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails or
+                                       # is too slow, or the stored settings have not been read yet
+       }
+       velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
+       tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
+       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days" }
+       detectors { enabled = false, interval = "1 minute", retention = "90 days" }
+       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5 }
+     }
+     ```
+  3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
+     queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
+     `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
+     the detectors' pace and analytics. Where the items below name one of them with its value, that is the constant.
 
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
   through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
@@ -555,9 +566,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
   `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
   number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
-  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending. What the
-  configuration keeps is deployment: the switches, `decision.timeout` and `failure-action`, the sizes (`velocity.*`,
-  `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
+  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending.
 
   There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
   own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
@@ -627,7 +636,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
   Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
-  optional `antifraud` block of `auth`'s config.
+  `antifraud` block of `auth`'s config.
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
   recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
@@ -637,8 +646,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
   change made through another instance shows within that time, and a refresh that fails keeps the previous lists
   (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
-  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
-  interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
+  every 30 seconds, expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
+  interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
   an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
   `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
   `/antifraud/lists`; the console has no screen for them yet. Entries added by SQL skip the audit and the version bump (an
@@ -650,17 +659,17 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
-  `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
-  `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  5% of the last 24 hours of events (judged over at least
+  100 events) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
   `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
-  `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
+  30 seconds for the first successful load so that lists are enforced from the first
   request; if it fails it starts without them, logs it and retries every second. **Rotating
   `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
 
 - **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
-  minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
+  minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, a constant of the service,
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
   (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
   ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
@@ -686,7 +695,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  `antifraud.sms-budget.max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
+  10000 ranges are tracked; beyond that new ones are let through untracked
   (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
@@ -696,9 +705,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
   ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
-  The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
-  `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
-  keys first) and `max-load-keys` (20000 per query, the busiest first). The limits are the tuned setting `thresholds`:
+  The counters' sizes are constants of the service: `max-keys` (20000 per kind), `stripes` (8), `share-from` (3),
+  `max-flush-rows` (20000, a strict cap, the busiest keys first) and `max-load-keys` (20000 per query, the busiest first);
+  `flush-interval` and `load-interval` are keys of the block above. The limits are the tuned setting `thresholds`:
   `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
   prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
   rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
@@ -711,7 +720,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
   stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
   about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
-  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
+  (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
   full table does not stop counting: a new key takes the place of the oldest key seen only once
   (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
   has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
@@ -744,13 +753,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
   never creates one. **Off by default** (`antifraud.detectors.enabled`, `false`), and each detector has its own
-  `enabled`. The block is read whole: set every key of it (and of `prefix-anomaly` and `fake-verify`), or none.
-  Defaults: `interval` 1 minute, `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
+  `enabled`. `interval`, `retention` and `enabled` are keys of the block above; the rest are constants of the service: `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
   10 s, `max-proposals` 20 per detector and run, `candidates` 200 (ranges looked at closely, busiest first), `open-for`
   12 hours (an undecided proposal then expires), `cooldown` 24 hours (a value approved or rejected is not proposed
   again for that long), `ttl` 24 hours (what an entry made from a proposal lives), `retention` 90 days, `batch-size`
   1000.
-  `prefix-anomaly` proposes a range (tenant plus the first `stats-prefix-length` digits) for `fake` when in the last
+  `prefix-anomaly` proposes a range (tenant plus the first 4 digits) for `fake` when in the last
   `window` (15 minutes) it was asked for at least `min-requests` (50) codes, `spike-factor` (5) times what the
   `baseline` (24 hours before the window) gives for a window of that length (at least `baseline-floor`, 5), at least
   `min-sent` (20) were sent and its conversion (verified over sent) is at most `max-conversion` (0.2) and, if the
@@ -761,7 +769,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (a shorter prefix covers a longer one). Sequential numbers are not detected: the log keeps a number as a keyed hash
   and its first six digits, which cannot tell consecutive numbers from others.
   One instance runs a detector at a time (an advisory lock; the others skip it), each statement under
-  `antifraud.detectors.statement-timeout` and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
+  the statement timeout (10 s) and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
   with `DEFAULT 0` (the previous release's rollup does not name it); it counts `fake_verify` events. Proposals are
   counted in `antifraud_proposals_created_total{kind}`; **alert on** `antifraud_detector_failed_total{kind}` and
   `antifraud_proposal_housekeeping_failed_total` increasing: a failing detector is only a warning in the log. There
@@ -1455,7 +1463,6 @@ handed over. A peer nobody classified is external. `http_client_requests_total` 
 | `PORT` / `APORT` / `DPORT` | `8080` / `8082` / `8081` | app / additional internal / diagnostics (`/metrics`, `/liveness`, `/readiness`) port |
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
-| `CONFIG_OVERLAY_PATH` | — | optional HOCON file laid below `CONFIG_PATH` and above the defaults the service ships; the chart sets it on `auth` from `services.auth.antifraud` |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |

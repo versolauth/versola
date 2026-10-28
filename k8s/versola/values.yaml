@@ -268,25 +268,6 @@ services:
       # default -- this chart doesn't generate one.
       existingSecret: ""
       secretKey: env.conf
-    # The deployment-level keys of the `antifraud` block of auth's config (deploy.md, "Antifraud configuration"; every key
-    # and its default is in auth/src/main/resources/versola-defaults.conf), written as a file auth reads below the
-    # env.conf Secret: a key the env.conf sets wins. Kebab-case keys, durations as strings. Everything is OFF by default,
-    # which is what the switches below say; leave this `{}` to change nothing. Changing it restarts auth, which also
-    # empties its in-memory velocity counters.
-    #
-    # Thresholds, weights, SMS limits and timings are not here: they are tuned while an attack is going on, so they are
-    # stored settings changed through central's admin API, `PUT /antifraud/settings` (deploy.md).
-    #
-    #   antifraud:
-    #     decision: {enabled: true, timeout: "20 milliseconds", failure-action: allow}
-    #     velocity: {enabled: true, max-keys: 20000, stripes: 8, max-flush-rows: 20000, max-load-keys: 20000}
-    #     lists: {enabled: true}
-    #     detectors: {enabled: true, statement-timeout: "10 seconds"}
-    antifraud:
-      decision: {enabled: false}
-      velocity: {enabled: false}
-      lists: {enabled: false}
-      detectors: {enabled: false}
     # Extra plain env vars: [{name: FOO, value: bar}, ...].
     extraEnv: []
     # Extra volumes / mounts, in Kubernetes' own shape, for every service (e.g. a certificate

@@ -25,9 +25,9 @@ object SmsBudgetSpec extends UnitSpecBase:
       sentPerHour: Int = 0,
       minVolume: Int = 0,
       minConversion: Double = 0.1,
-      maxRanges: Int = AntifraudTestSettings.smsBudget.maxRanges,
+      maxRanges: Int = AntifraudTestSettings.smsSizing.maxRanges,
   ) =
-    SmsBudget(AntifraudTestSettings.smsBudget.copy(maxRanges = maxRanges), SmsLimits(SmsLimit(sentPerHour, minVolume, minConversion), Map.empty))
+    SmsBudget(AntifraudTestSettings.smsBudget, AntifraudTestSettings.smsSizing.copy(maxRanges = maxRanges), SmsLimits(SmsLimit(sentPerHour, minVolume, minConversion), Map.empty))
 
   def spec = suite("SmsBudget")(
     test("allows everything while no limit is configured, and tracks nothing") {
