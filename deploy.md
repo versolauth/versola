@@ -1421,7 +1421,7 @@ notification and refuses to start, naming this setting, if it cannot.
   is older does not read the record, and an auth that is newer than its central treats the missing
   endpoint as nothing saved.
 
-  **Behaviour changes to know before upgrading** (the timeouts and the failing reset apply to every deployment, also one that sends
+  **Behaviour changes to know before upgrading** (the timeouts apply to every deployment, also one that sends
   through `auth.conf` only):
   - SMTP connections now give up after 10 seconds without an answer (connect, read and write), and the
     call to an SMS provider after 10 seconds in all. Neither had a limit; a server that was slower than
@@ -1430,6 +1430,10 @@ notification and refuses to start, naming this setting, if it cannot.
     setting, or the scheme, host, port or username of the SMS address, without sending the password
     again, is refused with `400` instead of silently keeping the old password for the new server. An
     `otpProvider.url` that the HTTP client cannot parse is refused too.
+  - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
+    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
+    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
 - **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
   version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules

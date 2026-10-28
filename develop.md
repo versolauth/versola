@@ -130,7 +130,6 @@ The script first asks for the environment **Name** (default `local`):
     - `auth/dev/env.conf`
     - `central/dev/env.conf`
     - `edge/dev/env.conf`
-
 - **`docker-local`** — also runs non-interactively, for the case where auth/central/edge
   each run in their own container on one Docker Compose bridge network, sitting behind
   nginx as the single published port (used by `versola bootstrap local`). Files are

@@ -79,7 +79,7 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         smsBlock.settings.body == Map("phones" -> "{{phone}}", "mes" -> "{{message}}"),
       )
     },
-    test("trims the host, as central does when it tests the block") {
+    test("trims the host, as central does when it compares hosts") {
       for
         _ <- serve(Status.Ok, s"""{"stored":true,"smtp":${smtp.replace("smtp.example.com", " smtp.example.com ")}}""")
         fetched <- fetch

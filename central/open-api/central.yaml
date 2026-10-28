@@ -113,8 +113,9 @@ tags:
   - name: Delivery settings
     description: |
       How auth delivers one-time codes and temporary passwords: the SMTP server for email and
-      the HTTP provider for SMS. One record per deployment; it replaces the `smtp` and
-      `otp-provider` blocks of `auth.conf` once stored. Passwords are write-only.
+      the HTTP provider for SMS. One record per deployment. A block saved here is used instead of
+      the matching block of `auth.conf`; a block not saved here is read from `auth.conf`.
+      Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
