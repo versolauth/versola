@@ -16,7 +16,7 @@ object AntifraudSpec extends UnitSpecBase:
     def rules = ZIO.succeed(rs.toList)
 
   private val on = AntifraudTestSettings.decision.copy(enabled = true)
-  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 5, reviewAt = 8, blockAt = 10)
+  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 5, blockAt = 10)
 
   /** An engine whose failure asks for friction; `engine` has the default, `allow`. */
   private def failingEngine(ruleSets: List[Antifraud.RuleSet]) =

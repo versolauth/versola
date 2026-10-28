@@ -6802,8 +6802,7 @@ components:
       type: object
       description: What applies to the whole deployment. A map, or `thresholds`, is set as a whole.
       properties:
-        challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `reviewAt` and `blockAt`). }
-        reviewAt: { type: integer, minimum: 0 }
+        challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `blockAt`). }
         blockAt: { type: integer, minimum: 0 }
         pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
         thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
@@ -6816,4 +6815,4 @@ components:
           type: array
           description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
           items: { type: string }
-      required: [challengeAt, reviewAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]
+      required: [challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]

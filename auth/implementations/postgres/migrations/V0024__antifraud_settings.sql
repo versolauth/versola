@@ -15,7 +15,7 @@ CREATE TABLE af_settings (
 -- The seed is Tuning.off; PostgresAntifraudSettingsRepositorySpec checks that they are the same.
 INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (
     1,
-    '{"challengeAt":0,"reviewAt":0,"blockAt":0,'
+    '{"challengeAt":0,"blockAt":0,'
         '"pow":{"minDifficulty":14,"maxDifficulty":18,"scoreStep":15},'
         '"thresholds":{'
             '"phone":{"perMinute":0,"perTenMinutes":0,"perHour":0,"perDay":0,"weight":50},'

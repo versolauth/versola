@@ -29,7 +29,6 @@ case class SmsLimitsDto(default: SmsLimitDto, byPrefix: Map[String, SmsLimitDto]
 /** The settings: what applies to the whole deployment. Auth validates them. */
 case class AntifraudSettings(
     challengeAt: Int,
-    reviewAt: Int,
     blockAt: Int,
     pow: PowDifficultyDto,
     thresholds: VelocityThresholdsDto,

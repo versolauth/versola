@@ -7,8 +7,7 @@ import zio.json.*
   * of a proof of work. Not deployment configuration, because a restart is too slow for it and empties the in-memory
   * counters; it is stored in `af_settings` (see [[AntifraudTuningStore]]) and changed through the admin API.
   *
-  * @param challengeAt    score from which a step is challenged; 0 disables the threshold (likewise the next two)
-  * @param reviewAt       score from which a step is sent to review
+  * @param challengeAt    score from which a step is challenged; 0 disables the threshold (likewise `blockAt`)
   * @param blockAt        score from which a step is refused
   * @param pow            how much work a proof-of-work challenge asks (see [[PowChallengeVerifier]])
   * @param thresholds     the limits (and weights) of the velocity rules
@@ -20,7 +19,6 @@ import zio.json.*
   */
 case class Tuning(
     challengeAt: Int,
-    reviewAt: Int,
     blockAt: Int,
     pow: PowDifficulty,
     thresholds: VelocityRules.Thresholds,
@@ -51,7 +49,6 @@ object Tuning:
     * global row is seeded with (migration `V0024`). */
   val off: Tuning = Tuning(
     challengeAt = 0,
-    reviewAt = 0,
     blockAt = 0,
     pow = PowDifficulty(minDifficulty = 14, maxDifficulty = 18, scoreStep = 15),
     thresholds = VelocityRules.Thresholds(

@@ -550,7 +550,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
   through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
   `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
-  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `reviewAt`, `blockAt`), the
+  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `blockAt`), the
   proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
   rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
   `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
@@ -576,7 +576,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   PUT /antifraud/settings
   {
     "settings": {
-      "challengeAt": 0, "reviewAt": 0, "blockAt": 0,
+      "challengeAt": 0, "blockAt": 0,
       "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
       "thresholds": {
         "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},

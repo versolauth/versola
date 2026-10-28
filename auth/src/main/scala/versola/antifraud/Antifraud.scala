@@ -40,9 +40,6 @@ enum DecisionAction:
   /** Refuse. */
   case Block
 
-  /** Go on or refuse as configured, and put it in front of a person. */
-  case Review
-
 object DecisionAction:
   /** Read from the config by name, in any case: `failure-action = "challenge"`. */
   given DeriveConfig[DecisionAction] = DeriveConfig[String].mapOrFail: name =>
@@ -132,7 +129,6 @@ object Antifraud:
       val forced = fired.flatMap(_.forces).maxByOption(_.ordinal)
       val byScore =
         if t.blockAt > 0 && score >= t.blockAt then DecisionAction.Block
-        else if t.reviewAt > 0 && score >= t.reviewAt then DecisionAction.Review
         else if t.challengeAt > 0 && score >= t.challengeAt then DecisionAction.Challenge
         else DecisionAction.Allow
       Decision(Seq(Some(byScore), forced).flatten.maxBy(_.ordinal), score, names)

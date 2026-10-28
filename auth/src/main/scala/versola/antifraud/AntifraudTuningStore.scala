@@ -60,7 +60,6 @@ object AntifraudTuningStore:
     val p = tuning.pow
     List(
       score("challengeAt", tuning.challengeAt),
-      score("reviewAt", tuning.reviewAt),
       score("blockAt", tuning.blockAt),
       Option.when(p.minDifficulty < 0 || p.maxDifficulty > MaxDifficulty || p.minDifficulty > p.maxDifficulty)(
         s"pow difficulty must satisfy 0 <= minDifficulty <= maxDifficulty <= $MaxDifficulty",

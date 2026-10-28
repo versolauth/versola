@@ -344,7 +344,6 @@ object AuthClientSpec extends ZIOSpecDefault:
       val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
       val settings = AntifraudSettings(
         challengeAt = 0,
-        reviewAt = 0,
         blockAt = 80,
         pow = PowDifficultyDto(14, 18, 15),
         thresholds = VelocityThresholdsDto(limit, limit, limit, limit, limit, 40),
