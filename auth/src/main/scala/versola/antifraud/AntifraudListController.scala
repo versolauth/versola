@@ -49,7 +49,6 @@ object AntifraudListController extends Controller:
     Method.GET / "antifraud" / "lists" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        _ <- request.queryZIO[UserId]("userId")
         listType <- request.queryZIO[Option[AntifraudListType]]("listType")
         valueType <- request.queryZIO[Option[AntifraudValueType]]("valueType")
         tenant <- request.queryZIO[Option[TenantId]]("tenantId")
@@ -90,7 +89,6 @@ object AntifraudListController extends Controller:
     Method.GET / "antifraud" / "lists" / "audit" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        _ <- request.queryZIO[UserId]("userId")
         entryId <- request.queryZIO[Option[UUID]]("entryId")
         limit <- request.queryZIO[Option[PageLimit]]("limit")
         lists <- ZIO.service[AntifraudLists]

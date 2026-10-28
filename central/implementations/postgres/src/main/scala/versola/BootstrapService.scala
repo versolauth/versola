@@ -996,11 +996,15 @@ object BootstrapService:
     "DELETE" -> "/antifraud/settings",
   )
 
+  /** The lists' reads, which need to know nobody: they are told nothing. */
+  private val antifraudListReads: Set[(String, String)] = Set("GET" -> "/antifraud/lists", "GET" -> "/antifraud/lists/audit")
+
   /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
-    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
-    * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
+    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists or the
+    * settings. As for the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the
+    * rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
-    if path.startsWith("/antifraud/") then
+    if path.startsWith("/antifraud/") && !antifraudListReads.contains(method -> path) then
       Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
     else Vector.empty
 

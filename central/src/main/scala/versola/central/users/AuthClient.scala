@@ -93,14 +93,13 @@ trait AuthClient:
 
   def previewAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse]
 
-  def listAntifraudListEntries(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
+  def listAntifraudListEntries(query: ListEntriesQuery): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
 
   def deleteAntifraudListEntry(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit]
 
   def antifraudListAudit(
       entryId: Option[UUID],
       limit: Option[PageLimit],
-      userId: UserId,
   ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
 
   /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. */
@@ -404,7 +403,7 @@ object AuthClient:
     override def previewAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse] =
       antifraud[PreviewResponse](Request(method = Method.POST, url = antifraudListsUrl / "preview", body = Body.from(request)))
 
-    override def listAntifraudListEntries(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
+    override def listAntifraudListEntries(query: ListEntriesQuery): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
       val params = List(
         query.listType.map("listType" -> _.toString),
         query.valueType.map("valueType" -> _.toString),
@@ -413,7 +412,7 @@ object AuthClient:
         query.limit.map("limit" -> _.toString),
         query.offset.map("offset" -> _.toString),
       ).flatten
-      antifraud[List[ListEntryResponse]](Request.get(antifraudListsUrl.addQueryParams(params :+ ("userId" -> userId.toString))))
+      antifraud[List[ListEntryResponse]](Request.get(antifraudListsUrl.addQueryParams(params)))
 
     override def deleteAntifraudListEntry(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit] =
       antifraudUnit(
@@ -427,10 +426,9 @@ object AuthClient:
     override def antifraudListAudit(
         entryId: Option[UUID],
         limit: Option[PageLimit],
-        userId: UserId,
     ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
       val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
-      antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params :+ ("userId" -> userId.toString))))
+      antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params)))
 
     override def getAntifraudSettings(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings] =
       antifraud[AntifraudSettings](Request.get(antifraudSettingsUrl.addQueryParams(List("userId" -> userId.toString))))

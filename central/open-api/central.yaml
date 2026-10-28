@@ -2547,7 +2547,6 @@ paths:
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
-        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The entries.
@@ -2658,7 +2657,6 @@ paths:
           in: query
           description: 1 to 500. Defaults to 100.
           schema: { type: integer, minimum: 1, maximum: 500 }
-        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The records.
