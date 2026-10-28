@@ -1173,6 +1173,39 @@ move together and `configure` is re-run)
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 
+### Request bodies state every field (breaking for API clients)
+
+`central`'s admin API no longer fills in values a caller leaves out. A field that has no meaning when missing used to
+decode to a default (`theme` to `"default"`, a missing boolean to `false`, a missing set to empty); it is now required, and a
+body that omits it is refused with `400`. A field typed as optional (`null` allowed) is still optional. The reason: a
+field left out by mistake used to become a security-relevant value (an unthrottled category, DPoP off, an empty scope patch)
+without anyone having chosen it.
+
+| Endpoint | Fields that must now be sent |
+|---|---|
+| `POST /configuration/clients/web` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `requireSignedRequestObject`, `requirePushedAuthorizationRequests`, `estEnrollment` (on top of the ones already required) |
+| `POST /configuration/clients/native` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopSigningAlgs` |
+| `POST /configuration/clients/service` | `permissions`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `estEnrollment` |
+| `PUT /configuration/clients/web`, `/native` | `redirectUris` and `scope` patches (`{"add":[],"remove":[]}` for no change) |
+| `PUT /configuration/clients/service` | `scope` and `permissions` patches |
+| `consentFlow` in any client body | `requiredScopes` (`[]`) and `offlineAccessOptional` (`false`) next to `allowPartial` |
+| `PATCH /configuration/edges/policies`, section `rateLimits` | `replicas`; and for every policy `by`, `scope`, `burst`, `cost`, `mode` |
+| `POST /configuration/resources` | `audienceRateLimits` (`[]` for none) |
+| `rateLimit` of a resource endpoint, and of an audience client | `burst`, `by`, `mode` next to `limits` |
+
+**Migrating a client of the API.** Send the fields above; the values to send for "as before" are the old defaults:
+`theme` and `otpTemplateId` `"default"`, the booleans `false`, `dpopSigningAlgs` and `permissions` `[]`, an unchanged patch
+`{"add":[],"remove":[]}`, a rate limit's `burst` `1`, `cost` `1`, `by` `[]` (policy) or `"none"` (declared limit), `scope`
+`"edge-wide"`, `mode` `"shadow"`, `replicas` `1`. The console, `versola-cli`, the load generator, `scripts/est-smoke.sh` and
+`openid-conformance/run.py` send them; a script of your own that posts a minimal body will start getting `400` and the reason is in
+`central`'s log. Read the new `required` lists in `central/open-api/central.yaml`.
+
+**Stored data.** Migration `V1032` adds `requiredScopes` and `offlineAccessOptional` to every stored `consent_flow`
+that lacks them, so no stored client is unreadable. `auth` and `edge` read configuration from `central` in the same shape:
+upgrade `central` first, then `auth` and `edge` (the configuration snapshot an `auth` or `edge` keeps for a start while `central` is unreachable is the raw answer
+of the older release and is decoded like a live one, so a snapshot that lacks a field cannot be used; start `central` first so the services
+refresh it).
+
 ### Overload protection
 
 When a service is asked for more than it can do, it should refuse the surplus quickly rather than queue it
@@ -1276,13 +1309,14 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
   - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
     whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
-    (`400`), so a misspelled section is an error and not a silent no-op. `400` also names the section and the first problem; `404` for
-    an unknown edge. The answer is the new state with the new `revisions`.
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` and `409` come with **no body** (a body would be a
+    contract callers parse; the reason of a `400` is in central's log as `invalid_policy`, and `dryRun` answers whether a body is valid); `404`
+    for an unknown edge. The answer is the new state with the new `revisions`.
   - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
     (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
-    written and the answer is `409` with the current state in `current`. A section that is not named has no precondition, so a client
+    written and the answer is `409` with no body: read the state again. A section that is not named has no precondition, so a client
     that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
-    it read and, on `409`, reads the edges again and says so.
+    it read and, on `409`, reads the edges again and says so; on `400` (the console validates, so it should not happen) it says central did not accept the values.
   - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
     writing nothing: for CI and automation.
   - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
@@ -1324,12 +1358,18 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
     cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
     platform and is to be verified on the first real load balancer.
 - **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
-  caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
+  caller wait longest) and **no body**: a body would be a contract; everything a caller can act on is in the headers, and the policy is named only by `RateLimit-Policy`, never the key. A caller
   passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
   (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
   refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
   policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
   has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
+- **The operator's view of refusals is the log, once a minute per policy.** Each edge and auth logs one line per policy that
+  refused something in the last minute (`... rate limit 'per-client' in the last 60 s: refused 12, would refuse (shadow) 0, ...`):
+  `WARN` when the policy enforced, `INFO` when it only counted in shadow, nothing when it did neither. It names no key, so it holds
+  nothing about a caller, and it is bounded by the number of policies however hard the edge is hit. A single refused request is not
+  logged by itself (a flood of them would be a flood of lines); its `429` names the policy in `RateLimit-Policy`, and a request
+  log line, when the access log is `full`, carries the error `rate_limited` with the same policy name.
 - **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
   protection refuses whoever is there, by priority, with `503`.
 - **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
@@ -1338,6 +1378,13 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
   (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
   applies to each pod and N pods allow N times it. Change it when the number of pods changes.
+  **Counting pods automatically:** set `replicas-from = "dns:<name>"` in the edge config to count the pods from DNS instead. The
+  chart ships a headless Service for this (`<fullname>-edge-headless`, ready pods only) and puts its name in the environment variable
+  `VERSOLA_EDGE_HEADLESS_SERVICE` of the edge pods, so the edge's `env.conf` can say `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}` and nothing is
+  typed by hand; the edge resolves it every 10 seconds, keeps
+  the last good count if a lookup fails, and uses the policy's `replicas` until the first answer. The count in force and where it came
+  from are the gauge `edge_rate_limit_replicas{source="dns|policy"}`. Nothing detects Kubernetes at runtime: without the key the
+  policy's `replicas` is used.
 - **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
   `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
 
@@ -1384,7 +1431,7 @@ absent):
 | failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
 | entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
 
-An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds) and `{"error":"rate_limited"}`
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds), the `RateLimit` fields and no body
 before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
 address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
 secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a

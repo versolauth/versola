@@ -91,12 +91,11 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         stranger <- setAudienceLimits(f, List(audienceLimit(f, limit("enforce", 5), clientId = Some("not-in-the-audience"))))
       yield assertTrue(
         endpoint.status == Status.BadRequest,
-        endpoint.body.contains("InvalidRateLimit"),
-        endpoint.body.contains("burst"),
+        endpoint.body.isEmpty,
         byClient.status == Status.BadRequest,
-        byClient.body.contains("by must be subject or none"),
+        byClient.body.isEmpty,
         stranger.status == Status.BadRequest,
-        stranger.body.contains("not in the audience"),
+        stranger.body.isEmpty,
       )
     },
     test("a limit declared on an endpoint refuses that endpoint with 429 under resource-endpoint, and the other endpoint is served") {
@@ -122,7 +121,7 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         second.status == Status.Ok,
         third.status == Status.TooManyRequests,
         third.response.rawHeader("Retry-After").flatMap(_.toIntOption).exists(_ >= 1),
-        third.body.contains("resource-endpoint"),
+        third.response.rawHeader("RateLimit-Policy").exists(_.contains("resource-endpoint")),
         // an id would be a metric label of unbounded kind: the name is fixed, nothing identifies the endpoint
         !third.body.contains(f.endpoint("limited")),
         free.forall(_.status == Status.Ok),
@@ -151,7 +150,7 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         first.status == Status.Ok,
         second.status == Status.Ok,
         third.status == Status.TooManyRequests,
-        third.body.contains("resource-client"),
+        third.response.rawHeader("RateLimit-Policy").exists(_.contains("resource-client")),
         read.body.contains("audienceRateLimits"),
         removed.status == Status.NoContent,
         lifted.forall(_.status == Status.Ok),

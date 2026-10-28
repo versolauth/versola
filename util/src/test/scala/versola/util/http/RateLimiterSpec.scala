@@ -179,6 +179,43 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(refused.forall(_.isInstanceOf[RateDecision.Limited]), ok == RateDecision.Allowed)
       },
     ),
+    suite("refusal summary")(
+      test("one line per policy that refused, WARN when it enforced and INFO when it only counted, and never a key") {
+        for
+          l <- limiter(
+            policy(name = "hard", limits = List(RateLimitWindow(1, 60))),
+            policy(name = "soft", limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Shadow, by = List(RateLimitDimension.Subject)),
+            policy(name = "quiet", limits = List(RateLimitWindow(1000, 60)), burst = 1000, by = List(RateLimitDimension.Session)),
+          )()
+          reported <- Ref.make(Map.empty[String, RateLimitStats])
+          keys = RateLimitKeys(client = "secret-client", subject = "secret-subject", session = "sid")
+          _ = (1 to 3).foreach(_ => l.check(Checkpoint.Identity, keys, 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          first <- ZTestLogger.logOutput
+          _ <- l.logSummary(reported, 1.minute)
+          second <- ZTestLogger.logOutput
+          line = (name: String) => first.find(_.message().contains(s"'$name'"))
+        yield assertTrue(
+          line("hard").exists(e => e.logLevel == LogLevel.Warning && e.message().contains("refused 2")),
+          line("soft").exists(e => e.logLevel == LogLevel.Info && e.message().contains("would refuse (shadow) ")),
+          line("quiet").isEmpty,
+          first.forall(e => !e.message().contains("secret")),
+          second.size == first.size,
+        ).label("nothing new happened, so the second summary adds no line")
+      },
+      test("a policy replaced by one with other buckets restarts its counts instead of reporting a negative number") {
+        for
+          l <- limiter(policy(name = "hard", limits = List(RateLimitWindow(1, 60))))()
+          reported <- Ref.make(Map.empty[String, RateLimitStats])
+          _ = (1 to 4).foreach(_ => l.check(Checkpoint.Identity, client("a"), 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          _ <- l.update(List(policy(name = "hard", limits = List(RateLimitWindow(2, 60)))))
+          _ = (1 to 2).foreach(_ => l.check(Checkpoint.Identity, client("a"), 0L))
+          _ <- l.logSummary(reported, 1.minute)
+          lines <- ZTestLogger.logOutput.map(_.map(_.message()))
+        yield assertTrue(lines.size == 2, lines.last.contains("refused 1,"), lines.forall(!_.contains("refused -")))
+      },
+    ),
     suite("modes")(
       test("shadow refuses nothing and counts what enforce would refuse") {
         for
@@ -286,11 +323,11 @@ object RateLimiterSpec extends ZIOSpecDefault:
     suite("limits declared on an endpoint or on an audience client")(
       test("an endpoint's limit applies to that endpoint only, and the stricter of it and an edge policy wins") {
         val edge = policy(name = "per-user", by = List(RateLimitDimension.Subject), limits = List(RateLimitWindow(100, 1)), burst = 100)
-        val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce, burst = 1)
         def route(endpoint: String) = RateLimitKeys(subject = "u1", endpoint = endpoint)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
-          _ <- l.update(List(edge), declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", declared)))
+          _ <- l.update(List(edge), declared = List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", declared, resource = "")))
           first = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
           second = l.check(Checkpoint.Route, route("GET /resources/a/x"), 0L)
           other = (1 to 5).map(_ => l.check(Checkpoint.Route, route("GET /resources/a/y"), 0L))
@@ -303,8 +340,8 @@ object RateLimiterSpec extends ZIOSpecDefault:
         )
       },
       test("a limit the resource sets for a client of its audience runs at R3 for that client on that resource only, per client or per user") {
-        val perClient = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce)
-        val perUser = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        val perClient = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
+        val perUser = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce, burst = 1)
         def call(resource: String, client: String, subject: String) =
           RateLimitKeys(resource = resource, client = client, subject = subject, endpoint = s"GET /resources/$resource/x")
         for
@@ -342,15 +379,15 @@ object RateLimiterSpec extends ZIOSpecDefault:
           limits = List(RateLimitWindow(100, 60)),
           burst = 100,
         )
-        val endpoint = DeclaredRateLimit(limits = List(RateLimitWindow(5, 60)), burst = 5, mode = GuardMode.Enforce)
-        val audience = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce)
+        val endpoint = DeclaredRateLimit(limits = List(RateLimitWindow(5, 60)), burst = 5, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
+        val audience = DeclaredRateLimit(limits = List(RateLimitWindow(2, 60)), burst = 2, mode = GuardMode.Enforce, by = DeclaredRateLimitBy.None)
         val keys = RateLimitKeys(resource = "api", client = "plan", subject = "u1", endpoint = "GET /resources/api/x")
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
           _ <- l.update(
             List(edge),
             declared = List(
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/api/x", endpoint),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/api/x", endpoint, resource = ""),
               DeclaredLimit(DeclaredOwner.Audience, "plan", audience, resource = "api"),
             ),
           )
@@ -369,8 +406,8 @@ object RateLimiterSpec extends ZIOSpecDefault:
         )
       },
       test("shadow counts would_limit and refuses nothing; off is not installed") {
-        val shadow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Shadow)
-        val off = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Off)
+        val shadow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Shadow, burst = 1, by = DeclaredRateLimitBy.None)
+        val off = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Off, burst = 1, by = DeclaredRateLimitBy.None)
         def call(client: String) = RateLimitKeys(resource = "api", client = client)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
@@ -390,7 +427,7 @@ object RateLimiterSpec extends ZIOSpecDefault:
         )
       },
       test("an update that leaves a declaration's shape alone keeps its buckets; a changed one starts afresh; a removed one is gone") {
-        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
         val limit = DeclaredLimit(DeclaredOwner.Audience, "c", one, resource = "api")
         val keys = RateLimitKeys(resource = "api", client = "c")
         for
@@ -399,7 +436,10 @@ object RateLimiterSpec extends ZIOSpecDefault:
           _ = l.check(Checkpoint.Route, keys, 0L)
           _ <- l.update(
             Nil,
-            declared = List(limit.copy(limit = one.copy(mode = GuardMode.Shadow)), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one)),
+            declared = List(
+              limit.copy(limit = one.copy(mode = GuardMode.Shadow)),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/r/p", one, resource = ""),
+            ),
           )
           kept = l.check(Checkpoint.Route, keys, 0L)
           _ <- l.update(Nil, declared = List(limit.copy(limit = one.copy(limits = List(RateLimitWindow(5, 60)), burst = 5))))
@@ -416,7 +456,7 @@ object RateLimiterSpec extends ZIOSpecDefault:
         )
       },
       test("the same client id on two resources has two limits, and a limit on one does not bleed into the other") {
-        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
           _ <- l.update(
@@ -430,13 +470,16 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(a1 == RateDecision.Allowed, a2 == RateDecision.Limited("resource-client", 60), b1 == RateDecision.Allowed)
       },
       test("the metric label is the fixed name, and the keys of every declaration add up under it") {
-        val one = DeclaredRateLimit(limits = List(RateLimitWindow(10, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        val one = DeclaredRateLimit(limits = List(RateLimitWindow(10, 60)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce, burst = 1)
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
           _ <- l.update(
             Nil,
             declared =
-              List(DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one), DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one)),
+              List(
+                DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", one, resource = ""),
+                DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", one, resource = ""),
+              ),
           )
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x"), 0L)
           _ = l.check(Checkpoint.Route, RateLimitKeys(subject = "u", endpoint = "GET /resources/a/y"), 0L)
@@ -449,16 +492,16 @@ object RateLimiterSpec extends ZIOSpecDefault:
         yield assertTrue(allowed.count >= 2.0, keys.value >= 2.0, l.names == List("resource-endpoint"))
       },
       test("a refusal answers with the rate of the declaration that refused, not of another endpoint's") {
-        val slow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce)
-        val fast = DeclaredRateLimit(limits = List(RateLimitWindow(10, 1)), mode = GuardMode.Enforce)
+        val slow = DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
+        val fast = DeclaredRateLimit(limits = List(RateLimitWindow(10, 1)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
         val keys = RateLimitKeys(subject = "u", endpoint = "GET /resources/a/x")
         for
           l <- RateLimiter.make(RateLimiterSettings(1000))
           _ <- l.update(
             Nil,
             declared = List(
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow),
-              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/x", slow, resource = ""),
+              DeclaredLimit(DeclaredOwner.Endpoint, "GET /resources/a/y", fast, resource = ""),
             ),
           )
           limited: RateDecision.Limited = RateDecision.Limited("resource-endpoint", 60)

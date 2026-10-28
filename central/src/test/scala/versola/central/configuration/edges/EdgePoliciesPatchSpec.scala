@@ -1,5 +1,7 @@
 package versola.central.configuration.edges
 
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
 import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy, RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
 import zio.json.*
 import zio.json.ast.Json
@@ -13,16 +15,40 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
   private val t1 = Instant.parse("2026-10-27T10:00:00Z")
   private val t2 = Instant.parse("2026-10-27T11:00:00Z")
 
-  private val record = EdgeRecord(EdgeId("edge-1"), Json.Obj(), None, requireDpopNonce = true)
+  private val record = EdgeRecord(
+    EdgeId("edge-1"),
+    Json.Obj(),
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   private val perClient = RateLimitPolicy(
     name = "per-client",
     by = List(RateLimitDimension.Client),
     limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
     burst = 5,
+    scope = RateLimitScope.EdgeWide,
+    cost = 1,
+    mode = GuardMode.Shadow,
   )
-  private val sets = RateLimitPolicies(List(perClient))
-  private val overload = OverloadPolicy(inbound = Some(InboundPolicy(maxInFlight = Some(64))))
+  private val sets = RateLimitPolicies(List(perClient), replicas = 1)
+  private val overload = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      maxInFlight = Some(64),
+      mode = None,
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   private def parse(json: String) = json.fromJson[Json.Obj].left.map(PolicyPatchError.UnknownSection(_)).flatMap(EdgePoliciesPatch.parse)
 
@@ -34,7 +60,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
           patch == Right(
             EdgePoliciesPatch(
               overload = Change.Remove,
-              accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"))),
+              accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)),
               rateLimits = Change.Keep,
               expectedRevisions = Map(PolicySection.Overload -> 3, PolicySection.RateLimits -> 0),
             ),
@@ -84,8 +110,13 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
         assertTrue(again.map(_.policyMeta) == Right(first.policyMeta))
       },
       test("an empty section is the same as removing it, and removing is a change") {
-        val first = EdgePoliciesPatch(record, EdgePoliciesPatch(overload = Change.Replace(overload), rateLimits = Change.Replace(sets)), t1).toOption.get
-        val emptied = EdgePoliciesPatch(first, EdgePoliciesPatch(overload = Change.Replace(OverloadPolicy.empty), rateLimits = Change.Replace(RateLimitPolicies.empty)), t2)
+        val first =
+          EdgePoliciesPatch(record, EdgePoliciesPatch(overload = Change.Replace(overload), rateLimits = Change.Replace(sets)), t1).toOption.get
+        val emptied = EdgePoliciesPatch(
+          first,
+          EdgePoliciesPatch(overload = Change.Replace(OverloadPolicy.empty), rateLimits = Change.Replace(RateLimitPolicies.empty)),
+          t2,
+        )
         val removed = EdgePoliciesPatch(first, EdgePoliciesPatch(overload = Change.Remove), t2)
         assertTrue(
           emptied.map(r => (r.overloadPolicy, r.rateLimitPolicies)) == Right((None, None)),
@@ -98,14 +129,23 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
         val tooBig = sets.copy(policies = List(perClient.copy(burst = 500)))
         val result = EdgePoliciesPatch(record, EdgePoliciesPatch(overload = Change.Replace(overload), rateLimits = Change.Replace(tooBig)), t1)
         assertTrue(
-          result.left.exists { case PolicyPatchError.Invalid(section, detail) => section == PolicySection.RateLimits && detail.contains("burst"); case _ => false },
+          result.left.exists {
+            case PolicyPatchError.Invalid(section, detail) => section == PolicySection.RateLimits && detail.contains("burst"); case _ => false
+          },
         )
       },
       test("an expected revision that matches lets the patch through; one that does not is a conflict carrying the current record") {
         val first = EdgePoliciesPatch(record, EdgePoliciesPatch(overload = Change.Replace(overload)), t1).toOption.get
         val ok = EdgePoliciesPatch(first, EdgePoliciesPatch(overload = Change.Remove, expectedRevisions = Map(PolicySection.Overload -> 1)), t2)
         val stale = EdgePoliciesPatch(first, EdgePoliciesPatch(overload = Change.Remove, expectedRevisions = Map(PolicySection.Overload -> 0)), t2)
-        val neverSet = EdgePoliciesPatch(record, EdgePoliciesPatch(accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"))), expectedRevisions = Map(PolicySection.AccessLog -> 0)), t1)
+        val neverSet = EdgePoliciesPatch(
+          record,
+          EdgePoliciesPatch(
+            accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)),
+            expectedRevisions = Map(PolicySection.AccessLog -> 0),
+          ),
+          t1,
+        )
         assertTrue(
           ok.map(_.overloadPolicy) == Right(None),
           stale == Left(PolicyPatchError.Conflict(PolicySection.Overload, first)),
@@ -114,7 +154,8 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
       },
       test("a precondition on a section the patch does not touch is still checked") {
         val first = EdgePoliciesPatch(record, EdgePoliciesPatch(overload = Change.Replace(overload)), t1).toOption.get
-        val result = EdgePoliciesPatch(first, EdgePoliciesPatch(rateLimits = Change.Replace(sets), expectedRevisions = Map(PolicySection.Overload -> 0)), t2)
+        val result =
+          EdgePoliciesPatch(first, EdgePoliciesPatch(rateLimits = Change.Replace(sets), expectedRevisions = Map(PolicySection.Overload -> 0)), t2)
         assertTrue(result.left.exists { case PolicyPatchError.Conflict(section, _) => section == PolicySection.Overload; case _ => false })
       },
     ),

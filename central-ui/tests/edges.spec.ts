@@ -262,11 +262,11 @@ test.describe('overload protection', () => {
     await expect(dialog.getByText('The limit starts at 16, the lowest limit, not at 8.')).toBeVisible();
   });
 
-  test('shows what central refuses and keeps the draft', async ({ page }) => {
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
     await loadAdminApp(page, { path: editPath, state: { edges: [alpha], overloadRejection: 'inbound.adaptive.maxLimit must be between 1 and 100000' } });
     const dialog = panel(page, 'Edit overload protection');
     await dialog.getByRole('button', { name: 'Save overload protection' }).click();
-    await expect(dialog.getByRole('alert').filter({ hasText: 'must be between 1 and 100000' })).toBeVisible();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
     await expect(dialog.getByLabel('Starting limit')).toHaveValue('512');
   });
 
@@ -373,11 +373,11 @@ test.describe('access log', () => {
     expect(api.requests.some(put)).toBe(false);
   });
 
-  test('shows what central refuses and keeps the draft', async ({ page }) => {
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
     await loadAdminApp(page, { path: editPath, state: { edges: [alpha], accessLogRejection: 'mode must be full, sampled or off' } });
     const dialog = panel(page, 'Edit access log');
     await dialog.getByRole('button', { name: 'Save access log' }).click();
-    await expect(dialog.getByRole('alert').filter({ hasText: 'mode must be full, sampled or off' })).toBeVisible();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
     await expect(dialog.getByLabel('Sample rate')).toHaveValue('0.1');
   });
 
@@ -460,7 +460,7 @@ test.describe('rate limits', () => {
     const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
     expect(request.searchParams.edgeId).toBe('edge-alpha');
     expect(request.body).toEqual({
-      rateLimits: { policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], mode: 'shadow' }] },
+      rateLimits: { replicas: 1, policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], burst: 1, cost: 1, mode: 'shadow' }] },
       expectedRevisions: { rateLimits: 0 },
     });
     await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
@@ -544,11 +544,11 @@ test.describe('rate limits', () => {
     expect(api.requests.some(put)).toBe(false);
   });
 
-  test('shows what central refuses and keeps the draft', async ({ page }) => {
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
     await loadAdminApp(page, { path: editPath, state: { edges: [alpha], rateLimitRejection: 'two rate limit policies have the same name' } });
     const dialog = panel(page, 'Edit rate limits');
     await dialog.getByRole('button', { name: 'Save rate limits' }).click();
-    await expect(dialog.getByRole('alert').filter({ hasText: 'two rate limit policies have the same name' })).toBeVisible();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
     await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('per-client');
   });
 

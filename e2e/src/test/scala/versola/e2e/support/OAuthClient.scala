@@ -1258,6 +1258,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
+      estEnrollment = false,
     ).toJson
     val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
@@ -1333,6 +1334,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "audience" -> Json.Arr(Chunk.fromIterable(audience.map(Json.Str(_)))),
         "endpoints" -> Json.Arr(),
         "internal" -> Json.Bool(internal),
+        "audienceRateLimits" -> Json.Arr(),
       ).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/configuration/resources", body)
@@ -1975,4 +1977,5 @@ object OAuthClient:
       applicationType: Option[String] = None,
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+      estEnrollment: Boolean,
   ) derives JsonEncoder

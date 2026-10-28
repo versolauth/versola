@@ -6,6 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   Acr,
   AuthFactor,
@@ -92,6 +93,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -211,6 +213,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     consentFlow = Some(versola.oauth.client.model.ConsentFlow(
       allowPartial = false,
       rememberDuration = None,
+      requiredScopes = Set.empty,
+      offlineAccessOptional = false,
     )),
   )
 

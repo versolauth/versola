@@ -54,9 +54,9 @@ enum DeclaredOwner(val policyName: String):
   */
 final case class DeclaredRateLimit(
     limits: List[RateLimitWindow],
-    burst: Int = 1,
-    by: DeclaredRateLimitBy = DeclaredRateLimitBy.None,
-    mode: GuardMode = GuardMode.Shadow,
+    burst: Int,
+    by: DeclaredRateLimitBy,
+    mode: GuardMode,
 ) derives JsonCodec, Schema:
   /** The policy the limiter runs for this declaration. The scope narrows to the endpoint's template for an endpoint, and stays
     * the resource for an audience client (the limiter keeps the declaration's own buckets, so nothing is shared with another owner).
@@ -92,4 +92,4 @@ final case class DeclaredRateLimit(
 /** One declaration, with the thing it is declared on: for an endpoint, the template (`GET /resources/{id}/path`, the same string
   * the edge keys R3 on) as `selector`; for an audience client, the client id as `selector` and the resource id as `resource`.
   */
-final case class DeclaredLimit(owner: DeclaredOwner, selector: String, limit: DeclaredRateLimit, resource: String = "")
+final case class DeclaredLimit(owner: DeclaredOwner, selector: String, limit: DeclaredRateLimit, resource: String)

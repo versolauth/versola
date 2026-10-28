@@ -9,7 +9,7 @@ object TokenBindingSpec extends ZIOSpecDefault:
   private val certificate = TestCertificates.generate().certificate
   private val thumbprint = TokenBinding.thumbprint(certificate)
   private val over = Presentation.BearerOverMutualTls(thumbprint)
-  private val bound = Some(Confirmation(certificateThumbprint = Some(thumbprint)))
+  private val bound = Some(Confirmation(certificateThumbprint = Some(thumbprint), jkt = None))
 
   def spec = suite("TokenBinding.check")(
     test("the thumbprint is the base64url SHA-256 of the DER certificate, unpadded (RFC 8705 §3.1)") {

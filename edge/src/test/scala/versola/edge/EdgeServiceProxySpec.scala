@@ -87,12 +87,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
   private val svcClient = OAuthClient(
     id = ClientId("svc-1"),
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
@@ -479,7 +481,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
 
   private def usersResourceNamed(id: ResourceId, endpoints: ResourceEndpoint*) =
-    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None)
+    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None, audienceRateLimits = Nil)
 
   private def centralEndpoint() =
     ResourceEndpoint(
@@ -501,7 +503,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     * the caller's own token (see [[EdgeService.Impl.resolveAuthHeader]]).
     */
   private def centralResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector, secret = Some(centralResourceSecret))
+    Resource(
+      resourceId = ResourceId("central"),
+      resource = centralUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(centralResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private val accountResourceSecret = Secret(Array.fill(48)(4.toByte))
 
@@ -522,7 +530,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     * internal: edge authenticates with `Basic(resourceId, secret)` rather than forwarding the caller's token.
     */
   private def accountResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("auth"), resource = backendUrl, endpoints = endpoints.toVector, secret = Some(accountResourceSecret))
+    Resource(
+      resourceId = ResourceId("auth"),
+      resource = backendUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(accountResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
@@ -2718,6 +2732,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2753,6 +2768,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2788,6 +2804,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        applicationType = ApplicationType.web,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -3237,6 +3254,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       scope = scope,
       limits = List(RateLimitWindow(limit = 1, windowSeconds = 3600)),
       mode = GuardMode.Shadow,
+      burst = 1,
+      cost = 1,
     )
 
   /** What a policy has counted so far: admitted, and would-have-been-refused. */
@@ -3493,8 +3512,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         second.rawHeader("RateLimit-Policy").contains("\"edge-enforce-r2\";q=1;w=3600"),
         second.rawHeader("RateLimit").contains("\"edge-enforce-r2\";r=0;t=3600"),
         first.rawHeader("RateLimit").isEmpty,
-        // the policy is named; no key, no other policy
-        body == """{"error":"rate_limited","policy":"edge-enforce-r2"}""",
+        // no body; the policy is named by the header, never a key or another policy
+        body.isEmpty,
         // the refused call reached neither the revocation check nor the upstream
         upstreamCalls == 1,
         revocationChecks == 1,
@@ -3537,7 +3556,12 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     test("a limit declared on an endpoint refuses that endpoint only, under the fixed name, and the smaller of it and the edge's policy wins") {
       val env = new Env
       val declared =
-        DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)), by = DeclaredRateLimitBy.Subject, mode = GuardMode.Enforce)
+        DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)),
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+          burst = 1,
+        )
       val generous = shadowPolicy("edge-generous", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
         .copy(mode = GuardMode.Enforce, limits = List(RateLimitWindow(limit = 1000, windowSeconds = 60)), burst = 100)
       val users = usersEndpoint().copy(rateLimit = Some(declared))
@@ -3550,7 +3574,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withResources(usersResource(users, userByIdEndpoint()))
         _ <- env.rateLimiter.update(
           List(generous),
-          declared = List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared)),
+          declared =
+            List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared, resource = "")),
         )
         token <- env.signToken()
         service = env.buildService(client, security)
@@ -3566,7 +3591,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         second.status == Status.TooManyRequests,
         second.rawHeader("Retry-After").contains("600"),
         second.rawHeader("RateLimit-Policy").contains("\"resource-endpoint\";q=1;w=600"),
-        body == """{"error":"rate_limited","policy":"resource-endpoint"}""",
+        body.isEmpty,
         other.status == Status.Ok,
         upstreamCalls == 2,
       )
@@ -3575,7 +3600,12 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       "a limit the resource sets for a client of its audience refuses that client's calls to it at R3 under resource-client, and another client is served",
     ) {
       val env = new Env
-      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)), mode = GuardMode.Enforce)
+      val declared = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)),
+        mode = GuardMode.Enforce,
+        burst = 1,
+        by = DeclaredRateLimitBy.None,
+      )
       for
         _ <- env.setupDefaults()
         upstream <- Ref.make(0)
@@ -3601,7 +3631,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         first.status == Status.Ok,
         second.status == Status.TooManyRequests,
         second.rawHeader("RateLimit-Policy").contains("\"resource-client\";q=1;w=900"),
-        body == """{"error":"rate_limited","policy":"resource-client"}""",
+        body.isEmpty,
         free.status == Status.Ok,
         // the refused call never reached the upstream
         upstreamCalls == 2,
