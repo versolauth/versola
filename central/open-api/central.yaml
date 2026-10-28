@@ -2207,12 +2207,6 @@ paths:
         the block; an empty password clears it. A block that is left out is removed together with
         its password. Passwords are encrypted at rest and never returned.
 
-        A password that is kept stays with the server it was saved for: a save that changes
-        `smtp.host`, `smtp.port`, `smtp.username` or `smtp.startTls`, or the scheme, host, port or `username` of
-        `otpProvider.url`, has to send the password again (or clear it), otherwise it is refused.
-        Without that, whoever may change the address but not read the password could collect it
-        by pointing the address at a server of their own.
-
         Auth decides each block on its own: a block saved here and switched on is used, one that
         is switched off sends nothing, and a block that is not saved here is read from the
         matching block of `auth.conf`. A record with both blocks left out therefore holds nothing
@@ -2233,9 +2227,8 @@ paths:
             of range, a value carries a control character, `otpProvider.url` is not an absolute
             HTTP(S) URL or carries credentials (`https://user:secret@host`; use `username` and the
             password field instead), or `otpProvider.method` is not one of `GET`, `POST`, `PUT`,
-            `PATCH`; or a password is kept (left out) while the server or account it belongs to
-            changes; or the body is not a delivery settings update at all. The text names the
-            field and the rule, never the value. Nothing is stored then.
+            `PATCH`; or the body is not a delivery settings update at all. The text names the field
+            and the rule, never the value. Nothing is stored then.
           content:
             text/plain:
               schema:

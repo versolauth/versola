@@ -87,33 +87,7 @@ object DeliverySettingsService:
     override def upsertSettings(update: Update): Task[Either[ValidationError, Unit]] =
       update.smtp.flatMap(SmtpDeliverySettings.validate).orElse(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate)) match
         case Some(reason) => ZIO.left(ValidationError(reason))
-        case None =>
-          // Read from the repository, not the cache: this decides whether a stored password may follow the settings.
-          repository.getAll.flatMap: stored =>
-            passwordWouldFollowToAnotherServer(update, stored) match
-              case Some(reason) => ZIO.left(ValidationError(reason))
-              case None => store(update).asRight
-
-    /** A password that is kept (left out of the update) stays with the server it was saved for. A save that changes the
-      * server, or the account, has to bring the password again: otherwise the saved one would be sent to wherever the
-      * new address points, and an administrator who may change the address but not read the password could collect it.
-      */
-    private def passwordWouldFollowToAnotherServer(update: Update, stored: Option[DeliverySettingsRecord]): Option[String] =
-      val smtp =
-        for
-          block <- update.smtp if update.smtpPassword.isEmpty
-          record <- stored
-          previous <- record.smtp
-          _ <- record.smtpPassword if !SmtpDeliverySettings.sameServer(previous, block)
-        yield "smtp.password must be entered again when the server address, port or username changes"
-      val otpProvider =
-        for
-          block <- update.otpProvider if update.otpProviderPassword.isEmpty
-          record <- stored
-          previous <- record.otpProvider
-          _ <- record.otpProviderPassword if !OtpProviderDeliverySettings.sameEndpoint(previous, block)
-        yield "otpProvider.password must be entered again when the address, its host or port, or the username changes"
-      smtp.orElse(otpProvider)
+        case None => store(update).asRight
 
     private def store(update: Update): Task[Unit] =
       for

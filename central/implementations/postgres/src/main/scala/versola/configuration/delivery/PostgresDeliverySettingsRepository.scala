@@ -21,22 +21,11 @@ class PostgresDeliverySettingsRepository(xa: TransactorZIO) extends DeliverySett
         .headOption
 
   override def upsert(write: DeliverySettingsRepository.Write): Task[Unit] =
-    val (keepSmtpRequested, smtpPassword) = split(write.smtpPassword)
-    val (keepOtpProviderRequested, otpProviderPassword) = split(write.otpProviderPassword)
-    xa.transactMeasured("upsert-delivery-settings"):
-      // The row is locked while it is read, so the check below and the write that follows see one record. A kept password
-      // stays only with the server it was saved for: whoever the service checked against a moment ago, a save that
-      // changes the server and keeps the password writes none, instead of handing the password to the new server.
-      val stored = sql"""SELECT smtp, smtp_password, otp_provider, otp_provider_password FROM delivery_settings WHERE id = 1 FOR UPDATE"""
-        .query[DeliverySettingsRecord].run()
-        .headOption
-      val keepSmtp = keepSmtpRequested && stored.exists(record =>
-        record.smtp.zip(write.smtp).exists((saved, next) => SmtpDeliverySettings.sameServer(saved, next)),
-      )
-      val keepOtpProvider = keepOtpProviderRequested && stored.exists(record =>
-        record.otpProvider.zip(write.otpProvider).exists((saved, next) => OtpProviderDeliverySettings.sameEndpoint(saved, next)),
-      )
-      // On a first save there is nothing to keep and the column is simply NULL.
+    val (keepSmtp, smtpPassword) = split(write.smtpPassword)
+    val (keepOtpProvider, otpProviderPassword) = split(write.otpProviderPassword)
+    xa.connectMeasured("upsert-delivery-settings"):
+      // A kept password stays whatever the row holds; on a first save there is nothing to keep
+      // and the column is simply NULL.
       sql"""
         INSERT INTO delivery_settings (id, smtp, smtp_password, otp_provider, otp_provider_password)
         VALUES (1, ${write.smtp}, $smtpPassword, ${write.otpProvider}, $otpProviderPassword)

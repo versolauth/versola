@@ -1426,10 +1426,7 @@ notification and refuses to start, naming this setting, if it cannot.
   - SMTP connections now give up after 10 seconds without an answer (connect, read and write), and the
     call to an SMS provider after 10 seconds in all. Neither had a limit; a server that was slower than
     that and worked will now fail.
-  - A `PUT /configuration/delivery-settings` that changes the SMTP host, port, username or STARTTLS
-    setting, or the scheme, host, port or username of the SMS address, without sending the password
-    again, is refused with `400` instead of silently keeping the old password for the new server. An
-    `otpProvider.url` that the HTTP client cannot parse is refused too.
+  - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
   - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
     or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
     starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
