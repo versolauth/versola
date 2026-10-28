@@ -114,6 +114,8 @@ tags:
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
     description: Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+  - name: Antifraud settings
+    description: Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an attack. Stored and applied by auth, without a restart.
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -2653,6 +2655,80 @@ paths:
               schema: { $ref: '#/components/schemas/AntifraudListAuditResponse' }
         '400':
           description: A parameter is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Antifraud settings ───────────────────────────────
+  /antifraud/settings:
+    get:
+      tags: [Antifraud settings]
+      summary: The settings
+      description: |
+        What applies to the whole deployment. The migration seeds the row with everything off, so there is always one.
+        Nothing in auth's configuration sets these values.
+      operationId: getAntifraudSettings
+      parameters:
+        - $ref: '#/components/parameters/UserIdQuery'
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+        '400':
+          description: A parameter is not valid (including a missing `userId`).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Antifraud settings]
+      summary: Replace the settings
+      description: |
+        Replaces the settings with `settings`, every key of it. This instance of auth applies it at once, the others within
+        `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+
+        `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
+        `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
+        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
+      operationId: putAntifraudSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                settings: { $ref: '#/components/schemas/AntifraudSettings' }
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [settings, userId]
+      responses:
+        '200':
+          description: The settings as stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+        '400':
+          description: The body is not valid, or auth refused the settings (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Antifraud settings]
+      summary: Reset the settings
+      operationId: deleteAntifraudSettings
+      description: Puts everything off. The caller is in the body, where edge adds `userId` for a request that is not a `GET`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [userId]
+      responses:
+        '204':
+          description: Reset.
+        '400':
+          description: The body is not valid.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -6570,3 +6646,66 @@ components:
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
       required: [id, at, action, actor, entryId, listType, valueType, value]
+    AntifraudVelocityLimit:
+      type: object
+      description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.
+      properties:
+        perMinute: { type: integer, minimum: 0 }
+        perTenMinutes: { type: integer, minimum: 0 }
+        perHour: { type: integer, minimum: 0 }
+        perDay: { type: integer, minimum: 0 }
+        weight: { type: integer }
+      required: [perMinute, perTenMinutes, perHour, perDay, weight]
+    AntifraudVelocityThresholds:
+      type: object
+      properties:
+        phone: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        ip: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        device: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        asn: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        prefix: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        trustedDiscount: { type: integer, minimum: 0 }
+      required: [phone, ip, device, asn, prefix, trustedDiscount]
+    AntifraudPowDifficulty:
+      type: object
+      description: The work a proof-of-work challenge asks, in zero bits of a hash (each bit doubles it, and a phone has to do it). `minDifficulty` at the challenge score, at most `maxDifficulty`, one more bit for each `scoreStep` of score above it (0 for none).
+      properties:
+        minDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        maxDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        scoreStep: { type: integer, minimum: 0 }
+      required: [minDifficulty, maxDifficulty, scoreStep]
+    AntifraudSmsLimit:
+      type: object
+      description: Codes allowed to one range of numbers per hour (0 for no limit), and the conversion below which a range with `minVolume` codes sent is closed (0 `minVolume` for no breaker).
+      properties:
+        sentPerHour: { type: integer, minimum: 0 }
+        minVolume: { type: integer, minimum: 0 }
+        minConversion: { type: number, minimum: 0, maximum: 1 }
+      required: [sentPerHour, minVolume, minConversion]
+    AntifraudSmsLimits:
+      type: object
+      description: "`byPrefix` is keyed by the leading digits of a number, country code included; the longest key a number starts with decides."
+      properties:
+        default: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+        byPrefix:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+      required: [default, byPrefix]
+    AntifraudSettings:
+      type: object
+      description: What applies to the whole deployment. A map, or `thresholds`, is set as a whole.
+      properties:
+        challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `blockAt`). }
+        blockAt: { type: integer, minimum: 0 }
+        pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
+        thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
+        smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
+        ruleWeights:
+          type: object
+          description: The weight of a rule by its name, in place of its own.
+          additionalProperties: { type: integer }
+        shadowRules:
+          type: array
+          description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
+          items: { type: string }
+      required: [challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]

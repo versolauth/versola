@@ -23,24 +23,17 @@ object PowChallengeVerifier:
 
   val Kind = "pow"
 
-  /** @param enabled       whether a `Challenge` decision is put to the client at all; off, it stays a pause
-    * @param minDifficulty zero bits asked of a request that only just reached the challenge score
-    * @param maxDifficulty the most zero bits asked of any request: each bit doubles the work, and a phone has to do it
-    * @param scoreStep     the score above the challenge threshold that adds one bit
+  /** What a deployment sets; how much work is asked is tuned during an attack (see [[PowDifficulty]]).
+    *
+    * @param enabled       whether a `Challenge` decision is put to the client at all; off, it stays a pause
     * @param ttl           how long a challenge may be solved
     * @param maxAttempts   wrong solutions allowed before the request is refused
     */
   case class Settings(
-      enabled: Boolean = true,
-      minDifficulty: Int = 14,
-      maxDifficulty: Int = 18,
-      scoreStep: Int = 15,
-      ttl: Duration = 2.minutes,
-      maxAttempts: Int = 5,
+      enabled: Boolean,
+      ttl: Duration,
+      maxAttempts: Int,
   )
-
-  object Settings:
-    val default: Settings = Settings()
 
   /** What the signature covers. */
   private case class Payload(
@@ -56,9 +49,9 @@ object PowChallengeVerifier:
   ) derives JsonCodec
 
   /** The zero bits asked at `score` when the engine challenges from `challengeAt`. */
-  def difficultyFor(settings: Settings, challengeAt: Int, score: Int): Int =
-    val extra = if settings.scoreStep <= 0 then 0 else math.max(0, score - challengeAt) / settings.scoreStep
-    math.min(settings.maxDifficulty, settings.minDifficulty + extra)
+  def difficultyFor(pow: PowDifficulty, challengeAt: Int, score: Int): Int =
+    val extra = if pow.scoreStep <= 0 then 0 else math.max(0, score - challengeAt) / pow.scoreStep
+    math.min(pow.maxDifficulty, pow.minDifficulty + extra)
 
   def leadingZeroBits(digest: Array[Byte]): Int =
     var bits = 0
@@ -76,11 +69,11 @@ object PowChallengeVerifier:
   /** The nonce is a short decimal number: whatever else a client sent is not a solution. */
   private val NonceLength = 20
 
-  val live: ZLayer[Settings & AntifraudEvents.Settings & SecurityService & SecureRandom & CoreConfig, Nothing, ChallengeVerifier] =
+  val live: ZLayer[Settings & AntifraudTuning & SecurityService & SecureRandom & CoreConfig, Nothing, ChallengeVerifier] =
     ZLayer.fromZIO:
       for
         settings <- ZIO.service[Settings]
-        events <- ZIO.service[AntifraudEvents.Settings]
+        tuning <- ZIO.service[AntifraudTuning]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
@@ -88,12 +81,12 @@ object PowChallengeVerifier:
         // A label of its own: a token made with this key cannot be mistaken for any other MAC made with the same secret.
         key <- securityService.mac(Secret("versola/antifraud/challenge/pow/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
       yield
-        if settings.enabled then Impl(settings, events.decision.challengeAt, securityService, secureRandom, key): ChallengeVerifier
+        if settings.enabled then Impl(settings, tuning, securityService, secureRandom, key): ChallengeVerifier
         else ChallengeVerifier.off
 
   class Impl(
       settings: Settings,
-      challengeAt: Int,
+      tuning: AntifraudTuning,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       key: Secret,
@@ -107,7 +100,8 @@ object PowChallengeVerifier:
       (for
         now <- Clock.instant
         seed <- secureRandom.nextBytes(16).map(Base64.urlEncode)
-        difficulty = difficultyFor(settings, challengeAt, score)
+        tuned = tuning.current
+        difficulty = difficultyFor(tuned.pow, tuned.challengeAt, score)
         payload = Payload(
           tenant = subject.tenantId.map(_.toString),
           client = subject.clientId.toString,
