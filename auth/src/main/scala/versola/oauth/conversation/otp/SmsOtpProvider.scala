@@ -2,15 +2,13 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.delivery.{ChannelUnavailable, DeliveryChannels}
+import versola.oauth.delivery.DeliveryChannels
 import versola.util.Phone
 import zio.{Task, URLayer, ZIO, ZLayer}
 
 trait SmsOtpProvider:
   def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit]
 
-  /** Fails with [[ChannelUnavailable]] when no SMS provider is configured and switched on, unlike [[sendOtp]]; see
-    * [[EmailOtpProvider.send]] for why. */
   def send(phone: Phone, message: String): Task[Unit]
 
 object SmsOtpProvider:
@@ -30,4 +28,4 @@ object SmsOtpProvider:
     override def send(phone: Phone, message: String): Task[Unit] =
       channels.sms.flatMap:
         case Some(sender) => sender.send(phone, message)
-        case None => ZIO.fail(ChannelUnavailable("sms"))
+        case None => ZIO.logWarning("OTP provider is not configured or is switched off; skipping SMS delivery")

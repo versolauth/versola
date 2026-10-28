@@ -96,7 +96,7 @@ object DeliverySettingsSyncClient:
         decrypted <- securityService.decryptAes256(encrypted, config.central.secretKey)
       yield String(decrypted, StandardCharsets.UTF_8)
 
-  private given JsonCodec[Email] = JsonCodec.string.transformOrFail(Email.from, identity)
+  private given JsonCodec[Email] = JsonCodec.string.transformOrFail(value => Email.from(value).left.map(_ => "not an email address"), identity)
 
   private given JsonCodec[URL] = JsonCodec.string.transformOrFail(value => URL.decode(value).left.map(_ => "not an absolute URL"), _.encode)
 

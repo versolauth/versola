@@ -2,7 +2,7 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.delivery.{ChannelUnavailable, DeliveryChannels}
+import versola.oauth.delivery.DeliveryChannels
 import versola.util.Email
 import versola.util.delivery.EmailSender
 import zio.*
@@ -57,9 +57,9 @@ object EmailOtpProviderSpec extends ZIOSpecDefault:
       for _ <- provider.sendOtp(email, code, template)
       yield assertCompletes
     },
-    test("a message that must arrive fails, naming the channel, when no SMTP server is configured or the saved one is switched off") {
-      for result <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(email, "hello").either
-      yield assertTrue(result.left.exists(_.isInstanceOf[ChannelUnavailable]))
+    test("a message is skipped, with a warning, when no SMTP server is configured or the saved one is switched off") {
+      for _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(email, "hello")
+      yield assertCompletes
     },
     test("passes a failure of the sender on") {
       val failing = new EmailSender:

@@ -52,5 +52,5 @@ final class HttpSmsSender(client: Client, settings: SmsProviderSettings) extends
 
 object HttpSmsSender:
   /** How long one request may take. Without it a provider that accepts the connection and never answers holds the call,
-    * and whoever waits on it (a login, a password reset, an administrator's test), for as long as the pool lets it. */
+    * and whoever waits on it (a login, a password reset), for as long as the pool lets it. */
   val Timeout = 10.seconds

@@ -10,7 +10,7 @@ import scala.util.Try
 
 /** How auth delivers one-time codes and temporary passwords: an SMTP server for email and an
   * HTTP provider for SMS. One record per deployment, the counterpart of the `smtp` and
-  * `otp-provider` blocks of `auth.conf`, which it replaces once it is stored (#832).
+  * `otp-provider` blocks of `auth.conf`: a block stored here is used instead of the matching block of the file (#832).
   *
   * The password of each block is kept apart from the rest of it, so that no type that is ever
   * serialised -- the admin API's responses, the stored JSON -- can carry one by accident. The

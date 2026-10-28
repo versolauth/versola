@@ -2,7 +2,7 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.delivery.{ChannelUnavailable, DeliveryChannels}
+import versola.oauth.delivery.DeliveryChannels
 import versola.util.Phone
 import versola.util.delivery.SmsSender
 import zio.*
@@ -56,9 +56,9 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
       for _ <- provider.sendOtp(phone, code, template)
       yield assertCompletes
     },
-    test("a message that must arrive fails, naming the channel, when no provider is configured or the saved one is switched off") {
-      for result <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(phone, "hello").either
-      yield assertTrue(result.left.exists(_.isInstanceOf[ChannelUnavailable]))
+    test("a message is skipped, with a warning, when no provider is configured or the saved one is switched off") {
+      for _ <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(phone, "hello")
+      yield assertCompletes
     },
     test("fails when the sender fails, so a caller can undo what it stored for the message") {
       val failing = new SmsSender:
