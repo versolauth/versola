@@ -310,7 +310,7 @@ object BootstrapService:
   /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
     * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
     * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
-    * operator turns on for it. */
+    * operator turns on for it. The same goes for an endpoint's `rateLimit`, which only an operator sets. */
   private[versola] def mergeAccountEndpoints(
       desired: List[ResourceEndpointRecord],
       existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
@@ -321,6 +321,7 @@ object BootstrapService:
           stepUpCondition = current.stepUpCondition,
           stepUpAcr = current.stepUpAcr,
           maxAge = current.maxAge,
+          rateLimit = current.rateLimit,
         )
 
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
@@ -454,6 +455,23 @@ object BootstrapService:
       ),
     ),
     (
+      Permission("antifraud:read"),
+      localized("View antifraud lists", "Просмотр списков антифрода"),
+      Set(
+        endpointId("GET", "/antifraud/lists"),
+        endpointId("GET", "/antifraud/lists/audit"),
+      ),
+    ),
+    (
+      Permission("antifraud:manage"),
+      localized("Manage antifraud lists", "Управление списками антифрода"),
+      Set(
+        endpointId("POST", "/antifraud/lists"),
+        endpointId("POST", "/antifraud/lists/preview"),
+        endpointId("DELETE", "/antifraud/lists"),
+      ),
+    ),
+    (
       Permission("resources:read"),
       localized("View protected resources", "Просмотр защищенных ресурсов"),
       Set(
@@ -580,6 +598,8 @@ object BootstrapService:
           "access:read",
           "security:read",
           "resources:read",
+          "antifraud:read",
+          "antifraud:manage",
         ).map(Permission(_)) :+ accountPermission,
       ),
       (
@@ -600,7 +620,7 @@ object BootstrapService:
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(_ != "users:read") :+ accountPermission,
+        readOnly.filter(p => p != "users:read" && p != "antifraud:read") :+ accountPermission,
       ),
     )
 
@@ -964,7 +984,20 @@ object BootstrapService:
     "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
+    "GET" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists",
+    "DELETE" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists/preview",
+    "GET" -> "/antifraud/lists/audit",
   )
+
+  /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
+    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
+    * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
+  private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
+    if path.startsWith("/antifraud/") then
+      Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
+    else Vector.empty
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
@@ -1568,7 +1601,7 @@ object BootstrapService:
             method = method,
             fetchUserInfo = false,
             allowExpression = None,
-            inject = Vector.empty,
+            inject = centralInjects(method, path),
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,

@@ -20,6 +20,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
@@ -258,6 +259,18 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         nonProd.size == prod.size + 2,
       )
     },
+    test("central's antifraud endpoints are registered in production, and told who the admin is from the verified token") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
+      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
+      assertTrue(
+        antifraud.size == 5,
+        antifraud.forall((method, path) =>
+          injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        ),
+        injected("GET", "/users").isEmpty,
+      )
+    },
     test("offline_access is described without the word refresh, which users do not know") {
       val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
       assertTrue(
@@ -342,6 +355,16 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.mergeAccountEndpoints(seeded, running.map(endpoint => endpoint.id -> endpoint).toMap) == running,
         BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned,
       )
+    },
+    test("a rate limit an operator put on an account endpoint is kept when bootstrap converges the catalog") {
+      val seeded = BootstrapService.accountEndpointRecords
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 30, windowSeconds = 60)),
+        burst = 5,
+        mode = GuardMode.Enforce,
+      )
+      val tuned = seeded.map(endpoint => endpoint.copy(rateLimit = Some(limit)))
+      assertTrue(BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned)
     },
     test("an endpoint a running resource does not have yet arrives with the seeded step-up") {
       val seeded = BootstrapService.accountEndpointRecords

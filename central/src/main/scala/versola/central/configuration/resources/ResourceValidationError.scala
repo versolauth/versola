@@ -1,5 +1,6 @@
 package versola.central.configuration.resources
 
+import versola.central.configuration.clients.ClientId
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
@@ -10,6 +11,14 @@ enum ResourceValidationError derives JsonCodec, Schema:
   case InvalidInjectExpression(endpointId: ResourceEndpointId, ruleName: String, expression: String, message: String)
   case InvalidStepUpConditionExpression(endpointId: ResourceEndpointId, expression: String, message: String)
   case InvalidEndpointPath(endpointId: ResourceEndpointId)
+
+  /** The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule. */
+  case InvalidRateLimit(endpointId: ResourceEndpointId, message: String)
+
+  /** A limit set for a client of the audience breaks a rule of a rate limit policy, names a client that is not in the audience, or
+    * repeats a client; `message` names the problem.
+    */
+  case InvalidAudienceRateLimit(clientId: ClientId, message: String)
 
   /** Another endpoint with the same method matches exactly the same requests, differing
     * only in its path parameter names. */

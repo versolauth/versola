@@ -48,7 +48,7 @@ object AntifraudSpec extends UnitSpecBase:
       for
         a <- Antifraud.Impl(on, List(set(boom))).evaluate(ctx)
         b <- Antifraud.Impl(on, List(failing)).evaluate(ctx)
-      yield assertTrue(a == Decision(DecisionAction.Challenge, 0, List("antifraud_error")), b == a)
+      yield assertTrue(a == Decision(DecisionAction.Delay, 0, List("antifraud_error")), b == a)
     },
     test("fails open with friction on timeout") {
       val slow = new Antifraud.RuleSet { def rules = ZIO.never }
@@ -56,6 +56,6 @@ object AntifraudSpec extends UnitSpecBase:
         f <- Antifraud.Impl(on, List(slow)).evaluate(ctx).fork
         _ <- TestClock.adjust(1.second)
         d <- f.join
-      yield assertTrue(d.firedRules == List("antifraud_error"), d.action == DecisionAction.Challenge)
+      yield assertTrue(d.firedRules == List("antifraud_error"), d.action == DecisionAction.Delay)
     },
   )

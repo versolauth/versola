@@ -1,9 +1,8 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
-import versola.util.http.OverloadPolicy
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
-import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
+import zio.{Clock, Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
 trait EdgeService:
   def getAllEdges: UIO[Vector[EdgeRecord]]
@@ -19,16 +18,17 @@ trait EdgeService:
 
   def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
 
-  /** Stores the policy after checking it ([[OverloadPolicy.validate]]); an empty policy is stored as none. Fails with
-    * [[InvalidOverloadPolicy]] when it does not validate. */
-  def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit]
+  /** The edge as stored now, not as the cache last saw it: what a client compares revisions against. */
+  def findFresh(id: EdgeId): Task[Option[EdgeRecord]]
+
+  /** Applies `patch` to the policy sections of the edge ([[EdgePoliciesPatch]]). With `dryRun` it checks and answers the record the
+    * patch would make, and writes nothing. `None`: no such edge.
+    */
+  def patchPolicies(id: EdgeId, patch: EdgePoliciesPatch, dryRun: Boolean): Task[Option[Either[PolicyPatchError, EdgeRecord]]]
 
   def deleteEdge(id: EdgeId): Task[Unit]
 
   def sync(): Task[Unit]
-
-/** An overload policy that fails validation; `message` names the field and is meant for the operator. */
-final case class InvalidOverloadPolicy(message: String) extends RuntimeException(message)
 
 object EdgeService:
   def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
@@ -69,9 +69,16 @@ object EdgeService:
     override def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit] =
       edgeRepository.setRequireDpopNonce(id, requireDpopNonce)
 
-    override def setOverloadPolicy(id: EdgeId, policy: OverloadPolicy): Task[Unit] =
-      ZIO.fromEither(policy.validate).mapError(InvalidOverloadPolicy(_)) *>
-        edgeRepository.setOverloadPolicy(id, Option.when(policy != OverloadPolicy.empty)(policy))
+    override def findFresh(id: EdgeId): Task[Option[EdgeRecord]] =
+      edgeRepository.find(id)
+
+    override def patchPolicies(id: EdgeId, patch: EdgePoliciesPatch, dryRun: Boolean): Task[Option[Either[PolicyPatchError, EdgeRecord]]] =
+      Clock.instant.flatMap: now =>
+        if dryRun then edgeRepository.find(id).map(_.map(EdgePoliciesPatch(_, patch, now)))
+        else
+          edgeRepository.patchPolicies(id, EdgePoliciesPatch(_, patch, now))
+            // the cache is read by the console's listing and by `find`; it is brought up to date now rather than at its next refresh
+            .tap(result => sync().when(result.exists(_.isRight)))
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)

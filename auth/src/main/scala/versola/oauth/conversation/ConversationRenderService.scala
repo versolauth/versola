@@ -114,6 +114,7 @@ object ConversationRenderService:
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
+
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String, skippable: Boolean) extends StepView
 
@@ -420,7 +421,7 @@ object ConversationRenderService:
     ): Task[Response] =
       val challenge = Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), uiLocale))
       result match
-        case ConversationResult.RenderStep(step) =>
+        case ConversationResult.RenderStep(_) | ConversationResult.Challenged(_) =>
           ZIO.succeed(challenge)
 
         case ConversationResult.ServiceUnavailable =>

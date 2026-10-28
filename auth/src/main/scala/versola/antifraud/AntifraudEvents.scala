@@ -5,7 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
-import versola.util.{Base64Url, CoreConfig, Email, Phone, SecureRandom, Secret, SecurityService}
+import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
 
@@ -23,6 +23,9 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 trait AntifraudEvents:
   def record(event: AntifraudEvent): UIO[Unit]
 
+  /** The keyed hash an event stores for a destination, which a `phone_hash` list entry is matched against. */
+  def subjectHash(credential: Either[Email, Phone]): Task[String]
+
   /** Whether a code may be sent to `phone`: false when the budget of its range is used up or the range is not
     * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
     * with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
@@ -33,16 +36,18 @@ trait AntifraudEvents:
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
-    * request's log context carries. Never fails; always
-    * [[Decision.allow]] while the decision engine is off. */
+    * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
+    * A `repeated` request is one that was challenged and is made again with its answer: it is judged, but not counted
+    * a second time. */
   def decideOtpRequest(
       clientId: ClientId,
       userAgent: Option[String],
       credential: Either[Email, Phone],
+      repeated: Boolean,
   ): UIO[Decision]
 
-  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, until a challenge can be asked for,
-    * P1-2): the pause is the friction. Returns at once for any other decision. */
+  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, when no challenge could be put to the
+    * client, see [[ChallengeVerifier]]): the pause is the friction. Returns at once for any other decision. */
   def hold(decision: Decision): UIO[Unit]
 
   /** A real code took `took` to hand to the provider; what a fake send imitates. */
@@ -60,6 +65,19 @@ trait AntifraudEvents:
       credential: Either[Email, Phone],
       outcome: AntifraudOutcome,
       decision: Option[Decision] = None,
+  ): UIO[Unit]
+
+  /** A step of putting `decision`'s challenge of `kind` and strength `level` to the client: it was `challenged`, then
+    * `challenge_passed` or `challenge_failed`. Goes on the request's log line with the decision that asked for it. */
+  def challengeStep(
+      authId: AuthId,
+      clientId: ClientId,
+      userAgent: Option[String],
+      credential: Either[Email, Phone],
+      outcome: AntifraudOutcome,
+      decision: Decision,
+      kind: String,
+      level: Option[Int],
   ): UIO[Unit]
 
   /** A submitted OTP was checked and this is how it ended. */
@@ -110,11 +128,13 @@ object AntifraudEvents:
   object noop extends AntifraudEvents:
     override def record(event: AntifraudEvent): UIO[Unit] = ZIO.unit
 
+    override def subjectHash(credential: Either[Email, Phone]): Task[String] = ZIO.succeed(credential.fold(identity[String], identity[String]))
+
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
-    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
+    override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
 
     override def hold(decision: Decision): UIO[Unit] = ZIO.unit
@@ -130,6 +150,17 @@ object AntifraudEvents:
         credential: Either[Email, Phone],
         outcome: AntifraudOutcome,
         decision: Option[Decision],
+    ): UIO[Unit] = ZIO.unit
+
+    override def challengeStep(
+        authId: AuthId,
+        clientId: ClientId,
+        userAgent: Option[String],
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+        decision: Decision,
+        kind: String,
+        level: Option[Int],
     ): UIO[Unit] = ZIO.unit
 
     override def otpChecked(
@@ -164,7 +195,19 @@ object AntifraudEvents:
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
         budget = SmsBudget(settings.smsBudget)
-        events = Impl(queue, settings.queueCapacity, budget, antifraud, velocity, SendLatency(), settings, securityService, secureRandom, configService, subjectKey)
+        events = Impl(
+          queue,
+          settings.queueCapacity,
+          budget,
+          antifraud,
+          velocity,
+          SendLatency(),
+          settings,
+          securityService,
+          secureRandom,
+          configService,
+          subjectKey,
+        )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings).run
         _ <- Maintenance(repository, settings).run
@@ -206,6 +249,7 @@ object AntifraudEvents:
         clientId: ClientId,
         userAgent: Option[String],
         credential: Either[Email, Phone],
+        repeated: Boolean,
     ): UIO[Decision] =
       if !settings.decision.enabled then ZIO.succeed(Decision.allow)
       else
@@ -230,7 +274,7 @@ object AntifraudEvents:
           // refused, or one aimed at somebody else's number, must not raise the count used against that number's owner.
           counted <- velocity.snapshot(context)
           decision <- antifraud.evaluate(counted)
-          _ <- ZIO.unless(decision.action == DecisionAction.Block)(velocity.record(context))
+          _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context))
           _ <- AntifraudMetrics.decided(decision.action)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
@@ -238,10 +282,19 @@ object AntifraudEvents:
           )
         yield decision).catchAllCause: cause =>
           ZIO.logDebugCause("could not build the antifraud context", cause) *>
-            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List("antifraud_error")))
+            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List(Antifraud.ErrorRule)))
 
     private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
-      AntifraudDetails(action.toString, DecisionAction.Allow.toString, 0, Nil, credential.toOption.map(destPrefix), None)
+      AntifraudDetails(
+        action = action.toString,
+        decision = DecisionAction.Allow.toString,
+        score = 0,
+        rules = Nil,
+        destPrefix = credential.toOption.map(destPrefix),
+        outcome = None,
+        challenge = None,
+        challengeLevel = None,
+      )
 
     override def hold(decision: Decision): UIO[Unit] =
       decision.action match
@@ -290,6 +343,28 @@ object AntifraudEvents:
     ): UIO[Unit] =
       event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, decision)
 
+    override def challengeStep(
+        authId: AuthId,
+        clientId: ClientId,
+        userAgent: Option[String],
+        credential: Either[Email, Phone],
+        outcome: AntifraudOutcome,
+        decision: Decision,
+        kind: String,
+        level: Option[Int],
+    ): UIO[Unit] =
+      AntifraudMetrics.challenge(kind, outcome) *>
+        Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
+          _.copy(
+            decision = decision.action.toString,
+            score = decision.score,
+            rules = decision.firedRules,
+            challenge = Some(kind),
+            challengeLevel = level,
+          ),
+        ) *>
+        event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, Some(decision))
+
     override def otpChecked(
         authId: AuthId,
         clientId: ClientId,
@@ -299,7 +374,7 @@ object AntifraudEvents:
     ): UIO[Unit] =
       event(authId, clientId, userAgent, credential, AntifraudAction.otp_verify, outcome)
 
-    private def subjectHash(credential: Either[Email, Phone]): Task[String] =
+    override def subjectHash(credential: Either[Email, Phone]): Task[String] =
       val subject = credential.fold(_.toLowerCase, identity[String])
       securityService.mac(Secret(subject.getBytes(StandardCharsets.UTF_8)), subjectKey).map(Base64Url.encode)
 
@@ -316,31 +391,33 @@ object AntifraudEvents:
     ): UIO[Unit] =
       // How the step ended goes on the `receive-http` line of the request too.
       Observability.updateAntifraud(details(action, credential))(_.copy(outcome = Some(outcome.toString))) *>
-      // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
-      (for
-        id <- secureRandom.nextUUIDv7
-        now <- Clock.instant
-        client <- configService.find(clientId)
-        hash <- subjectHash(credential)
-        _ <- record(
-          AntifraudEvent(
-            id = id,
-            at = now,
-            tenantId = client.map(_.tenantId),
-            clientId = clientId,
-            conversationId = authId,
-            action = action,
-            outcome = outcome,
-            channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
-            subjectHash = hash,
-            destPrefix = credential.toOption.map(destPrefix),
-            userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
-            decision = decision.map(_.action.toString),
-            score = decision.map(_.score),
-            rules = decision.fold(List.empty[String])(_.firedRules),
-          ),
+        // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
+        (for
+          id <- secureRandom.nextUUIDv7
+          now <- Clock.instant
+          client <- configService.find(clientId)
+          hash <- subjectHash(credential)
+          _ <- record(
+            AntifraudEvent(
+              id = id,
+              at = now,
+              tenantId = client.map(_.tenantId),
+              clientId = clientId,
+              conversationId = authId,
+              action = action,
+              outcome = outcome,
+              channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
+              subjectHash = hash,
+              destPrefix = credential.toOption.map(destPrefix),
+              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+              decision = decision.map(_.action.toString),
+              score = decision.map(_.score),
+              rules = decision.fold(List.empty[String])(_.firedRules),
+            ),
+          )
+        yield ()).catchAllCause(cause =>
+          AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause),
         )
-      yield ()).catchAllCause(cause => AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause))
 
   /** The leading digits of a phone number, country code included, an event keeps. Statistics group by a shorter
     * one with `left()`; this is the longest they could want. */
@@ -463,6 +540,12 @@ object AntifraudMetrics:
   /** Decisions by action, a closed set of labels. */
   def decided(action: DecisionAction): UIO[Unit] =
     decisionsTotal.tagged(Set(MetricLabel("action", action.toString))).increment
+
+  private val challengesTotal = Metric.counter("antifraud_challenges_total")
+
+  /** Steps of putting a challenge to a client by `kind` (a verifier's, a closed set) and how each ended. */
+  def challenge(kind: String, outcome: AntifraudOutcome): UIO[Unit] =
+    challengesTotal.tagged(Set(MetricLabel("kind", kind), MetricLabel("outcome", outcome.toString))).increment
 
   private val rollupFailedTotal = Metric.counter("antifraud_stats_rollup_failed_total")
 

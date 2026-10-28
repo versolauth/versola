@@ -6,13 +6,16 @@ import versola.antifraud.{
   AntifraudDetectors,
   AntifraudEventRepository,
   AntifraudEvents,
+  AntifraudListController,
   AntifraudListRepository,
   AntifraudLists,
   AntifraudProposalRepository,
+  ChallengeVerifier,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
   PostgresVelocityRepository,
+  PowChallengeVerifier,
   VelocityCounters,
   VelocityRepository,
   VelocityRules,
@@ -40,7 +43,13 @@ import versola.oauth.challenge.passkey.{
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient, ServiceController}
-import versola.oauth.clientauth.{ClientAssertionRepository, ClientAssertionService, ClientAuthentication, PostgresClientAssertionRepository}
+import versola.oauth.clientauth.{
+  ClientAssertionRepository,
+  ClientAssertionService,
+  ClientAuthThrottle,
+  ClientAuthentication,
+  PostgresClientAssertionRepository,
+}
 import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService, SmsOtpProvider}
@@ -125,6 +134,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter &
       ConversationService &
       AntifraudEvents &
+      ChallengeVerifier &
       AntifraudEventRepository &
       VelocityRepository &
       VelocityCounters &
@@ -140,6 +150,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
+      ClientAuthThrottle &
       AccountSettingsService &
       ChallengeThrottleRepository &
       LogoutService &
@@ -155,9 +166,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override protected def internalPeers =
     ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
-  override protected def accessLogConfigurable: Boolean = false
-
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
+    ClientAuthThrottle[Dependencies & Tracing & EnvName, Throwable](mainRoutes)
+
+  private def mainRoutes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,
       PushedAuthorizationController.routes,
@@ -169,6 +181,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
+      AntifraudListController.routes,
       ServiceController.routes,
       LogoutController.routes,
       EstController.routes,
@@ -266,6 +279,19 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
       )
 
+  /** `antifraud.challenge`, optional like the rest of the block. */
+  private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(
+          Config.Nested(
+            "antifraud",
+            Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings]).withDefault(PowChallengeVerifier.Settings.default),
+          )
+            .withDefault(PowChallengeVerifier.Settings.default),
+        ),
+      )
+
   /** `antifraud.lists`, optional like the rest of the block. */
   private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
     ZLayer.fromZIO:
@@ -343,6 +369,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >++>
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
+      ClientAuthThrottle.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
@@ -362,6 +389,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>
       AntifraudDetectors.live >++>
+      antifraudChallengeSettings >++>
+      PowChallengeVerifier.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
