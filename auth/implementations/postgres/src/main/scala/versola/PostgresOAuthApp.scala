@@ -370,13 +370,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudLists.live >++>
       antifraudTuningSettings >++>
       AntifraudTuningStore.live >++>
-      ZLayer.fromFunction((store: AntifraudTuningStore) => store: AntifraudTuning) >++>
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
       VelocityCounters.live >++>
-      // Each component that adds rules is listed here.
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists, tuning: AntifraudTuning) =>
-        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud,
-      ) >++>
+      Antifraud.live >++>
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>
       AntifraudDetectors.live >++>

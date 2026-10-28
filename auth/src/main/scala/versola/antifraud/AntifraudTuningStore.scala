@@ -80,15 +80,15 @@ object AntifraudTuningStore:
 
   /** Reads the tuning once, and then on a fiber of its own, which stops with the scope. A start with the database
     * unreadable goes on, with [[AntifraudTuning.available]] false until a read succeeds. */
-  val live: ZLayer[AntifraudSettingsRepository & Settings & Scope, Nothing, AntifraudTuningStore] =
-    ZLayer.fromZIO:
+  val live: ZLayer[AntifraudSettingsRepository & Settings & Scope, Nothing, AntifraudTuningStore & AntifraudTuning] =
+    ZLayer.fromZIOEnvironment:
       for
         repository <- ZIO.service[AntifraudSettingsRepository]
         settings <- ZIO.service[Settings]
         tuning = Impl(repository)
         _ <- tuning.refresh
         _ <- (ZIO.sleep(settings.refreshInterval) *> tuning.refresh).forever.forkScoped
-      yield tuning
+      yield ZEnvironment[AntifraudTuningStore, AntifraudTuning](tuning, tuning)
 
   class Impl(repository: AntifraudSettingsRepository) extends AntifraudTuningStore:
     private val loaded = AtomicReference(Option.empty[Tuning])

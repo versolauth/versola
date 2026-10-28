@@ -50,7 +50,7 @@ object VelocityCountersSpec extends UnitSpecBase:
   private def instance(repo: VelocityRepository, settings: VelocityCounters.Settings, tuning: Tuning = Tuning.off): ZIO[Scope, Nothing, VelocityCounters] =
     VelocityCounters.live.build.map(_.get).provideSome[Scope](
       ZLayer.succeed(repo),
-      ZLayer.succeed(settings),
+      ZLayer.succeed(AntifraudTestSettings.events.copy(velocity = settings)),
       ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed(TestEnvConfig.coreConfig),
       SecureRandom.live,

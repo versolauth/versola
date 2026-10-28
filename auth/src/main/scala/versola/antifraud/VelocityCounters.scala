@@ -412,11 +412,11 @@ object VelocityCounters:
     * An address is stored as a keyed hash of its network (`/32` for IPv4, `/64` for IPv6), made with a key derived from
     * the antifraud subject secret under a label of its own, so the table holds no address, and the hash cannot be
     * matched against one made anywhere else with the same secret. */
-  val live: ZLayer[VelocityRepository & Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
+  val live: ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[VelocityRepository]
-        settings <- ZIO.service[Settings]
+        settings <- ZIO.serviceWith[AntifraudEvents.Settings](_.velocity)
         tuning <- ZIO.service[AntifraudTuning]
         securityService <- ZIO.service[SecurityService]
         config <- ZIO.service[CoreConfig]

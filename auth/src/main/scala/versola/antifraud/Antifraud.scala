@@ -87,10 +87,11 @@ object Antifraud:
       failureAction: DecisionAction,
   )
 
-  /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer
-    * is assembled. */
-  def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings & AntifraudTuning, Antifraud] =
-    ZLayer.fromFunction((settings: AntifraudEvents.Settings, tuning: AntifraudTuning) => Impl(settings.decision, ruleSets, tuning): Antifraud)
+  /** The engine over the rules of the components that add them: the lists and the velocity limits. A component that adds
+    * rules is added here, where the engine is, not in the application's wiring. */
+  val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists, Antifraud] =
+    ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists) =>
+      Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud
 
   /** The rule a decision made of a failed evaluation names. */
   val ErrorRule = "antifraud_error"
