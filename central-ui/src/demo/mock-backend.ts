@@ -561,6 +561,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     deliveryRejection: overrides.deliveryRejection,
     deliveryDelayMs: overrides.deliveryDelayMs,
     deliveryFailure: overrides.deliveryFailure,
+    deliveryLeaksPasswords: overrides.deliveryLeaksPasswords,
     deliveryDeleteFailure: overrides.deliveryDeleteFailure,
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
