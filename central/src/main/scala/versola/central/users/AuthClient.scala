@@ -104,7 +104,7 @@ trait AuthClient:
   ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
 
   /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. */
-  def getAntifraudSettings(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings]
+  def getAntifraudSettings: IO[AntifraudListError | Throwable, AntifraudSettings]
 
   def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings]
 
@@ -432,8 +432,8 @@ object AuthClient:
       val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
       antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params :+ ("userId" -> userId.toString))))
 
-    override def getAntifraudSettings(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings] =
-      antifraud[AntifraudSettings](Request.get(antifraudSettingsUrl.addQueryParams(List("userId" -> userId.toString))))
+    override def getAntifraudSettings: IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request.get(antifraudSettingsUrl))
 
     override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings] =
       antifraud[AntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))

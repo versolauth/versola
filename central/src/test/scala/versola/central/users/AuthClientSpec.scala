@@ -355,7 +355,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(settings.toJson))).toRoutes)
         client <- ZIO.service[AuthClient]
-        got <- client.getAntifraudSettings(userId)
+        got <- client.getAntifraudSettings
         put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId))
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId))
@@ -366,7 +366,6 @@ object AuthClientSpec extends ZIOSpecDefault:
         put == settings,
         requests(0).method == Method.GET,
         requests(0).url.path.segments == Chunk("antifraud", "settings"),
-        requests(0).url.queryParams.queryParam("userId").contains(userId.toString),
         requests(1).method == Method.PUT,
         sent.fromJson[Json.Obj].toOption.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
         requests(2).method == Method.DELETE,
