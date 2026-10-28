@@ -2254,64 +2254,6 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /configuration/delivery-settings/test:
-    post:
-      tags: [Delivery settings]
-      summary: Send a test message
-      description: |
-        Sends one message through the block in the request, saved or not, so a wrong server,
-        account or address is found before it is saved. It works in every environment, and sends
-        from Central with the same senders auth uses.
-
-        `password` is the one typed for the block. Left out, the saved password is used, but only
-        for the server it was saved for: a request that changes the server, port or account (or,
-        for SMS, the scheme, host, port or username of the URL) without a password is refused
-        rather than sent with the saved one.
-
-        An attempt that fails is an answer, not an error: the status is `200` and `delivered` is
-        false with a `code` from a closed set and a sentence that says what to look at. What the
-        server or the provider said is never repeated. A request that cannot be tried at all is
-        `400`, and nothing is sent.
-
-        Anyone who may call this can make Central connect to a host and port of their choosing
-        (an SMTP conversation, or one HTTP(S) request with a fixed body) and learn whether it
-        answered; the permission is `security:manage` for that reason. At most five test
-        messages leave one Central instance a minute, whoever asks.
-      operationId: testDeliverySettings
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeliveryTestRequest'
-      responses:
-        '200':
-          description: The attempt was made; `delivered` says whether it worked.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeliveryTestResult'
-        '400':
-          description: |
-            The request cannot be tried: `channel` is not `email` or `sms`, the block for the
-            channel is missing or fails the rules of `PUT /configuration/delivery-settings`,
-            `to` is not an address or a phone number for the channel, or a saved password would
-            have to follow the settings to another server. The text names the field and the
-            rule, never the value.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '429':
-          description: More than five test messages in the last minute; nothing was sent.
-          headers:
-            Retry-After:
-              schema:
-                type: integer
-              description: Seconds to wait.
-
   /configuration/edges:
     get:
       tags: [Edges]
@@ -6329,45 +6271,6 @@ components:
           type: string
           nullable: true
           description: Write-only. Absent or `null` keeps the stored password, empty clears it.
-
-    DeliveryTestRequest:
-      type: object
-      properties:
-        channel:
-          type: string
-          enum: [email, sms]
-        to:
-          type: string
-          description: The address (email) or phone number (SMS) the test message goes to.
-        smtp:
-          allOf:
-            - $ref: '#/components/schemas/SmtpDeliverySettings'
-          description: Required for `email`. The block as edited, saved or not.
-        otpProvider:
-          allOf:
-            - $ref: '#/components/schemas/OtpProviderDeliverySettings'
-          description: Required for `sms`. The block as edited, saved or not.
-        password:
-          type: string
-          nullable: true
-          description: |
-            Write-only. The password typed for the block. Absent, `null` or empty uses the saved
-            one, for the server it was saved for only.
-      required: [channel, to]
-
-    DeliveryTestResult:
-      type: object
-      properties:
-        delivered:
-          type: boolean
-        code:
-          type: string
-          enum: [authentication_failed, unknown_host, timeout, connection_failed, rejected, provider_status, send_failed]
-          description: Why the attempt failed, from a closed set. Absent when it was delivered.
-        message:
-          type: string
-          description: A sentence saying what to look at. Never repeats what the other side said.
-      required: [delivered]
 
     # ─────────────────────────────── Edges ───────────────────────────────
     RegisterEdgeRequest:

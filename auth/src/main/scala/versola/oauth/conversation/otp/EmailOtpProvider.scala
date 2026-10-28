@@ -4,7 +4,7 @@ import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.delivery.{ChannelUnavailable, DeliveryChannels}
 import versola.util.Email
-import zio.{Task, UIO, URLayer, ZIO, ZLayer}
+import zio.{Task, URLayer, ZIO, ZLayer}
 
 trait EmailOtpProvider:
   def sendOtp(
@@ -17,10 +17,6 @@ trait EmailOtpProvider:
     * logs and goes on: a one-time code that does not arrive is asked for again, a temporary password that does not
     * arrive is a locked-out user, so the caller that stored one has to be told. */
   def send(email: Email, message: String): Task[Unit]
-
-  /** Whether a message can leave at all: an SMTP server is configured and switched on. A caller that has stored
-    * something for the message (a temporary password) asks first, so that it can say so instead of leaving it undelivered. */
-  def available: UIO[Boolean]
 
 object EmailOtpProvider:
   val live: URLayer[DeliveryChannels, EmailOtpProvider] =
@@ -35,8 +31,6 @@ object EmailOtpProvider:
       channels.email.flatMap:
         case Some(sender) => sender.send(email, template.replace("{{code}}", code))
         case None => ZIO.logWarning("SMTP is not configured or is switched off; skipping email delivery")
-
-    override def available: UIO[Boolean] = channels.email.map(_.isDefined)
 
     override def send(email: Email, message: String): Task[Unit] =
       channels.email.flatMap:

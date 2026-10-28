@@ -19,20 +19,9 @@ case class CoreConfig(
     argon2: Option[Argon2Config],
     mutualTls: Option[CoreConfig.MutualTlsConfig],
     est: Option[CoreConfig.EstConfig] = None,
-    /** `deliver-outside-prod`: send one-time codes and temporary passwords through the configured SMTP server and SMS
-      * provider also when `env` is not `prod`. Off by default: outside production nothing is sent. A test stack that has to
-      * prove delivery end to end turns it on, and `gen-env` writes it for the `local` target and no other.
-      *
-      * Outside production the one-time code is still the fixed, guessable one, so with this key on a real message carries a
-      * code anyone can guess. Never set it on a deployment that can be reached by anyone you would not hand a password. */
-    deliverOutsideProd: Option[Boolean] = None,
     // Limits on the channel that is not mutual TLS (#745); absent, the defaults of [[ClientAuthThrottle.Settings]] apply.
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
 ):
-  /** Whether a code or a temporary password is really sent in `env`: always in production, and elsewhere only when
-    * `deliver-outside-prod` is on. Showing a temporary password in a response stays a non-production feature either way. */
-  def delivers(env: EnvName): Boolean = env.isProd || deliverOutsideProd.contains(true)
-
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
   def dpopOrDefault: CoreConfig.DpopConfig = dpop.getOrElse(CoreConfig.DpopConfig.default)

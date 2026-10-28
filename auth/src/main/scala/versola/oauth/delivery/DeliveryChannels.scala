@@ -14,8 +14,6 @@ import zio.{Duration, Ref, Scope, Task, UIO, ZIO, ZLayer}
   *
   *  - a block saved in central that is switched on is used, and the same block of `auth.conf` is then ignored;
   *  - a block saved in central that is switched off sends nothing, whatever `auth.conf` holds: off means off;
-  *  - a block saved in central that auth cannot read sends nothing either, and is announced as such: an administrator
-  *    saved something, so quietly falling back to a different server would hide that it is broken;
   *  - with no block saved in central, the block of `auth.conf` is used, as it was before the console could save one.
   *
   * Central's blocks reach auth through the configuration cache, so a saved change applies after the next refresh, or at
@@ -38,7 +36,6 @@ object DeliveryChannels:
     case Central
     case Config
     case Off
-    case Invalid
     case Absent
 
   case class Resolved(
@@ -59,17 +56,15 @@ object DeliveryChannels:
 
   def resolve(config: CoreConfig, client: Client, central: Fetched): Resolved =
     val (email, emailOrigin) = central.smtp match
-      case Some(Saved.Usable(settings, true)) => (Some(EmailSender.smtp(settings)), Origin.Central)
-      case Some(Saved.Usable(_, false)) => (None, Origin.Off)
-      case Some(Saved.Unusable) => (None, Origin.Invalid)
+      case Some(Saved(settings, true)) => (Some(EmailSender.smtp(settings)), Origin.Central)
+      case Some(Saved(_, false)) => (None, Origin.Off)
       case None =>
         config.smtp match
           case Some(smtp) => (Some(EmailSender.smtp(smtpOf(smtp))), Origin.Config)
           case None => (None, Origin.Absent)
     val (sms, smsOrigin) = central.otpProvider match
-      case Some(Saved.Usable(settings, true)) => (Some(SmsSender.http(client, settings)), Origin.Central)
-      case Some(Saved.Usable(_, false)) => (None, Origin.Off)
-      case Some(Saved.Unusable) => (None, Origin.Invalid)
+      case Some(Saved(settings, true)) => (Some(SmsSender.http(client, settings)), Origin.Central)
+      case Some(Saved(_, false)) => (None, Origin.Off)
       case None =>
         config.otpProvider match
           case Some(provider) => (Some(SmsSender.http(client, smsOf(provider))), Origin.Config)
@@ -143,23 +138,15 @@ object DeliveryChannels:
       .map(Impl(_, source))
 
   /** Says where each channel's settings come from, when that changes and at start-up: the only way an operator sees that
-    * a saved block has taken over from `auth.conf`, has been switched off, or cannot be read. Never names a value.
+    * a saved block has taken over from `auth.conf` or has been switched off. Never names a value.
     */
   private def announce(announced: Ref[Option[(Origin, Origin)]], resolved: Resolved): UIO[Unit] =
     val origins = (resolved.emailOrigin, resolved.smsOrigin)
-    val unreadable = List(
-      Option.when(resolved.emailOrigin == Origin.Invalid)("the SMTP block"),
-      Option.when(resolved.smsOrigin == Origin.Invalid)("the SMS provider block"),
-    ).flatten
     val summary =
       s"Delivery settings: email from ${resolved.emailOrigin}, sms from ${resolved.smsOrigin}" +
         (if resolved.emailOverridesConfig then "; the smtp block of auth.conf is ignored" else "") +
-        (if resolved.smsOverridesConfig then "; the otp-provider block of auth.conf is ignored" else "") +
-        (if unreadable.nonEmpty then
-           s"; ${unreadable.mkString(" and ")} saved in central cannot be read, check the shared secret and the saved values"
-         else "")
-    val log = if unreadable.nonEmpty then ZIO.logWarning(summary) else ZIO.logInfo(summary)
-    announced.getAndSet(Some(origins)).flatMap(previous => log.unless(previous.contains(origins)).unit)
+        (if resolved.smsOverridesConfig then "; the otp-provider block of auth.conf is ignored" else "")
+    announced.getAndSet(Some(origins)).flatMap(previous => ZIO.logInfo(summary).unless(previous.contains(origins)).unit)
 
   private class Impl(cache: ReloadingCache[Resolved], source: CacheSource[Resolved]) extends DeliveryChannels:
     override def email: UIO[Option[EmailSender]] = cache.get.map(_.email)

@@ -1,6 +1,5 @@
 package versola.oauth.conversation.otp
 
-import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.OtpSettings
@@ -8,7 +7,7 @@ import versola.oauth.client.model.{ClientId, OtpType}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, Phone, UnitSpecBase}
+import versola.util.{Email, EnvName, Phone, UnitSpecBase}
 import zio.*
 import zio.test.*
 
@@ -32,7 +31,7 @@ object OtpServiceSpec extends UnitSpecBase:
     lastSentAt = None,
   )
 
-  class Env(envName: EnvName = EnvName.Prod, config: CoreConfig = TestEnvConfig.coreConfig):
+  class Env:
     val otpGenerationService = stub[OtpGenerationService]
     val otpDecisionService = stub[OtpDecisionService]
     val emailOtpProvider = stub[EmailOtpProvider]
@@ -44,8 +43,7 @@ object OtpServiceSpec extends UnitSpecBase:
       emailOtpProvider,
       otpClient,
       configService,
-      envName,
-      config,
+      EnvName.Prod,
     )
 
   val spec = suite("OtpService")(
@@ -122,37 +120,6 @@ object OtpServiceSpec extends UnitSpecBase:
           env.otpClient.sendOtp.calls == List((phone, otpCode, template)),
           env.configService.getClientTemplate.calls == List((clientId, OtpType.sms, None)),
         )
-      },
-      test("sends nothing outside production by default, even for a real code") {
-        val env = Env(envName = EnvName.Test("local"))
-        for
-          _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
-          _ <- env.service.sendOtp(realOtp, Right(phone), authId, clientId, None)
-        yield assertTrue(
-          env.emailOtpProvider.sendOtp.calls.isEmpty,
-          env.otpClient.sendOtp.calls.isEmpty,
-          env.configService.getClientTemplate.calls.isEmpty,
-        )
-      },
-      test("sends outside production when deliver-outside-prod is on") {
-        val env = Env(envName = EnvName.Test("local"), config = TestEnvConfig.coreConfig.copy(deliverOutsideProd = Some(true)))
-        val template = OtpTemplate("Your code: {{code}}")
-        for
-          _ <- env.configService.getClientTemplate.succeedsWith(template)
-          _ <- env.emailOtpProvider.sendOtp.succeedsWith(())
-          _ <- env.otpClient.sendOtp.succeedsWith(())
-          _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
-          _ <- env.service.sendOtp(realOtp, Right(phone), authId, clientId, None)
-        yield assertTrue(
-          env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template)),
-          env.otpClient.sendOtp.calls == List((phone, otpCode, template)),
-        )
-      },
-      test("still sends nothing outside production when deliver-outside-prod is explicitly off") {
-        val env = Env(envName = EnvName.Test("local"), config = TestEnvConfig.coreConfig.copy(deliverOutsideProd = Some(false)))
-        for
-          _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
-        yield assertTrue(env.emailOtpProvider.sendOtp.calls.isEmpty)
       },
     ),
     suite("checkOtp")(

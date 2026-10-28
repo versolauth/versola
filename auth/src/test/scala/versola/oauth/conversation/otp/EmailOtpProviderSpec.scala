@@ -61,12 +61,6 @@ object EmailOtpProviderSpec extends ZIOSpecDefault:
       for result <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(email, "hello").either
       yield assertTrue(result.left.exists(_.isInstanceOf[ChannelUnavailable]))
     },
-    test("is available exactly when a sender is configured") {
-      for
-        withSender <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(RecordingSender()), None)).available
-        without <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).available
-      yield assertTrue(withSender, !without)
-    },
     test("passes a failure of the sender on") {
       val failing = new EmailSender:
         override def send(to: Email, message: String): Task[Unit] = ZIO.fail(RuntimeException("smtp down"))

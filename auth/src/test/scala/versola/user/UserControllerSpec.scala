@@ -5,7 +5,6 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.PasswordChannelUnavailable
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
@@ -762,40 +761,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         calls.head._1 == targetUserId,
         calls.head._2 == None,
         calls.head._3.contains(versola.oauth.challenge.password.model.DeliveryChannel.email),
-      )
-    },
-    test("POST /users/password/reset answers 503, not a crash, when the channel has no usable server") {
-      val passwordSvc = stub[PasswordService]
-      val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000004"))
-      for
-        client <- ZIO.service[Client]
-        tracing <- NoopTracing.layer.build
-        token <- validToken(secretKey)
-        _ <- passwordSvc.resetPassword.failsWith(
-          PasswordChannelUnavailable(targetUserId, versola.oauth.challenge.password.model.DeliveryChannel.email),
-        )
-        _ <- TestClient.addRoutes(
-          Observability.handleErrors(
-            UserController.routes
-              .provideEnvironment(
-                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
-                  ZEnvironment(logoutService) ++
-                  ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
-                  ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
-              ),
-          ),
-        )
-        body = s"""{"userId":"${targetUserId}","expiresInSeconds":null,"channel":"email"}"""
-        resp <- client.batched(
-          Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-        text <- resp.body.asString
-      yield assertTrue(
-        resp.status == Status.ServiceUnavailable,
-        text == "the email delivery channel is not available",
       )
     },
     test("POST /users/password/reset without channel sends None") {
