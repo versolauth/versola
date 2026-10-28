@@ -1296,7 +1296,9 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
   applies to each pod and N pods allow N times it. Change it when the number of pods changes.
   **Counting pods automatically:** set `replicas-from = "dns:<name>"` in the edge config to count the pods from DNS instead. The
-  chart ships a headless Service `<release>-edge-headless` for this (ready pods only); the edge resolves it every 10 seconds, keeps
+  chart ships a headless Service for this (`<fullname>-edge-headless`, ready pods only) and puts its name in the environment variable
+  `VERSOLA_EDGE_HEADLESS_SERVICE` of the edge pods, so the edge's `env.conf` can say `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}` and nothing is
+  typed by hand; the edge resolves it every 10 seconds, keeps
   the last good count if a lookup fails, and uses the policy's `replicas` until the first answer. The count in force and where it came
   from are the gauge `edge_rate_limit_replicas{source="dns|policy"}`. Nothing detects Kubernetes at runtime: without the key the
   policy's `replicas` is used.

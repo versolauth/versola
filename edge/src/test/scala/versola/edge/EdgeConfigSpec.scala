@@ -241,6 +241,14 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           set.replicasFrom.contains("dns:versola-edge-headless"),
         )
       },
+      test("replicas-from may be written as the chart supplies it: a string joined to a substitution") {
+        for
+          config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false) + "\nheadless = \"v-edge-headless\"\nreplicas-from = \"dns:\"${headless}")
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.replicasFrom.contains("dns:v-edge-headless"))
+      },
       test("client-ip other than socket or forwarded is refused, naming the choices") {
         for error <- TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false) + "\nclient-ip = \"Forwarded\"")

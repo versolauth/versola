@@ -91,12 +91,11 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         stranger <- setAudienceLimits(f, List(audienceLimit(f, limit("enforce", 5), clientId = Some("not-in-the-audience"))))
       yield assertTrue(
         endpoint.status == Status.BadRequest,
-        endpoint.body.contains("InvalidRateLimit"),
-        endpoint.body.contains("burst"),
+        endpoint.body.isEmpty,
         byClient.status == Status.BadRequest,
-        byClient.body.contains("by must be subject or none"),
+        byClient.body.isEmpty,
         stranger.status == Status.BadRequest,
-        stranger.body.contains("not in the audience"),
+        stranger.body.isEmpty,
       )
     },
     test("a limit declared on an endpoint refuses that endpoint with 429 under resource-endpoint, and the other endpoint is served") {

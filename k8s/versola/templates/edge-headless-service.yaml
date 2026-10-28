@@ -2,7 +2,8 @@
 ---
 # Lists the addresses of the ready edge pods and nothing else (`clusterIP: None`: a DNS name that answers with every pod, not a virtual
 # address). The edge resolves it to count its own replicas, so the per-pod share of a rate limit follows the autoscaler (set
-# `replicas-from = "dns:{{ include "versola.fullname" . }}-edge-headless"` in the edge's configuration). Nothing is routed through it.
+# `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}` in the edge's configuration; the chart sets that variable on the edge pods).
+# Nothing is routed through it.
 apiVersion: v1
 kind: Service
 metadata:

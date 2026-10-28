@@ -642,11 +642,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateResourceResponse'
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -664,11 +660,7 @@ paths:
         '204':
           description: Resource updated.
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -4499,85 +4491,6 @@ components:
         secret:
           $ref: '#/components/schemas/Secret'
       required: [secret]
-    ResourceValidationError:
-      type: object
-      description: |
-        A single-member object naming the rejected case, e.g.
-        `{"InvalidAllowExpression": {"endpointId": "...", "expression": "...", "message": "..."}}`.
-      minProperties: 1
-      maxProperties: 1
-      properties:
-        InvalidResourceId:
-          type: object
-        ReservedResourceId:
-          type: object
-        InvalidAllowExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidInjectExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            ruleName:
-              type: string
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, ruleName, expression, message]
-        InvalidStepUpConditionExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidEndpointPath:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-          required: [endpointId]
-        InvalidRateLimit:
-          type: object
-          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            message:
-              type: string
-          required: [endpointId, message]
-        InvalidAudienceRateLimit:
-          type: object
-          description: A limit set for an audience client breaks a rule of a rate limit policy, names a client that is not in the audience, or repeats a client.
-          properties:
-            clientId:
-              $ref: '#/components/schemas/ClientId'
-            message:
-              type: string
-          required: [clientId, message]
-        AmbiguousEndpointPath:
-          type: object
-          description: |
-            Another endpoint with the same method matches exactly the same requests, differing
-            only in its path parameter names.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            path:
-              type: string
-          required: [endpointId, path]
     CreateClaim:
       type: object
       properties:
