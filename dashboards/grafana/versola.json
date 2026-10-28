@@ -3125,6 +3125,582 @@
     {
       "id": 58,
       "type": "row",
+      "title": "auth — Rate limits",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 117
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Refused by a rate limit / s",
+      "description": "Calls answered 429, by policy. Only `enforce` policies appear here. A policy that refuses a steady share of one client's traffic is working; one that refuses many clients at once is too tight (see the share below).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(auth_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"limited\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 59,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 118
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Would be refused / s (shadow)",
+      "description": "What a `shadow` policy counted and did not refuse. This is the number to read before switching a policy to enforce: if it is zero over a normal week the limit is safe, if it is not, ask who it would have refused (the log line per policy, once a minute) before enforcing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(auth_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"would_limit\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 60,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 118
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Share of calls a policy refuses",
+      "description": "Refused (or would be) / all calls the policy decided, shadow included. Above 1% sustained, the policy is cutting into normal traffic: raise its limit or burst, or narrow what it is keyed on, before it enforces.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(auth_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=~\"limited|would_limit\"}[$__rate_interval])) / clamp_min(sum by (policy) (rate(auth_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 61,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys tracked per policy",
+      "description": "Distinct callers (clients, users, addresses) a policy holds a bucket for, on the fullest pod. Dashed line: the 100,000 cap per policy, past which new keys share one overflow bucket.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (policy) (auth_rate_limit_tracked_keys{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 62,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys over the cap / s",
+      "description": "Calls counted in the shared overflow bucket because the policy was at its key cap. Empty is healthy; non-zero is either far more callers than the cap or an attacker sending distinct keys, and those callers share one limit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(auth_rate_limit_overflow_hits_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 63,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 134
+      }
+    },
+    {
+      "id": 64,
+      "type": "row",
+      "title": "auth — Overload protection",
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Requests in flight against the limit",
+          "description": "Requests this pod is serving, the busiest second, and the most it admits at once (the adaptive limit when adaptive is on). Peak near the limit means the pod is close to refusing; a limit that falls while in flight does not is the pod slowing down. Empty while the overload policy is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight_peak{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} peak"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} limit"
+            }
+          ],
+          "id": 65,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 143
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Refused by overload protection / s",
+          "description": "Requests turned away because the pod was full. `mode` enforce answered 503 with Retry-After; shadow served the request and only counted it, so the number is what enforcing would have refused. Tiers: `start` (new sign-ins) go first, `continuation` next, `critical` last. Sustained shadow refusals: raise the limit or add pods before enforcing; any enforce refusals: the pod is saturated now.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (tier, mode) (rate(http_admission_refused_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+              "legendFormat": "{{tier}} ({{mode}})"
+            }
+          ],
+          "id": 66,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 143
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive limit — share of its ceiling",
+          "description": "How much of `maxLimit` the adaptive limit currently allows. Near 100% the pod keeps up; low means round-trip times grew and the limit backed off to protect it. Stays flat when adaptive is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 0.5
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.8
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "min by (pod) (http_admission_adaptive_limit_ratio{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "id": 67,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 151
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Round trip by tier and event-loop lag",
+          "description": "What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (tier) (http_admission_rtt_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{tier}} round trip"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_executor_lag_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} executor lag"
+            }
+          ],
+          "id": 68,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 151
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 142
+      }
+    },
+    {
+      "id": 69,
+      "type": "row",
       "title": "auth — Calls to other services",
       "collapsed": true,
       "panels": [
@@ -3171,12 +3747,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 59,
+          "id": 70,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 118
+            "y": 144
           }
         },
         {
@@ -3223,12 +3799,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 60,
+          "id": 71,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 118
+            "y": 144
           }
         },
         {
@@ -3274,12 +3850,311 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 61,
+          "id": 72,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 126
+            "y": 152
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — in flight against the limit",
+          "description": "Calls the guard has let through per peer, and the most it allows at once. In flight pinned at the limit means the peer is where this service waits: read the queue and the refusals next. Empty until the outbound guard is on for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{peer}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{peer}} limit"
+            }
+          ],
+          "id": 73,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 152
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — queued calls and wait ${tail:text}",
+          "description": "Calls waiting for a place to a peer, and how long they waited (seconds, at the selected quantile). A queue that keeps growing is a peer slower than the traffic sent to it; the wait is time added to every call behind it.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_waiting{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{peer}} queued"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_guard_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+              "legendFormat": "{{peer}} wait"
+            }
+          ],
+          "id": 74,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 160
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — refused / s",
+          "description": "Calls the guard refused: `queue_full`, `queue_timeout`, `circuit_open`, `request_timeout`. `mode` shadow means the call was still made and only counted: what enforcing would refuse. Read shadow for a week before switching a peer to enforce.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, reason, mode) (rate(http_client_guard_rejected_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} {{reason}} ({{mode}})"
+            }
+          ],
+          "id": 75,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 160
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — circuit breaker",
+          "description": "Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 2
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_breaker_state{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 76,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 168
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — retries denied / s",
+          "description": "Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, mode) (rate(http_client_retry_budget_denied_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} ({{mode}})"
+            }
+          ],
+          "id": 77,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 168
           }
         },
         {
@@ -3326,12 +4201,12 @@
               "legendFormat": "{{pod}} {{cache}}"
             }
           ],
-          "id": 62,
+          "id": 78,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 126
+            "x": 0,
+            "y": 176
           }
         }
       ],
@@ -3339,11 +4214,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 117
+        "y": 143
       }
     },
     {
-      "id": 63,
+      "id": 79,
       "type": "row",
       "title": "auth — Saturation",
       "collapsed": false,
@@ -3352,7 +4227,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 118
+        "y": 144
       }
     },
     {
@@ -3399,12 +4274,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 64,
+      "id": 80,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 119
+        "y": 145
       }
     },
     {
@@ -3468,12 +4343,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 65,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 119
+        "y": 145
       }
     },
     {
@@ -3520,12 +4395,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 66,
+      "id": 82,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 119
+        "y": 145
       }
     },
     {
@@ -3589,16 +4464,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 67,
+      "id": 83,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 119
+        "y": 145
       }
     },
     {
-      "id": 68,
+      "id": 84,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3656,12 +4531,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 69,
+          "id": 85,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 128
+            "y": 154
           }
         },
         {
@@ -3707,12 +4582,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 70,
+          "id": 86,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 128
+            "y": 154
           }
         }
       ],
@@ -3720,11 +4595,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 153
       }
     },
     {
-      "id": 71,
+      "id": 87,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3733,7 +4608,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 128
+        "y": 154
       }
     },
     {
@@ -3783,12 +4658,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 72,
+      "id": 88,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 129
+        "y": 155
       }
     },
     {
@@ -3838,12 +4713,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 73,
+      "id": 89,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 129
+        "y": 155
       }
     },
     {
@@ -3934,12 +4809,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 74,
+      "id": 90,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 137
+        "y": 163
       }
     },
     {
@@ -3985,12 +4860,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 75,
+      "id": 91,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 137
+        "y": 163
       }
     },
     {
@@ -4040,12 +4915,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 76,
+      "id": 92,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 145
+        "y": 171
       }
     },
     {
@@ -4091,16 +4966,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 77,
+      "id": 93,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 145
+        "y": 171
       }
     },
     {
-      "id": 78,
+      "id": 94,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4109,7 +4984,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 153
+        "y": 179
       }
     },
     {
@@ -4159,12 +5034,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 79,
+      "id": 95,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 154
+        "y": 180
       }
     },
     {
@@ -4210,12 +5085,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 80,
+      "id": 96,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 154
+        "y": 180
       }
     },
     {
@@ -4265,12 +5140,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 81,
+      "id": 97,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 162
+        "y": 188
       }
     },
     {
@@ -4320,16 +5195,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 82,
+      "id": 98,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 162
+        "y": 188
       }
     },
     {
-      "id": 83,
+      "id": 99,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4338,7 +5213,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 170
+        "y": 196
       }
     },
     {
@@ -4386,12 +5261,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 84,
+      "id": 100,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 171
+        "y": 197
       }
     },
     {
@@ -4437,12 +5312,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 85,
+      "id": 101,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 171
+        "y": 197
       }
     },
     {
@@ -4506,16 +5381,286 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 86,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 179
+        "y": 205
       }
     },
     {
-      "id": 87,
+      "id": 103,
+      "type": "row",
+      "title": "central — Overload protection",
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Requests in flight against the limit",
+          "description": "Requests this pod is serving, the busiest second, and the most it admits at once (the adaptive limit when adaptive is on). Peak near the limit means the pod is close to refusing; a limit that falls while in flight does not is the pod slowing down. Empty while the overload policy is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{pod}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight_peak{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{pod}} peak"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{pod}} limit"
+            }
+          ],
+          "id": 104,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 214
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Refused by overload protection / s",
+          "description": "Requests turned away because the pod was full. `mode` enforce answered 503 with Retry-After; shadow served the request and only counted it, so the number is what enforcing would have refused. Tiers: `start` (new sign-ins) go first, `continuation` next, `critical` last. Sustained shadow refusals: raise the limit or add pods before enforcing; any enforce refusals: the pod is saturated now.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (tier, mode) (rate(http_admission_refused_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+              "legendFormat": "{{tier}} ({{mode}})"
+            }
+          ],
+          "id": 105,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 214
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive limit — share of its ceiling",
+          "description": "How much of `maxLimit` the adaptive limit currently allows. Near 100% the pod keeps up; low means round-trip times grew and the limit backed off to protect it. Stays flat when adaptive is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 0.5
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.8
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "min by (pod) (http_admission_adaptive_limit_ratio{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "id": 106,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 222
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Round trip by tier and event-loop lag",
+          "description": "What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (tier) (http_admission_rtt_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{tier}} round trip"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_executor_lag_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{pod}} executor lag"
+            }
+          ],
+          "id": 107,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 222
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 213
+      }
+    },
+    {
+      "id": 108,
       "type": "row",
       "title": "central — Calls to other services",
       "collapsed": true,
@@ -4563,12 +5708,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 88,
+          "id": 109,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 188
+            "y": 215
           }
         },
         {
@@ -4615,12 +5760,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 89,
+          "id": 110,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 188
+            "y": 215
           }
         },
         {
@@ -4666,12 +5811,311 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 90,
+          "id": 111,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 196
+            "y": 223
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — in flight against the limit",
+          "description": "Calls the guard has let through per peer, and the most it allows at once. In flight pinned at the limit means the peer is where this service waits: read the queue and the refusals next. Empty until the outbound guard is on for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{peer}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{peer}} limit"
+            }
+          ],
+          "id": 112,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 223
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — queued calls and wait ${tail:text}",
+          "description": "Calls waiting for a place to a peer, and how long they waited (seconds, at the selected quantile). A queue that keeps growing is a peer slower than the traffic sent to it; the wait is time added to every call behind it.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_waiting{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{peer}} queued"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_guard_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+              "legendFormat": "{{peer}} wait"
+            }
+          ],
+          "id": 113,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 231
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — refused / s",
+          "description": "Calls the guard refused: `queue_full`, `queue_timeout`, `circuit_open`, `request_timeout`. `mode` shadow means the call was still made and only counted: what enforcing would refuse. Read shadow for a week before switching a peer to enforce.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, reason, mode) (rate(http_client_guard_rejected_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} {{reason}} ({{mode}})"
+            }
+          ],
+          "id": 114,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 231
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — circuit breaker",
+          "description": "Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 2
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_breaker_state{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 115,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 239
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — retries denied / s",
+          "description": "Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, mode) (rate(http_client_retry_budget_denied_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} ({{mode}})"
+            }
+          ],
+          "id": 116,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 239
           }
         }
       ],
@@ -4679,11 +6123,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 187
+        "y": 214
       }
     },
     {
-      "id": 91,
+      "id": 117,
       "type": "row",
       "title": "central — Saturation",
       "collapsed": false,
@@ -4692,7 +6136,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 188
+        "y": 215
       }
     },
     {
@@ -4739,12 +6183,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 92,
+      "id": 118,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 189
+        "y": 216
       }
     },
     {
@@ -4808,12 +6252,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 93,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 189
+        "y": 216
       }
     },
     {
@@ -4860,12 +6304,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 94,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 189
+        "y": 216
       }
     },
     {
@@ -4929,16 +6373,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 95,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 189
+        "y": 216
       }
     },
     {
-      "id": 96,
+      "id": 122,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -4996,12 +6440,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 97,
+          "id": 123,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 198
+            "y": 225
           }
         },
         {
@@ -5047,12 +6491,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 98,
+          "id": 124,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 198
+            "y": 225
           }
         }
       ],
@@ -5060,11 +6504,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 197
+        "y": 224
       }
     },
     {
-      "id": 99,
+      "id": 125,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -5073,7 +6517,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 198
+        "y": 225
       }
     },
     {
@@ -5123,12 +6567,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 100,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 199
+        "y": 226
       }
     },
     {
@@ -5178,12 +6622,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 101,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 199
+        "y": 226
       }
     },
     {
@@ -5274,12 +6718,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 102,
+      "id": 128,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 207
+        "y": 234
       }
     },
     {
@@ -5325,12 +6769,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 103,
+      "id": 129,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 207
+        "y": 234
       }
     },
     {
@@ -5380,12 +6824,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 104,
+      "id": 130,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 215
+        "y": 242
       }
     },
     {
@@ -5435,12 +6879,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 105,
+      "id": 131,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 215
+        "y": 242
       }
     },
     {
@@ -5509,12 +6953,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 106,
+      "id": 132,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 223
+        "y": 250
       }
     },
     {
@@ -5621,12 +7065,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 107,
+      "id": 133,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 223
+        "y": 250
       }
     },
     {
@@ -5673,16 +7117,16 @@
           "legendFormat": "{{auth_call}}"
         }
       ],
-      "id": 108,
+      "id": 134,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 231
+        "y": 258
       }
     },
     {
-      "id": 109,
+      "id": 135,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5691,7 +7135,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 239
+        "y": 266
       }
     },
     {
@@ -5741,12 +7185,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 110,
+      "id": 136,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 240
+        "y": 267
       }
     },
     {
@@ -5796,12 +7240,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 111,
+      "id": 137,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 240
+        "y": 267
       }
     },
     {
@@ -5892,12 +7336,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 112,
+      "id": 138,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 248
+        "y": 275
       }
     },
     {
@@ -5943,12 +7387,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 113,
+      "id": 139,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 248
+        "y": 275
       }
     },
     {
@@ -5998,12 +7442,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 114,
+      "id": 140,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 256
+        "y": 283
       }
     },
     {
@@ -6049,16 +7493,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 115,
+      "id": 141,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 256
+        "y": 283
       }
     },
     {
-      "id": 116,
+      "id": 142,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -6067,7 +7511,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 264
+        "y": 291
       }
     },
     {
@@ -6117,12 +7561,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 117,
+      "id": 143,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 265
+        "y": 292
       }
     },
     {
@@ -6172,12 +7616,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 118,
+      "id": 144,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 265
+        "y": 292
       }
     },
     {
@@ -6268,12 +7712,12 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 119,
+      "id": 145,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 273
+        "y": 300
       }
     },
     {
@@ -6319,12 +7763,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 120,
+      "id": 146,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 273
+        "y": 300
       }
     },
     {
@@ -6374,12 +7818,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 121,
+      "id": 147,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 281
+        "y": 308
       }
     },
     {
@@ -6425,16 +7869,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 122,
+      "id": 148,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 281
+        "y": 308
       }
     },
     {
-      "id": 123,
+      "id": 149,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6443,7 +7887,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 289
+        "y": 316
       }
     },
     {
@@ -6489,12 +7933,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 124,
+      "id": 150,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 290
+        "y": 317
       }
     },
     {
@@ -6557,12 +8001,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 125,
+      "id": 151,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 290
+        "y": 317
       }
     },
     {
@@ -6624,12 +8068,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 126,
+      "id": 152,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 298
+        "y": 325
       }
     },
     {
@@ -6684,16 +8128,705 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 127,
+      "id": 153,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 298
+        "y": 325
       }
     },
     {
-      "id": 128,
+      "id": 154,
+      "type": "row",
+      "title": "edge — Rate limits",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 333
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Refused by a rate limit / s",
+      "description": "Calls answered 429, by policy. Only `enforce` policies appear here. A policy that refuses a steady share of one client's traffic is working; one that refuses many clients at once is too tight (see the share below).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=\"limited\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 155,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 334
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Would be refused / s (shadow)",
+      "description": "What a `shadow` policy counted and did not refuse. This is the number to read before switching a policy to enforce: if it is zero over a normal week the limit is safe, if it is not, ask who it would have refused (the log line per policy, once a minute) before enforcing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=\"would_limit\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 156,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 334
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Share of calls a policy refuses",
+      "description": "Refused (or would be) / all calls the policy decided, shadow included. Above 1% sustained, the policy is cutting into normal traffic: raise its limit or burst, or narrow what it is keyed on, before it enforces.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=~\"limited|would_limit\"}[$__rate_interval])) / clamp_min(sum by (policy) (rate(edge_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 157,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 342
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys tracked per policy",
+      "description": "Distinct callers (clients, users, addresses) a policy holds a bucket for, on the fullest pod. Dashed line: the 100,000 cap per policy, past which new keys share one overflow bucket.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (policy) (edge_rate_limit_tracked_keys{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 158,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 342
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys over the cap / s",
+      "description": "Calls counted in the shared overflow bucket because the policy was at its key cap. Empty is healthy; non-zero is either far more callers than the cap or an attacker sending distinct keys, and those callers share one limit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_rate_limit_overflow_hits_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 159,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 350
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pods the limit is divided by",
+      "description": "`in force` is the number each pod divides a limit by, and where it came from: `dns` (replicas-from) or `policy` (the replicas of the policy set). `pods serving traffic` is how many pods answer. When they differ the limit is wrong by that factor: with more pods than in force the edge allows too much, with fewer it refuses too early.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (source) (edge_rate_limit_replicas{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "in force ({{source}})"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(count by (pod) (http_server_requests_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}))",
+          "legendFormat": "pods serving traffic"
+        }
+      ],
+      "id": 160,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 350
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Where the caller's address comes from",
+      "description": "`forwarded`: read from the proxy's header. `socket`: the connection's peer, right when callers reach the edge directly; behind a proxy or load balancer it is the proxy's own address, the same for everyone, so address limits count everyone together. `forwarded_missing`: client-ip is forwarded but the header was absent or not an address: a misconfiguration, or a caller bypassing the proxy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (source) (rate(edge_client_address_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "id": 161,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 358
+      }
+    },
+    {
+      "id": 162,
+      "type": "row",
+      "title": "edge — Overload protection",
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Requests in flight against the limit",
+          "description": "Requests this pod is serving, the busiest second, and the most it admits at once (the adaptive limit when adaptive is on). Peak near the limit means the pod is close to refusing; a limit that falls while in flight does not is the pod slowing down. Empty while the overload policy is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_in_flight_peak{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} peak"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_admission_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} limit"
+            }
+          ],
+          "id": 163,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 367
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Refused by overload protection / s",
+          "description": "Requests turned away because the pod was full. `mode` enforce answered 503 with Retry-After; shadow served the request and only counted it, so the number is what enforcing would have refused. Tiers: `start` (new sign-ins) go first, `continuation` next, `critical` last. Sustained shadow refusals: raise the limit or add pods before enforcing; any enforce refusals: the pod is saturated now.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (tier, mode) (rate(http_admission_refused_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+              "legendFormat": "{{tier}} ({{mode}})"
+            }
+          ],
+          "id": 164,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 367
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive limit — share of its ceiling",
+          "description": "How much of `maxLimit` the adaptive limit currently allows. Near 100% the pod keeps up; low means round-trip times grew and the limit backed off to protect it. Stays flat when adaptive is off.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 0.5
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.8
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "min by (pod) (http_admission_adaptive_limit_ratio{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "id": 165,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 375
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Round trip by tier and event-loop lag",
+          "description": "What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (tier) (http_admission_rtt_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{tier}} round trip"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod) (http_executor_lag_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} executor lag"
+            }
+          ],
+          "id": 166,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 375
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 366
+      }
+    },
+    {
+      "id": 167,
       "type": "row",
       "title": "edge — Calls to other services",
       "collapsed": true,
@@ -6741,12 +8874,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 129,
+          "id": 168,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 307
+            "y": 368
           }
         },
         {
@@ -6793,12 +8926,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 130,
+          "id": 169,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 307
+            "y": 368
           }
         },
         {
@@ -6844,12 +8977,311 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 131,
+          "id": 170,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 315
+            "y": 376
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — in flight against the limit",
+          "description": "Calls the guard has let through per peer, and the most it allows at once. In flight pinned at the limit means the peer is where this service waits: read the queue and the refusals next. Empty until the outbound guard is on for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{peer}} in flight"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_limit{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{peer}} limit"
+            }
+          ],
+          "id": 171,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 376
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — queued calls and wait ${tail:text}",
+          "description": "Calls waiting for a place to a peer, and how long they waited (seconds, at the selected quantile). A queue that keeps growing is a peer slower than the traffic sent to it; the wait is time added to every call behind it.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_waiting{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{peer}} queued"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_guard_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+              "legendFormat": "{{peer}} wait"
+            }
+          ],
+          "id": 172,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 384
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — refused / s",
+          "description": "Calls the guard refused: `queue_full`, `queue_timeout`, `circuit_open`, `request_timeout`. `mode` shadow means the call was still made and only counted: what enforcing would refuse. Read shadow for a week before switching a peer to enforce.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, reason, mode) (rate(http_client_guard_rejected_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} {{reason}} ({{mode}})"
+            }
+          ],
+          "id": 173,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 384
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — circuit breaker",
+          "description": "Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "min": 0,
+              "max": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 2
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (peer) (http_client_guard_breaker_state{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 174,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 392
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Outbound guard — retries denied / s",
+          "description": "Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer, mode) (rate(http_client_retry_budget_denied_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+              "legendFormat": "{{peer}} ({{mode}})"
+            }
+          ],
+          "id": 175,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 392
           }
         },
         {
@@ -6896,12 +9328,12 @@
               "legendFormat": "{{pod}} {{cache}}"
             }
           ],
-          "id": 132,
+          "id": 176,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 315
+            "x": 0,
+            "y": 400
           }
         }
       ],
@@ -6909,11 +9341,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 306
+        "y": 367
       }
     },
     {
-      "id": 133,
+      "id": 177,
       "type": "row",
       "title": "edge — Saturation",
       "collapsed": false,
@@ -6922,7 +9354,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 307
+        "y": 368
       }
     },
     {
@@ -6969,12 +9401,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 134,
+      "id": 178,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 308
+        "y": 369
       }
     },
     {
@@ -7038,12 +9470,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 135,
+      "id": 179,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 308
+        "y": 369
       }
     },
     {
@@ -7090,12 +9522,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 136,
+      "id": 180,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 308
+        "y": 369
       }
     },
     {
@@ -7159,16 +9591,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 137,
+      "id": 181,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 308
+        "y": 369
       }
     },
     {
-      "id": 138,
+      "id": 182,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -7226,12 +9658,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 139,
+          "id": 183,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 317
+            "y": 378
           }
         },
         {
@@ -7277,12 +9709,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 140,
+          "id": 184,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 317
+            "y": 378
           }
         }
       ],
@@ -7290,7 +9722,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 316
+        "y": 377
       }
     }
   ]

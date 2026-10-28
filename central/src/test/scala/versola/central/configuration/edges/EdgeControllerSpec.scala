@@ -6,6 +6,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
+import versola.util.http.RateLimitScope
 import versola.util.http.{
   AccessLogPolicy,
   GuardMode,
@@ -159,14 +160,31 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     RSAKey.Builder(testKeyPair.publicKey).keyID(testKeyPair.keyId).build()
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
-  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    publicJwk,
+    oldPublicKey = None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
-  private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
-    name = "per-client",
-    by = List(RateLimitDimension.Client),
-    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-    burst = 5,
-  )))
+  private val rateLimits = RateLimitPolicies(
+    List(RateLimitPolicy(
+      name = "per-client",
+      by = List(RateLimitDimension.Client),
+      limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+      burst = 5,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+      mode = GuardMode.Shadow,
+    )),
+    replicas = 1,
+  )
 
   // lazy: it reads vals declared below it, which an object initialises in order
   private lazy val storedRecord = edgeRecord.copy(
@@ -192,9 +210,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def patch(body: String, params: (String, String)*): Request = patchFor(edgeId.toString, body, params*)
 
-  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1), slowMillis = None)
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+  private val overloadPolicy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(100),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -210,16 +238,54 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service =>
         service.getAllEdges.succeedsWith(
           Vector(
-            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None, requireDpopNonce = true),
-            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj()), requireDpopNonce = false),
+            EdgeRecord(
+              edgeId,
+              Json.Obj(),
+              oldPublicKey = None,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
+            EdgeRecord(
+              EdgeId("edge-2"),
+              Json.Obj(),
+              oldPublicKey = Some(Json.Obj()),
+              requireDpopNonce = false,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
           ),
         ),
       verify = (response, _) =>
         for body <- response.body.asJson[GetAllEdgesResponse]
         yield assertTrue(
           body.edges == List(
-            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true),
-            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false),
+            EdgeResponse(
+              edgeId,
+              hasOldKey = false,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              groupId = EdgeGroup.DefaultId,
+            ),
+            EdgeResponse(
+              EdgeId("edge-2"),
+              hasOldKey = true,
+              requireDpopNonce = false,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              groupId = EdgeGroup.DefaultId,
+            ),
           ),
         ),
     ),
@@ -238,7 +304,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.root / "configuration" / "edges",
-        body = Body.fromString(RegisterEdgeRequest(edgeId).toJson),
+        body = Body.fromString(RegisterEdgeRequest(edgeId, groupId = None).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service => service.registerEdge.succeedsWith(testKeyPair),
@@ -283,7 +349,18 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getAllEdges.succeedsWith(
           Vector(
             edgeRecord,
-            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
+            EdgeRecord(
+              EdgeId("edge-2"),
+              publicJwk,
+              oldPublicKey = Some(publicJwk),
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
           ),
         ),
       tenants = Vector(
@@ -387,7 +464,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               (
                 edgeId,
                 EdgePoliciesPatch(
-                  accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"))),
+                  accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)),
                   expectedRevisions = Map(PolicySection.AccessLog -> 0),
                 ),
                 true,
@@ -397,7 +474,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "a section that does not validate is answered 400 with the section and what is wrong",
+      description = "a section that does not validate is answered 400 with no body",
       request = patch(s"""{"rateLimits":${rateLimits.toJson}}"""),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -405,34 +482,26 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           PolicySection.RateLimits,
           "policy per-client: burst must not exceed the smallest limit",
         )))),
-      verify = (response, _) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("rateLimits"), body.error.contains("per-client"), body.current.isEmpty),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
-      description = "a misspelled section, a section of the wrong shape and a body that is not an object are refused before the service is called",
+      description = "a misspelled section is refused with 400 and no body before the service is called",
       request = patch("""{"overlod":{}}"""),
       expectedStatus = Status.BadRequest,
-      verify = (response, service) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.error.contains("unknown section 'overlod'"), service.patchPolicies.calls.isEmpty),
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "a rate limit set with an unknown dimension is refused as malformed, naming the section",
+      description = "a rate limit set with an unknown dimension is refused as malformed with 400 and no body",
       request = patch("""{"rateLimits":{"policies":[{"name":"x","by":["ip-address"],"limits":[{"limit":1,"windowSeconds":1}]}]}}"""),
       expectedStatus = Status.BadRequest,
-      verify = (response, service) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("rateLimits"), service.patchPolicies.calls.isEmpty),
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "a revision that has moved on is answered 409 with the current state",
+      description = "a revision that has moved on is answered 409 with no body (the client reads the state again)",
       request = patch("""{"overload":{},"expectedRevisions":{"overload":1}}"""),
       expectedStatus = Status.Conflict,
       setup = service => service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Conflict(PolicySection.Overload, storedRecord)))),
-      verify = (response, _) =>
-        for body <- decoded[PolicyPatchErrorResponse](response)
-        yield assertTrue(body.section.contains("overload"), body.current.exists(_.revisions.get("overload").contains(2))),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
       description = "PATCH policies of an unregistered edge returns 404",

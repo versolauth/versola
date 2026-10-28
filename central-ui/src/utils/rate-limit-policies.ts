@@ -131,21 +131,21 @@ export function draftFromPolicies(set: RateLimitPolicies | undefined | null): Ra
   };
 }
 
-/** The body of the PUT: what the operator typed, with the defaults left out. */
+/** The body of the PATCH section: every field is sent, an empty burst, cost or pod count as its default (the API has no implicit values). */
 export function policiesFromDraft(draft: RateLimitDraft): RateLimitPolicies {
   const replicas = draft.replicas.trim();
   return {
-    ...(replicas !== '' ? { replicas: Number(replicas) } : {}),
+    replicas: replicas !== '' ? Number(replicas) : 1,
     policies: draft.policies.map(policy => {
       const body: RateLimitPolicy = {
         name: policy.name.trim(),
         by: DIMENSION_ORDER.filter(dimension => policy.by.includes(dimension)),
         scope: policy.scope,
         limits: policy.limits.map(window => ({ limit: Number(window.limit.trim()), windowSeconds: Number(window.windowSeconds.trim()) })),
+        burst: policy.burst.trim() !== '' ? Number(policy.burst.trim()) : 1,
+        cost: policy.cost.trim() !== '' ? Number(policy.cost.trim()) : 1,
         mode: policy.mode,
       };
-      if (policy.burst.trim() !== '') body.burst = Number(policy.burst.trim());
-      if (policy.cost.trim() !== '') body.cost = Number(policy.cost.trim());
       return body;
     }),
   };

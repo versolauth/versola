@@ -644,11 +644,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateResourceResponse'
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -666,11 +662,7 @@ paths:
         '204':
           description: Resource updated.
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -2400,7 +2392,7 @@ paths:
         - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
 
         **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
-        named section is still at that revision; otherwise nothing is written and the answer is `409` with the current state in `current`. A
+        named section is still at that revision; otherwise nothing is written and the answer is `409` with no body (read the state again). A
         section that is not named has no precondition, so a client that only ever patches its own section needs none. A change that changes
         nothing does not move the revision.
 
@@ -2446,21 +2438,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/EdgePolicies'
         '400':
-          description: A key that is not a section, a section of the wrong shape, or a section that does not validate. `section` names it.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A key that is not a section, a section of the wrong shape, or a section that does not validate. **No body**: a body would be a
+            contract. The console validates what it sends, so it should not meet this; the reason is in central's log (`invalid_policy`).
+            To find out whether a body is valid without writing it, use `dryRun=true`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
         '409':
-          description: A section named in `expectedRevisions` has changed since it was read. Nothing was written; `current` is the state.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A section named in `expectedRevisions` has changed since it was read. Nothing was written. No body: read the state again with `GET`.
 
   /configuration/edges/rate-limits/recommended:
     get:
@@ -3258,7 +3246,8 @@ components:
       required: [primary, equivalents, otpType]
     ConsentFlowDto:
       type: object
-      description: Whether and how the consent screen is shown before a grant is issued.
+      description: Whether and how the consent screen is shown before a grant is issued. Every member except `rememberDuration` is required.
+      required: [allowPartial, requiredScopes, offlineAccessOptional]
       properties:
         allowPartial:
           type: boolean
@@ -3270,7 +3259,6 @@ components:
           uniqueItems: true
           items:
             type: string
-          default: []
           description: |
             Scopes the user cannot deselect when the client requests them, on top of `openid`
             and `offline_access`, which are always required. The consent screen keeps them
@@ -3280,7 +3268,6 @@ components:
             granted or denied.
         offlineAccessOptional:
           type: boolean
-          default: false
           description: |
             Lets the user deselect `offline_access` ("long-lived access"). When they do, the
             client receives no refresh token and must be able to sign the user in again. A
@@ -3678,7 +3665,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, requireSignedRequestObject, requirePushedAuthorizationRequests, estEnrollment]
     CreateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -3803,7 +3790,7 @@ components:
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopSigningAlgs]
     CreateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -3912,7 +3899,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
+      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod, permissions, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, estEnrollment]
     UpdateWebClientRequest:
       type: object
       additionalProperties: false
@@ -4038,7 +4025,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -4129,7 +4116,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -4200,7 +4187,7 @@ components:
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
             assertions with. `null` means the client does not use the method.
-      required: [clientId]
+      required: [clientId, scope, permissions]
     CreateClientResponse:
       type: object
       description: |
@@ -4507,6 +4494,7 @@ components:
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
+      required: [tenantId, resourceId, resource, audience, endpoints, internal, audienceRateLimits]
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
@@ -4575,85 +4563,6 @@ components:
         secret:
           $ref: '#/components/schemas/Secret'
       required: [secret]
-    ResourceValidationError:
-      type: object
-      description: |
-        A single-member object naming the rejected case, e.g.
-        `{"InvalidAllowExpression": {"endpointId": "...", "expression": "...", "message": "..."}}`.
-      minProperties: 1
-      maxProperties: 1
-      properties:
-        InvalidResourceId:
-          type: object
-        ReservedResourceId:
-          type: object
-        InvalidAllowExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidInjectExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            ruleName:
-              type: string
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, ruleName, expression, message]
-        InvalidStepUpConditionExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidEndpointPath:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-          required: [endpointId]
-        InvalidRateLimit:
-          type: object
-          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            message:
-              type: string
-          required: [endpointId, message]
-        InvalidAudienceRateLimit:
-          type: object
-          description: A limit set for an audience client breaks a rule of a rate limit policy, names a client that is not in the audience, or repeats a client.
-          properties:
-            clientId:
-              $ref: '#/components/schemas/ClientId'
-            message:
-              type: string
-          required: [clientId, message]
-        AmbiguousEndpointPath:
-          type: object
-          description: |
-            Another endpoint with the same method matches exactly the same requests, differing
-            only in its path parameter names.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            path:
-              type: string
-          required: [endpointId, path]
     CreateClaim:
       type: object
       properties:
@@ -6456,12 +6365,13 @@ components:
           description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
     RateLimitPolicies:
       type: object
+      description: Every field is required; nothing has an implicit value.
+      required: [policies, replicas]
       properties:
         replicas:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: |
             How many edge pods share the traffic. Each pod enforces `limit / replicas` of every window (and `burst / replicas`,
             rounded up, never below `cost`), so the edge as a whole allows about the limit written here. As exact as the balancer
@@ -6473,7 +6383,7 @@ components:
             $ref: '#/components/schemas/RateLimitPolicy'
     RateLimitPolicy:
       type: object
-      required: [name, limits]
+      required: [name, by, scope, limits, burst, cost, mode]
       properties:
         name:
           type: string
@@ -6494,7 +6404,6 @@ components:
         scope:
           type: string
           enum: [edge-wide, resource, endpoint]
-          default: edge-wide
           description: |
             `edge-wide` keeps one bucket per key; `resource` and `endpoint` one per key and resource, or per key and
             registered endpoint template. A policy narrower than the edge is checked after the caller's permissions are
@@ -6519,22 +6428,19 @@ components:
         burst:
           type: integer
           minimum: 1
-          default: 1
           description: How many requests may arrive together. Not above the smallest `limit`. `1` is strict spacing.
         cost:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: What one request takes from the bucket. Not above `burst`.
         mode:
           type: string
           enum: [off, shadow, enforce]
-          default: shadow
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     DeclaredRateLimit:
       type: object
-      required: [limits]
+      required: [limits, burst, by, mode]
       description: |
         A rate limit declared by the owner of an API (on a resource endpoint, or for a client of a resource's audience), not in the
         edge's own set. The rules are those of `RateLimitPolicy` (windows, burst, mode); `cost` is always 1. It applies together
@@ -6561,12 +6467,10 @@ components:
         burst:
           type: integer
           minimum: 1
-          default: 1
           description: How many calls may arrive together. Not above the smallest `limit`. `1` is strict spacing.
         by:
           type: string
           enum: [subject, client, none]
-          default: none
           description: |
             What a bucket is keyed on. On an endpoint, `none` is one bucket for the endpoint, `client` one per client and
             `subject` one per user. On an audience client, `none` is one bucket for that client on the resource and `subject` one per
@@ -6574,7 +6478,6 @@ components:
         mode:
           type: string
           enum: [off, shadow, enforce]
-          default: shadow
           description: '`off` ignores the limit; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     AudienceRateLimit:
       type: object
@@ -6628,16 +6531,6 @@ components:
             accessLog: { type: integer, minimum: 0 }
             rateLimits: { type: integer, minimum: 0 }
           additionalProperties: false
-    EdgePoliciesError:
-      type: object
-      required: [error]
-      properties:
-        error: { type: string }
-        section:
-          type: string
-          enum: [overload, accessLog, rateLimits]
-        current:
-          $ref: '#/components/schemas/EdgePolicies'
     SetEdgeDpopRequest:
       type: object
       properties:

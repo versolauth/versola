@@ -12,7 +12,7 @@ import zio.{Task, URLayer, ZIO, ZLayer}
   *
   * Central serves this edge its own row only: which edge is asking is established by the key the sync call is signed with.
   */
-case class EdgeRateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int = 1)
+case class EdgeRateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int)
 
 trait RateLimitPolicySyncClient extends CacheSource[EdgeRateLimitPolicies]
 
@@ -40,7 +40,7 @@ object RateLimitPolicySyncClient:
             else if !response.status.isSuccess then
               ZIO.fail(RuntimeException(s"central answered ${response.status.code} to the rate limit policy sync"))
             else response.bodyAs[EdgeRateLimitSyncResponse].map(_.rateLimitPolicies)
-      yield policies.fold(EdgeRateLimitPolicies(Nil))(set => EdgeRateLimitPolicies(set.policies, set.replicas))
+      yield policies.fold(EdgeRateLimitPolicies(Nil, replicas = 1))(set => EdgeRateLimitPolicies(set.policies, set.replicas))
 
   private case class EdgeRateLimitSyncResponse(
       rateLimitPolicies: Option[RateLimitPolicies],

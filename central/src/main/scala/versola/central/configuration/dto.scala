@@ -147,7 +147,7 @@ case class ResourceResponse(
     internal: Boolean,
     secretRotation: Boolean,
     /** The limits the resource sets for its audience clients; empty when there are none. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -160,7 +160,7 @@ case class ResourceEndpointResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
-    rateLimit: Option[DeclaredRateLimit] = None,
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class GetAllResourcesResponse(
@@ -189,7 +189,7 @@ case class CreateResourceRequest(
     endpoints: Vector[CreateResourceEndpointRequest],
     internal: Boolean,
     /** The limits the resource sets for clients of `audience`: at most one per client. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
@@ -200,7 +200,7 @@ case class UpdateResourceRequest(
     createEndpoints: Vector[CreateResourceEndpointRequest],
     /** Replaces the limits set for audience clients, as a whole: absent leaves them (those of clients removed from the audience in
       * this request are dropped), an empty list removes them all. */
-    audienceRateLimits: Option[List[AudienceRateLimit]] = None,
+    audienceRateLimits: Option[List[AudienceRateLimit]],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(
@@ -222,7 +222,7 @@ case class CreateResourceEndpointRequest(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
-    rateLimit: Option[DeclaredRateLimit] = None,
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class CreateRoleRequest(
@@ -421,14 +421,14 @@ case class OAuthClientResponse(
     /** What this client changes in the theme it uses; absent when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
     /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
-    est: Option[ClientEstService.State] = None,
+    est: Option[ClientEstService.State],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
     allowPartial: Boolean,
     rememberDuration: Option[Long],
-    requiredScopes: Set[ScopeToken] = Set.empty,
-    offlineAccessOptional: Boolean = false,
+    requiredScopes: Set[ScopeToken],
+    offlineAccessOptional: Boolean,
 ) derives Schema, JsonCodec:
   def toDomain: ConsentFlow =
     ConsentFlow(
@@ -672,7 +672,7 @@ case class ResourceEndpointSyncResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
-    rateLimit: Option[DeclaredRateLimit] = None,
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class ResourceSyncResponse(
