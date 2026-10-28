@@ -26,6 +26,8 @@ case class CoreConfig(
       * Outside production the one-time code is still the fixed, guessable one, so with this key on a real message carries a
       * code anyone can guess. Never set it on a deployment that can be reached by anyone you would not hand a password. */
     deliverOutsideProd: Option[Boolean] = None,
+    // Limits on the channel that is not mutual TLS (#745); absent, the defaults of [[ClientAuthThrottle.Settings]] apply.
+    limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
 ):
   /** Whether a code or a temporary password is really sent in `env`: always in production, and elsewhere only when
     * `deliver-outside-prod` is on. Showing a temporary password in a response stays a non-production feature either way. */

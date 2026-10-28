@@ -2,6 +2,7 @@ import { render } from 'solid-js/web';
 import { createSignal, onMount, Show } from 'solid-js';
 import { PhoneField, type PhoneFieldApi } from './phone-field';
 import type { PhoneRegion } from './phone';
+import { canSubmitInline, submitInline } from '../shared/inline';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 import { PageBrand, ClientBadge } from '../shared/brand';
 import { LocaleSelector, createTranslations } from '../shared/locale';
@@ -116,6 +117,7 @@ function CredentialForm(props: { config: FormConfig }) {
     else denyPasskeyOnly();
   });
 
+  let submitting = false;
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
     if (single === 'phone' && phoneField && !phoneField.validate()) {
@@ -130,6 +132,18 @@ function CredentialForm(props: { config: FormConfig }) {
           setPasswordNotAllowed(true);
         }
       } catch (_) {}
+    }
+    // Sent from script, so that a request the server wants a proof for solves it unseen and goes on to the next step as
+    // any other would. The forms that carry a password never lead to a code.
+    if (!e.defaultPrevented && !showPassword() && canSubmitInline(props.config)) {
+      e.preventDefault();
+      if (submitting) return;
+      submitting = true;
+      const action = formAction();
+      submitInline(action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>)).catch(() => {
+        form.action = action;
+        HTMLFormElement.prototype.submit.call(form);
+      });
     }
   };
 

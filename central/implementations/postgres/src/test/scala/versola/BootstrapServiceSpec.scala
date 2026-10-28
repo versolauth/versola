@@ -20,6 +20,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
@@ -354,6 +355,16 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.mergeAccountEndpoints(seeded, running.map(endpoint => endpoint.id -> endpoint).toMap) == running,
         BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned,
       )
+    },
+    test("a rate limit an operator put on an account endpoint is kept when bootstrap converges the catalog") {
+      val seeded = BootstrapService.accountEndpointRecords
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 30, windowSeconds = 60)),
+        burst = 5,
+        mode = GuardMode.Enforce,
+      )
+      val tuned = seeded.map(endpoint => endpoint.copy(rateLimit = Some(limit)))
+      assertTrue(BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned)
     },
     test("an endpoint a running resource does not have yet arrives with the seeded step-up") {
       val seeded = BootstrapService.accountEndpointRecords

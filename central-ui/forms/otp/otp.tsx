@@ -3,6 +3,7 @@ import { createSignal, onCleanup, onMount, Show } from 'solid-js';
 import { PageBrand, ClientBadge } from '../shared/brand';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
+import { canSubmitInline, submitInline } from '../shared/inline';
 
 type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
 
@@ -32,6 +33,7 @@ function OtpForm(props: { config: FormConfig }) {
       </>
     );
   };
+  let resending = false;
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
   let submitRef!: HTMLButtonElement;
@@ -113,7 +115,21 @@ function OtpForm(props: { config: FormConfig }) {
           </p>
         }
       >
-        <form method="post" action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}>
+        <form
+          method="post"
+          action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}
+          onSubmit={(e) => {
+            // From script, so that a proof the server asks for is solved unseen (see shared/inline).
+            if (!canSubmitInline(props.config)) return;
+            e.preventDefault();
+            const form = e.currentTarget;
+            if (resending) return;
+            resending = true;
+            submitInline(form.action, new URLSearchParams(new FormData(form) as unknown as Record<string, string>)).catch(() => {
+              HTMLFormElement.prototype.submit.call(form);
+            });
+          }}
+        >
           <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
           <button type="submit" class="btn btn-secondary">
             {t().resend_button}

@@ -153,10 +153,12 @@ object ResourceController extends Controller:
           stepUpCondition = endpoint.stepUpCondition,
           stepUpAcr = endpoint.stepUpAcr,
           maxAge = endpoint.maxAge,
+          rateLimit = endpoint.rateLimit,
         )
       },
       internal = record.isInternal,
       secretRotation = record.previousSecret.nonEmpty,
+      audienceRateLimits = record.audienceRateLimits,
     )
 
   private def toResourceRegistryEntry(record: ResourceRecord): ResourceRegistryEntry =

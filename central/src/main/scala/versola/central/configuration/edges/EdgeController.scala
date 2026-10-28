@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{Controller, OverloadPolicy, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Controller, OverloadPolicy, RateLimitPolicies, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
@@ -25,7 +25,9 @@ object EdgeController extends Controller:
     deleteEdgeEndpoint,
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
-    setEdgeOverloadEndpoint,
+    getEdgePoliciesEndpoint,
+    patchEdgePoliciesEndpoint,
+    recommendedRateLimitsEndpoint,
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
@@ -46,6 +48,9 @@ object EdgeController extends Controller:
               hasOldKey = edge.oldPublicKey.isDefined,
               requireDpopNonce = edge.requireDpopNonce,
               overloadPolicy = edge.overloadPolicy,
+              accessLogPolicy = edge.accessLogPolicy,
+              rateLimitPolicies = edge.rateLimitPolicies,
+              policyRevisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap),
               groupId = edge.groupId,
               identityChainEndsAt = chainEnds.get(edge.id),
             ),
@@ -166,26 +171,65 @@ object EdgeController extends Controller:
       yield response
     }
 
-  /** Sets what the named edge does when asked for more than it can do (see [[OverloadPolicy]]); an empty policy returns it
-    * to its deployment's own values. Refused with `400` and the first thing wrong when the policy does not validate: the
-    * edge would not apply it either, and a console that reported success for it would leave an operator believing a limit
-    * was in force.
+  /** The policy sections of one edge as stored now (not the cache's last copy): `overload`, `accessLog` and `rateLimits`, each absent
+    * when none is set, with the `revisions` and `updatedAt` of the sections that have ever changed.
     */
-  val setEdgeOverloadEndpoint =
-    Method.PUT / "configuration" / "edges" / "overload" -> handler { (request: Request) =>
+  val getEdgePoliciesEndpoint =
+    Method.GET / "configuration" / "edges" / "policies" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
-        policy <- request.bodyAs[OverloadPolicy]
-        edge <- service.find(edgeId)
-        response <-
-          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
-          else
-            service.setOverloadPolicy(edgeId, policy).as(Response.status(Status.NoContent)).catchSome:
-              case InvalidOverloadPolicy(message) =>
-                ZIO.succeed(Response.json(OverloadPolicyError(message).toJson).status(Status.BadRequest))
+        edge <- service.findFresh(edgeId)
+      yield edge.fold(Response.status(Status.NotFound))(record => Response.json(EdgePoliciesResponse.of(record).toJson))
+    }
+
+  /** Changes the policy sections of one edge ([[EdgePoliciesPatch]]): the sections named in the body are changed, the others are
+    * left as they are; `null` removes a section and an object replaces it as a whole. `expectedRevisions` makes a section's change
+    * conditional on its revision (`409` with the current state if it has moved on). `dryRun=true` checks the body with the rules the
+    * edge applies and answers what the state would be, writing nothing. `400` names the section and the first thing wrong; the edge
+    * would not apply an invalid policy either, and a console that reported success for it would leave an operator believing a limit
+    * was in force. The answer is the new state, so a client has the new revisions without another call.
+    */
+  val patchEdgePoliciesEndpoint =
+    Method.PATCH / "configuration" / "edges" / "policies" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[EdgeService]
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        dryRun <- request.url.queryZIO[Option[String]]("dryRun").map(_.contains("true"))
+        body <- request.bodyAs[Json.Obj]
+        response <- EdgePoliciesPatch.parse(body) match
+          case Left(error) => ZIO.succeed(policyError(error))
+          case Right(patch) =>
+            service.patchPolicies(edgeId, patch, dryRun).map:
+              case None => Response.status(Status.NotFound)
+              case Some(Left(error)) => policyError(error)
+              case Some(Right(record)) => Response.json(EdgePoliciesResponse.of(record).toJson)
       yield response
+    }
+
+  private def policyError(error: PolicyPatchError): Response =
+    error match
+      case PolicyPatchError.Conflict(section, current) =>
+        Response.json(PolicyPatchErrorResponse(
+          error.message,
+          Some(section.key),
+          Some(EdgePoliciesResponse.of(current)),
+        ).toJson).status(Status.Conflict)
+      case PolicyPatchError.Invalid(section, _) =>
+        Response.json(PolicyPatchErrorResponse(error.message, Some(section.key), None).toJson).status(Status.BadRequest)
+      case PolicyPatchError.Malformed(section, _) =>
+        Response.json(PolicyPatchErrorResponse(error.message, Some(section.key), None).toJson).status(Status.BadRequest)
+      case PolicyPatchError.UnknownSection(_) =>
+        Response.json(PolicyPatchErrorResponse(error.message, None, None).toJson).status(Status.BadRequest)
+
+  /** The starting set of rate limit policies (all in `shadow`) that the console offers with one click and an operator can send
+    * to [[patchEdgePoliciesEndpoint]]; the same on every edge, so it is not read from one.
+    */
+  val recommendedRateLimitsEndpoint =
+    Method.GET / "configuration" / "edges" / "rate-limits" / "recommended" -> handler { (request: Request) =>
+      authorizeBasic(request).as(Response.json(RateLimitPolicies.recommended.toJson))
     }
 
   /** Which edges exist, and the tenants each is assigned to serve, for auth to decide whether a
@@ -236,6 +280,10 @@ case class EdgeResponse(
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy] = None,
+    accessLogPolicy: Option[AccessLogPolicy] = None,
+    rateLimitPolicies: Option[RateLimitPolicies] = None,
+    /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
+    policyRevisions: Map[String, Int] = Map.empty,
     groupId: EdgeGroupId = EdgeGroup.DefaultId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
     identityChainEndsAt: Option[Instant] = None,
@@ -253,8 +301,41 @@ case class EdgeOverloadSyncResponse(
     overloadPolicy: Option[OverloadPolicy],
 ) derives Schema, JsonCodec
 
-case class OverloadPolicyError(
+case class EdgeAccessLogSyncResponse(
+    accessLogPolicy: Option[AccessLogPolicy],
+) derives Schema, JsonCodec
+
+case class EdgeRateLimitSyncResponse(
+    rateLimitPolicies: Option[RateLimitPolicies],
+) derives Schema, JsonCodec
+
+/** The policy sections of an edge: absent when none is set, with how often and when each section last changed. */
+case class EdgePoliciesResponse(
+    edgeId: EdgeId,
+    overload: Option[OverloadPolicy] = None,
+    accessLog: Option[AccessLogPolicy] = None,
+    rateLimits: Option[RateLimitPolicies] = None,
+    revisions: Map[String, Int] = Map.empty,
+    updatedAt: Map[String, Instant] = Map.empty,
+) derives Schema, JsonCodec
+
+object EdgePoliciesResponse:
+  def of(record: EdgeRecord): EdgePoliciesResponse =
+    val meta = record.policyMeta.getOrElse(Map.empty)
+    EdgePoliciesResponse(
+      edgeId = record.id,
+      overload = record.overloadPolicy,
+      accessLog = record.accessLogPolicy,
+      rateLimits = record.rateLimitPolicies,
+      revisions = meta.view.mapValues(_.revision).toMap,
+      updatedAt = meta.view.mapValues(_.updatedAt).toMap,
+    )
+
+/** `400` or `409` of the policies patch; `current` is the state the patch lost to, on `409`. */
+case class PolicyPatchErrorResponse(
     error: String,
+    section: Option[String] = None,
+    current: Option[EdgePoliciesResponse] = None,
 ) derives Schema, JsonCodec
 
 case class GetAllEdgesResponse(

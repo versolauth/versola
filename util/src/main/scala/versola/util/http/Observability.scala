@@ -145,21 +145,19 @@ object Observability:
   def setRoutePath(path: String): UIO[Unit] =
     routePath.set(Some(path))
 
-  /** What `receive-http` lines are written, from `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and
-    * `HTTP_ACCESS_LOG_SAMPLE_RATE` (see [[AccessLogSettings]]). Replaced as a whole while the process runs, which is how
-    * a policy from central would be applied ([[AccessLogPolicy.applyTo]] over [[accessLogBase]]).
+  /** What `receive-http` lines are written. `full` (every request) until a service that thins them out, the edge, sets its
+    * defaults ([[setAccessLogBase]]); auth and central never do. Replaced as a whole while the process runs, which is how
+    * a policy from central is applied ([[AccessLogPolicy.applyTo]] over [[accessLogBase]]).
     */
   val accessLog: java.util.concurrent.atomic.AtomicReference[AccessLogSettings] =
-    new java.util.concurrent.atomic.AtomicReference(AccessLogSettings.fromEnv())
+    new java.util.concurrent.atomic.AtomicReference(AccessLogSettings.default)
 
-  /** What the process started with, the base an [[AccessLogPolicy]] is a patch over. */
-  @volatile var accessLogBase: AccessLogSettings = accessLog.get
+  /** What the process uses when no policy is set, the base an [[AccessLogPolicy]] is a patch over. */
+  @volatile var accessLogBase: AccessLogSettings = AccessLogSettings.default
 
-  /** Applies the service's own default mode: what `HTTP_ACCESS_LOG` unset means for this service (`full` for most, `off`
-    * for the edge). The environment still wins. Called once at start-up, before the server takes requests. */
-  def applyAccessLogDefault(serviceDefault: AccessLogMode): UIO[Unit] =
+  /** Sets the service's built-in defaults and uses them now. Called once at start-up, before the server takes requests. */
+  def setAccessLogBase(settings: AccessLogSettings): UIO[Unit] =
     ZIO.succeed:
-      val settings = AccessLogSettings.fromEnv(serviceDefault)
       accessLogBase = settings
       accessLog.set(settings)
 
@@ -744,6 +742,10 @@ object Observability:
       rules: List[String],
       destPrefix: Option[String],
       outcome: Option[String],
+      /** The kind of challenge the client was put to (`pow`), when the request was challenged or answered one. */
+      challenge: Option[String],
+      /** How hard it was, as the kind measures it (zero bits for `pow`). */
+      challengeLevel: Option[Int],
   ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key

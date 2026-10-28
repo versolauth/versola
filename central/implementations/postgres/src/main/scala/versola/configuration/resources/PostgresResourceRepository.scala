@@ -5,7 +5,14 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import versola.central.configuration.clients.ClientId
-import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRecord, ResourceRepository}
+import versola.central.configuration.resources.{
+  AudienceRateLimit,
+  ResourceEndpointId,
+  ResourceEndpointRecord,
+  ResourceId,
+  ResourceRecord,
+  ResourceRepository,
+}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.util.Secret
@@ -25,18 +32,20 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
     given JsonCodec[ResourceEndpointRecord] = JsonCodec.derived
     jsonBCodec
 
+  given JsonBDbCodec[List[AudienceRateLimit]] = jsonBCodec
+
   given DbCodec[ResourceRecord] = DbCodec.derived
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret FROM resources
+      SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
       WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connectMeasured("get-all-resources"):
       sql"""
-        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret FROM resources
+        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
@@ -70,7 +79,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
     xa.transactMeasured("update-resource"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       sql"""
-        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret FROM resources
+        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
         WHERE resource_id = $resourceId
         FOR UPDATE
       """.query[ResourceRecord].run().headOption match
@@ -89,6 +98,13 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
               endpoints = $newEndpoints::jsonb[]
             WHERE resource_id = $resourceId
           """.update.run()
+    .unit
+
+  override def updateAudienceRateLimits(resourceId: ResourceId, limits: List[AudienceRateLimit]): Task[Unit] =
+    xa.connectMeasured("update-resource-audience-rate-limits"):
+      sql"""
+        UPDATE resources SET audience_rate_limits = $limits::jsonb WHERE resource_id = $resourceId
+      """.update.run()
     .unit
 
   override def rotateSecret(resourceId: ResourceId, newSecret: Array[Byte]): Task[Boolean] =
