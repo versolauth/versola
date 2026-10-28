@@ -532,3 +532,44 @@ for (const theme of themes) {
     expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 }
+
+for (const theme of themes) {
+  test(`the rate limit editors of an endpoint and of an audience client have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+      .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+    const limit = { limits: [{ limit: 30, windowSeconds: 60 }, { limit: 500, windowSeconds: 3600 }], burst: 5, by: 'subject', mode: 'enforce' };
+    const state = {
+      ...shopState,
+      resources: {
+        'tenant-alpha': [{
+          ...ordersApi,
+          audienceRateLimits: [{ clientId: 'shop-mobile', rateLimit: limit }],
+          endpoints: ordersApi.endpoints.map(e => (e.id === 5 ? { ...e, rateLimit: limit } : e)),
+        }],
+      },
+    };
+    await loadAdminApp(page, { path: '/?view=resources&tenant=tenant-alpha&id=orders-api&edit=endpoints', state });
+    await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund(?= |$)/ }).click();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('region', { name: 'Rate limit' }).locator('summary').click();
+    await expect(page.getByRole('region', { name: 'Rate limit' })).toContainText('Mode');
+    expect(await scan()).toEqual([]);
+    // the same editor with an error shown
+    await page.getByLabel('Burst').fill('9999');
+    await expect(page.getByText('burst must not exceed the smallest limit')).toBeVisible();
+    expect(await scan()).toEqual([]);
+
+    await page.goto('/?view=resources&tenant=tenant-alpha&id=orders-api');
+    await expect(page.getByRole('region', { name: 'Audience' })).toContainText('Enforce');
+    expect(await scan()).toEqual([]);
+    await page.goto('/?view=resources&tenant=tenant-alpha&id=orders-api&edit=audience');
+    await page.getByRole('region', { name: 'Rate limits' }).locator('summary').first().click();
+    expect(await scan()).toEqual([]);
+    await page.locator('details[data-client="shop-mobile"] summary').click();
+    await expect(page.locator('details[data-client="shop-mobile"]')).toContainText('Mode');
+    expect(await scan()).toEqual([]);
+    await page.locator('details[data-client="shop-mobile"]').getByRole('button', { name: 'Remove limit' }).click();
+    expect(await scan()).toEqual([]);
+  });
+}

@@ -24,6 +24,7 @@ import versola.oauth.client.model.{
   TenantId,
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
+import versola.oauth.conversation.ProofInput
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
@@ -527,7 +528,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint, "testcsrf1"),
+        submitCalls.head._2 == EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
@@ -545,7 +546,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == PhoneSubmission(phoneHint, "testcsrf1"),
+        submitCalls.head._2 == PhoneSubmission(phoneHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("force re-authentication when max_age exceeded") {

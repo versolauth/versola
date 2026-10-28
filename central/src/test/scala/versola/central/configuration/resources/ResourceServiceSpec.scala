@@ -16,6 +16,7 @@ import versola.central.configuration.{
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.cel.CelEvaluator
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import versola.util.{ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.test.*
@@ -237,6 +238,54 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           ),
           None,
         )),
+      )
+    },
+    test("createResource stores the rate limit declared on an endpoint, and one that breaks a policy rule is refused") {
+      val env = new Env
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+        burst = 10,
+        by = DeclaredRateLimitBy.Subject,
+        mode = GuardMode.Enforce,
+      )
+      def withLimit(rateLimit: DeclaredRateLimit) =
+        createRequest.copy(endpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(rateLimit))))
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        stored <- env.service.createResource(withLimit(limit))
+        burstTooHigh <- env.service.createResource(withLimit(limit.copy(burst = 61)))
+        noWindow <- env.service.createResource(withLimit(limit.copy(limits = Nil)))
+      yield assertTrue(
+        stored == Right((resourceId, None)),
+        env.repository.createResource.calls.map(_._5.head.rateLimit) == List(Some(limit)),
+        burstTooHigh == Left(ResourceValidationError.InvalidRateLimit(
+          existingEndpointId,
+          "policy resource-endpoint: burst must not exceed the smallest limit",
+        )),
+        noWindow == Left(ResourceValidationError.InvalidRateLimit(
+          existingEndpointId,
+          "policy resource-endpoint: limits must have at least one window",
+        )),
+        // the refused requests reached the repository no more than the first
+        env.repository.createResource.calls.size == 1,
+      )
+    },
+    test("updateResource refuses a replacement endpoint whose rate limit breaks a rule") {
+      val env = new Env
+      val bad = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)), burst = 2)
+      val request = UpdateResourceRequest(
+        resourceId = resourceId,
+        resource = None,
+        audience = PatchAudience(Set.empty, Set.empty),
+        deleteEndpoints = Set.empty,
+        createEndpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(bad))),
+      )
+      for
+        _ <- env.repository.findResource.succeedsWith(None)
+        result <- env.service.updateResource(request)
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[ResourceValidationError.InvalidRateLimit]),
+        env.repository.updateResource.calls.isEmpty,
       )
     },
     test("createResource rejects the reserved edge resource id") {
@@ -711,6 +760,73 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result == Right((resourceId, None)),
         env.repository.createResource.calls.nonEmpty,
+      )
+    },
+    test("createResource stores the limits the resource sets for its audience, and refuses one that is not valid") {
+      val env = new Env
+      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
+      val client = audience.head
+      def with_(limits: AudienceRateLimit*) = createRequest.copy(audienceRateLimits = limits.toList)
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        _ <- env.repository.updateAudienceRateLimits.succeedsWith(())
+        stored <- env.service.createResource(with_(AudienceRateLimit(client, limit)))
+        outsider <- env.service.createResource(with_(AudienceRateLimit(ClientId("stranger"), limit)))
+        twice <- env.service.createResource(with_(AudienceRateLimit(client, limit), AudienceRateLimit(client, limit)))
+        burst <- env.service.createResource(with_(AudienceRateLimit(client, limit.copy(burst = 601))))
+        byClient <- env.service.createResource(with_(AudienceRateLimit(client, limit.copy(by = DeclaredRateLimitBy.Client))))
+      yield assertTrue(
+        stored == Right((resourceId, None)),
+        env.repository.updateAudienceRateLimits.calls == List((resourceId, List(AudienceRateLimit(client, limit)))),
+        outsider == Left(ResourceValidationError.InvalidAudienceRateLimit(
+          ClientId("stranger"),
+          "the client is not in the audience of this resource",
+        )),
+        twice == Left(ResourceValidationError.InvalidAudienceRateLimit(client, "the client has two limits")),
+        burst == Left(ResourceValidationError.InvalidAudienceRateLimit(client, "policy resource-client: burst must not exceed the smallest limit")),
+        byClient.left.exists(_.isInstanceOf[ResourceValidationError.InvalidAudienceRateLimit]),
+        // only the first request reached the repository
+        env.repository.createResource.calls.size == 1,
+      )
+    },
+    test("updateResource replaces the audience limits as a whole, keeps them when absent, and drops those of a client it removes") {
+      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), mode = GuardMode.Enforce)
+      val other = ClientId("other-client")
+      val both = resource.copy(
+        audience = List(audience.head, other),
+        audienceRateLimits = List(AudienceRateLimit(audience.head, limit), AudienceRateLimit(other, limit)),
+      )
+      val untouched = updateRequest.copy(audience = PatchAudience.empty, createEndpoints = Vector.empty, deleteEndpoints = Set.empty, resource = None)
+      val env = new Env
+      for
+        _ <- env.repository.findResource.succeedsWith(Some(both))
+        _ <- env.repository.updateResource.succeedsWith(())
+        _ <- env.repository.updateAudienceRateLimits.succeedsWith(())
+        // absent: nothing to write
+        _ <- env.service.updateResource(untouched)
+        // removing a client from the audience drops its limit
+        _ <- env.service.updateResource(untouched.copy(audience = PatchAudience(add = Set.empty, remove = Set(other))))
+        // an empty list removes them all
+        _ <- env.service.updateResource(untouched.copy(audienceRateLimits = Some(Nil)))
+        // a new set
+        replaced = List(AudienceRateLimit(other, limit.copy(burst = 1)))
+        _ <- env.service.updateResource(untouched.copy(audienceRateLimits = Some(replaced)))
+        outsider <- env.service.updateResource(untouched.copy(audienceRateLimits = Some(List(AudienceRateLimit(ClientId("stranger"), limit)))))
+        // a limit for a client this very request removes from the audience
+        removedHere <- env.service.updateResource(
+          untouched.copy(
+            audience = PatchAudience(add = Set.empty, remove = Set(other)),
+            audienceRateLimits = Some(List(AudienceRateLimit(other, limit))),
+          ),
+        )
+      yield assertTrue(
+        env.repository.updateAudienceRateLimits.calls == List(
+          (resourceId, List(AudienceRateLimit(audience.head, limit))),
+          (resourceId, Nil),
+          (resourceId, replaced),
+        ),
+        outsider.left.exists(_.isInstanceOf[ResourceValidationError.InvalidAudienceRateLimit]),
+        removedHere.left.exists(_.isInstanceOf[ResourceValidationError.InvalidAudienceRateLimit]),
       )
     },
     test("updateResource delegates patches and endpoint replacements to repository") {

@@ -860,6 +860,53 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/edge-access-log-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: { ...edgesState, edges: [{ ...edges[0], accessLogPolicy: { mode: 'sampled', successSampleRate: 0.1 } }] },
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Access log' })).toContainText('Sampled (set here)');
+    },
+  },
+  {
+    name: 'console/edge-access-log-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit access log', exact: true }).click();
+      await expect(sidePanel(page, 'Edit access log').getByRole('button', { name: 'Save access log' })).toBeVisible();
+    },
+  },
+  {
+    name: 'console/edge-rate-limits-view', kind: 'frame', path: '/?view=edges&tenant=default',
+    state: {
+      ...edgesState,
+      edges: [{
+        ...edges[0],
+        rateLimitPolicies: {
+          replicas: 3,
+          policies: [
+            { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, mode: 'shadow' },
+            { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, mode: 'enforce' },
+            { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, mode: 'shadow' },
+          ],
+        },
+      }],
+    },
+    before: async page => {
+      await page.setViewportSize({ width: 1440, height: 1500 });
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await expect(sidePanel(page, 'edge-default').getByRole('region', { name: 'Rate limits' })).toContainText('3 policies');
+    },
+  },
+  {
+    // The empty editor: the recommended set is one click away.
+    name: 'console/edge-rate-limits-edit', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open edge edge-default' }).click();
+      await sidePanel(page, 'edge-default').getByRole('button', { name: 'Edit rate limits', exact: true }).click();
+      await expect(sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Add recommended policies' })).toBeVisible();
+    },
+  },
+  {
     name: 'console/edge-form', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await page.getByRole('button', { name: '+ Create Edge' }).click();
@@ -1242,6 +1289,39 @@ const consoleShots: DocsShot[] = [
       await page.getByRole('region', { name: 'Inject' }).getByLabel('Name').fill('userId');
       await page.getByRole('textbox', { name: 'Inject expression' }).fill('token.sub');
       await expect(page.getByRole('textbox', { name: 'Inject expression' })).toHaveValue('token.sub');
+    },
+  },
+
+  {
+    name: 'console/resource-endpoint-ratelimit', kind: 'crop', path: `${resourcePath}&edit=endpoints`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limit' }),
+    before: async page => {
+      await page.getByRole('list', { name: 'Endpoints' }).getByRole('button', { name: /^POST \/orders\/\{orderId\}\/refund/ }).click();
+      await page.getByRole('region', { name: 'Rate limit' }).locator('summary').click();
+      await page.getByRole('button', { name: 'Set a limit' }).click();
+      await page.getByRole('button', { name: 'Enforce' }).click();
+      await page.getByLabel('Count by').selectOption('subject');
+      await page.getByRole('textbox', { name: 'Window 1: requests' }).fill('30');
+      await page.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await page.getByLabel('Burst').fill('5');
+      await expect(page.getByLabel('Burst')).toHaveValue('5');
+    },
+  },
+
+  {
+    name: 'console/resource-audience-ratelimit', kind: 'crop', path: `${resourcePath}&edit=audience`, state: resourcesState,
+    section: page => page.getByRole('region', { name: 'Rate limits' }),
+    before: async page => {
+      await page.getByRole('region', { name: 'Rate limits' }).locator('summary').first().click();
+      const mobile = page.locator('details[data-client="storefront-web"]');
+      await mobile.locator('summary').click();
+      await mobile.getByRole('button', { name: 'Set a limit' }).click();
+      await mobile.getByRole('button', { name: 'Shadow' }).click();
+      await mobile.getByLabel('Count by').selectOption('subject');
+      await mobile.getByRole('textbox', { name: 'Window 1: requests' }).fill('600');
+      await mobile.getByRole('textbox', { name: 'Window 1: seconds' }).fill('60');
+      await mobile.getByLabel('Burst').fill('50');
+      await expect(mobile.getByLabel('Burst')).toHaveValue('50');
     },
   },
 

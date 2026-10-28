@@ -23,6 +23,10 @@ object AccessLogSpec extends ZIOSpecDefault:
         assertTrue(
           (0 until 200).forall(i => none.logReceive(400, failed = false, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(503, failed = false, 1, traceId(i))),
+          // a rate-limit refusal is not a line per refusal: it follows the success rules (slow and sampled lines only)
+          (0 until 200).forall(i => !none.logReceive(429, failed = false, 1, traceId(i))),
+          none.logReceive(429, failed = false, 500, traceId(1)),
+          none.logReceive(429, failed = true, 1, traceId(1)),
           (0 until 200).forall(i => none.logReceive(200, failed = true, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(302, failed = true, 1, traceId(i))),
         )
@@ -76,24 +80,10 @@ object AccessLogSpec extends ZIOSpecDefault:
         )
       },
     ),
-    suite("parse")(
-      test("defaults are full, 500 ms, 1 in 20") {
-        val s = AccessLogSettings.parse(None, None, None)
+    suite("defaults")(
+      test("a service logs every request, 500 ms slow, 1 in 20 sampled, unless it says otherwise") {
+        val s = AccessLogSettings.default
         assertTrue(s.mode == AccessLogMode.Full, s.slowMillis == 500, s.successSampleRate == 0.05)
-      },
-      test("a service default replaces full when the mode is unset, and an explicit mode still wins") {
-        val edge = AccessLogSettings.parse(None, None, None, AccessLogMode.Off)
-        val explicit = AccessLogSettings.parse(Some("full"), None, None, AccessLogMode.Off)
-        val invalid = AccessLogSettings.parse(Some("verbose"), None, None, AccessLogMode.Off)
-        assertTrue(edge.mode == AccessLogMode.Off, explicit.mode == AccessLogMode.Full, invalid.mode == AccessLogMode.Off)
-      },
-      test("reads valid values") {
-        val s = AccessLogSettings.parse(Some(" Sampled "), Some("250"), Some("0.1"))
-        assertTrue(s.mode == AccessLogMode.Sampled, s.slowMillis == 250, s.successSampleRate == 0.1)
-      },
-      test("an invalid value falls back to its default") {
-        val s = AccessLogSettings.parse(Some("verbose"), Some("-1"), Some("1.5"))
-        assertTrue(s == AccessLogSettings.default, AccessLogSettings.parse(None, Some("x"), Some("nan")) == AccessLogSettings.default)
       },
       test("isSlow is inclusive of the threshold") {
         assertTrue(sampled.isSlow(500), !sampled.isSlow(499))

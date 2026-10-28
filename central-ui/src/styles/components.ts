@@ -330,6 +330,57 @@ export const editorStyles = css`
     margin-bottom: 0;
   }
 
+  /* A group that is rarely changed starts folded: the title, and beside it what is set. */
+  details.fold > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.125rem 0.75rem;
+    min-height: 1.5rem;
+    cursor: pointer;
+    list-style: none;
+    border-radius: var(--radius-sm);
+  }
+
+  details.fold > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  details.fold > summary::before {
+    content: '';
+    flex: none;
+    align-self: center;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 2px solid var(--text-secondary);
+    border-bottom: 2px solid var(--text-secondary);
+    transform: rotate(-45deg);
+    transition: transform var(--transition-fast);
+  }
+
+  details.fold[open] > summary::before {
+    transform: rotate(45deg);
+  }
+
+  details.fold > summary:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  details.fold > summary h3 {
+    margin: 0;
+  }
+
+  details.fold > summary .fold-hint {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  details.fold[open] > summary {
+    margin-bottom: var(--spacing-sm);
+  }
+
   .editor-error {
     margin: 0 0 var(--spacing-md);
     padding: 0.75rem var(--spacing-md);

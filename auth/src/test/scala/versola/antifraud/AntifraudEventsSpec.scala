@@ -374,14 +374,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
-            decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone))
+            decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone), repeated = false)
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.blocked, Some(decision))
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             seen.get.flatMap(_.ip) == Some("203.0.113.7"),
             seen.get.flatMap(_.destPrefix) == Some("491512"),
             details == Some(
-              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked")),
+              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked"), None, None),
             ),
           )
       },
@@ -392,12 +392,40 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small)
-            decision <- events.decideOtpRequest(clientId, None, Right(phone))
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             decision == Decision.allow,
-            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"))),
+            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"), None, None)),
+          )
+      },
+      test("a challenge step puts the decision, the kind and the level of the challenge on the log context, and its outcome in the event log") {
+        val e = env
+        val challenging = Decision(DecisionAction.Challenge, 61, List("phone_velocity"))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small)
+            _ <- events.challengeStep(authId, clientId, None, Right(phone), AntifraudOutcome.challenged, challenging, "pow", Some(17))
+            details <- logContext.get.map(_.get(Observability.antifraud))
+            _ <- TestClock.adjust(0.seconds)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            details == Some(Observability.AntifraudDetails(
+              "otp_request",
+              "Challenge",
+              61,
+              List("phone_velocity"),
+              Some("491512"),
+              Some("challenged"),
+              Some("pow"),
+              Some(17),
+            )),
+            written.map(_.outcome) == List(AntifraudOutcome.challenged),
+            written.map(_.action) == List(AntifraudAction.otp_request),
+            written.flatMap(_.decision) == List("Challenge"),
           )
       },
     ),
@@ -408,24 +436,69 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val vsettings = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
         val velocity = VelocityCounters(vsettings)
         val engine = Antifraud.Impl(
-          Antifraud.Settings(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          Antifraud.Settings(
+            enabled = true,
+            blockAt = 50,
+            delayAt = 0,
+            challengeAt = 0,
+            reviewAt = 0,
+            delay = 1.second,
+            timeout = 1.second,
+            failureAction = DecisionAction.Challenge,
+          ),
           List(VelocityRules.ruleSet(vsettings)),
         )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
-            first <- events.decideOtpRequest(clientId, None, Right(phone))
-            second <- events.decideOtpRequest(clientId, None, Right(phone))
-            third <- events.decideOtpRequest(clientId, None, Right(phone))
-            fourth <- events.decideOtpRequest(clientId, None, Right(phone))
+            events <-
+              build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            third <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            fourth <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
           yield assertTrue(
             first.action == DecisionAction.Allow,
             second.action == DecisionAction.Allow,
             third.action == DecisionAction.Block,
             third.firedRules == List("velocity_phone_1m"),
             fourth.action == DecisionAction.Block,
+          )
+      },
+      test("a request made again with its answer is judged but not counted a second time") {
+        val e = env
+        val vsettings =
+          VelocityCounters.Settings(enabled = true, thresholds = VelocityRules.Thresholds(phone = VelocityRules.Limit(perMinute = 2, weight = 60)))
+        val velocity = VelocityCounters(vsettings)
+        val engine = Antifraud.Impl(
+          Antifraud.Settings(
+            enabled = true,
+            blockAt = 50,
+            delayAt = 0,
+            challengeAt = 0,
+            reviewAt = 0,
+            delay = 1.second,
+            timeout = 1.second,
+            failureAction = DecisionAction.Challenge,
+          ),
+          List(VelocityRules.ruleSet(vsettings)),
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <-
+              build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            again <- ZIO.foreach(1 to 3)(_ => events.decideOtpRequest(clientId, None, Right(phone), repeated = true))
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            third <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            again.forall(_.action == DecisionAction.Allow),
+            second.action == DecisionAction.Allow,
+            third.action == DecisionAction.Block,
           )
       },
     ),
