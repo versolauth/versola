@@ -18,7 +18,7 @@ info:
       and `POST /users/registrations`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`), `POST /edge/clients/edge-certificate/sign`
+      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener),
       the surface an edge reads with the key it was registered with. It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
@@ -2360,49 +2360,127 @@ paths:
         '404':
           description: No edge is registered under that id.
 
-  /configuration/edges/overload:
-    put:
+  /configuration/edges/policies:
+    get:
       tags: [Edges]
-      summary: Set what an edge does when it is asked for more than it can do
+      summary: Read the policies of an edge
       description: |
-        The overload policy of one edge: its inbound admission limits (with priorities, so a new
-        login is refused before work already begun, and the proxied calls last) held to a limit the
-        edge learns from its own call times inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of
-        its outbound calls. The body replaces the stored policy as a whole; an empty object `{}`
-        removes it and returns the edge to the values of its own deployment.
-
-        Every field is optional and means "what the edge starts with" when absent, so a policy is
-        a patch over the deployment: the values of the edge's own environment (`HTTP_ADMISSION_*`,
-        `HTTP_CLIENT_GUARD_*`) when set, the built-in defaults below otherwise. `mode` is `off`, `shadow` (count what `enforce` would
-        refuse, refuse nothing — the default of a new deployment) or `enforce`. The edge picks the
-        change up on its next configuration sync and, while central is unreachable, keeps the last
-        policy it received (the sync runs every configuration refresh interval, 5 minutes by default).
-
-        Fields the schema does not know are ignored, so a leftover `inbound.adaptive.enabled` from
-        an earlier draft has no effect: the limit is learned whenever the inbound mode is not `off`.
-        A value outside the documented range answers `400` with the first problem found.
-      operationId: setEdgeOverloadPolicy
+        The three policy sections of one edge as they are stored now (not the console's cached copy): `overload`, `accessLog` and
+        `rateLimits`, each absent when none is set, with the `revisions` and `updatedAt` of every section that has ever changed. A section
+        that never changed has revision 0.
+      operationId: getEdgePolicies
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '200':
+          description: The policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePolicies'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+    patch:
+      tags: [Edges]
+      summary: Change the policies of an edge
+      description: |
+        Changes the sections the body names and leaves the others as they are. A section that is absent is kept; `null` removes it (the
+        edge goes back to the values of its own deployment, or applies no rate limit); an object replaces it **as a whole**: a section is
+        never merged field by field, so the body of a section is the section. An empty object (an empty `policies` list for `rateLimits`)
+        is the same as `null`. A key that is not a section is refused, so a misspelled section is an error and not a silent no-op.
+
+        - `overload`: what the edge does when it is asked for more than it can do: inbound admission limits, with priorities, held to a limit
+          the edge learns inside operator-set bounds, and the limits, timeouts, circuit breaker and retry budget of its outbound calls.
+          Every field is optional and means "what the edge starts with" when absent (the edge's `HTTP_ADMISSION_*` and
+          `HTTP_CLIENT_GUARD_*` environment when set, the built-in defaults otherwise).
+        - `accessLog`: which requests the edge writes a `receive-http` log line for. Every field is optional and means the edge's
+          built-in default when absent (`off`, 500 ms, 0.05). `auth` and `central` have no such setting.
+        - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
+
+        **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
+        named section is still at that revision; otherwise nothing is written and the answer is `409` with the current state in `current`. A
+        section that is not named has no precondition, so a client that only ever patches its own section needs none. A change that changes
+        nothing does not move the revision.
+
+        **Dry run.** With `dryRun=true` the body is checked by the rules the edge applies (and the revisions are checked) and the answer is
+        the state the patch would make; nothing is written.
+
+        The answer is the new state, with the new revisions. The edge picks a change up on its next configuration sync and, while central is
+        unreachable, keeps the last policy it received (the sync runs every configuration refresh interval, 5 minutes by default). A value
+        outside its documented range answers `400` with the section and the first problem found.
+      operationId: patchEdgePolicies
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+        - name: dryRun
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Check the body and answer the resulting state without writing it.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/OverloadPolicy'
+              $ref: '#/components/schemas/EdgePoliciesPatch'
+            examples:
+              rateLimitsAndRemoveOverload:
+                summary: Replace the rate limits, remove the overload policy, leave the access log alone
+                value:
+                  overload: null
+                  rateLimits:
+                    replicas: 3
+                    policies:
+                      - name: per-user
+                        by: [subject]
+                        limits: [{ limit: 300, windowSeconds: 60 }]
+                        burst: 60
+                        mode: enforce
+                  expectedRevisions: { rateLimits: 4 }
       responses:
-        '204':
-          description: Policy recorded.
-        '400':
-          description: The policy does not validate; the body names the first field that is wrong.
+        '200':
+          description: The new state (or, with `dryRun`, the state the patch would make).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OverloadPolicyError'
+                $ref: '#/components/schemas/EdgePolicies'
+        '400':
+          description: A key that is not a section, a section of the wrong shape, or a section that does not validate. `section` names it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePoliciesError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
+        '409':
+          description: A section named in `expectedRevisions` has changed since it was read. Nothing was written; `current` is the state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePoliciesError'
+
+  /configuration/edges/rate-limits/recommended:
+    get:
+      tags: [Edges]
+      summary: The recommended starting set of rate limit policies
+      description: |
+        A starting set that is safe to add to any edge: `per-client`, `per-user`, `per-user-endpoint`, `per-address` and `per-certificate`, all in mode
+        `shadow`, so the edge only counts what it would refuse. Read `edge_rate_limit_decisions_total{result="would_limit"}`
+        for a while, adjust the limits, then switch a policy to `enforce`. The numbers are generous on purpose and are per
+        edge pod. Send the body as `rateLimits` of `PATCH /configuration/edges/policies` (the console's "Add recommended policies" does).
+      operationId: getRecommendedRateLimitPolicies
+      responses:
+        '200':
+          description: The recommended policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitPolicies'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /configuration/edges/rotate-key:
     post:
@@ -4406,6 +4484,12 @@ components:
         maxAge:
           type: [integer, 'null']
           description: Maximum authentication age, in seconds, accepted for this endpoint.
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, method, path, fetchUserInfo, inject]
     ResourceResponse:
       type: object
@@ -4428,6 +4512,12 @@ components:
           description: Internal resources are Versola's own services and are issued a secret.
         secretRotation:
           type: boolean
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            The limits the resource sets for its audience clients; empty when there are none.
       required: [resourceId, resource, audience, endpoints, internal, secretRotation]
     GetAllResourcesResponse:
       type: object
@@ -4460,6 +4550,12 @@ components:
           type: [string, 'null']
         maxAge:
           type: [integer, 'null']
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+          description: |
+            A limit on how often this endpoint is called, checked by the edge after the caller's permissions are resolved,
+            together with the edge's own rate limit policies (a call must pass all of them, so the smallest limit wins).
+            The bucket is per key (`by`) and endpoint template. Absent means no limit.
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
@@ -4480,6 +4576,12 @@ components:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
         internal:
           type: boolean
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            The limits the resource sets for clients of `audience`: at most one per client, and only for a client in the audience.
       required: [tenantId, resourceId, resource, audience, endpoints, internal]
     UpdateResourceRequest:
       type: object
@@ -4501,6 +4603,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
+        audienceRateLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceRateLimit'
+          description: |
+            Replaces the limits set for audience clients as a whole: absent leaves them (those of clients removed from the audience in this request are dropped), an empty list removes them all.
       required: [resourceId, audience, deleteEndpoints, createEndpoints]
     CreateResourceResponse:
       type: object
@@ -4569,6 +4677,24 @@ components:
             endpointId:
               $ref: '#/components/schemas/ResourceEndpointId'
           required: [endpointId]
+        InvalidRateLimit:
+          type: object
+          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            message:
+              type: string
+          required: [endpointId, message]
+        InvalidAudienceRateLimit:
+          type: object
+          description: A limit set for an audience client breaks a rule of a rate limit policy, names a client that is not in the audience, or repeats a client.
+          properties:
+            clientId:
+              $ref: '#/components/schemas/ClientId'
+            message:
+              type: string
+          required: [clientId, message]
         AmbiguousEndpointPath:
           type: object
           description: |
@@ -6174,6 +6300,16 @@ components:
         overloadPolicy:
           $ref: '#/components/schemas/OverloadPolicy'
           description: The edge's overload policy; absent when none is set.
+        accessLogPolicy:
+          $ref: '#/components/schemas/AccessLogPolicy'
+          description: The edge's access-log policy; absent when none is set.
+        rateLimitPolicies:
+          $ref: '#/components/schemas/RateLimitPolicies'
+          description: The edge's rate limit policies; absent when none are set.
+        policyRevisions:
+          type: object
+          additionalProperties: { type: integer }
+          description: The revision of each policy section that has ever changed (`overload`, `accessLog`, `rateLimits`); for `expectedRevisions` of `PATCH /configuration/edges/policies`.
         groupId:
           type: string
           description: The group of edges this edge belongs to.
@@ -6347,12 +6483,213 @@ components:
               minimum: 0
               maximum: 1000
               description: Retries per second always allowed, whatever the ratio. Default 5.
-    OverloadPolicyError:
+    AccessLogPolicy:
+      type: object
+      description: |
+        A patch over the access-log settings an edge starts with; every field is optional.
+      properties:
+        mode:
+          type: string
+          enum: [full, sampled, off]
+          description: |
+            `full` logs every request. `sampled` logs failures, slow requests and a share of the rest
+            (`successSampleRate`, chosen per trace so every hop of a trace agrees). `off` logs failures and slow requests only.
+            The edge's default is `off`.
+        slowMillis:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 600000
+          description: A request at least this slow is always logged. Default 500.
+        successSampleRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
+    RateLimitPolicies:
       type: object
       properties:
-        error:
+        replicas:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: |
+            How many edge pods share the traffic. Each pod enforces `limit / replicas` of every window (and `burst / replicas`,
+            rounded up, never below `cost`), so the edge as a whole allows about the limit written here. As exact as the balancer
+            is even; there is no shared counter. Set it to the number of pods of this edge.
+        policies:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/RateLimitPolicy'
+    RateLimitPolicy:
+      type: object
+      required: [name, limits]
+      properties:
+        name:
           type: string
+          pattern: '^[a-z][a-z0-9_-]{0,47}$'
+          description: Stable identifier; appears in metrics and, later, in the response. Unique in the set.
+        by:
+          type: array
+          items:
+            type: string
+            enum: [ip, certificate, client, subject, session, jkt]
+          description: |
+            What a bucket is keyed on; empty means one bucket for the whole scope. `client`, `subject`, `session` and `jkt`
+            come from the verified access token, never from what the caller sent. `ip` (the caller's address on the plain
+            listener, failed and unauthenticated attempts only, see `client-ip` in the edge's config) and `certificate` (the
+            verified client certificate of the mutual-TLS listener, every call) are counted before the token is read, so they
+            stand alone and take scope `edge-wide`. A request that lacks a value (a bearer token has no
+            `jkt`) is not counted by that policy.
+        scope:
+          type: string
+          enum: [edge-wide, resource, endpoint]
+          default: edge-wide
+          description: |
+            `edge-wide` keeps one bucket per key; `resource` and `endpoint` one per key and resource, or per key and
+            registered endpoint template. A policy narrower than the edge is checked after the caller's permissions are
+            resolved; the others are checked right after the access token is verified.
+        limits:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: Every window must pass. Windows of one policy are distinct.
+          items:
+            type: object
+            required: [limit, windowSeconds]
+            properties:
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000000
+              windowSeconds:
+                type: integer
+                minimum: 1
+                maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          default: 1
+          description: How many requests may arrive together. Not above the smallest `limit`. `1` is strict spacing.
+        cost:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: What one request takes from the bucket. Not above `burst`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+          default: shadow
+          description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
+    DeclaredRateLimit:
+      type: object
+      required: [limits]
+      description: |
+        A rate limit declared by the owner of an API (on a resource endpoint, or for a client of a resource's audience), not in the
+        edge's own set. The rules are those of `RateLimitPolicy` (windows, burst, mode); `cost` is always 1. It applies together
+        with the edge's policies and a request must pass all of them, so the smallest limit wins. In metrics it is the policy
+        `resource-endpoint` or `resource-client`, never an id.
+      properties:
+        limits:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: Every window must pass. Windows are distinct.
+          items:
+            type: object
+            required: [limit, windowSeconds]
+            properties:
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000000
+              windowSeconds:
+                type: integer
+                minimum: 1
+                maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          default: 1
+          description: How many calls may arrive together. Not above the smallest `limit`. `1` is strict spacing.
+        by:
+          type: string
+          enum: [subject, client, none]
+          default: none
+          description: |
+            What a bucket is keyed on. On an endpoint, `none` is one bucket for the endpoint, `client` one per client and
+            `subject` one per user. On an audience client, `none` is one bucket for that client on the resource and `subject` one per
+            user of it; `client` is refused there, since it would mean the same as `none`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+          default: shadow
+          description: '`off` ignores the limit; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
+    AudienceRateLimit:
+      type: object
+      required: [clientId, rateLimit]
+      description: |
+        What the owner of a resource lets one client of its audience take from it. It applies to that client's calls to this resource,
+        checked together with the edge's own rate limit policies (the smaller limit wins). The client's own owner sets nothing.
+        In metrics it is the policy `resource-client`.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        rateLimit:
+          $ref: '#/components/schemas/DeclaredRateLimit'
+    EdgePolicies:
+      type: object
+      required: [edgeId]
+      properties:
+        edgeId: { type: string }
+        overload:
+          $ref: '#/components/schemas/OverloadPolicy'
+        accessLog:
+          $ref: '#/components/schemas/AccessLogPolicy'
+        rateLimits:
+          $ref: '#/components/schemas/RateLimitPolicies'
+        revisions:
+          type: object
+          additionalProperties: { type: integer }
+          description: How many times each section has changed, by section name. A section that never changed is absent (revision 0).
+        updatedAt:
+          type: object
+          additionalProperties: { type: string, format: date-time }
+          description: When each section last changed, by section name.
+    EdgePoliciesPatch:
+      type: object
+      description: The sections to change. A key that is not listed here is refused.
+      properties:
+        overload:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/OverloadPolicy' }]
+        accessLog:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/AccessLogPolicy' }]
+        rateLimits:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/RateLimitPolicies' }]
+        expectedRevisions:
+          type: object
+          description: The revision of each named section the client last read; the patch is applied only if all still match.
+          properties:
+            overload: { type: integer, minimum: 0 }
+            accessLog: { type: integer, minimum: 0 }
+            rateLimits: { type: integer, minimum: 0 }
+          additionalProperties: false
+    EdgePoliciesError:
+      type: object
       required: [error]
+      properties:
+        error: { type: string }
+        section:
+          type: string
+          enum: [overload, accessLog, rateLimits]
+        current:
+          $ref: '#/components/schemas/EdgePolicies'
     SetEdgeDpopRequest:
       type: object
       properties:

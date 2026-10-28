@@ -62,6 +62,8 @@ object InternalSurfaceSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[PermissionService](stub[PermissionService]) ++
               ZEnvironment[DpopPolicyService](stub[DpopPolicyService]) ++
               ZEnvironment[OverloadPolicyService](stub[OverloadPolicyService]) ++
+              ZEnvironment[AccessLogPolicyService](stub[AccessLogPolicyService]) ++
+              ZEnvironment[RateLimitPolicyService](stub[RateLimitPolicyService]) ++
               ZEnvironment[EdgeConfig](config(mode)) ++
               ZEnvironment[EnvName](EnvName.Test("test")) ++
               tracing,

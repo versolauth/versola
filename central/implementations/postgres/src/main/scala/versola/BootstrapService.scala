@@ -310,7 +310,7 @@ object BootstrapService:
   /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
     * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
     * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
-    * operator turns on for it. */
+    * operator turns on for it. The same goes for an endpoint's `rateLimit`, which only an operator sets. */
   private[versola] def mergeAccountEndpoints(
       desired: List[ResourceEndpointRecord],
       existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
@@ -321,6 +321,7 @@ object BootstrapService:
           stepUpCondition = current.stepUpCondition,
           stepUpAcr = current.stepUpAcr,
           maxAge = current.maxAge,
+          rateLimit = current.rateLimit,
         )
 
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
