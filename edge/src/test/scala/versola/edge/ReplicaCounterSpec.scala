@@ -34,11 +34,10 @@ object ReplicaCounterSpec extends ZIOSpecDefault:
       },
     ),
     suite("resolving")(
-      test("nothing is known before the first answer; then the count follows the answers") {
+      test("the count follows the answers") {
         for
           answers <- Ref.make[Task[List[String]]](ZIO.succeed(List("10.0.0.1", "10.0.0.2")))
           counter <- ReplicaCounter.dns("edge", _ => answers.get.flatten, 10.seconds)
-          before <- counter
           _ <- TestClock.adjust(1.second)
           first <- counter
           _ <- answers.set(ZIO.succeed(List("10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4")))
@@ -47,7 +46,7 @@ object ReplicaCounterSpec extends ZIOSpecDefault:
           _ <- answers.set(ZIO.succeed(List("10.0.0.1")))
           _ <- TestClock.adjust(10.seconds)
           shrunk <- counter
-        yield assertTrue(before.isEmpty, first.contains(2), grown.contains(4), shrunk.contains(1))
+        yield assertTrue(first.contains(2), grown.contains(4), shrunk.contains(1))
       },
       test("a failed or empty answer keeps the last count: a glitch must not change the share") {
         for

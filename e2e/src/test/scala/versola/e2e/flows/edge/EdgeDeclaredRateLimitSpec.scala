@@ -122,7 +122,7 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         second.status == Status.Ok,
         third.status == Status.TooManyRequests,
         third.response.rawHeader("Retry-After").flatMap(_.toIntOption).exists(_ >= 1),
-        third.body.contains("resource-endpoint"),
+        third.response.rawHeader("RateLimit-Policy").exists(_.contains("resource-endpoint")),
         // an id would be a metric label of unbounded kind: the name is fixed, nothing identifies the endpoint
         !third.body.contains(f.endpoint("limited")),
         free.forall(_.status == Status.Ok),
@@ -151,7 +151,7 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
         first.status == Status.Ok,
         second.status == Status.Ok,
         third.status == Status.TooManyRequests,
-        third.body.contains("resource-client"),
+        third.response.rawHeader("RateLimit-Policy").exists(_.contains("resource-client")),
         read.body.contains("audienceRateLimits"),
         removed.status == Status.NoContent,
         lifted.forall(_.status == Status.Ok),

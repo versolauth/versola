@@ -796,7 +796,7 @@ test.describe('rate limit declared on an endpoint', () => {
       createEndpoints: [{
         id: 4, method: 'PUT', path: '/orders/{orderId}/address', fetchUserInfo: false, allow: 'has(request.body.postalCode)', inject: [],
         stepUpCondition: null, stepUpAcr: null, maxAge: null,
-        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], mode: 'shadow', by: 'client' },
+        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], burst: 1, mode: 'shadow', by: 'client' },
       }],
     });
   });

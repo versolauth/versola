@@ -460,7 +460,7 @@ test.describe('rate limits', () => {
     const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
     expect(request.searchParams.edgeId).toBe('edge-alpha');
     expect(request.body).toEqual({
-      rateLimits: { policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], mode: 'shadow' }] },
+      rateLimits: { replicas: 1, policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], burst: 1, cost: 1, mode: 'shadow' }] },
       expectedRevisions: { rateLimits: 0 },
     });
     await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
