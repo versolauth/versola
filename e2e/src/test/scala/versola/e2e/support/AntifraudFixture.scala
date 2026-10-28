@@ -207,7 +207,7 @@ object AntifraudFixture:
     database: connection =>
       connection.setAutoCommit(false)
       val upsert = connection.prepareStatement(
-        """INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, ?, 'e2e', now())
+        """INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, ?::jsonb, 'e2e', now())
           |ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = 'e2e', updated_at = now()""".stripMargin,
       ).nn
       upsert.setString(1, settings)
