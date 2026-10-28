@@ -7,10 +7,10 @@ const limit: DeclaredRateLimit = { limits: [{ limit: 600, windowSeconds: 60 }, {
 const draft = (patch: Partial<DeclaredDraft> = {}): DeclaredDraft => ({ ...draftFromDeclared(limit)!, ...patch });
 
 describe('declared rate limit wire form', () => {
-  it('round-trips, and leaves out what is the default', () => {
+  it('round-trips, and states every field, an empty burst as 1', () => {
     expect(declaredFromDraft(draftFromDeclared(limit))).toEqual(limit);
     const minimal = declaredFromDraft(draftFromDeclared({ limits: [{ limit: 5, windowSeconds: 1 }], burst: 1, by: 'none', mode: 'shadow' }));
-    expect(minimal).toEqual({ limits: [{ limit: 5, windowSeconds: 1 }], mode: 'shadow' });
+    expect(minimal).toEqual({ limits: [{ limit: 5, windowSeconds: 1 }], burst: 1, by: 'none', mode: 'shadow' });
   });
 
   it('no limit is null both ways', () => {

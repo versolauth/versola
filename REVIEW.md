@@ -25,12 +25,96 @@ Project rules live in `CLAUDE.md` and `.claude/rules/*.md`. This file does not r
 
 Go in this order and stop to flag a blocker as soon as you find one.
 
+0. **Shape**: is this the right, cheapest way to solve it (section 0)? Do it first; a wrong shape
+   makes the line-level review moot
 1. **Compatibility and data safety** (migrations, API, stored data, config)
 2. **Security**
 3. **Correctness and concurrency**
 4. **Database access and scalability** (the section below; weigh it heavily)
 5. **Tests**
 6. **Readability, structure, observability**
+
+## 0. Is this the right shape?
+
+Do this before reading the code line by line. A correct implementation of the wrong shape is still a
+cost: every new public surface (endpoint, query parameter, claim, cookie, column, config key, error
+code, CLI flag) is a compatibility promise (CLAUDE.md "Backward compatibility") that needs an OpenAPI
+entry, `deploy.md` text, unit and e2e tests, observability, rate-limit and authorization review, and a
+deprecation path to ever remove. Prefer the change that adds the least of it.
+
+### Method
+
+1. **State the problem in one sentence**, from the linked issue, not from the diff.
+2. **Find what already serves it.** Search before judging: controllers and `*/open-api/` for the same
+   resource, actor and verb; the sibling flow that solved a neighbouring problem (web vs native, `auth`
+   vs `edge`, an existing cache, helper, table, cleanup job or `Observability` code). Never conclude
+   "nothing exists" without having searched.
+3. **List the alternatives**, always including "extend the existing X additively" and "no new state /
+   no new surface (derive it from data the request or row already carries; use a mechanism the
+   standard already defines)". Compare them on: public surface added, new stored state, DB round-trips
+   on a hot path, compatibility risk, test and doc cost, security strength. The security column is a
+   veto, not a weight: do not propose a cheaper shape that is weaker.
+4. **Choose the cheapest shape that is not weaker.** If the PR did not, say which alternative and what
+   it saves, in concrete terms (file/function, "removes endpoint X", "saves a column and a migration").
+   If the PR chose the same shape, say "alternatives considered, current shape kept" and why, in one line.
+
+### Extend, do not add, when they are coupled
+
+A new endpoint, table, service or flag is justified only by a real difference. If the new behaviour has
+the **same** caller, authentication scheme, resource, lifecycle, transaction and failure semantics as
+an existing one, extend it:
+
+- An optional request field/parameter, a new field in a response, or a new value of an existing enum,
+  all additive, rather than a second endpoint that repeats the same validation, lookup and auth.
+- A column on the existing row rather than a table with the same key and the same lifecycle (no new
+  join, no second insert, one cleanup path).
+- The existing cache, background loop or cleanup job rather than a parallel one.
+- The existing error code, metric and config key (reuse before inventing).
+
+### A new surface is justified when the difference is real
+
+- **Different caller or authentication**: end user vs admin vs service-to-service vs mTLS client; the
+  endpoint must not be reachable by whoever may call the existing one.
+- **Different contract owner**: a standard endpoint (`/token`, `/authorize`, `/par`, `/userinfo`,
+  introspection) stays RFC-shaped. Non-standard parameters or modes go to a separate endpoint or an
+  extension the RFC defines, never smuggled into it.
+- **Different safety or caching semantics**: safe/idempotent GET vs state-changing POST, or a
+  response that must or must not be cached.
+- **Different performance or abuse profile**: a cold or expensive path must not add cost to a hot one
+  (an extra query on `/token` for a rarely used feature), and needs its own rate limit.
+- **Different lifecycle or retention**: separate cardinality, TTL or cleanup (a new table, not a
+  column), or a column that would become a hot row.
+- **Incompatible shape**: it cannot be added without a breaking change to the existing one.
+
+### Do not overload either
+
+Extending is wrong when it makes one endpoint do two jobs: a boolean or mode parameter that forks the
+behaviour (see section 6), a body whose meaning depends on which optional fields are present, or a
+hot-path handler that now branches on a cold-path feature. Coupled means "one reason to change", not
+"nearby".
+
+### Red flags
+
+- A new endpoint whose handler is mostly a copy of an existing one (same lookup, same checks, one
+  different final step).
+- A new table or column keyed by the same id as an existing one, written in the same request.
+- A new endpoint/parameter/column/config key with no consumer in the PR, or whose consumer is the
+  same service that could call the code directly.
+- A custom token, nonce, signature or header scheme where the standard already has a parameter for it.
+- A second implementation of a rule that exists in a sibling flow: the two will drift. Reuse it, or
+  flag that they now differ.
+- Stored state added where the value could be recomputed from what the request already carries.
+  (Stored state is still right when it is the security property, for example a hash that a
+  read-only database leak must not turn into a usable credential. Say that it is, not that it is
+  merely convenient.)
+
+### How to report it
+
+A shape finding is **MAJOR** when it duplicates an existing surface or adds a public one that is not
+needed (it is permanent and costly to remove), **MINOR** when the cost is internal and reversible.
+Respect a decision the linked issue already took and argued: raise the alternative once, as a question
+or a note, and do not block on it unless the code shows the issue's premise is wrong. An alternative
+must be concrete and no weaker than the PR's; "consider a different design" is not a finding.
 
 ## 1. Compatibility and data safety
 
@@ -234,7 +318,9 @@ evidence.
   generated `forms/` output is never edited; no secrets or user input in `console.*` or URLs; user
   text goes through i18n; accessibility (the axe scan) is not regressed.
 - Commit and PR hygiene: imperative sentence-case messages without `feat:` prefixes; PR description
-  states what changed, which tests at which level, any OpenAPI change, and any gap left.
+  states what changed, which tests at which level, any OpenAPI change, and any gap left. When it adds
+  a public surface (endpoint, parameter, column, config key, cookie) it says why the existing one could
+  not be extended (section 0).
 
 ## Output format
 
@@ -254,9 +340,13 @@ Severity:
   that breaks rolling upgrade/rollback, a race that breaks a single-use guarantee, an unbounded or
   per-request query on a hot path that will not survive load, CI will fail.
 - **MAJOR**: wrong behaviour in a reachable case, missing index for a new query, missing negative
-  security test, missing test level without a follow-up, transaction held across slow work.
+  security test, missing test level without a follow-up, transaction held across slow work, a new
+  public surface that duplicates an existing one (section 0).
 - **MINOR**: maintainability, naming, a missed reuse, redundant query that is not on a hot path.
 - **NIT**: taste; at most three, and only if nothing above them is open.
+
+Add a one-line **Shape** note after the verdict: the alternatives you weighed (section 0) and whether
+the PR's shape is kept or which one is cheaper and why.
 
 End with a short **Checked, no issues** list (areas you verified) and a **Not verified** list (what you
 could not run or judge from the diff: e2e, loadgen, query plans), so the author knows the review's

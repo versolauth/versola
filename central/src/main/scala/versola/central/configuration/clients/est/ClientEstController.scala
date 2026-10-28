@@ -141,5 +141,5 @@ case class EstRenewRequest(
 /** The certificate chain (leaf first, no key) and, where the chain of the client ends, when. */
 case class EstIssuedResponse(
     certificate: String,
-    chainEndsAt: Option[Instant] = None,
+    chainEndsAt: Option[Instant],
 ) derives JsonCodec, Schema

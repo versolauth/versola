@@ -2,6 +2,7 @@ package versola.oauth.introspect
 
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   AuthMethod,
   AuthMethodRef,
@@ -80,6 +81,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

@@ -103,6 +103,13 @@ trait AuthClient:
       userId: UserId,
   ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
 
+  /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. */
+  def getAntifraudSettings(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings]
+
+  def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings]
+
+  def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest): IO[AntifraudListError | Throwable, Unit]
+
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
@@ -222,6 +229,7 @@ object AuthClient:
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
     private val antifraudListsUrl: URL = config.auth.url / "antifraud" / "lists"
+    private val antifraudSettingsUrl: URL = config.auth.url / "antifraud" / "settings"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
 
     override def upsertUser(
@@ -423,6 +431,17 @@ object AuthClient:
     ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
       val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
       antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params :+ ("userId" -> userId.toString))))
+
+    override def getAntifraudSettings(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request.get(antifraudSettingsUrl.addQueryParams(List("userId" -> userId.toString))))
+
+    override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
+
+    override def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest): IO[AntifraudListError | Throwable, Unit] =
+      antifraudUnit(
+        Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty),
+      )
 
     private def antifraud[A: JsonDecoder](request: Request): IO[AntifraudListError | Throwable, A] =
       antifraudAnswer(request): response =>

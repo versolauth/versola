@@ -37,7 +37,7 @@ object EdgeRegistrySyncClient:
 
     private case class RegistryEntry(
         id: String,
-        tenantIds: List[String] = List.empty,
+        tenantIds: List[String],
     ) derives JsonCodec
 
     private case class RegistryResponse(

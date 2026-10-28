@@ -34,7 +34,7 @@ case class Resource(
     resource: URL,
     endpoints: Vector[ResourceEndpoint],
     secret: Option[Secret],
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives JsonCodec
 
 object Resource:

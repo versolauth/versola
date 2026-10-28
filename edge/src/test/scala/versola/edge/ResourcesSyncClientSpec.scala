@@ -69,7 +69,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(
               Response.json(
-                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(
+                s"""{"resources":[{"resourceId":"central","audienceRateLimits":[],"resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(
                     encryptedSecret,
                   )}"}]}""",
               ),
@@ -94,7 +94,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.succeed(
             Response.json(
-              s"""{"resources":[{"resourceId":"api","resource":"https://api.example","endpoints":[
+              s"""{"resources":[{"resourceId":"api","audienceRateLimits":[],"resource":"https://api.example","endpoints":[
                  |{"id":"$limited","method":"GET","path":"/orders","fetchUserInfo":false,"allow":null,"inject":[],
                  |"stepUpCondition":null,"stepUpAcr":null,"maxAge":null,
                  |"rateLimit":{"limits":[{"limit":60,"windowSeconds":60}],"burst":10,"by":"subject","mode":"enforce"}},
@@ -121,7 +121,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
               """{"resources":[
                 |{"resourceId":"api","resource":"https://api.example","endpoints":[],"secret":null,
                 | "audienceRateLimits":[{"clientId":"plan-a","rateLimit":{"limits":[{"limit":600,"windowSeconds":60}],"burst":50,"by":"subject","mode":"enforce"}}]},
-                |{"resourceId":"plain","resource":"https://plain.example","endpoints":[],"secret":null}]}""".stripMargin,
+                |{"resourceId":"plain","audienceRateLimits":[],"resource":"https://plain.example","endpoints":[],"secret":null}]}""".stripMargin,
             ),
           ).toRoutes,
         )
@@ -143,7 +143,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { _ =>
             ZIO.succeed(
               Response.json(
-                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[
+                s"""{"resources":[{"resourceId":"central","audienceRateLimits":[],"resource":"https://central.example","endpoints":[
                    |{"id":"$endpointId","method":"GET","path":"/orders","fetchUserInfo":false,
                    |"allow":"request.body.total <= 50000",
                    |"inject":[{"target":"header","name":"X-User","expression":"token.sub"}],

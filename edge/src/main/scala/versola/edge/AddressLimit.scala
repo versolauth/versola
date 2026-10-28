@@ -3,7 +3,6 @@ package versola.edge
 import versola.util.http.{Checkpoint, ClientIpSource, IpAddress, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import zio.*
 import zio.http.*
-import zio.json.{EncoderOps, JsonEncoder}
 import zio.metrics.{Metric, MetricLabel}
 
 import java.net.InetAddress
@@ -55,8 +54,6 @@ object AddressLimit:
     case Skip, Entry, Authenticated
 
   private val clientAddresses = Metric.counter("edge_client_address_total")
-
-  private case class RateLimitedBody(error: String, policy: String) derives JsonEncoder
 
   private def kindOf(pattern: String): Kind =
     if pattern.startsWith("/service/") || pattern == "/logout/backchannel" then Kind.Skip
@@ -137,8 +134,8 @@ object AddressLimit:
       case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
         Observability.setError("rate_limited", Some(policy)) *>
           ZIO.fail(
-            Response.json(RateLimitedBody(error = "rate_limited", policy = policy).toJson)
-              .status(Status.TooManyRequests)
+            // no body: see `EdgeService`; the headers say what a caller can act on
+            Response.status(Status.TooManyRequests)
               .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
               .addHeaders(Headers(limiter.responseHeaders(limited).map((name, value) => Header.Custom(name, value)))),
           )
