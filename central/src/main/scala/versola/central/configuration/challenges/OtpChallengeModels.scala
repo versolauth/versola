@@ -43,6 +43,9 @@ case class UpsertChallengeSettingsRequest(
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
+    /** See [[ChallengeSettingsRecord.passkeyPolicy]]. Null clears it, absent keeps the stored one. No default, for the
+      * same reason as `signingKeyId`. */
+    passkeyPolicy: Option[Patch[PasskeyPolicy]],
     authConversationTtlSeconds: Option[Int],
     sessionTtlSeconds: Option[Int],
     sessionIdleTtlSeconds: Option[Int],
@@ -83,7 +86,7 @@ case class UpsertChallengeSettingsRequest(
   * merged into -- `submissionLimits`, `passkeySettings`, `emailRegistration` and `acrVocabulary` are sent in full.
   *
   * Absent keeps, a value replaces, `null` clears: only the optional members can be cleared (`sessionIdleTtlSeconds`,
-  * `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`, `signingKeyId`, `logoLight`, `logoDark`), and a
+  * `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`, `signingKeyId`, `logoLight`, `logoDark`, `passkeyPolicy`), and a
   * `null` for any other member is refused rather than read as absent. An unknown key is refused too, so a misspelt
   * member cannot pass for an applied change.
   *
@@ -99,6 +102,7 @@ case class PatchChallengeSettingsRequest(
     otpLength: Option[Patch[Int]],
     otpResendAfter: Option[Patch[Int]],
     passkeySettings: Option[Patch[PasskeySettings]],
+    passkeyPolicy: Option[Patch[PasskeyPolicy]],
     authConversationTtlSeconds: Option[Patch[Int]],
     sessionTtlSeconds: Option[Patch[Int]],
     sessionIdleTtlSeconds: Option[Patch[Int]],
@@ -157,6 +161,7 @@ case class PatchChallengeSettingsRequest(
         otpLength = otpLength,
         otpResendAfter = otpResendAfter,
         passkeySettings = passkeySettings,
+        passkeyPolicy = this.passkeyPolicy.applyTo(current.passkeyPolicy),
         authConversationTtlSeconds = authConversationTtlSeconds,
         sessionTtlSeconds = sessionTtlSeconds,
         sessionIdleTtlSeconds = this.sessionIdleTtlSeconds.applyTo(current.sessionIdleTtlSeconds),

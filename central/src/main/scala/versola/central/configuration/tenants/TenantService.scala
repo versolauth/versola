@@ -150,6 +150,7 @@ object TenantService:
           origins = config.bootstrap.map(_.passkey.origins).getOrElse(Nil),
           userVerification = "preferred",
         ),
+        passkeyPolicy = None,
         authConversationTtlSeconds = 900,
         sessionTtlSeconds = 86400,
         sessionIdleTtlSeconds = None,

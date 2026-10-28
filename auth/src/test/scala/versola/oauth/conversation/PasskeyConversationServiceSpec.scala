@@ -3,7 +3,14 @@ package versola.oauth.conversation
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.passkey.{
+  AssertionOutcome,
+  PasskeyCeremony,
+  PasskeyEnrollmentRepository,
+  PasskeyRepository,
+  WebAuthnError,
+  WebAuthnService,
+}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
@@ -12,6 +19,9 @@ import versola.oauth.client.model.{
   ClientId,
   PassedAuthFactor,
   PasskeyAuthFlow,
+  PasskeyEnrollmentMode,
+  PasskeyEnrollmentState,
+  PasskeyPolicy,
   PasskeySettings,
   PrimaryCredential,
   ScopeToken,
@@ -66,6 +76,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val submissionLimiter = stub[SubmissionLimiter]
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
+    val passkeyEnrollmentRepository = stub[PasskeyEnrollmentRepository]
     val configService = stub[OAuthConfigurationService]
     val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
@@ -88,6 +99,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       submissionLimiter,
       webAuthnService,
       passkeyRepository,
+      passkeyEnrollmentRepository,
       configService,
       acrResolver,
       userAgentRepository,
@@ -151,13 +163,176 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     for
       _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
       _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+      _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
       _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
       _ <- env.conversationRepository.overwrite.succeedsWith(true)
       _ <- env.service.offerPasskeyEnroll(authId, record.copy(userId = Some(userId)))
       call = env.webAuthnService.startRegistration.calls.head
     yield (call._3, call._4)
 
+  private def policy(mode: PasskeyEnrollmentMode, graceSkips: Option[Int], graceDays: Option[Int]) =
+    PasskeyPolicy(mode = mode, graceSkips = graceSkips, graceDays = graceDays)
+
+  private val recordWithUser = baseRecord.copy(userId = Some(userId))
+
+  /** Stubs what offering the enrolment card touches, for a user without a passkey under `policy`. */
+  private def offering(env: Env, policy: PasskeyPolicy, state: Option[PasskeyEnrollmentState]) =
+    for
+      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+      _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+      _ <- env.configService.getPasskeyPolicy.succeedsWith(Some(policy))
+      _ <- env.passkeyEnrollmentRepository.find.succeedsWith(state)
+      _ <- env.passkeyEnrollmentRepository.recordOffer.succeedsWith(())
+      _ <- env.passkeyEnrollmentRepository.recordSkip.succeedsWith(())
+      _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
+      _ <- env.conversationRepository.overwrite.succeedsWith(true)
+    yield ()
+
+  private def card(skippable: Boolean) =
+    ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}", skippable = skippable))
+
+  private def stateOf(skips: Int) = Some(PasskeyEnrollmentState(userId = userId, firstOfferedAt = Instant.EPOCH, skips = skips))
+
+  val policySpec = suite("passkey policy")(
+    suite("offerPasskeyEnroll")(
+      test("off: a client's passkeyEnroll factor still gets its skippable card, the tenant does not override it") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.off, None, None), None)
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = true), env.passkeyEnrollmentRepository.recordOffer.calls.isEmpty)
+      },
+      test("offered: render a skippable card and keep no record") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.offered, None, None), None)
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = true), env.passkeyEnrollmentRepository.recordOffer.calls.isEmpty)
+      },
+      test("required: render a card without skip") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.required, None, None), None)
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = false))
+      },
+      test("required: refuse the sign-in when the ceremony cannot start, instead of finishing without a passkey") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.required, None, None), None)
+          _ <- env.webAuthnService.startRegistration.failsWith(WebAuthnError.PasskeysNotEnabled)
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("required_after_grace: the first offer is recorded and skippable") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None), None)
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = true), env.passkeyEnrollmentRepository.recordOffer.calls == List((userId, Instant.EPOCH)))
+      },
+      test("required_after_grace: skippable while skips remain") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None), stateOf(2))
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = true), env.passkeyEnrollmentRepository.recordOffer.calls.isEmpty)
+      },
+      test("required_after_grace: mandatory once the skips are used up") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None), stateOf(3))
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = false))
+      },
+      test("required_after_grace: mandatory once the days are over, even with skips left") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(10), Some(7)), stateOf(1))
+          _ <- TestClock.adjust(zio.Duration.fromSeconds(8 * 86400L))
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = false))
+      },
+      test("required_after_grace: skippable inside the days") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, None, Some(7)), stateOf(5))
+          _ <- TestClock.adjust(zio.Duration.fromSeconds(6 * 86400L))
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = true))
+      },
+      test("a user who has a passkey is not offered one under any policy") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.required, None, None), None)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector(PasskeyRecord(
+            id = CredentialId(Array.empty),
+            userId = userId,
+            publicKey = Array.empty,
+            signatureCounter = 0,
+            deviceType = CredentialDeviceType.SingleDevice,
+            backedUp = true,
+            backupEligible = true,
+            transports = Nil,
+            attestationObject = None,
+            clientDataJson = None,
+            aaguid = None,
+            name = None,
+            lastUsedAt = None,
+            createdAt = Instant.EPOCH,
+            updatedAt = Instant.EPOCH,
+          )))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          result <- env.service.offerPasskeyEnroll(authId, recordWithUser).exit
+        yield assertTrue(env.webAuthnService.startRegistration.calls.isEmpty, env.passkeyEnrollmentRepository.find.calls.isEmpty)
+      },
+    ),
+    suite("skipPasskey")(
+      test("offered: the skip is allowed and nothing is counted") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.offered, None, None), None)
+          result <- env.service.skipPasskey(authId, recordWithUser)
+        yield assertTrue(result == ConversationResult.StepPassed(recordWithUser), env.passkeyEnrollmentRepository.recordSkip.calls.isEmpty)
+      },
+      test("no policy: the skip is allowed, as before the policy existed") {
+        val env = Env()
+        for
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
+          result <- env.service.skipPasskey(authId, recordWithUser)
+        yield assertTrue(result == ConversationResult.StepPassed(recordWithUser))
+      },
+      test("required_after_grace: a skip inside the grace is counted") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None), stateOf(1))
+          result <- env.service.skipPasskey(authId, recordWithUser)
+        yield assertTrue(
+          result == ConversationResult.StepPassed(recordWithUser),
+          env.passkeyEnrollmentRepository.recordSkip.calls == List((userId, Instant.EPOCH)),
+        )
+      },
+      test("required_after_grace: a skip after the grace is refused and the mandatory card comes back") {
+        val env = Env()
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.requiredAfterGrace, Some(3), None), stateOf(3))
+          result <- env.service.skipPasskey(authId, recordWithUser)
+        yield assertTrue(result == card(skippable = false), env.passkeyEnrollmentRepository.recordSkip.calls.isEmpty)
+      },
+      test("required: a skip submitted for a card that had a skip button is refused") {
+        val env = Env()
+        val stale = recordWithUser.copy(step = ConversationStep.PasskeyEnroll("old", "{}", skippable = true))
+        for
+          _ <- offering(env, policy(PasskeyEnrollmentMode.required, None, None), None)
+          result <- env.service.skipPasskey(authId, stale)
+        yield assertTrue(result == card(skippable = false), env.passkeyEnrollmentRepository.recordSkip.calls.isEmpty)
+      },
+    ),
+  )
+
   def spec = suite("PasskeyConversationServiceSpec")(
+    policySpec,
     suite("startPasskeyAssertion")(
       test("return publicKeyOptions and update step with request") {
         val env = Env()
@@ -249,12 +424,13 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.userRepository.find.succeedsWith(Some(user))
           _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse, None)
           resetSubjects = env.submissionLimiter.reset.calls.map(_._2)
         yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}")),
+          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}", enrollFailed = false, skippable = true)),
           resetSubjects == List("cred-123"),
         )
       },
@@ -596,11 +772,12 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
         yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}")),
+          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}", skippable = true)),
         )
       },
       test("name the account by the phone number the user signed in with") {
@@ -677,6 +854,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
           _ <- env.webAuthnService.startRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.PasskeysNotEnabled)
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
@@ -746,7 +924,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     suite("finishPasskeyEnroll")(
       test("deny access when reached without a resolved user") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}", enrollFailed = false, skippable = true)
         for
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyEnroll(authId, baseRecord, enrollStep, "resp", PasskeyName("my-passkey"))
@@ -755,7 +933,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       test("pass the step on success so the caller decides what follows") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
-        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}", enrollFailed = false, skippable = true)
         val dummyPasskey = PasskeyRecord(
           id = CredentialId(Array.fill(16)(1.toByte)),
           userId = userId,
@@ -802,7 +980,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       test("re-render enroll step with enrollFailed flag when registration fails") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
-        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}", enrollFailed = false, skippable = true)
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
@@ -821,6 +999,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testMac = versola.util.MAC(Array.fill(32)(4.toByte))
         for
+          _ <- env.configService.getPasskeyPolicy.succeedsWith(None)
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)

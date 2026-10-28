@@ -1684,6 +1684,7 @@ export async function upsertChallengeSettings(settings: ChallengeSettingsRecord)
       otpLength: settings.otpLength,
       otpResendAfter: settings.otpResendAfter,
       passkeySettings: settings.passkeySettings ?? null,
+      passkeyPolicy: settings.passkeyPolicy ?? null,
       authConversationTtlSeconds: settings.authConversationTtlSeconds,
       sessionTtlSeconds: settings.sessionTtlSeconds,
       sessionIdleTtlSeconds: settings.sessionIdleTtlSeconds ?? null,

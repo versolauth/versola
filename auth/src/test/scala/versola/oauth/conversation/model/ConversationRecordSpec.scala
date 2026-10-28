@@ -209,7 +209,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
         )
       },
       test("PasskeyEnroll matches the enrollment step") {
-        val step = ConversationStep.PasskeyEnroll("request", "options")
+        val step = ConversationStep.PasskeyEnroll("request", "options", enrollFailed = false, skippable = true)
         assertTrue(
           ConversationRecord.PasskeyEnroll.unapply(record.copy(step = step)) == Some(step),
           ConversationRecord.PasskeyEnroll.unapply(record).isEmpty,

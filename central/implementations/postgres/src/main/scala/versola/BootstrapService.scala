@@ -829,6 +829,7 @@ object BootstrapService:
         origins = passkeyConfig.origins,
         userVerification = "preferred",
       ),
+      passkeyPolicy = None,
       authConversationTtlSeconds = 900,
       sessionTtlSeconds = 86400,
       sessionIdleTtlSeconds = None,

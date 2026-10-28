@@ -55,9 +55,11 @@ object ConversationStep:
   ) extends ConversationStep(StepId.SetPassword)
 
   case class PasskeyEnroll(
-      request: String,              // serialized registration ceremony state
-      publicKeyOptions: String,     // JSON for navigator.credentials.create()
+      request: String,               // serialized registration ceremony state
+      publicKeyOptions: String,      // JSON for navigator.credentials.create()
       enrollFailed: Boolean = false, // set when a submitted registration fails server-side verification
+      /** Whether the card has a skip button; false when the tenant's policy makes the passkey mandatory. */
+      skippable: Boolean,
   ) extends ConversationStep(StepId.PasskeyEnroll)
 
   /** Asks the user to authorize the client for the requested scope. The scope is carried on the

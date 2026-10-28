@@ -102,6 +102,23 @@ case class ChallengeResult(response: Response, html: String):
   def assertStep(expected: ConversationStep): Task[ChallengeResult] =
     step.assertIs(expected).as(this)
 
+  /** What the passkey enrolment card was rendered with: the options for `navigator.credentials.create()` and whether
+    * the card has a skip button. Read from the form configuration the page carries. */
+  def passkeyEnrollCard: Task[PasskeyEnrollCard] =
+    val marker = "window.__VERSOLA_FORM__ = "
+    val start = html.indexOf(marker)
+    // The page inlines the config on one line, either as `...;</script>...` or as `...;` ending the line.
+    val raw = if start < 0 then "" else html.substring(start + marker.length).takeWhile(_ != '\n').split(";</script>", 2).head.stripSuffix(";")
+    for
+      _ <- ZIO.fail(RuntimeException("no form configuration in the challenge HTML")).when(start < 0)
+      config <- ZIO.fromEither(raw.trim.fromJson[Json.Obj]).mapError(error => RuntimeException(s"form configuration is not JSON [$error]: $raw"))
+      step <- ZIO.fromOption(config.get("step").flatMap(_.asObject)).orElseFail(RuntimeException("form configuration has no step"))
+      options <- ZIO.fromOption(step.get("publicKeyOptions").flatMap(_.asString)).orElseFail(RuntimeException("step has no publicKeyOptions"))
+      skippable <- ZIO.fromOption(step.get("skippable").flatMap(_.asBoolean)).orElseFail(RuntimeException("step has no skippable flag"))
+    yield PasskeyEnrollCard(publicKeyOptions = options, skippable = skippable)
+
+case class PasskeyEnrollCard(publicKeyOptions: String, skippable: Boolean)
+
 extension (task: Task[ChallengeResult])
   def assertStep(expected: ConversationStep): Task[ChallengeResult] = task.flatMap(_.assertStep(expected))
 
@@ -736,6 +753,16 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** POST /challenge/passkey — submits a signed assertion to log in with a passkey. */
   def submitPasskeyAssertion(cookie: String, response: String, csrf: String): Task[SubmitResult] =
     formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/passkey/enroll — submits the credential a user created on the enrolment card. */
+  def submitPasskeyEnroll(cookie: String, response: String, name: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/enroll", Map("response" -> response, "name" -> name, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/passkey/skip — what the enrolment card's skip button sends. */
+  def submitPasskeySkip(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/skip", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /challenge/passkey/unavailable — what the passkey-only form sends when the browser
@@ -1487,6 +1514,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * these two. Central takes both or neither. */
       logoLight: Option[String] = None,
       logoDark: Option[String] = None,
+      /** The tenant's passkey enrolment policy as a JSON object, e.g. `{"mode":"required",...}`. Sent as null when
+        * `None`, which clears it, so every call leaves the tenant on exactly this policy. */
+      passkeyPolicy: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1509,6 +1539,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
          |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
          |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")},
+         |  "passkeyPolicy": ${passkeyPolicy.getOrElse("null")},
          |  "logoLight": ${logoLight.fold("null")(url => s"\"$url\"")},
          |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin

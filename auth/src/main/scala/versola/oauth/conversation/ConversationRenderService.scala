@@ -116,7 +116,7 @@ object ConversationRenderService:
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
 
     @jsonHint("passkey-enroll")
-    case class PasskeyEnroll(publicKeyOptions: String) extends StepView
+    case class PasskeyEnroll(publicKeyOptions: String, skippable: Boolean) extends StepView
 
     /** One row on the consent card. `description` and `claims` preserve the initial server-side
       * resolution, while the localization maps let the form react to a locale change in-place. */
@@ -759,7 +759,7 @@ object ConversationRenderService:
           )
 
         case s: ConversationStep.PasskeyEnroll =>
-          ZIO.succeed(StepView.PasskeyEnroll(publicKeyOptions = s.publicKeyOptions))
+          ZIO.succeed(StepView.PasskeyEnroll(publicKeyOptions = s.publicKeyOptions, skippable = s.skippable))
 
         case s: ConversationStep.Consent =>
           for

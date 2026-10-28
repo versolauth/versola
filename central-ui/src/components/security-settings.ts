@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type {
-  ChallengeSettingsChanges, ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, SubmissionLimits,
+  ChallengeSettingsChanges, ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeyEnrollmentMode, PasskeyPolicy, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, SubmissionLimits,
 } from '../types';
 import { fetchChallengeSettings, fetchJwksKeys, getRoles, patchChallengeSettings, upsertChallengeSettings } from '../utils/central-api';
 import { confirmDiscardDraft } from '../utils/draft-guard';
@@ -70,6 +70,7 @@ function defaultSettings(tenantId: string): ChallengeSettingsRecord {
     otpLength: 6,
     otpResendAfter: 60,
     passkeySettings: null,
+    passkeyPolicy: null,
     authConversationTtlSeconds: 900,
     sessionTtlSeconds: 86400,
     sessionIdleTtlSeconds: null,
@@ -725,6 +726,15 @@ export class VersolaSecuritySettings extends LitElement {
         if (origins.length === 0) errors.origins = 'At least one origin is required.';
         else if (origins.some(origin => !isHttpUrl(origin))) errors.origins = 'Every origin is an absolute http(s) URL.';
         changes.passkeySettings = { rpId, rpName, origins, userVerification: draft.passkeySettings?.userVerification ?? 'preferred' };
+        const policy = draft.passkeyPolicy;
+        if (policy?.mode === 'required_after_grace') {
+          const { graceSkips, graceDays } = policy;
+          if (graceSkips == null && graceDays == null) errors.graceSkips = 'Set a number of skips, a number of days, or both.';
+          if (graceSkips != null && (!Number.isInteger(graceSkips) || graceSkips < 1 || graceSkips > 100)) errors.graceSkips = 'Between 1 and 100.';
+          if (graceDays != null && (!Number.isInteger(graceDays) || graceDays < 1 || graceDays > 365)) errors.graceDays = 'Between 1 and 365.';
+        }
+        // A grace belongs to required_after_grace only: central refuses it on any other mode.
+        changes.passkeyPolicy = policy ? { mode: policy.mode, graceSkips: policy.mode === 'required_after_grace' ? policy.graceSkips : null, graceDays: policy.mode === 'required_after_grace' ? policy.graceDays : null } : null;
         break;
       }
       case 'registration': {
@@ -895,6 +905,7 @@ export class VersolaSecuritySettings extends LitElement {
         ${this.row('Relying party', html`<span class="mono">${settings.passkeySettings.rpId}</span> · ${settings.passkeySettings.rpName}`)}
         ${this.row('User verification', settings.passkeySettings.userVerification.charAt(0).toUpperCase() + settings.passkeySettings.userVerification.slice(1))}
         ${this.row('Allowed origins', this.tags(settings.passkeySettings.origins, 'None'))}
+        ${this.row('Enrolment after sign-in', this.passkeyPolicyLabel(settings.passkeyPolicy))}
       ` : html`<div class="record-row"><div class="record-label"></div><div class="record-value muted">Passkeys are not configured for this tenant. Every save needs them: set them up first.</div></div>`)}
 
       ${this.card('registration', 'Who may create an account and what they get.', html`
@@ -1198,6 +1209,19 @@ export class VersolaSecuritySettings extends LitElement {
     `;
   }
 
+  private passkeyPolicyLabel(policy: PasskeyPolicy | null | undefined): string {
+    if (!policy) return 'Decided by each client';
+    switch (policy.mode) {
+      case 'off': return 'Off; a client may still offer';
+      case 'offered': return 'Offered, can always be skipped';
+      case 'required': return 'Required';
+      case 'required_after_grace': {
+        const grace = [policy.graceSkips != null ? `${policy.graceSkips} skips` : '', policy.graceDays != null ? `${policy.graceDays} days` : ''].filter(Boolean).join(' or ');
+        return `Required after ${grace}`;
+      }
+    }
+  }
+
   private renderPasskeysEditor() {
     const passkeys: PasskeySettings = this.draft!.passkeySettings ?? { rpId: '', rpName: '', origins: [], userVerification: 'preferred' };
     const patchPasskeys = (changes: Partial<PasskeySettings>) => this.patch({ passkeySettings: { ...passkeys, ...changes } });
@@ -1217,6 +1241,34 @@ export class VersolaSecuritySettings extends LitElement {
         <p class="editor-sub">The full origins permitted to use these passkeys.</p>
         ${this.entryList(this.origins, 'Origin', 'https://example.com', entries => this.origins = entries, 'origin', '+ Add origin')}
         ${this.error('origins')}
+      </div>
+      ${this.renderPasskeyPolicyEditor()}
+    `;
+  }
+
+  private renderPasskeyPolicyEditor() {
+    const policy: PasskeyPolicy | null = this.draft!.passkeyPolicy ?? null;
+    const mode = policy?.mode ?? 'client';
+    const setMode = (value: string) => this.patch({
+      passkeyPolicy: value === 'client' ? null : { mode: value as PasskeyEnrollmentMode, graceSkips: value === 'required_after_grace' ? (policy?.graceSkips ?? 3) : null, graceDays: value === 'required_after_grace' ? policy?.graceDays ?? null : null },
+    });
+    const parse = (value: string) => (value.trim() === '' ? null : parseInt(value) || 0);
+    const options: [string, string][] = [
+      ['client', 'Decided by each client'], ['off', 'Off (a client may still offer)'], ['offered', 'Offer, always skippable'],
+      ['required_after_grace', 'Require after a grace'], ['required', 'Require'],
+    ];
+    return html`
+      <div class="editor-box">
+        <h3>Enrolment after sign-in</h3>
+        <p class="editor-sub">What a user who signs in without a passkey is asked. Not applied to registration, which has its own passkey step.</p>
+        ${this.field('passkeyPolicyMode', 'Policy', html`
+          <select id="passkeyPolicyMode" class="compact-input" .value=${mode} @change=${(e: Event) => setMode((e.target as HTMLSelectElement).value)}>
+            ${options.map(([value, label]) => html`<option value=${value} ?selected=${mode === value}>${label}</option>`)}
+          </select>`, 'Required: the sign-in cannot finish without a passkey, and it is refused when the passkey cannot be offered.')}
+        ${policy?.mode === 'required_after_grace' ? html`
+          ${this.field('graceSkips', 'Skips allowed', this.textInput('graceSkips', policy.graceSkips == null ? '' : String(policy.graceSkips), value => this.patch({ passkeyPolicy: { ...policy, graceSkips: parse(value) } }), { type: 'number', max: '8rem' }), 'How many times the user may skip the offer. Leave empty for no limit by skips.')}
+          ${this.field('graceDays', 'Days allowed', this.textInput('graceDays', policy.graceDays == null ? '' : String(policy.graceDays), value => this.patch({ passkeyPolicy: { ...policy, graceDays: parse(value) } }), { type: 'number', max: '8rem' }), 'Days after the first offer the user may keep skipping. The grace ends with whichever runs out first.')}
+        ` : ''}
       </div>
     `;
   }

@@ -353,11 +353,11 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           (result, _) <- env.router.submit(authId, submission, None, None)
           checkOtpTimes = env.otpConversationService.checkOtp.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(
           result == completeResult,
           checkOtpTimes == 1,
@@ -412,10 +412,10 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(recordWithPasskeyAmr))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == completeResult,
@@ -441,11 +441,11 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
           _ <- env.otpConversationService.checkLoginPassword.succeedsWith(successResult)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           (result, _) <- env.router.submit(authId, submission, None, None)
           checkTimes = env.otpConversationService.checkLoginPassword.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(
           result == completeResult,
           checkTimes == 1,
@@ -487,7 +487,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.checkLoginPassword.succeedsWith(renderResult)
           (result, _) <- env.router.submit(authId, submission, None, None)
           checkTimes = env.otpConversationService.checkLoginPassword.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(
           result == renderResult,
           checkTimes == 1,
@@ -703,7 +703,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
           registerTimes = env.otpConversationService.registerVerifiedUser.times
           setPasswordTimes = env.otpConversationService.offerSetPassword.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(
           result == conversationResult,
           registerTimes == 1,
@@ -776,7 +776,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
           (result, _) <- env.router.submit(authId, PasskeySkipSubmission("test-csrf"), None, None)
-          finished = env.otpConversationService.finish.calls
+          finished = env.otpConversationService.finishOrOfferPasskey.calls
         yield assertTrue(result == ConversationResult.BadRequest, finished.isEmpty)
       },
       test("a correct password does not finish the conversation, the passkey is asked for again") {
@@ -789,7 +789,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.configService.getAcrVocabulary.succeedsWith(poVocabulary)
           _ <- env.otpConversationService.promptPasskey.succeedsWith(prompt)
           (result, _) <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
-          finished = env.otpConversationService.finish.calls
+          finished = env.otpConversationService.finishOrOfferPasskey.calls
         yield assertTrue(result == prompt, finished.isEmpty)
       },
       test("'passkey unavailable' denies, and is refused outside a passkey-only step") {
@@ -993,7 +993,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.preparePasswordStep.succeedsWith(passwordResult)
           _ <- env.router.advance(authId, record)
           passwordTimes = env.otpConversationService.preparePasswordStep.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(passwordTimes == 1, finishTimes == 0)
       },
       test("finishes, rather than asking again, once the password was passed in an inline-password flow") {
@@ -1008,10 +1008,10 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
         for
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
           _ <- env.router.advance(authId, record)
           passwordTimes = env.otpConversationService.preparePasswordStep.times
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
         yield assertTrue(passwordTimes == 0, finishTimes == 1)
       },
       test("does not ask for a password in an inline-password flow when the class does not need one") {
@@ -1020,7 +1020,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val record = otpRecord.copy(authFlow = inlineFlow, targetAcr = None, userId = Some(testUserId))
         for
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(ConversationResult.RenderStep(ConversationStep.AccessDenied))
           _ <- env.router.advance(authId, record)
           passwordTimes = env.otpConversationService.preparePasswordStep.times
         yield assertTrue(passwordTimes == 0)
@@ -1067,9 +1067,9 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
         for
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           _ <- env.router.advance(authId, record)
-          finishTimes = env.otpConversationService.finish.times
+          finishTimes = env.otpConversationService.finishOrOfferPasskey.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           finishTimes == 1,
@@ -1229,7 +1229,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
           _ <- env.otpConversationService.checkPassword.succeedsWith(ConversationResult.StepPassed(record))
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           (result, _) <- env.router.submit(authId, PasswordSubmission(password, "test-csrf"), None, None)
         yield assertTrue(result == completeResult)
       },
@@ -1273,7 +1273,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("advances to the next registration step when passkey enrollment passes during registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val twoStepFlow = RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp(), RegistrationStep.PasskeyEnroll()), Set(roleId))
         val record = initialRecord.copy(
           step = enrollStep,
@@ -1300,7 +1300,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("finishes the conversation when passkey enrollment passes outside registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val completeResult = ConversationResult.Complete(
           redirectUri,
@@ -1321,7 +1321,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("re-renders the enrollment step with enrollFailed when the ceremony fails") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val failedResult = ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true))
         for
@@ -1332,7 +1332,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("treats a non-failed enrollment render as passed for metrics purposes") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val renderResult = ConversationResult.RenderStep(enrollStep)
         for
@@ -1343,7 +1343,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("skips passkey enrollment and advances the registration step") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val twoStepFlow = RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp(), RegistrationStep.PasskeyEnroll()), Set(roleId))
         val record = initialRecord.copy(
           step = enrollStep,
@@ -1370,7 +1370,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("skips passkey enrollment and finishes outside registration") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         val completeResult = ConversationResult.Complete(
           redirectUri,
@@ -1391,7 +1391,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("returns a render result directly from a skip submission") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep, userId = Some(testUserId))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
@@ -1417,7 +1417,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
           _ <- env.otpConversationService.setNewPassword.succeedsWith(ConversationResult.StepPassed(record))
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           (result, _) <- env.router.submit(authId, SetPasswordSubmission(password, "test-csrf"), None, None)
         yield assertTrue(result == completeResult)
       },
@@ -1517,7 +1517,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(record))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          _ <- env.otpConversationService.finishOrOfferPasskey.succeedsWith(completeResult)
           (result, _) <- env.router.submit(authId, PhoneSubmission(phone, ProofInput.NoScript, "test-csrf"), None, None)
         yield assertTrue(result == completeResult)
       },
@@ -1668,7 +1668,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("labels a mismatch on the PasskeyEnroll step") {
         val env = Env()
-        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}")
+        val enrollStep = ConversationStep.PasskeyEnroll("req", "{}", enrollFailed = false, skippable = true)
         val record = initialRecord.copy(step = enrollStep)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(record))

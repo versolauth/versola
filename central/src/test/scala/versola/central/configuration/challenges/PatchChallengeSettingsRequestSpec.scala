@@ -18,6 +18,7 @@ object PatchChallengeSettingsRequestSpec extends UnitSpecBase:
     otpLength = 6,
     otpResendAfter = 60,
     passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
+    passkeyPolicy = None,
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = Some(1800),
@@ -64,6 +65,31 @@ object PatchChallengeSettingsRequestSpec extends UnitSpecBase:
       test("null clears the logo pair together") {
         val result = applied(""""logoLight":null,"logoDark":null""")
         assertTrue(result == Right(stored.copy(logoLight = None, logoDark = None)))
+      },
+      test("sets the passkey policy under the wire names, and null clears it") {
+        val set = applied(""""passkeyPolicy":{"mode":"required_after_grace","graceSkips":3,"graceDays":14}""")
+        val policy = PasskeyPolicy(mode = PasskeyEnrollmentMode.requiredAfterGrace, graceSkips = Some(3), graceDays = Some(14))
+        val withPolicy = stored.copy(passkeyPolicy = Some(policy))
+        assertTrue(
+          set == Right(withPolicy),
+          patch(""""passkeyPolicy":null""").flatMap(_.applyTo(withPolicy)) == Right(stored),
+        )
+      },
+      test("refuses required_after_grace without a grace, which would silently be required") {
+        val result = applied(""""passkeyPolicy":{"mode":"required_after_grace","graceSkips":null,"graceDays":null}""")
+        assertTrue(result == Left("passkeyPolicy required_after_grace needs graceSkips or graceDays"))
+      },
+      test("refuses a grace on a mode that has none") {
+        val result = applied(""""passkeyPolicy":{"mode":"required","graceSkips":2,"graceDays":null}""")
+        assertTrue(result == Left("passkeyPolicy graceSkips and graceDays apply only to required_after_grace"))
+      },
+      test("refuses a grace outside its bounds") {
+        val skips = applied(""""passkeyPolicy":{"mode":"required_after_grace","graceSkips":0,"graceDays":null}""")
+        val days = applied(""""passkeyPolicy":{"mode":"required_after_grace","graceSkips":null,"graceDays":366}""")
+        assertTrue(skips.isLeft, days.isLeft)
+      },
+      test("refuses a passkey policy mode that does not exist") {
+        assertTrue(patch(""""passkeyPolicy":{"mode":"sometimes","graceSkips":null,"graceDays":null}""").isLeft)
       },
       test("refuses null for a member that is not optional") {
         val result = applied(""""otpLength":null""")

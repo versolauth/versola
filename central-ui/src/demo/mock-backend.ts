@@ -297,6 +297,7 @@ type ChallengeSettingsDto = {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
+  passkeyPolicy?: { mode: string; graceSkips: number | null; graceDays: number | null } | null;
   authConversationTtlSeconds?: number;
   sessionTtlSeconds?: number;
   sessionIdleTtlSeconds?: number | null;
@@ -339,6 +340,7 @@ export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto
   otpLength: 6,
   otpResendAfter: 60,
   passkeySettings: null,
+  passkeyPolicy: null,
   requireDpopNonce: false,
   signingKeyId: null,
   mtlsCertificateHeader: null,
@@ -1665,6 +1667,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           securityProfile: profileOf(state, payload.tenantId),
           passwordRegex: payload.passwordRegex ?? null,
           passkeySettings: payload.passkeySettings ?? null,
+          passkeyPolicy: payload.passkeyPolicy ?? null,
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
           mtlsCertificateHeader: payload.mtlsCertificateHeader ?? null,
@@ -1680,9 +1683,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         // null clears an optional member. The mock refuses what central refuses, so a console that sends the whole
         // record back, a null for a required member or a misspelt key fails here as it would there.
         const payload = body as Record<string, unknown> & { tenantId?: string };
-        const optional = new Set(['sessionIdleTtlSeconds', 'acrVocabulary', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId', 'logoLight', 'logoDark']);
+        const optional = new Set(['sessionIdleTtlSeconds', 'acrVocabulary', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId', 'logoLight', 'logoDark', 'passkeyPolicy']);
         const members = new Set([
-          'tenantId', 'phoneRegions', 'emailRegistration', 'defaultRoles', 'submissionLimits', 'otpLength', 'otpResendAfter', 'passkeySettings',
+          'tenantId', 'phoneRegions', 'emailRegistration', 'defaultRoles', 'submissionLimits', 'otpLength', 'otpResendAfter', 'passkeySettings', 'passkeyPolicy',
           'authConversationTtlSeconds', 'sessionTtlSeconds', 'sessionIdleTtlSeconds', 'userAgentTtlSeconds', 'ipHeader', 'acrVocabulary',
           'postLogoutRedirectUris', 'requireDpopNonce', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId',
           'clientAssertionMaxLifetimeSeconds', 'securityProfile', 'logoLight', 'logoDark',

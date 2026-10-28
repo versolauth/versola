@@ -1625,7 +1625,7 @@ paths:
         `emailRegistration` and `acrVocabulary` are sent in full, and so are `phoneRegions` and the
         other lists. `null` clears a member, but only the optional ones --
         `sessionIdleTtlSeconds`, `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`,
-        `signingKeyId`, `logoLight` and `logoDark`. `null` for any other member is refused with
+        `signingKeyId`, `logoLight`, `logoDark` and `passkeyPolicy`. `null` for any other member is refused with
         `400` rather than read as absent, and so is a key the record does not have.
 
         The record that would result is validated exactly as a `PUT` validates its record (the
@@ -5324,6 +5324,42 @@ components:
           type: string
           description: 'The WebAuthn user verification requirement, e.g. `preferred`.'
       required: [rpId, rpName, origins, userVerification]
+    PasskeyEnrollmentMode:
+      type: string
+      enum: [off, offered, required_after_grace, required]
+      description: >-
+        How firmly a user who signed in without having a passkey is asked to enrol one. `off`
+        adds no tenant offer (a client's own `passkeyEnroll` factor still offers a skippable card); `offered` asks after every sign-in and the user may always skip;
+        `required_after_grace` asks and allows a skip until the grace is used up, then the
+        sign-in cannot finish without a passkey; `required` allows no skip. When a mandatory
+        card cannot be offered (the registration ceremony does not start) the sign-in is
+        refused, not finished without a passkey.
+    PasskeyPolicy:
+      type: object
+      description: >-
+        A tenant's passkey enrolment policy, applied after a successful sign-in to a user who has
+        no passkey. It does not apply to a new account's registration, which offers a passkey only
+        through its own `passkeyEnroll` step (and then follows `mode`), nor to an existing
+        session that is resumed without a sign-in.
+      properties:
+        mode:
+          $ref: '#/components/schemas/PasskeyEnrollmentMode'
+        graceSkips:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 100
+          description: >-
+            Under `required_after_grace`: how many offers the user may skip. Must be null for any
+            other mode.
+        graceDays:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 365
+          description: >-
+            Under `required_after_grace`: how many days after the first offer the user may keep
+            skipping. The grace ends with whichever of `graceSkips` and `graceDays` runs out
+            first; `required_after_grace` needs at least one. Must be null for any other mode.
+      required: [mode, graceSkips, graceDays]
     ChallengeSettingsRecord:
       type: object
       properties:
@@ -5353,6 +5389,13 @@ components:
           description: Seconds before a new code can be requested.
         passkeySettings:
           $ref: '#/components/schemas/PasskeySettings'
+        passkeyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/PasskeyPolicy'
+            - type: 'null'
+          description: >-
+            The tenant's passkey enrolment policy. Null means none is set: each client's
+            `passkeyEnroll` factor decides, as it did before the policy existed.
         authConversationTtlSeconds:
           type: integer
         sessionTtlSeconds:
@@ -5469,6 +5512,14 @@ components:
           type: integer
         passkeySettings:
           $ref: '#/components/schemas/PasskeySettings'
+        passkeyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/PasskeyPolicy'
+            - type: 'null'
+          description: >-
+            Keeps the stored policy when omitted; null clears it, which hands the decision back to
+            each client's `passkeyEnroll` factor. Replaced whole. `required_after_grace` needs
+            `graceSkips` or `graceDays`, no other mode takes one, and each must be within its range.
         authConversationTtlSeconds:
           type: [integer, 'null']
           description: Keeps the stored value when omitted; defaults to 900 for a new tenant.
@@ -5577,6 +5628,11 @@ components:
           type: integer
         passkeySettings:
           $ref: '#/components/schemas/PasskeySettings'
+        passkeyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/PasskeyPolicy'
+            - type: 'null'
+          description: Replaced whole; null clears the policy. Validated as in `UpsertChallengeSettingsRequest`.
         authConversationTtlSeconds:
           type: integer
         sessionTtlSeconds:

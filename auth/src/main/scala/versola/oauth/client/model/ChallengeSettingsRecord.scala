@@ -115,6 +115,8 @@ case class ChallengeSettingsRecord(
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
+    /** Mirrors central's field of the same name, see [[PasskeyPolicy]]. */
+    passkeyPolicy: Option[PasskeyPolicy],
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,
     sessionIdleTtlSeconds: Option[Int],
