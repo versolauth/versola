@@ -11,6 +11,12 @@ import zio.http.{Cookie, Path}
   * `SameSite=Lax`, not `Strict` like [[EdgeSessionCookie]]: `/complete` is reached by the OP's redirect, a
   * cross-site top-level GET, which a `Strict` cookie does not accompany, so every login would be refused.
   * `Lax` still withholds it from cross-site subrequests and from any non-GET request.
+  *
+  * Known cost of one cookie per login: `/login` is unauthenticated, so a client that loops on it (a stale
+  * `redirect_uri`, a proxy that drops `Set-Cookie`) piles up one cookie per call in a browser for the
+  * `Max-Age` of 10 minutes. Browsers cap cookies per domain and evict the least recently used first, which
+  * can include `EDGE_SESSION`, and `/complete` carries them all. Accepted: it only affects such loops and is
+  * bounded by the TTL. If it is seen in the field, keep one cookie holding the last few `state.secret` pairs.
   */
 object EdgeLoginCookie:
   private val prefix = "EDGE_LOGIN_"

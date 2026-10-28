@@ -368,7 +368,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           tokens = Fixtures.tokens.copy(accessToken = accessToken)
           _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(tokens)
           service = env.buildService(client, security)
-          completion <- service.complete(code, Fixtures.state)
+          completion <- service.complete(code = code, state = Fixtures.state, browserBinding = None)
         yield assertTrue(
           completion.accessToken == accessToken,
           completion.cookieTtl == zio.Duration.fromSeconds(tokens.expiresIn),
@@ -386,7 +386,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          result <- service.complete(code, Fixtures.state).either
+          result <- service.complete(code = code, state = Fixtures.state, browserBinding = None).either
         yield assertTrue(result == Left(AuthConversationNotFound()))
       },
       test("completes an OAuth error and returns the post-login URL") {
@@ -403,10 +403,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
           redirectUrl <- service.completeError(
-            Fixtures.state,
-            "access_denied",
-            Some("User cancelled"),
-            None,
+            state = Fixtures.state,
+            error = "access_denied",
+            errorDescription = Some("User cancelled"),
+            errorUri = None,
+            browserBinding = None,
           )
         yield assertTrue(
           redirectUrl.url == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
@@ -503,10 +504,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           redirectUrl <- env.buildService(client, security).completeError(
-            Fixtures.state,
-            "unmet_authentication_requirements",
-            None,
-            None,
+            state = Fixtures.state,
+            error = "unmet_authentication_requirements",
+            errorDescription = None,
+            errorUri = None,
+            browserBinding = None,
           )
         yield assertTrue(
           redirectUrl.url.encode == "https://app.example/resources/auth/settings?error=unmet_authentication_requirements",
@@ -519,7 +521,13 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          result <- service.completeError(Fixtures.state, "access_denied", None, None).either
+          result <- service.completeError(
+            state = Fixtures.state,
+            error = "access_denied",
+            errorDescription = None,
+            errorUri = None,
+            browserBinding = None,
+          ).either
         yield assertTrue(result == Left(AuthConversationNotFound()))
       },
       // Distinct from the login-record-absent case above: here the record is found but its
@@ -535,7 +543,13 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          result <- service.completeError(Fixtures.state, "access_denied", None, None).either
+          result <- service.completeError(
+            state = Fixtures.state,
+            error = "access_denied",
+            errorDescription = None,
+            errorUri = None,
+            browserBinding = None,
+          ).either
         yield assertTrue(result == Left(AuthConversationNotFound()))
       },
       test("completeError includes error_uri in the redirect when supplied") {
@@ -552,10 +566,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
           redirectUrl <- service.completeError(
-            Fixtures.state,
-            "access_denied",
-            None,
-            Some("https://idp.example/errors/access_denied"),
+            state = Fixtures.state,
+            error = "access_denied",
+            errorDescription = None,
+            errorUri = Some("https://idp.example/errors/access_denied"),
+            browserBinding = None,
           )
         yield assertTrue(
           redirectUrl.url == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
@@ -574,7 +589,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          result <- service.complete(code, Fixtures.state).either
+          result <- service.complete(code = code, state = Fixtures.state, browserBinding = None).either
         yield assertTrue(result == Left(AuthConversationNotFound()))
       },
       test("fails with ClientNotFound when oauth client has been removed") {
@@ -589,7 +604,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          result <- service.complete(code, Fixtures.state).either
+          result <- service.complete(code = code, state = Fixtures.state, browserBinding = None).either
         yield assertTrue(
           result == Left(EdgeService.ClientNotFound(Fixtures.missingClientId)),
         )
@@ -624,7 +639,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
           _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(tokens)
           service = env.buildService(client, security)
-          completion <- service.complete(code, Fixtures.state)
+          completion <- service.complete(code = code, state = Fixtures.state, browserBinding = None)
           createCalls = env.sessionRepository.create.calls
           encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
           decryptedRefresh <- security.decryptAes256(createCalls.head.encryptedRefreshToken.get, encryptionKey)
@@ -661,7 +676,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Fixtures.tokens.copy(accessToken = accessToken),
           )
           service = env.buildService(client, security)
-          _ <- service.complete(code, Fixtures.state)
+          _ <- service.complete(code = code, state = Fixtures.state, browserBinding = None)
           createCalls = env.sessionRepository.create.calls
         yield assertTrue(
           createCalls.size == 1,
@@ -691,7 +706,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Fixtures.tokens.copy(accessToken = AccessToken("not-a-jwt")),
           )
           service = env.buildService(client, security)
-          result <- service.complete(code, Fixtures.state).either
+          result <- service.complete(code = code, state = Fixtures.state, browserBinding = None).either
         yield assertTrue(
           result.swap.toOption.collect { case ex: Throwable => ex.getMessage }.exists(_.contains("Failed to validate JWT")),
           env.sessionRepository.create.calls.isEmpty,

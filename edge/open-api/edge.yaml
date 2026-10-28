@@ -239,8 +239,8 @@ paths:
                 format: uri
             Set-Cookie:
               description: |
-                `EDGE_LOGIN_<state>` expired, on success and on error. And
-                `EDGE_SESSION=<presetId>:<accessToken>` on success only. `Secure`, `HttpOnly`,
+                `EDGE_LOGIN_<state>` is expired on success and on error. On success only,
+                `EDGE_SESSION=<presetId>:<accessToken>` is set: `Secure`, `HttpOnly`,
                 `SameSite=Strict`; `Domain` and `Path` come from the preset (`Path` defaults to
                 `/`) and `Max-Age` from the refresh token's lifetime.
               schema:

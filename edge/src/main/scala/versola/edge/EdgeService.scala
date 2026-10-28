@@ -60,7 +60,7 @@ trait EdgeService:
   def complete(
       code: Code,
       state: State,
-      browserBinding: Option[String] = None,
+      browserBinding: Option[String],
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginCompletion]
 
   def completeError(
@@ -68,7 +68,7 @@ trait EdgeService:
       error: String,
       errorDescription: Option[String],
       errorUri: Option[String],
-      browserBinding: Option[String] = None,
+      browserBinding: Option[String],
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginErrorRedirect]
 
   def proxy(
@@ -324,7 +324,9 @@ object EdgeService:
     ): IO[Throwable | AuthConversationNotFound, LoginCompletion] =
       for
         record <- findOwnLogin(state, browserBinding)
-        preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
+        preset <- clientService.findPreset(record.presetId)
+          .someOrFail(AuthConversationNotFound())
+          .tapError(_ => Observability.setError("preset_not_found"))
         client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
         tokens <- ssoClient.exchangeAuthorizationCode(
           code = code,
@@ -356,7 +358,9 @@ object EdgeService:
     ): IO[Throwable | AuthConversationNotFound, LoginErrorRedirect] =
       for
         record <- findOwnLogin(state, browserBinding)
-        preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
+        preset <- clientService.findPreset(record.presetId)
+          .someOrFail(AuthConversationNotFound())
+          .tapError(_ => Observability.setError("preset_not_found"))
         _ <- loginRepository.deleteByState(state)
       yield LoginErrorRedirect(
         url = ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
