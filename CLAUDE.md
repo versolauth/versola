@@ -15,7 +15,8 @@ compatibility cannot be kept, stop and ask. State any break, and how existing de
 in the PR and in `deploy.md`.
 
 Read before non-trivial work: `readme.md` (architecture), `develop.md` (running locally,
-config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
+config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`. Before any
+release work, read `release.md`.
 
 # Commands
 
