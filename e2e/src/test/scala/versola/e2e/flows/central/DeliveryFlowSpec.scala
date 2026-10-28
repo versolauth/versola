@@ -7,8 +7,7 @@ import zio.json.ast.Json
 import zio.test.*
 import zio.test.TestAspect.sequential
 
-/** Delivery settings saved through central's API (#832): what is stored, what the admin API gives back, and what a save
-  * that would hand a saved password to another server leaves untouched.
+/** Delivery settings saved through central's API (#832): what is stored and what the admin API gives back.
   *
   * Outside production auth sends no code or temporary password at all, so the staged stack cannot prove a message
   * arrives; the cache and the sync that carry the record to auth, and what auth does with it, are the unit specs' ground
@@ -53,22 +52,6 @@ object DeliveryFlowSpec extends CentralApiSpec:
       yield assertTrue(
         body.contains("\"hasSmtpPassword\":true"),
         !body.contains("mail-s3cret"),
-      )
-    },
-    test("a saved password is not sent to another server in a save, and nothing is changed") {
-      for
-        central <- api
-        outcome <- (for
-          _ <- save(central, "smtp" -> smtpBlock(2525), "smtpPassword" -> Json.Str("mail-s3cret"))
-          refusedSave <- central.put(path, Json.Obj("smtp" -> smtpBlock(2526)))
-          read <- central.get(path).flatMap(_.obj)
-        yield (refusedSave, read)).ensuring(cleanUp(central))
-        (refusedSave, read) = outcome
-      yield assertTrue(
-        refusedSave.status == Status.BadRequest,
-        refusedSave.body.contains("password must be entered again"),
-        // The refused save changed nothing: the server on record is still the first one.
-        read.obj("smtp").flatMap(_.int("port")).contains(2525),
       )
     },
   ) @@ sequential

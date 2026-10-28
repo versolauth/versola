@@ -52,13 +52,6 @@ object SmtpDeliverySettings:
     else if hasControlCharacter(settings.subject) then Some("smtp.subject must not contain control characters")
     else None
 
-  /** Whether `a` and `b` are the same server and the same account, reached the same way: the only case in which a password
-    * saved for one may be used for the other. Anything else would let whoever may change the host collect the password by
-    * pointing it at a server of their own, without ever reading it, or send it in the clear by switching STARTTLS off.
-    */
-  def sameServer(a: SmtpDeliverySettings, b: SmtpDeliverySettings): Boolean =
-    a.host.trim.equalsIgnoreCase(b.host.trim) && a.port == b.port && a.username == b.username && a.startTls == b.startTls
-
 /** The `otp-provider` block of `auth.conf` without its password: the request auth sends for each
   * SMS, with `{{phone}}` and `{{message}}` in the body entries standing for the recipient and
   * the text. A `username` makes the request carry HTTP Basic credentials.
@@ -96,20 +89,6 @@ object OtpProviderDeliverySettings:
           else if settings.username.exists(hasControlCharacter) then Some("otpProvider.username must not contain control characters")
           else if settings.body.keys.exists(_.trim.isEmpty) then Some("otpProvider.body must not have an empty key")
           else None
-
-  /** Whether `a` and `b` reach the same origin (scheme, host, port) as the same account: the only case in which a
-    * password saved for one may be used for the other, for the reason given at [[SmtpDeliverySettings.sameServer]].
-    * The path may change: it does not decide who receives the credentials.
-    */
-  def sameEndpoint(a: OtpProviderDeliverySettings, b: OtpProviderDeliverySettings): Boolean =
-    (parseHttpUrl(a.url), parseHttpUrl(b.url)) match
-      case (Some(x), Some(y)) =>
-        x.getScheme.equalsIgnoreCase(y.getScheme) && x.getHost.equalsIgnoreCase(y.getHost) &&
-        effectivePort(x) == effectivePort(y) && a.username == b.username
-      case _ => false
-
-  private def effectivePort(uri: URI): Int =
-    if uri.getPort != -1 then uri.getPort else if uri.getScheme.equalsIgnoreCase("https") then 443 else 80
 
   private def parseHttpUrl(value: String): Option[URI] =
     Try(URI(value)).toOption.filter: uri =>
