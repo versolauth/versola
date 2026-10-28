@@ -17,7 +17,7 @@ object AntifraudSettingsController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint)
 
-  /** The row as stored, which is what applies. */
+  /** The row as stored, which is what applies (everything off where there is none). */
   val getEndpoint =
     Method.GET / "antifraud" / "settings" -> handler { (request: Request) =>
       for
@@ -25,10 +25,7 @@ object AntifraudSettingsController extends Controller:
         _ <- request.queryZIO[UserId]("userId")
         tuning <- ZIO.service[AntifraudTuningStore]
         stored <- tuning.stored
-        response <- stored match
-          case Some(settings) => ZIO.succeed(Response.json(settings.toJson))
-          case None => Observability.setError("antifraud_settings_not_found").as(Response.status(Status.NotFound))
-      yield response
+      yield Response.json(stored.getOrElse(Tuning.off).toJson)
     }
 
   /** Replaces the settings with the body's. */
@@ -43,7 +40,7 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
-  /** Puts the seeded values back (everything off). */
+  /** Puts everything off. */
   val deleteEndpoint =
     Method.DELETE / "antifraud" / "settings" -> handler { (request: Request) =>
       for

@@ -560,8 +560,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
 
   There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
-  own audit). The migration seeds it with everything off (nothing limited or weighed), so there is always one. `PUT`
-  replaces it as a whole (every key), `GET` reads it and `DELETE` puts the seeded values back. Every instance holds it in
+  own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
+  weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
+  everything off. `PUT`
+  replaces it as a whole (every key), `GET` reads it and `DELETE` puts everything off again. Every instance holds it in
   memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
   full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
   that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the

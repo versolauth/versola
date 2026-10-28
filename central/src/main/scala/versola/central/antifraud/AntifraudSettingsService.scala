@@ -12,7 +12,7 @@ trait AntifraudSettingsService:
 
   def put(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings]
 
-  /** Puts the seeded values back (everything off). */
+  /** Puts everything off. */
   def reset(request: DeleteAntifraudSettingsRequest): IO[AntifraudListError | Throwable, Unit]
 
 object AntifraudSettingsService:

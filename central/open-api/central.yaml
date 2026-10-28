@@ -2726,7 +2726,7 @@ paths:
       tags: [Antifraud settings]
       summary: Reset the settings
       operationId: deleteAntifraudSettings
-      description: Puts the seeded values back (everything off). The caller is in the body, where edge adds `userId` for a request that is not a `GET`.
+      description: Puts everything off. The caller is in the body, where edge adds `userId` for a request that is not a `GET`.
       requestBody:
         required: true
         content:

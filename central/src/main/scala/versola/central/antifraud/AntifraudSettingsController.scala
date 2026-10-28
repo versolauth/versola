@@ -35,7 +35,7 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
-  /** Puts the seeded values back. The caller is in the body, where edge puts it for a request that is not a `GET`. */
+  /** Puts everything off. The caller is in the body, where edge puts it for a request that is not a `GET`. */
   val deleteEndpoint =
     Method.DELETE / "antifraud" / "settings" -> handler { (request: Request) =>
       for

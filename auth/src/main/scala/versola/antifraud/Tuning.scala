@@ -45,8 +45,8 @@ case class SmsLimits(default: SmsLimit, byPrefix: Map[String, SmsLimit]) derives
   def enabled: Boolean = default.enabled || byPrefix.values.exists(_.enabled)
 
 object Tuning:
-  /** Nothing limited or weighed: what applies until the stored settings are read, and the values the first
-    * global row is seeded with (migration `V0024`). */
+  /** Nothing limited or weighed: what applies until the stored settings are read, where there is no
+    * row, and the first row auth's bootstrap writes. */
   val off: Tuning = Tuning(
     challengeAt = 0,
     blockAt = 0,

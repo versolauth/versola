@@ -12,9 +12,10 @@ final class InvalidTuning(message: String) extends RuntimeException(message)
 /** The tuning as stored, and the internal API that changes it.
   *
   * ==The row==
-  * `af_settings` has one row with every key, seeded by migration `V0024` with everything off, so there is always one. A
-  * change replaces it as a whole and bumps `af_settings_version`; deleting it ([[reset]]) puts the seeded values back.
-  * Nothing in the configuration says what a threshold is: the store is the single source.
+  * `af_settings` has one row with every key, written with everything off by auth's bootstrap if there is none. A change
+  * replaces it as a whole and bumps `af_settings_version`; [[reset]] puts everything off again. A deployment with no row
+  * (bootstrap has not run yet, or the row was deleted by hand) is taken to have everything off ([[Tuning.off]]). Nothing in
+  * the configuration says what a threshold is: the store is the single source.
   *
   * ==Reading==
   * Every instance holds the tuning in memory; a request reads it without touching the database. It is rebuilt when
@@ -30,7 +31,7 @@ trait AntifraudTuningStore extends AntifraudTuning:
   /** Replaces the row. Fails with [[InvalidTuning]]. */
   def put(tuning: Tuning, actor: String): Task[Unit]
 
-  /** Puts the seeded values back. */
+  /** Puts everything off ([[Tuning.off]]). */
   def reset(actor: String): Task[Unit]
 
 object AntifraudTuningStore:
@@ -113,8 +114,8 @@ object AntifraudTuningStore:
         version <- repository.version
         stale = version != loadedVersion.get || now.isAfter(loadedAt.get.plusSeconds(FullReloadSeconds))
         _ <- ZIO.when(stale):
-          repository.find.flatMap(row => ZIO.fromOption(row).orElseFail(RuntimeException("no antifraud settings row"))).map: tuning =>
-            loaded.set(Some(tuning))
+          repository.find.map: row =>
+            loaded.set(Some(row.getOrElse(Tuning.off)))
             loadedVersion.set(version)
             loadedAt.set(now)
       yield ()).catchAllCause(_ => AntifraudMetrics.tuningRefreshFailed)

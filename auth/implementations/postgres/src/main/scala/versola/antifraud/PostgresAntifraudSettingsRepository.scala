@@ -12,6 +12,13 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO) extends AntifraudSe
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
+  private def bumped()(using DbCon): Unit =
+    sql"""
+      INSERT INTO af_settings_version (id, version) VALUES (1, 1)
+      ON CONFLICT (id) DO UPDATE SET version = af_settings_version.version + 1
+    """.update.run()
+    ()
+
   override def put(tuning: Tuning, actor: String, at: Instant): Task[Unit] =
     val json = tuning.toJson
     xa.transactMeasured("put-antifraud-settings"):
@@ -19,8 +26,17 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO) extends AntifraudSe
         INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, $json, $actor, $at)
         ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at
       """.update.run()
-      sql"UPDATE af_settings_version SET version = version + 1 WHERE id = 1".update.run()
-      ()
+      bumped()
+
+  override def seed(tuning: Tuning, actor: String, at: Instant): Task[Boolean] =
+    val json = tuning.toJson
+    xa.transactMeasured("seed-antifraud-settings"):
+      val inserted = sql"""
+        INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, $json, $actor, $at)
+        ON CONFLICT (id) DO NOTHING
+      """.update.run()
+      if inserted > 0 then bumped()
+      inserted > 0
 
   override def find: Task[Option[Tuning]] =
     xa.connectMeasured("find-antifraud-settings"):
@@ -32,7 +48,7 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO) extends AntifraudSe
 
   override def version: Task[Long] =
     xa.connectMeasured("antifraud-settings-version"):
-      sql"SELECT version FROM af_settings_version WHERE id = 1".query[Long].run().head
+      sql"SELECT COALESCE(MAX(version), 0) FROM af_settings_version".query[Long].run().head
 
 object PostgresAntifraudSettingsRepository:
   val live: ZLayer[TransactorZIO, Nothing, AntifraudSettingsRepository] =

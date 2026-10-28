@@ -17,6 +17,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
   private class InMemory(row: Ref[Option[Tuning]], counter: Ref[Long], failing: Ref[Boolean]) extends AntifraudSettingsRepository:
     override def put(tuning: Tuning, actor: String, at: Instant) = row.set(Some(tuning)) *> counter.update(_ + 1)
 
+    override def seed(tuning: Tuning, actor: String, at: Instant) =
+      row.modify(r => (r.isEmpty, r.orElse(Some(tuning)))).tap(wrote => counter.update(_ + 1).when(wrote))
+
     override def find = row.get
 
     override def version: Task[Long] = failing.get.flatMap(f => if f then ZIO.fail(RuntimeException("down")) else counter.get)
@@ -85,12 +88,13 @@ object AntifraudTuningSpec extends UnitSpecBase:
         _ <- store.refresh
       yield assertTrue(store.current.blockAt == 70, store.available)
     },
-    test("a missing row is not read: the tuning there is stays") {
+    test("no row yet is everything off, and the engine runs on it") {
       for
         (repo, _) <- repository(seeded = false)
         store = AntifraudTuningStore.Impl(repo)
         _ <- store.refresh
-      yield assertTrue(!store.available, store.current == base)
+        decision <- Antifraud.Impl(enabled.copy(failureAction = DecisionAction.Challenge), List(rules(rule("a", 1))), store).evaluate(ctx)
+      yield assertTrue(store.available, store.current == base, decision == Decision(DecisionAction.Allow, 1, List("a")))
     },
     test("reset puts the seeded values back") {
       for

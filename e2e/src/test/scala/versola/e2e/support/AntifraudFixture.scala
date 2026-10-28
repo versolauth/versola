@@ -211,34 +211,49 @@ object AntifraudFixture:
         finally connection.close()
     yield result
 
-  private def writeGlobalSettings(settings: String): Task[Unit] =
+  private def writeSettings(settings: String): Task[Unit] =
     database: connection =>
       connection.setAutoCommit(false)
-      val update = connection.prepareStatement("UPDATE af_settings SET settings = ?, updated_by = 'e2e', updated_at = now() WHERE id = 1").nn
-      update.setString(1, settings)
-      update.executeUpdate()
-      connection.createStatement().nn.executeUpdate("UPDATE af_settings_version SET version = version + 1 WHERE id = 1")
+      val upsert = connection.prepareStatement(
+        """INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, ?, 'e2e', now())
+          |ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = 'e2e', updated_at = now()""".stripMargin,
+      ).nn
+      upsert.setString(1, settings)
+      upsert.executeUpdate()
+      bump(connection)
       connection.commit()
 
-  /** The fixture's thresholds, set the way the admin API would: in the row of `af_settings` (the row the migration
-    * seeds with everything off) and the bump of `af_settings_version` that tells the instances to reload. The row is put
-    * back as it was when the fixture goes, so that the running stack, and the next run, find everything off. */
+  private def bump(connection: Connection): Unit =
+    connection.createStatement().nn.executeUpdate(
+      "INSERT INTO af_settings_version (id, version) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET version = af_settings_version.version + 1",
+    )
+
+  private def deleteSettings: Task[Unit] =
+    database: connection =>
+      connection.setAutoCommit(false)
+      connection.createStatement().nn.executeUpdate("DELETE FROM af_settings WHERE id = 1")
+      bump(connection)
+      connection.commit()
+
+  /** The fixture's thresholds, set the way the admin API would: in the row of `af_settings` and the bump of
+    * `af_settings_version` that tells the instances to reload. The row is put back as it was when the fixture goes (or
+    * removed, if there was none, which fails the fixture first), so that the running stack, and the next run, find everything off. */
   private val tuned: ZIO[Scope, Throwable, Unit] =
     val limit = (perHour: Int) => Json.Obj("perMinute" -> Json.Num(0), "perTenMinutes" -> Json.Num(0), "perHour" -> Json.Num(perHour), "perDay" -> Json.Num(0), "weight" -> Json.Num(50))
     ZIO.acquireRelease(
       database: connection =>
         val rs = connection.createStatement().nn.executeQuery("SELECT settings FROM af_settings WHERE id = 1").nn
-        rs.next()
-        rs.getString(1).nn,
-    )(before => writeGlobalSettings(before).ignore).flatMap: before =>
+        if rs.next() then Some(rs.getString(1).nn) else None,
+    )(before => before.fold(deleteSettings)(writeSettings).ignore).flatMap: before =>
       for
-        row <- ZIO.fromEither(before.fromJson[Json.Obj]).mapError(RuntimeException(_))
+        text <- ZIO.fromOption(before).orElseFail(RuntimeException("af_settings has no row: auth's bootstrap writes it when the stack starts"))
+        row <- ZIO.fromEither(text.fromJson[Json.Obj]).mapError(RuntimeException(_))
         thresholds = row.get("thresholds").collect { case o: Json.Obj => o }.getOrElse(Json.Obj())
         tuned = row
           .add("challengeAt", Json.Num(15))
           .add("blockAt", Json.Num(50))
           .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
-        _ <- writeGlobalSettings(tuned.toJson)
+        _ <- writeSettings(tuned.toJson)
       yield ()
 
   /** What the specs seed the lists with, the way [[versola.antifraud.AntifraudListRepository.upsert]] stores an entry:
