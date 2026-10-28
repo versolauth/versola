@@ -24,8 +24,6 @@ import type {
   SystemSettingsRecord,
   DeliverySettingsRecord,
   DeliverySettingsUpdate,
-  DeliveryTestRequest,
-  DeliveryTestResult,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -1746,10 +1744,4 @@ export async function upsertDeliverySettings(update: DeliverySettingsUpdate): Pr
 
 export async function deleteDeliverySettings(): Promise<void> {
   await requestVoid('/configuration/delivery-settings', { method: 'DELETE' });
-}
-
-/** Sends one message through the block being edited. A failed attempt is an answer (`delivered: false`), not an error;
- * `400` (the request cannot be tried) and `429` (more than five a minute) are errors. */
-export async function sendDeliveryTest(body: DeliveryTestRequest): Promise<DeliveryTestResult> {
-  return request<DeliveryTestResult>('/configuration/delivery-settings/test', { method: 'POST', body });
 }

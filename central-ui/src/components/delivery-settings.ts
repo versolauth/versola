@@ -2,8 +2,8 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, toggleStyles } from '../styles/components';
-import type { DeliverySettingsRecord, DeliverySettingsUpdate, DeliveryTestRequest } from '../types';
-import { deleteDeliverySettings, fetchDeliverySettings, sendDeliveryTest, upsertDeliverySettings, type ApiError } from '../utils/central-api';
+import type { DeliverySettingsRecord, DeliverySettingsUpdate } from '../types';
+import { deleteDeliverySettings, fetchDeliverySettings, upsertDeliverySettings } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
@@ -16,7 +16,6 @@ import {
   smtpFromDraft,
   validateOtpProviderDraft,
   validateSmtpDraft,
-  validateTestRecipient,
   type FieldErrors,
   type OtpProviderDraft,
   type SmtpDraft,
@@ -56,11 +55,6 @@ export class VersolaDeliverySettings extends LitElement {
   @state() private isSaving = false;
   @state() private actionError = '';
   @state() private isRemoving = false;
-  @state() private testTo = '';
-  @state() private isTesting = false;
-  @state() private testResult: { ok: boolean; text: string } | null = null;
-  // The draft the result is about: edit the page afterwards and the result no longer describes it, so it is not shown.
-  private testResultFor = '';
   private editorSession = 0;
   private draftKey = '';
   private draftBaseline = '';
@@ -231,9 +225,6 @@ export class VersolaDeliverySettings extends LitElement {
         this.smtpDraft = { ...this.smtpDraft, password: '', clearPassword: false };
         this.otpDraft = { ...this.otpDraft, password: '', clearPassword: false };
         this.actionError = '';
-        this.testTo = '';
-        this.testResult = null;
-        this.isTesting = false;
         if (group) this.resetDraft(group);
       }
     }
@@ -269,7 +260,7 @@ export class VersolaDeliverySettings extends LitElement {
   }
 
   private async cancelEditor() {
-    if (this.isSaving || this.isTesting) return;
+    if (this.isSaving) return;
     if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null });
   }
@@ -281,51 +272,12 @@ export class VersolaDeliverySettings extends LitElement {
       : validateOtpProviderDraft(this.otpDraft, this.record?.otpProvider ? { settings: this.record.otpProvider, hasPassword: this.record.hasOtpProviderPassword } : undefined);
   }
 
-  /** Sends one message through what is on the page, saved or not. The password typed goes with it; left empty, central uses
-   * the saved one for the server it was saved for and refuses otherwise, which the form has already said beside the field. */
-  private async sendTest() {
-    const group = this.editingGroup;
-    if (!group || this.isTesting || this.isSaving) return;
-    const channel = group === 'smtp' ? 'email' : 'sms';
-    const errors = this.draftErrors(group);
-    const recipientError = validateTestRecipient(channel, this.testTo);
-    this.fieldErrors = recipientError ? { ...errors, testTo: recipientError } : errors;
-    this.testResult = null;
-    if (Object.keys(this.fieldErrors).length) {
-      await this.updateComplete;
-      this.renderRoot.querySelector<HTMLElement>('[aria-invalid="true"], .input-error')?.focus();
-      return;
-    }
-    const session = this.editorSession;
-    const snapshot = this.draftSnapshot;
-    const to = this.testTo.trim();
-    const body: DeliveryTestRequest = group === 'smtp'
-      ? { channel, to, smtp: smtpFromDraft(this.smtpDraft), password: this.smtpDraft.password || undefined }
-      : { channel, to, otpProvider: otpProviderFromDraft(this.otpDraft), password: this.otpDraft.password || undefined };
-    this.isTesting = true;
-    try {
-      const result = await sendDeliveryTest(body);
-      if (this.editorSession !== session) return;
-      this.testResultFor = snapshot;
-      this.testResult = result.delivered
-        ? { ok: true, text: channel === 'email' ? `Sent to ${to}. Check that inbox, the spam folder included.` : `Sent to ${to}. Check that phone.` }
-        : { ok: false, text: result.message ?? 'The message could not be sent.' };
-    } catch (error) {
-      if (this.editorSession !== session) return;
-      const status = (error as ApiError | undefined)?.status;
-      this.testResultFor = snapshot;
-      this.testResult = { ok: false, text: status === 429 ? 'Too many test messages. Try again in a minute.' : error instanceof Error ? error.message : 'The test could not be made.' };
-    } finally {
-      if (this.editorSession === session) this.isTesting = false;
-    }
-  }
-
   /** A save replaces both blocks, so the block that is not being edited is sent back as it is stored, its password
    * left out (kept). */
   private async handleSubmit(event: Event) {
     event.preventDefault();
     const group = this.editingGroup;
-    if (this.isSaving || this.isTesting || !group) return;
+    if (this.isSaving || !group) return;
     const errors = this.draftErrors(group);
     this.fieldErrors = errors;
     if (Object.keys(errors).length) {
@@ -522,52 +474,11 @@ export class VersolaDeliverySettings extends LitElement {
     `;
   }
 
-  /** The test of what is on the page. It has its own recipient field, so Enter there sends the test and never saves. */
-  private renderTestBox(group: Group) {
-    const channel = group === 'smtp' ? 'email' : 'sms';
-    const draft = group === 'smtp' ? this.smtpDraft : this.otpDraft;
-    const invalid = !!this.fieldErrors.testTo;
-    const removing = draft.clearPassword;
-    const result = this.testResult && this.testResultFor === this.draftSnapshot ? this.testResult : null;
-    return html`
-      <div class="editor-box">
-        <h3>Send a test message</h3>
-        <p class="editor-sub">Tries what is on this page, saved or not, so a wrong server or address shows up before it is saved. The saved password is used unless you typed one above.</p>
-        <div class="form-group">
-          <label for="testTo">Send to *</label>
-          <input type="text" id="testTo" class="compact-input mono ${invalid ? 'input-error' : ''}" .value=${this.testTo} autocomplete="off"
-            placeholder=${channel === 'email' ? 'you@example.com' : '+12025551234'}
-            aria-invalid=${invalid ? 'true' : nothing} aria-describedby=${invalid ? 'testTo-error' : 'testTo-hint'}
-            @input=${(e: Event) => {
-              this.testTo = (e.target as HTMLInputElement).value;
-              if (this.fieldErrors.testTo) this.fieldErrors = Object.fromEntries(Object.entries(this.fieldErrors).filter(([field]) => field !== 'testTo'));
-            }}
-            @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void this.sendTest(); } }} />
-          ${invalid
-            ? html`<div class="error-message" id="testTo-error" role="alert">${this.fieldErrors.testTo}</div>`
-            : html`<div class="hint" id="testTo-hint">${channel === 'email' ? 'An email address you can read.' : 'A phone number with its country code. The message costs what the provider charges.'}</div>`}
-        </div>
-        <button type="button" class="btn btn-secondary" ?disabled=${this.isTesting || this.isSaving || removing} aria-busy=${this.isTesting ? 'true' : 'false'}
-          aria-describedby=${removing ? 'test-removing-hint' : nothing} @click=${() => void this.sendTest()}>${this.isTesting ? 'Sending…' : 'Send test message'}</button>
-        ${removing ? html`<div class="hint" id="test-removing-hint">Save first: the test would use the saved password that is being removed.</div>` : ''}
-        <div role="status">
-          ${result ? html`
-            <div class="banner ${result.ok ? 'ok' : 'warn'}">
-              <div class="banner-text">
-                <div class="banner-title">${statusIcon(result.ok ? 'check' : 'alert')}${result.ok ? 'The test message was sent' : 'The test message was not sent'}</div>
-                ${result.text}
-              </div>
-            </div>` : ''}
-        </div>
-      </div>
-    `;
-  }
-
   private formActions(label: string) {
     return html`
       <div class="form-actions">
-        <button type="button" class="btn btn-secondary" ?disabled=${this.isSaving || this.isTesting} @click=${() => void this.cancelEditor()}>Cancel</button>
-        <button type="submit" class="btn btn-primary" ?disabled=${this.isSaving || this.isTesting}>${this.isSaving ? 'Saving…' : label}</button>
+        <button type="button" class="btn btn-secondary" ?disabled=${this.isSaving} @click=${() => void this.cancelEditor()}>Cancel</button>
+        <button type="submit" class="btn btn-primary" ?disabled=${this.isSaving}>${this.isSaving ? 'Saving…' : label}</button>
       </div>
     `;
   }
@@ -600,7 +511,6 @@ export class VersolaDeliverySettings extends LitElement {
           <h3>Status</h3>
           ${this.switchRow('enabled', 'Enabled', 'Off keeps the settings saved but sends nothing through this server.', draft.enabled, value => set({ enabled: value }))}
         </div>
-        ${this.renderTestBox('smtp')}
         ${this.formActions('Save email settings')}
       </form>
     `;
@@ -691,7 +601,6 @@ export class VersolaDeliverySettings extends LitElement {
           <h3>Status</h3>
           ${this.switchRow('enabled', 'Enabled', 'Off keeps the settings saved but sends no text messages through this provider.', draft.enabled, value => set({ enabled: value }))}
         </div>
-        ${this.renderTestBox('otp-provider')}
         ${this.formActions('Save SMS settings')}
       </form>
     `;

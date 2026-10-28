@@ -976,15 +976,6 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'console/delivery-test-result', kind: 'frame', fullPage: true, path: '/?view=delivery', state: deliverySettingsState,
-    before: async page => {
-      await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit email' }).click();
-      await page.getByLabel('Send to *').fill('you@example.com');
-      await page.getByRole('button', { name: 'Send test message' }).click();
-      await expect(page.getByRole('status')).toContainText('The test message was sent');
-    },
-  },
-  {
     name: 'console/delivery-sms-edit', kind: 'frame', fullPage: true, path: '/?view=delivery', state: deliverySettingsState,
     before: async page => {
       await page.getByRole('region', { name: 'SMS' }).getByRole('button', { name: 'Edit' }).click();

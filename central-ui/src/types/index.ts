@@ -648,20 +648,3 @@ export interface DeliverySettingsUpdate {
   otpProvider?: OtpProviderDeliverySettings;
   otpProviderPassword?: string | null;
 }
-
-/** What `POST /configuration/delivery-settings/test` is asked: the block under test as edited, saved or not, and the
- * password typed for it (absent: the saved one, for the server it was saved for). */
-export interface DeliveryTestRequest {
-  channel: 'email' | 'sms';
-  to: string;
-  smtp?: SmtpDeliverySettings;
-  otpProvider?: OtpProviderDeliverySettings;
-  password?: string;
-}
-
-/** A test that was made: it worked, or `code` and `message` say what to look at. Never what the other side said. */
-export interface DeliveryTestResult {
-  delivered: boolean;
-  code?: string;
-  message?: string;
-}

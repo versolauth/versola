@@ -439,11 +439,6 @@ export type MockConfigState = {
   deliveryLeaksPasswords?: boolean;
   // Makes `DELETE /configuration/delivery-settings` answer 500 with this message.
   deliveryDeleteFailure?: string;
-  // What `POST /configuration/delivery-settings/test` answers: by default the message is delivered. `status` answers an error
-  // instead (400 the request cannot be tried, 429 the limit), `delivered: false` a failed attempt with its code and sentence.
-  deliveryTest?: { delivered: true } | { delivered: false; code: string; message: string } | { status: number; body: string };
-  // Holds `POST /configuration/delivery-settings/test` for this long, to look at the sending state.
-  deliveryTestDelayMs?: number;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
   jwksKeys: JwksKeyDto[];
@@ -567,8 +562,6 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     deliveryDelayMs: overrides.deliveryDelayMs,
     deliveryFailure: overrides.deliveryFailure,
     deliveryDeleteFailure: overrides.deliveryDeleteFailure,
-    deliveryTest: overrides.deliveryTest,
-    deliveryTestDelayMs: overrides.deliveryTestDelayMs,
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
     jwksKeys: clone(overrides.jwksKeys ?? defaultState.jwksKeys),
@@ -718,29 +711,6 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
-    }
-
-    if (pathname === '/configuration/delivery-settings/test' && method === 'POST') {
-      if (state.deliveryTestDelayMs) await new Promise(resolve => setTimeout(resolve, state.deliveryTestDelayMs));
-      const test = body as { channel: string; to: string; smtp?: SmtpDeliverySettings; otpProvider?: OtpProviderDeliverySettings; password?: string };
-      const stored = state.deliverySettings;
-      // Central sends a saved password only to the server it was saved for, and refuses a request that would send it elsewhere.
-      const moved = test.channel === 'email'
-        ? !!stored?.smtpPassword && !test.password && !!test.smtp && !!stored.smtp
-          && (stored.smtp.host.toLowerCase() !== test.smtp.host.toLowerCase() || stored.smtp.port !== test.smtp.port || stored.smtp.username !== test.smtp.username || stored.smtp.startTls !== test.smtp.startTls)
-        : !!stored?.otpProviderPassword && !test.password && !!test.otpProvider && !!stored.otpProvider
-          && (new URL(stored.otpProvider.url).origin !== new URL(test.otpProvider.url).origin || (stored.otpProvider.username ?? null) !== (test.otpProvider.username ?? null));
-      if (moved) {
-        await route.fulfill({ status: 400, contentType: 'text/plain', body: 'password must be entered again when the server changes' });
-        return;
-      }
-      const outcome = state.deliveryTest ?? { delivered: true };
-      if ('status' in outcome) {
-        await route.fulfill({ status: outcome.status, contentType: 'text/plain', body: outcome.body });
-        return;
-      }
-      await route.fulfill(json(outcome));
-      return;
     }
 
     if (pathname === '/configuration/delivery-settings') {

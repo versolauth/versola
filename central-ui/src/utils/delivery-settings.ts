@@ -115,14 +115,6 @@ export function otpEndpointChanged(saved: OtpProviderDeliverySettings, draft: Ot
   return before !== after || (saved.username ?? '') !== draft.username.trim();
 }
 
-/** The address or number a test message goes to; `null` when it will do. */
-export function validateTestRecipient(channel: 'email' | 'sms', value: string): string | null {
-  const to = value.trim();
-  if (!to) return channel === 'email' ? 'Enter the address the test goes to.' : 'Enter the phone number the test goes to.';
-  if (channel === 'email') return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) ? null : 'Enter an email address, such as you@example.com.';
-  return /^\+?\d{9,15}$/.test(to) ? null : 'Enter a phone number with its country code, such as +12025551234.';
-}
-
 export function validateSmtpDraft(draft: SmtpDraft, saved?: SavedBlock<SmtpDeliverySettings>): FieldErrors {
   const errors: FieldErrors = {};
   const host = draft.host.trim();

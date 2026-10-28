@@ -12,7 +12,6 @@ import {
   smtpServerChanged,
   validateOtpProviderDraft,
   validateSmtpDraft,
-  validateTestRecipient,
   type OtpProviderDraft,
   type SmtpDraft,
 } from './delivery-settings';
@@ -208,25 +207,5 @@ describe('the saved password follows only the server it was saved for', () => {
     const moved = { ...smtpDraftFrom(savedSmtp), host: 'smtp.other.example' };
     expect(validateSmtpDraft(moved, { settings: savedSmtp, hasPassword: false }).password).toBeUndefined();
     expect(validateSmtpDraft(moved).password).toBeUndefined();
-  });
-});
-
-describe('validateTestRecipient', () => {
-  it('accepts an address for email and a number with its country code for SMS', () => {
-    expect(validateTestRecipient('email', ' you@example.com ')).toBeNull();
-    expect(validateTestRecipient('sms', '+12025551234')).toBeNull();
-    expect(validateTestRecipient('sms', '12025551234')).toBeNull();
-  });
-
-  it.each([
-    ['email', ''],
-    ['email', 'not-an-address'],
-    ['email', 'a@b'],
-    ['sms', ''],
-    ['sms', 'call me'],
-    ['sms', '+12'],
-    ['sms', '+1 202 555 1234'],
-  ] as const)('refuses %s "%s"', (channel, value) => {
-    expect(validateTestRecipient(channel, value)).not.toBeNull();
   });
 });

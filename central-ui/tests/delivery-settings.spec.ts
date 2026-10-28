@@ -396,118 +396,7 @@ test('shows a load failure and loads the record when Retry is pressed', async ({
   await expect(page.getByRole('heading', { name: 'Could not load the delivery settings' })).toHaveCount(0);
 });
 
-test('sends a test message through what is on the page, saved or not, and writes nothing', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Subject *').fill('Edited and not saved');
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/delivery-settings/test')).body).toEqual({
-    channel: 'email',
-    to: 'you@example.com',
-    smtp: { ...stored.smtp, subject: 'Edited and not saved' },
-  });
-  await expect(page.getByRole('status')).toContainText('The test message was sent');
-  await expect(page.getByRole('status')).toContainText('Sent to you@example.com');
-  expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
-  await expect(page).toHaveURL(/edit=smtp/);
-});
-
-test('sends the password typed for the block with the test, and the saved one is left to central', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Password', { exact: true }).fill('typed-secret');
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/delivery-settings/test')).body).toMatchObject({ password: 'typed-secret' });
-});
-
-test('says why a test did not arrive, in central’s words, and stays on the editor', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: `${path}&edit=smtp`,
-    state: { deliverySettings: stored, deliveryTest: { delivered: false, code: 'authentication_failed', message: 'The server refused the username or the password.' } },
-  });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-
-  const result = page.getByRole('status');
-  await expect(result).toContainText('The test message was not sent');
-  await expect(result).toContainText('The server refused the username or the password.');
-  await expect(page.getByRole('button', { name: 'Save email settings' })).toBeEnabled();
-});
-
-test('shows central’s refusal of a request it cannot try, and the limit', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored, deliveryTest: { status: 400, body: 'smtp.from must be an email address' } } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('status')).toContainText('smtp.from must be an email address');
-
-  api.state.deliveryTest = { status: 429, body: '' };
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('status')).toContainText('Too many test messages. Try again in a minute.');
-});
-
-test('asks for a usable recipient beside the field, focuses it, and sends nothing', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  const field = page.getByLabel('Send to *');
-  await expect(page.getByText('Enter the address the test goes to.')).toBeVisible();
-  await expect(field).toHaveAttribute('aria-invalid', 'true');
-  await expect(field).toBeFocused();
-  await field.fill('not-an-address');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByText('Enter an email address, such as you@example.com.')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname.endsWith('/test'))).toBe(false);
-});
-
-test('Enter in the recipient field sends the test and never saves the form', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByLabel('Send to *').press('Enter');
-
-  await findRequest(api.requests, 'POST', '/configuration/delivery-settings/test');
-  await expect(page.getByRole('status')).toContainText('The test message was sent');
-  expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
-  await expect(page).toHaveURL(/edit=smtp/);
-});
-
-test('tests the SMS provider with a phone number and the block as edited', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=otp-provider`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Send to *').fill('not a number');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByText('Enter a phone number with its country code, such as +12025551234.')).toBeVisible();
-
-  await page.getByLabel('Send to *').fill('+12025551234');
-  await page.getByLabel('Address *').fill('https://sms.example.com/v2/send');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/delivery-settings/test')).body).toEqual({
-    channel: 'sms',
-    to: '+12025551234',
-    otpProvider: { ...stored.otpProvider, url: 'https://sms.example.com/v2/send' },
-  });
-  await expect(page.getByRole('status')).toContainText('Sent to +12025551234. Check that phone.');
-});
-
-test('sends one test for a repeated click while it is pending', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored, deliveryTestDelayMs: 1500 } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('button', { name: 'Sending…' })).toBeDisabled();
-  await page.getByLabel('Send to *').press('Enter');
-  await expect(page.getByRole('status')).toContainText('The test message was sent');
-  expect(api.requests.filter(request => request.method === 'POST' && request.pathname.endsWith('/test'))).toHaveLength(1);
-});
-
-test('asks for the password again when the server changes, on Save and on the test, and sends nothing', async ({ page }) => {
+test('asks for the password again when the server changes, and sends nothing', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
 
   await page.getByLabel('Server address *').fill('smtp.other.example');
@@ -517,10 +406,7 @@ test('asks for the password again when the server changes, on Save and on the te
   await expect(password).toHaveAttribute('aria-invalid', 'true');
   await expect(password).toBeFocused();
 
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(password).toHaveAttribute('aria-invalid', 'true');
-  expect(api.requests.some(request => request.method === 'PUT' || (request.method === 'POST' && request.pathname.endsWith('/test')))).toBe(false);
+  expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
 
   await password.fill('new-secret');
   await page.getByRole('button', { name: 'Save email settings' }).click();
@@ -539,64 +425,7 @@ test('does not ask for the password again for a change that leaves the server al
   expect((await findRequest(api.requests, 'PUT', '/configuration/delivery-settings')).body).toMatchObject({ smtpPassword: '' });
 });
 
-test('keeps the test from using a password that is being removed', async ({ page }) => {
-  await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Remove the saved password').check();
-  await expect(page.getByRole('button', { name: 'Send test message' })).toBeDisabled();
-  await expect(page.getByText('Save first: the test would use the saved password that is being removed.')).toBeVisible();
-  await page.getByLabel('Remove the saved password').uncheck();
-  await expect(page.getByRole('button', { name: 'Send test message' })).toBeEnabled();
-});
-
-test('forgets the result of a test when the editor is left and opened again', async ({ page }) => {
-  await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('status')).toContainText('The test message was sent');
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit email' }).click();
-  await expect(page.getByRole('status')).not.toContainText('The test message was sent');
-  await expect(page.getByLabel('Send to *')).toHaveValue('');
-});
-
-test('stops describing a test once the page is edited, so a result never speaks for other settings', async ({ page }) => {
-  await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('status')).toContainText('The test message was sent');
-  await page.getByLabel('Subject *').fill('Edited after the test');
-  await expect(page.getByRole('status')).not.toContainText('The test message was sent');
-});
-
-test('keeps Cancel and Save out of reach while a test is pending, and ignores a late answer after the editor was left', async ({ page }) => {
-  await loadAdminApp(page, { path, state: { deliverySettings: stored, deliveryTestDelayMs: 1200 } });
-
-  await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit email' }).click();
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Save email settings' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Sending…' })).toHaveAttribute('aria-busy', 'true');
-
-  await page.evaluate(() => { window.history.replaceState({}, '', '/?view=delivery'); window.dispatchEvent(new PopStateEvent('popstate')); });
-  await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit email' }).click();
-  await page.waitForTimeout(1500);
-  await expect(page.getByRole('status')).not.toContainText('The test message was sent');
-  await expect(page.getByRole('button', { name: 'Send test message' })).toBeEnabled();
-});
-
-test('shows the text of any other failure of the test', async ({ page }) => {
-  await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored, deliveryTest: { status: 500, body: 'central could not send' } } });
-
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByRole('status')).toContainText('central could not send');
-});
-
-test('asks for the SMS password again when the address moves to another origin, and sends the typed one with the test', async ({ page }) => {
+test('asks for the SMS password again when the address moves to another origin, and saves it with the typed one', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${path}&edit=otp-provider`, state: { deliverySettings: stored } });
 
   await page.getByLabel('Address *').fill('https://sms.other.example/send');
@@ -606,20 +435,9 @@ test('asks for the SMS password again when the address moves to another origin, 
   expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
 
   await page.getByLabel('Password', { exact: true }).fill('typed-sms-secret');
-  await page.getByLabel('Send to *').fill('+12025551234');
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  expect((await findRequest(api.requests, 'POST', '/configuration/delivery-settings/test')).body).toMatchObject({
-    channel: 'sms',
-    password: 'typed-sms-secret',
+  await page.getByRole('button', { name: 'Save SMS settings' }).click();
+  expect((await findRequest(api.requests, 'PUT', '/configuration/delivery-settings')).body).toMatchObject({
+    otpProviderPassword: 'typed-sms-secret',
     otpProvider: { url: 'https://sms.other.example/send' },
   });
-});
-
-test('clears the recipient error as soon as the recipient is typed', async ({ page }) => {
-  await loadAdminApp(page, { path: `${path}&edit=smtp`, state: { deliverySettings: stored } });
-
-  await page.getByRole('button', { name: 'Send test message' }).click();
-  await expect(page.getByLabel('Send to *')).toHaveAttribute('aria-invalid', 'true');
-  await page.getByLabel('Send to *').fill('you@example.com');
-  await expect(page.getByLabel('Send to *')).not.toHaveAttribute('aria-invalid', 'true');
 });
