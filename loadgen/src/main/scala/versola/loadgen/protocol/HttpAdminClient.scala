@@ -291,6 +291,7 @@ final class HttpAdminClient(
       // credentials and never sees the caller's token, which would take the access token off the
       // one hop the campaign is meant to measure end to end.
       internal = false,
+      audienceRateLimits = Nil,
     )
     send(Method.POST, central("configuration", "resources"), Some(body.toJson)).flatMap: response =>
       convergeAfterFailedCreate("registerResource", response, listResources.map(_.get(spec.resourceId))): state =>
@@ -892,6 +893,7 @@ object HttpAdminClient:
       audience: List[String],
       endpoints: List[ResourceEndpointBody],
       internal: Boolean,
+      audienceRateLimits: List[Json],
   ) derives JsonEncoder
 
   private case class PatchAudience(add: Set[String], remove: Set[String]) derives JsonEncoder

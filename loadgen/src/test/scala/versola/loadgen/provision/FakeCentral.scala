@@ -518,6 +518,7 @@ object FakeCentral:
       "audience",
       "endpoints",
       "internal",
+      "audienceRateLimits",
     ),
     (Method.PUT, "/configuration/resources") -> Set(
       "resourceId",
