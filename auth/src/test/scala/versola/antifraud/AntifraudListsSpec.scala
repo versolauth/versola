@@ -68,9 +68,9 @@ object AntifraudListsSpec extends UnitSpecBase:
 
   private val settings = AntifraudTestSettings.lists.copy(enabled = true)
 
-  // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
+  // challenge 50, block 100: a watch (20) is only visible in the score
   private val engine = AntifraudTestSettings.decision.copy(enabled = true)
-  private val thresholds = AntifraudTestSettings.tuning.copy(delayAt = 1, challengeAt = 50, blockAt = 100)
+  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 50, blockAt = 100)
 
   private def ctx(
       ip: Option[String] = None,
@@ -151,7 +151,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(
         blocked == Decision(DecisionAction.Block, 0, List("deny_list:device_id")),
         faked == Decision(DecisionAction.Fake, 0, List("fake_list:prefix")),
-        watched == Decision(DecisionAction.Delay, 20, List("watch_list:cidr")),
+        watched == Decision(DecisionAction.Allow, 20, List("watch_list:cidr")),
         clean == Decision.allow,
       )
     },

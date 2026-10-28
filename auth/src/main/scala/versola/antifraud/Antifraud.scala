@@ -34,9 +34,6 @@ enum DecisionAction:
   /** Ask for proof first (a proof-of-work or a captcha token, P1-2). */
   case Challenge
 
-  /** Go on, slowly: the answer is held back (a tarpit). */
-  case Delay
-
   /** Answer as if the step succeeded and do nothing (P0-6). */
   case Fake
 
@@ -82,7 +79,7 @@ trait Antifraud:
 object Antifraud:
 
   /** @param enabled        off by default: nothing changes for a deployment that does not turn it on
-    * The thresholds, weights and delays are not here: they are tuned during an attack (see [[AntifraudTuning]]).
+    * The thresholds and weights are not here: they are tuned during an attack (see [[AntifraudTuning]]).
     *
     * @param timeout        the longest an evaluation may take
     * @param failureAction  the decision when evaluation fails or times out
@@ -137,6 +134,5 @@ object Antifraud:
         if t.blockAt > 0 && score >= t.blockAt then DecisionAction.Block
         else if t.reviewAt > 0 && score >= t.reviewAt then DecisionAction.Review
         else if t.challengeAt > 0 && score >= t.challengeAt then DecisionAction.Challenge
-        else if t.delayAt > 0 && score >= t.delayAt then DecisionAction.Delay
         else DecisionAction.Allow
       Decision(Seq(Some(byScore), forced).flatten.maxBy(_.ordinal), score, names)

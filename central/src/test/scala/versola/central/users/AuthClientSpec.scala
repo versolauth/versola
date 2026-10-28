@@ -342,11 +342,9 @@ object AuthClientSpec extends ZIOSpecDefault:
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("the antifraud settings calls send the scope, the body and the userId to auth's /antifraud/settings") {
       val patch = AntifraudSettingsPatch(
-        delayAt = None,
         challengeAt = None,
         reviewAt = None,
         blockAt = Some(80),
-        delayMillis = None,
         fakeSendDelayMillis = None,
         pow = None,
         thresholds = None,

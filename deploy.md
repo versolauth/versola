@@ -550,15 +550,15 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
   through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, `GET /antifraud/settings/audit`, see
   `central/open-api/central.yaml`; permissions `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the
-  in-memory velocity counters. The configuration has no key for any of them: they are the score thresholds (`delayAt`,
-  `challengeAt`, `reviewAt`, `blockAt`), the proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of
+  in-memory velocity counters. The configuration has no key for any of them: they are the score thresholds (`challengeAt`,
+  `reviewAt`, `blockAt`), the proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of
   any rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
   `shadow:<name>`, adding no weight and forcing nothing), the limits on codes sent (`smsLimits`: a default and one per
-  number prefix, the longest prefix a number starts with deciding; the SMS budget below) and the timings of a delay and of
-  a fake send (global only). What the configuration keeps is deployment: the switches, `decision.timeout` and
+  number prefix, the longest prefix a number starts with deciding; the SMS budget below) and the timing of a fake
+  send (`fakeSendDelayMillis`, global only). There is no delay step: nothing holds an honest user's request back. What the configuration keeps is deployment: the switches, `decision.timeout` and
   `failure-action`, the sizes (`velocity.*`, `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
 
-  The migration seeds the **global row** with everything off (nothing limited, weighed or delayed), so there is always one,
+  The migration seeds the **global row** with everything off (nothing limited or weighed), so there is always one,
   and it is the only source of what applies to a tenant without a row: `PUT` without `tenantId` changes the keys it names
   of it and leaves the others, and it cannot be deleted. A **tenant's row** is a patch over the global row (a key it leaves
   out is the global row's; a map or `thresholds` is replaced as a whole), and deleting it returns the tenant to the global
@@ -568,7 +568,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   increasing**). An instance that starts with the database unreadable has none yet, and decides every request as
   `decision.failure-action` says (rule `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity
   counters count) until a read succeeds. Every change is audited with the row before and after. Per-tenant rows apply to
-  everything but the timings, which are global because the request is held where no tenant is known.
+  everything but the fake-send timing, which is global because a fake send waits where no tenant is known.
 
   *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
   `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
@@ -765,8 +765,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   follow-up.
 
 - **Challenges (a proof of work before a code is sent; no table, no new page).** A request for a code that the decision
-  engine scores at or above `antifraud.decision.challenge-at` (and below `block-at`) is no longer only held for
-  `antifraud.decision.delay`: nothing is sent until the client has done some work. The credential (email, phone) and
+  engine scores at or above the tuned `challengeAt` (and below `blockAt`) is not sent until the client has done some work. The credential (email, phone) and
   OTP-resend forms send their request from script (`proof_inline=1` among the fields) and auth answers
   `{"challenge": {"kind", "token", "params"}}` instead of a redirect, leaving the conversation where it was. The page
   finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
@@ -776,8 +775,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   it does take a second turn of the per-credential OTP request limit. Measured in headless Chromium (4 workers, 2.7 M
   hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
   phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
-  higher is asked for more: `min-difficulty` (14) plus one bit per `score-step` (15) points above `challenge-at`, at most
-  `max-difficulty` (18).
+  higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
+  `maxDifficulty` (18).
   The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
   names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
   is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
@@ -790,10 +789,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **A challenged request that cannot answer is refused, not sent:** a plain form post (no JavaScript, the password forms
   that lead on to a code, `/authorize` with `login_hint`) or a page that cannot solve the kind gets "access denied" as a
   blocked request does, since sending it would be a way round the challenge for any script. Only a verifier that is
-  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
-  challenges existed, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
+  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
   for a request that cannot answer, so that an outage of the engine does not lock out the second factor after a password or
-  `login_hint`. `failure-action` is `delay` by default; set it to `Challenge` only if you want an engine that times out
+  `login_hint`. `failure-action` is `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that times out
   to ask every request that can answer for a proof. Routing those two paths through a page that can solve is a follow-up.
   The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes) and `max-attempts` (5): the
   switch and what a challenge lives for. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,

@@ -16,7 +16,11 @@ object AntifraudSpec extends UnitSpecBase:
     def rules = ZIO.succeed(rs.toList)
 
   private val on = AntifraudTestSettings.decision.copy(enabled = true)
-  private val thresholds = AntifraudTestSettings.tuning.copy(delayAt = 1, challengeAt = 5, reviewAt = 8, blockAt = 10)
+  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 5, reviewAt = 8, blockAt = 10)
+
+  /** An engine whose failure asks for friction; `engine` has the default, `allow`. */
+  private def failingEngine(ruleSets: List[Antifraud.RuleSet]) =
+    AntifraudTestSettings.engine(on.copy(failureAction = DecisionAction.Challenge), ruleSets, thresholds)
 
   private def engine(ruleSets: List[Antifraud.RuleSet]) = AntifraudTestSettings.engine(on, ruleSets, thresholds)
 
@@ -34,7 +38,7 @@ object AntifraudSpec extends UnitSpecBase:
         blocked <- engine(List(set(rule("a", 6), rule("b", 4)))).evaluate(ctx)
       yield assertTrue(
         d == Decision(DecisionAction.Challenge, 7, List("a", "b")),
-        low.action == DecisionAction.Delay,
+        low == Decision(DecisionAction.Allow, 1, List("a")),
         none == Decision.allow,
         blocked.action == DecisionAction.Block,
       )
@@ -45,20 +49,25 @@ object AntifraudSpec extends UnitSpecBase:
         fake <- engine(List(set(rule("fake", 0, Some(DecisionAction.Fake)), rule("w", 10)))).evaluate(ctx)
       yield assertTrue(deny.action == DecisionAction.Block, fake.action == DecisionAction.Block)
     },
-    test("fails open with friction when a rule throws or a rule set fails") {
+    test("fails as failure-action says when a rule throws or a rule set fails") {
       val boom = rule("boom", 1).copy(test = _ => throw RuntimeException("x"))
       val failing = new Antifraud.RuleSet { def rules = ZIO.die(RuntimeException("db")) }
       for
-        a <- engine(List(set(boom))).evaluate(ctx)
-        b <- engine(List(failing)).evaluate(ctx)
-      yield assertTrue(a == Decision(DecisionAction.Delay, 0, List("antifraud_error")), b == a)
+        a <- failingEngine(List(set(boom))).evaluate(ctx)
+        b <- failingEngine(List(failing)).evaluate(ctx)
+        open <- engine(List(set(boom))).evaluate(ctx)
+      yield assertTrue(
+        a == Decision(DecisionAction.Challenge, 0, List("antifraud_error")),
+        b == a,
+        open == Decision(DecisionAction.Allow, 0, List("antifraud_error")),
+      )
     },
-    test("fails open with friction on timeout") {
+    test("fails as failure-action says on timeout") {
       val slow = new Antifraud.RuleSet { def rules = ZIO.never }
       for
-        f <- engine(List(slow)).evaluate(ctx).fork
+        f <- failingEngine(List(slow)).evaluate(ctx).fork
         _ <- TestClock.adjust(1.second)
         d <- f.join
-      yield assertTrue(d.firedRules == List("antifraud_error"), d.action == DecisionAction.Delay)
+      yield assertTrue(d.firedRules == List("antifraud_error"), d.action == DecisionAction.Challenge)
     },
   )

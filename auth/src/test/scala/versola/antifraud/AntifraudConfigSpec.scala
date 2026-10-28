@@ -40,7 +40,7 @@ object AntifraudConfigSpec extends UnitSpecBase:
         all.statsPrefixLength == 4,
         all.smsBudget == SmsBudget.Settings(prefixLength = 4, maxRanges = 10000),
         !all.decision.enabled,
-        all.decision.failureAction == DecisionAction.Delay,
+        all.decision.failureAction == DecisionAction.Allow,
         all.decision.timeout == 20.millis,
         !all.velocity.enabled,
         all.velocity.maxKeys == 20000,
@@ -95,6 +95,9 @@ object AntifraudConfigSpec extends UnitSpecBase:
         detectors.fakeVerify.minFakeVerifies == 3,
         detectors.fakeVerify.window == 30.minutes,
       )
+    },
+    test("failure-action no longer accepts delay") {
+      events("antifraud { decision { failure-action = \"delay\" } }").either.map(result => assertTrue(result.isLeft))
     },
     test("the overlay file is read, below the env.conf and above the defaults") {
       val overlay = Files.createTempFile("antifraud-overlay", ".conf")

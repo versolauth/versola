@@ -17,11 +17,9 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
 
   private def patch(blockAt: Int) =
     TuningPatch(
-      delayAt = None,
       challengeAt = None,
       reviewAt = None,
       blockAt = Some(blockAt),
-      delayMillis = None,
       fakeSendDelayMillis = None,
       pow = None,
       thresholds = None,

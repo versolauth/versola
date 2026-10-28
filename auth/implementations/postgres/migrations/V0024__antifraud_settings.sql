@@ -1,5 +1,5 @@
 -- Antifraud settings an operator changes during an attack (thresholds, rule weights, shadow rules, limits on codes sent
--- to a range of numbers, timings), kept apart from the configuration because a restart is too slow for them and empties
+-- to a range of numbers, the fake-send timing), kept apart from the configuration because a restart is too slow for them and empties
 -- the in-memory counters. A row is a TuningPatch as JSON. The global row (tenant_id '') has every key, is seeded below
 -- with everything off, and is the only source of what applies to a tenant that has no row; a tenant's row is a patch over
 -- it, and what it leaves out is the global row's. The configuration says nothing of these values.
@@ -17,7 +17,7 @@ CREATE TABLE af_settings (
 -- The seed is Tuning.off; PostgresAntifraudSettingsRepositorySpec checks that they are the same.
 INSERT INTO af_settings (tenant_id, settings, updated_by, updated_at) VALUES (
     '',
-    '{"delayAt":0,"challengeAt":0,"reviewAt":0,"blockAt":0,"delayMillis":2000,"fakeSendDelayMillis":0,'
+    '{"challengeAt":0,"reviewAt":0,"blockAt":0,"fakeSendDelayMillis":0,'
         '"pow":{"minDifficulty":14,"maxDifficulty":18,"scoreStep":15},'
         '"thresholds":{'
             '"phone":{"perMinute":0,"perTenMinutes":0,"perHour":0,"perDay":0,"weight":50},'

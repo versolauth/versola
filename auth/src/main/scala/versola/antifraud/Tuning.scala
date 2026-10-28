@@ -5,15 +5,13 @@ import zio.*
 import zio.json.*
 
 /** What an operator changes while an attack is going on: the thresholds the score turns into an action at, the weights
-  * of the rules, which rules only record, the limits on codes sent to a range of numbers, and the timing of a delay
-  * and of a fake send. Not deployment configuration, because a restart is too slow for it and empties the in-memory
+  * of the rules, which rules only record, the limits on codes sent to a range of numbers, and the timing of a fake
+  * send. Not deployment configuration, because a restart is too slow for it and empties the in-memory
   * counters; it is stored in `af_settings` (see [[AntifraudTuning]]) and changed through the admin API.
   *
-  * @param delayAt        score from which a step is delayed; 0 disables the threshold (likewise the next three)
-  * @param challengeAt    score from which a step is challenged
+  * @param challengeAt    score from which a step is challenged; 0 disables the threshold (likewise the next two)
   * @param reviewAt       score from which a step is sent to review
   * @param blockAt        score from which a step is refused
-  * @param delayMillis    how long a `Delay` holds a request back
   * @param fakeSendDelayMillis how long a fake send waits; 0 waits as long as the recent real sends took
   * @param pow            how much work a proof-of-work challenge asks (see [[PowChallengeVerifier]])
   * @param thresholds     the limits (and weights) of the velocity rules
@@ -24,19 +22,16 @@ import zio.json.*
   *                       and force nothing: a dry run before the rule is made real
   */
 case class Tuning(
-    delayAt: Int,
     challengeAt: Int,
     reviewAt: Int,
     blockAt: Int,
-    delayMillis: Long,
     fakeSendDelayMillis: Long,
     pow: PowDifficulty,
     thresholds: VelocityRules.Thresholds,
     smsLimits: SmsLimits,
     ruleWeights: Map[String, Int],
     shadowRules: Set[String],
-) derives JsonCodec:
-  def delay: Duration = Duration.fromMillis(delayMillis)
+) derives JsonCodec
 
 /** Zero bits asked of a request that only just reached the challenge score (`minDifficulty`), of any request at most
   * (`maxDifficulty`: each bit doubles the work, and a phone has to do it), and the score above `challengeAt` that adds one
@@ -56,15 +51,12 @@ case class SmsLimits(default: SmsLimit, byPrefix: Map[String, SmsLimit]) derives
   def enabled: Boolean = default.enabled || byPrefix.values.exists(_.enabled)
 
 object Tuning:
-  /** Nothing limited, weighed or delayed: what applies until the stored settings are read, and the values the first
-    * global row is seeded with (migration `V0024`). The delays are what a delay or a fake send takes once something
-    * is turned on. */
+  /** Nothing limited or weighed: what applies until the stored settings are read, and the values the first
+    * global row is seeded with (migration `V0024`). */
   val off: Tuning = Tuning(
-    delayAt = 0,
     challengeAt = 0,
     reviewAt = 0,
     blockAt = 0,
-    delayMillis = 2000,
     fakeSendDelayMillis = 0,
     pow = PowDifficulty(minDifficulty = 14, maxDifficulty = 18, scoreStep = 15),
     thresholds = VelocityRules.Thresholds(

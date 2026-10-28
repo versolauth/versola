@@ -15,9 +15,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
   private val base = Tuning.off
 
   private def patch(
-      delayAt: Option[Int] = None,
+      challengeAt: Option[Int] = None,
       blockAt: Option[Int] = None,
-      delayMillis: Option[Long] = None,
+      fakeSendDelayMillis: Option[Long] = None,
       thresholds: Option[VelocityRules.Thresholds] = None,
       smsLimits: Option[SmsLimits] = None,
       ruleWeights: Option[Map[String, Int]] = None,
@@ -25,12 +25,10 @@ object AntifraudTuningSpec extends UnitSpecBase:
       pow: Option[PowDifficulty] = None,
   ) =
     TuningPatch(
-      delayAt = delayAt,
-      challengeAt = None,
+      challengeAt = challengeAt,
       reviewAt = None,
       blockAt = blockAt,
-      delayMillis = delayMillis,
-      fakeSendDelayMillis = None,
+      fakeSendDelayMillis = fakeSendDelayMillis,
       pow = pow,
       thresholds = thresholds,
       smsLimits = smsLimits,
@@ -87,14 +85,14 @@ object AntifraudTuningSpec extends UnitSpecBase:
         tuning = AntifraudTuningStore.Impl(InMemory(rows, version, failing))
         _ <- tuning.refresh
         before = tuning.available
-        engine = Antifraud.Impl(enabled, List(rules(rule("a", 1))), tuning)
+        engine = Antifraud.Impl(enabled.copy(failureAction = DecisionAction.Challenge), List(rules(rule("a", 1))), tuning)
         cold <- engine.evaluate(ctx)
         _ <- failing.set(false)
         _ <- tuning.refresh
         warm <- engine.evaluate(ctx)
       yield assertTrue(
         !before,
-        cold == Decision(DecisionAction.Delay, 0, List("antifraud_tuning_unavailable")),
+        cold == Decision(DecisionAction.Challenge, 0, List("antifraud_tuning_unavailable")),
         tuning.available,
         warm == Decision(DecisionAction.Allow, 1, List("a")),
       )
@@ -111,25 +109,25 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (tuning, _, _) <- tuningLayer
         _ <- tuning.put(None, patch(blockAt = Some(70)), "alice")
-        _ <- tuning.put(None, patch(delayAt = Some(3)), "alice")
+        _ <- tuning.put(None, patch(challengeAt = Some(3)), "alice")
         removed <- tuning.delete(None, "alice").either
       yield assertTrue(
         tuning.effective(None).blockAt == 70,
-        tuning.effective(None).delayAt == 3,
+        tuning.effective(None).challengeAt == 3,
         removed.left.exists(_.isInstanceOf[InvalidTuning]),
       )
     },
     test("the global row is laid over the config, a tenant's over that, and a key a row leaves out is the layer below's") {
       for
         (tuning, _, _) <- tuningLayer
-        _ <- tuning.put(None, patch(delayAt = Some(10), blockAt = Some(100)), "alice")
+        _ <- tuning.put(None, patch(challengeAt = Some(10), blockAt = Some(100)), "alice")
         _ <- tuning.put(Some(tenant), patch(blockAt = Some(50)), "alice")
       yield assertTrue(
         tuning.effective(None).blockAt == 100,
         tuning.effective(Some(other)).blockAt == 100,
         tuning.effective(Some(tenant)).blockAt == 50,
-        tuning.effective(Some(tenant)).delayAt == 10,
-        tuning.effective(Some(tenant)).challengeAt == base.challengeAt,
+        tuning.effective(Some(tenant)).challengeAt == 10,
+        tuning.effective(Some(tenant)).reviewAt == base.reviewAt,
       )
     },
     test("deleting a row returns the scope to the layer below") {
@@ -158,13 +156,18 @@ object AntifraudTuningSpec extends UnitSpecBase:
         _ <- tuning.refresh
       yield assertTrue(tuning.effective(None).blockAt == 70)
     },
+    test("a row stored while there was a Delay step still reads: its delayAt and delayMillis are ignored") {
+      import zio.json.*
+      val stored = TuningPatch.of(Tuning.off).toJson.dropRight(1) + ""","delayAt":3,"delayMillis":2000}"""
+      assertTrue(stored.fromJson[TuningPatch].exists(_.complete.contains(Tuning.off)))
+    },
     test("refuses what cannot be meant") {
       def refused(p: TuningPatch, tenant: Boolean = false) = AntifraudTuningStore.invalid(p, tenant).isDefined
       assertTrue(
         refused(patch(blockAt = Some(-1))),
-        refused(patch(delayMillis = Some(600000))),
-        refused(patch(delayMillis = Some(100)), tenant = true),
-        !refused(patch(delayMillis = Some(100))),
+        refused(patch(fakeSendDelayMillis = Some(600000))),
+        refused(patch(fakeSendDelayMillis = Some(100)), tenant = true),
+        !refused(patch(fakeSendDelayMillis = Some(100))),
         refused(patch(smsLimits = Some(SmsLimits(SmsLimit(0, 0, 0.1), Map("49x" -> SmsLimit(5, 0, 0.1)))))),
         refused(patch(smsLimits = Some(SmsLimits(SmsLimit(0, 0, 2.0), Map.empty)))),
         !refused(patch(smsLimits = Some(SmsLimits(SmsLimit(0, 0, 0.1), Map("49" -> SmsLimit(5, 0, 0.1)))))),

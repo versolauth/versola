@@ -33,11 +33,9 @@ case class SmsLimitsDto(default: SmsLimitDto, byPrefix: Map[String, SmsLimitDto]
 /** What a row of the settings sets; what it leaves out is the layer below's (the tenant's from the global row, that from
   * the configuration of auth). Auth validates it. */
 case class AntifraudSettingsPatch(
-    delayAt: Option[Int],
     challengeAt: Option[Int],
     reviewAt: Option[Int],
     blockAt: Option[Int],
-    delayMillis: Option[Long],
     fakeSendDelayMillis: Option[Long],
     pow: Option[PowDifficultyDto],
     thresholds: Option[VelocityThresholdsDto],
@@ -48,11 +46,9 @@ case class AntifraudSettingsPatch(
 
 /** What applies to a scope once the layers are put together. */
 case class AntifraudSettingsValues(
-    delayAt: Int,
     challengeAt: Int,
     reviewAt: Int,
     blockAt: Int,
-    delayMillis: Long,
     fakeSendDelayMillis: Long,
     pow: PowDifficultyDto,
     thresholds: VelocityThresholdsDto,

@@ -23,11 +23,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val base = URL.empty / "antifraud" / "settings"
   private val effective = Tuning.off
   private val patch = TuningPatch(
-    delayAt = None,
     challengeAt = None,
     reviewAt = None,
     blockAt = Some(80),
-    delayMillis = None,
     fakeSendDelayMillis = None,
     pow = None,
     thresholds = None,

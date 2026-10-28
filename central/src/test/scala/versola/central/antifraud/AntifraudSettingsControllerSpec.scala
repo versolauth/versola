@@ -27,11 +27,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
   private val patch = AntifraudSettingsPatch(
-    delayAt = None,
     challengeAt = None,
     reviewAt = None,
     blockAt = Some(80),
-    delayMillis = None,
     fakeSendDelayMillis = None,
     pow = None,
     thresholds = None,
@@ -40,11 +38,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     shadowRules = Some(Set("velocity_ip_1m")),
   )
   private val effective = AntifraudSettingsValues(
-    delayAt = 0,
     challengeAt = 0,
     reviewAt = 0,
     blockAt = 80,
-    delayMillis = 2000,
     fakeSendDelayMillis = 0,
     pow = PowDifficultyDto(14, 18, 15),
     thresholds = VelocityThresholdsDto(limit, limit, limit, limit, limit, 40),

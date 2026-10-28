@@ -184,7 +184,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
 
   val spec = suite("OtpConversationService")(
     suite("proof of work")(
-      test("a Challenge decision asks a client that can answer for a proof, sending nothing, holding nothing and writing nothing") {
+      test("a Challenge decision asks a client that can answer for a proof, sending nothing and writing nothing") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           result <- request(env, ProofInput.Asked)
@@ -194,7 +194,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           steps.map(_.outcome) == List(AntifraudOutcome.challenged),
           steps.flatMap(_.decision) == List(challenging),
           env.antifraud.smsAsked.isEmpty,
-          env.antifraud.holds == 0,
           env.conversationRepository.overwrite.calls.isEmpty,
           env.otpService.sendOtp.calls.isEmpty,
         )
@@ -210,19 +209,19 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.antifraud.smsAsked.isEmpty,
         )
       },
-      test("with the verifier off a Challenge stays the pause it was: held and sent, whoever asks") {
+      test("with the verifier off a Challenge is sent as a plain send, whoever asks") {
         val env = Env(decision = challenging)
         for
           _ <- request(env, ProofInput.NoScript)
-        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
       },
       test("a verifier that fails to make a challenge fails open the same way") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed, issues = false))
         for
           _ <- request(env, ProofInput.Asked)
-        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
       },
-      test("a right solution sends the code once, without the pause, judging the request again but not counting it again") {
+      test("a right solution sends the code once, judging the request again but not counting it again") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           result <- request(env, answered)
@@ -230,7 +229,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result.isInstanceOf[ConversationResult.RenderStep],
           env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.challenge_passed, AntifraudOutcome.sent),
           env.antifraud.decisions == List(true),
-          env.antifraud.holds == 0,
           env.otpService.sendOtp.calls.size == 1,
         )
       },
@@ -248,7 +246,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env(challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, answered)
-        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent), env.antifraud.holds == 0)
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
       },
       test("a request with a garbage proof is counted like any other, and the proof does not lower its decision") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Failed(1)))
@@ -260,12 +258,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.otpService.sendOtp.calls.isEmpty,
         )
       },
-      test("a challenge that came of the engine failing does not lock out a request that cannot answer: held and sent as before") {
+      test("a challenge that came of the engine failing does not lock out a request that cannot answer: it is sent") {
         val env =
           Env(decision = Decision(DecisionAction.Challenge, 0, List("antifraud_error")), challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, ProofInput.NoScript)
-        yield assertTrue(env.antifraud.holds == 1, env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
+        yield assertTrue(env.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.sent))
       },
       test("a real score is refused for a request that cannot answer, even while the engine is failing elsewhere") {
         val env =

@@ -10,11 +10,9 @@ import java.util.concurrent.atomic.AtomicReference
 /** The part of a [[Tuning]] a row of `af_settings` sets; what it leaves out is taken from the row below it (the tenant's
   * from the global one, that from the configuration). A map or the thresholds are replaced as a whole. */
 case class TuningPatch(
-    delayAt: Option[Int],
     challengeAt: Option[Int],
     reviewAt: Option[Int],
     blockAt: Option[Int],
-    delayMillis: Option[Long],
     fakeSendDelayMillis: Option[Long],
     pow: Option[PowDifficulty],
     thresholds: Option[VelocityRules.Thresholds],
@@ -24,11 +22,9 @@ case class TuningPatch(
 ) derives JsonCodec:
   def over(base: Tuning): Tuning =
     Tuning(
-      delayAt = delayAt.getOrElse(base.delayAt),
       challengeAt = challengeAt.getOrElse(base.challengeAt),
       reviewAt = reviewAt.getOrElse(base.reviewAt),
       blockAt = blockAt.getOrElse(base.blockAt),
-      delayMillis = delayMillis.getOrElse(base.delayMillis),
       fakeSendDelayMillis = fakeSendDelayMillis.getOrElse(base.fakeSendDelayMillis),
       pow = pow.getOrElse(base.pow),
       thresholds = thresholds.getOrElse(base.thresholds),
@@ -40,31 +36,37 @@ case class TuningPatch(
   /** The whole tuning, if the patch sets every key. */
   def complete: Option[Tuning] =
     for
-      a <- delayAt
-      b <- challengeAt
-      c <- reviewAt
-      d <- blockAt
-      e <- delayMillis
-      f <- fakeSendDelayMillis
-      p <- pow
-      g <- thresholds
-      h <- smsLimits
-      i <- ruleWeights
-      j <- shadowRules
-    yield Tuning(a, b, c, d, e, f, p, g, h, i, j)
+      challenge <- challengeAt
+      review <- reviewAt
+      block <- blockAt
+      fakeSend <- fakeSendDelayMillis
+      difficulty <- pow
+      limits <- thresholds
+      sms <- smsLimits
+      weights <- ruleWeights
+      shadow <- shadowRules
+    yield Tuning(
+      challengeAt = challenge,
+      reviewAt = review,
+      blockAt = block,
+      fakeSendDelayMillis = fakeSend,
+      pow = difficulty,
+      thresholds = limits,
+      smsLimits = sms,
+      ruleWeights = weights,
+      shadowRules = shadow,
+    )
 
-  /** The timings belong to the whole deployment: a request is held and a fake send waits where no tenant is known. */
-  def setsTimings: Boolean = delayMillis.isDefined || fakeSendDelayMillis.isDefined
+  /** The timing belongs to the whole deployment: a fake send waits where no tenant is known. */
+  def setsTimings: Boolean = fakeSendDelayMillis.isDefined
 
 object TuningPatch:
   /** A patch that sets every key to what `tuning` has: how the global row is stored. */
   def of(tuning: Tuning): TuningPatch =
     TuningPatch(
-      delayAt = Some(tuning.delayAt),
       challengeAt = Some(tuning.challengeAt),
       reviewAt = Some(tuning.reviewAt),
       blockAt = Some(tuning.blockAt),
-      delayMillis = Some(tuning.delayMillis),
       fakeSendDelayMillis = Some(tuning.fakeSendDelayMillis),
       pow = Some(tuning.pow),
       thresholds = Some(tuning.thresholds),
@@ -142,16 +144,14 @@ object AntifraudTuningStore:
         .orElse(Option.when(l.minConversion.isNaN || l.minConversion < 0 || l.minConversion > 1)(s"$name minConversion must be between 0 and 1"))
     val rule = "[a-z0-9_:.-]{1,100}".r
     List(
-      score("delayAt", patch.delayAt),
       score("challengeAt", patch.challengeAt),
       score("reviewAt", patch.reviewAt),
       score("blockAt", patch.blockAt),
-      patch.delayMillis.filter(v => v < 0 || v > MaxDelayMillis).map(_ => s"delayMillis must be between 0 and $MaxDelayMillis"),
       patch.fakeSendDelayMillis.filter(v => v < 0 || v > MaxDelayMillis).map(_ => s"fakeSendDelayMillis must be between 0 and $MaxDelayMillis"),
       patch.pow.flatMap: p =>
         Option.when(p.minDifficulty < 0 || p.maxDifficulty > MaxDifficulty || p.minDifficulty > p.maxDifficulty)(s"pow difficulty must satisfy 0 <= minDifficulty <= maxDifficulty <= $MaxDifficulty")
           .orElse(Option.when(p.scoreStep < 0 || p.scoreStep > MaxScore)(s"pow scoreStep must be between 0 and $MaxScore")),
-      Option.when(tenant && patch.setsTimings)("delayMillis and fakeSendDelayMillis are for the global settings only"),
+      Option.when(tenant && patch.setsTimings)("fakeSendDelayMillis is for the global settings only"),
       patch.thresholds.flatMap: t =>
         List("phone" -> t.phone, "ip" -> t.ip, "device" -> t.device, "asn" -> t.asn, "prefix" -> t.prefix).flatMap(limit.tupled).headOption
           .orElse(Option.when(t.trustedDiscount < 0 || t.trustedDiscount > MaxWeight)(s"trustedDiscount must be between 0 and $MaxWeight")),

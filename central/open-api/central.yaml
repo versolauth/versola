@@ -2705,8 +2705,8 @@ paths:
         no restart and no loss of the counters. Every change is recorded in the audit with the row before and after.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
-        `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). `delayMillis` and
-        `fakeSendDelayMillis` are for the global row only. Auth refuses (`400`, with the reason as text) a negative or
+        `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). `fakeSendDelayMillis` is for
+        the global row only. Auth refuses (`400`, with the reason as text) a negative or
         out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
       operationId: putAntifraudSettings
       requestBody:
@@ -6850,11 +6850,9 @@ components:
       type: object
       description: What a row sets; a key it leaves out is the global row's (for a change of the global row, what it has now). A map, or `thresholds`, is replaced as a whole.
       properties:
-        delayAt: { type: integer, minimum: 0, description: Score from which a step is delayed; 0 disables (likewise the next three). }
-        challengeAt: { type: integer, minimum: 0 }
+        challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `reviewAt` and `blockAt`). }
         reviewAt: { type: integer, minimum: 0 }
         blockAt: { type: integer, minimum: 0 }
-        delayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a `Delay` holds a request back. Global row only. }
         fakeSendDelayMillis: { type: integer, minimum: 0, maximum: 60000, description: How long a fake send waits; 0 waits as long as recent real sends took. Global row only. }
         pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
         thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
@@ -6871,11 +6869,9 @@ components:
       type: object
       description: What applies to a scope once the layers are put together.
       properties:
-        delayAt: { type: integer }
         challengeAt: { type: integer }
         reviewAt: { type: integer }
         blockAt: { type: integer }
-        delayMillis: { type: integer }
         fakeSendDelayMillis: { type: integer }
         pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
         thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
@@ -6886,7 +6882,7 @@ components:
         shadowRules:
           type: array
           items: { type: string }
-      required: [delayAt, challengeAt, reviewAt, blockAt, delayMillis, fakeSendDelayMillis, pow, thresholds, smsLimits, ruleWeights, shadowRules]
+      required: [challengeAt, reviewAt, blockAt, fakeSendDelayMillis, pow, thresholds, smsLimits, ruleWeights, shadowRules]
     AntifraudSettingsResponse:
       type: object
       properties:

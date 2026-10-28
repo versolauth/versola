@@ -46,10 +46,6 @@ trait AntifraudEvents:
       repeated: Boolean,
   ): UIO[Decision]
 
-  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, when no challenge could be put to the
-    * client, see [[ChallengeVerifier]]): the pause is the friction. Returns at once for any other decision. */
-  def hold(decision: Decision): UIO[Unit]
-
   /** A real code took `took` to hand to the provider; what a fake send imitates. */
   def sendTook(took: Duration): UIO[Unit]
 
@@ -133,8 +129,6 @@ object AntifraudEvents:
 
     override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
-
-    override def hold(decision: Decision): UIO[Unit] = ZIO.unit
 
     override def sendTook(took: Duration): UIO[Unit] = ZIO.unit
 
@@ -295,11 +289,6 @@ object AntifraudEvents:
         challenge = None,
         challengeLevel = None,
       )
-
-    override def hold(decision: Decision): UIO[Unit] =
-      decision.action match
-        case DecisionAction.Delay | DecisionAction.Challenge => ZIO.sleep(tuning.effective(None).delay)
-        case _ => ZIO.unit
 
     override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
 
