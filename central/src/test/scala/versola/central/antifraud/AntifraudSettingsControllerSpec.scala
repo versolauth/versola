@@ -97,13 +97,13 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.put.calls == List(PutAntifraudSettingsRequest(settings, admin)),
       )
     },
-    test("a get takes the token's user") {
+    test("a get needs no caller to name") {
       val service = stub[AntifraudSettingsService]
       for
         _ <- service.get.succeedsWith(settings)
-        response <- runAs(Request.get(base.addQueryParam("userId", attacker.toString)), service)
+        response <- run(Request.get(base), service)
         body <- response.body.asString
-      yield assertTrue(response.status == Status.Ok, body.fromJson[AntifraudSettings] == Right(settings), service.get.calls == List(admin))
+      yield assertTrue(response.status == Status.Ok, body.fromJson[AntifraudSettings] == Right(settings), service.get.calls.size == 1)
     },
     test("a delete resets, with the userId edge added to the body") {
       val service = stub[AntifraudSettingsService]
@@ -112,12 +112,11 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         deleted <- runAs(delete("{}"), service)
       yield assertTrue(deleted.status == Status.NoContent, service.reset.calls == List(DeleteAntifraudSettingsRequest(admin)))
     },
-    test("a request without a userId reaches nothing") {
+    test("a put without a userId reaches nothing") {
       val service = stub[AntifraudSettingsService]
       for
         put <- run(Request.put(base, Body.fromString(putBody)), service)
-        get <- run(Request.get(base), service)
-      yield assertTrue(put.status == Status.BadRequest, get.status == Status.BadRequest, service.put.calls.isEmpty, service.get.calls.isEmpty)
+      yield assertTrue(put.status == Status.BadRequest, service.put.calls.isEmpty)
     },
     test("what auth refused is 400 with its reason") {
       val service = stub[AntifraudSettingsService]

@@ -20,8 +20,7 @@ object AntifraudSettingsController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudSettingsService]
-        userId <- request.queryZIO[UserId]("userId")
-        response <- guarded(service.get(userId).map(settings => Response.json(settings.toJson)))
+        response <- guarded(service.get.map(settings => Response.json(settings.toJson)))
       yield response
     }
 
