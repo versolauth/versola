@@ -456,19 +456,22 @@ object BootstrapService:
     ),
     (
       Permission("antifraud:read"),
-      localized("View antifraud lists", "Просмотр списков антифрода"),
+      localized("View antifraud lists and settings", "Просмотр списков и настроек антифрода"),
       Set(
         endpointId("GET", "/antifraud/lists"),
         endpointId("GET", "/antifraud/lists/audit"),
+        endpointId("GET", "/antifraud/settings"),
       ),
     ),
     (
       Permission("antifraud:manage"),
-      localized("Manage antifraud lists", "Управление списками антифрода"),
+      localized("Manage antifraud lists and settings", "Управление списками и настройками антифрода"),
       Set(
         endpointId("POST", "/antifraud/lists"),
         endpointId("POST", "/antifraud/lists/preview"),
         endpointId("DELETE", "/antifraud/lists"),
+        endpointId("PUT", "/antifraud/settings"),
+        endpointId("DELETE", "/antifraud/settings"),
       ),
     ),
     (
@@ -988,6 +991,9 @@ object BootstrapService:
     "DELETE" -> "/antifraud/lists",
     "POST" -> "/antifraud/lists/preview",
     "GET" -> "/antifraud/lists/audit",
+    "GET" -> "/antifraud/settings",
+    "PUT" -> "/antifraud/settings",
+    "DELETE" -> "/antifraud/settings",
   )
 
   /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from

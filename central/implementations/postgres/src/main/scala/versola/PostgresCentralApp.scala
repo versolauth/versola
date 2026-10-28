@@ -2,7 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
-import versola.central.antifraud.{AntifraudListController, AntifraudListService}
+import versola.central.antifraud.{AntifraudListController, AntifraudListService, AntifraudSettingsController, AntifraudSettingsService}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -150,6 +150,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserRepository &
       UserService &
       AntifraudListService &
+      AntifraudSettingsService &
       AuthClient &
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
@@ -185,6 +186,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.routes,
       UserController.routes,
       AntifraudListController.routes,
+      AntifraudSettingsController.routes,
       JwksController.routes,
       ServerMetadataController.routes,
       ServiceController.routes,
@@ -296,6 +298,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthClient.live >++>
       UserService.live >++>
       AntifraudListService.live >++>
+      AntifraudSettingsService.live >++>
       UserOutboxProcessor.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.

@@ -1939,6 +1939,46 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
        |}
+       |
+       |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
+       |# kept, and the intervals. All keys are required. Everything is off: thresholds, weights and limits are not here,
+       |# they are tuned through central's admin API (`/antifraud/settings`) without a restart.
+       |antifraud {
+       |  retention          = "14 days"   # the event log
+       |  stats-interval     = "1 minute"
+       |  stats-retention    = "30 days"
+       |  sms-budget {
+       |    prefix-length = 4          # digits of a number (country code included) that make a range; changing it starts the counts over
+       |  }
+       |  decision {
+       |    enabled        = false
+       |    timeout        = "20 milliseconds"
+       |    failure-action = "allow"       # allow, challenge, fake or block: what a request gets when the evaluation fails or is too slow
+       |  }
+       |  velocity {
+       |    enabled        = false
+       |    flush-interval = "10 seconds"
+       |    load-interval  = "20 seconds"
+       |  }
+       |  tuning {
+       |    refresh-interval = "5 seconds"
+       |  }
+       |  lists {
+       |    enabled         = false
+       |    refresh-interval = "5 seconds"
+       |    audit-retention = "365 days"
+       |  }
+       |  detectors {
+       |    enabled   = false
+       |    interval  = "1 minute"
+       |    retention = "90 days"
+       |  }
+       |  challenge {
+       |    enabled      = true
+       |    ttl          = "2 minutes"
+       |    max-attempts = 5
+       |  }
+       |}
        |$authMutualTlsBlock$authEstBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:

@@ -264,7 +264,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
       assertTrue(
-        antifraud.size == 5,
+        antifraud.size == 8,
         antifraud.forall((method, path) =>
           injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
         ),
