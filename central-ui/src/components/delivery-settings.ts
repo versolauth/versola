@@ -265,7 +265,7 @@ export class VersolaDeliverySettings extends LitElement {
     dispatchRecordRoute(this, { edit: null });
   }
 
-  /** The mistakes the draft has, with what is already saved to compare the password rule against. */
+  /** The mistakes the draft has. */
   private draftErrors(group: Group): FieldErrors {
     return group === 'smtp'
       ? validateSmtpDraft(this.smtpDraft)
