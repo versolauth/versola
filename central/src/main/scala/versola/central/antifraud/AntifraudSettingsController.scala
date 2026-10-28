@@ -2,9 +2,7 @@ package versola.central.antifraud
 
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
-import versola.util.PageLimit
 import versola.util.http.{BadRequest, Controller, Observability}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -15,17 +13,15 @@ import zio.json.EncoderOps
 object AntifraudSettingsController extends Controller:
   type Env = Tracing & ResourceService & AntifraudSettingsService
 
-  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint, auditEndpoint)
+  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint)
 
-  /** `tenantId` for a tenant's row, none for the global one. */
   val getEndpoint =
     Method.GET / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudSettingsService]
-        tenantId <- request.queryZIO[Option[TenantId]]("tenantId")
         userId <- request.queryZIO[UserId]("userId")
-        response <- guarded(service.get(tenantId, userId).map(settings => Response.json(settings.toJson)))
+        response <- guarded(service.get(userId).map(settings => Response.json(settings.toJson)))
       yield response
     }
 
@@ -39,30 +35,14 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
-  /** The scope is named in the body, where edge puts the caller of a request that is not a `GET`. */
+  /** Puts the seeded values back. The caller is in the body, where edge puts it for a request that is not a `GET`. */
   val deleteEndpoint =
     Method.DELETE / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         body <- request.bodyAs[DeleteAntifraudSettingsRequest]
         service <- ZIO.service[AntifraudSettingsService]
-        response <- guarded(service.delete(body).as(Response.status(Status.NoContent)))
-      yield response
-    }
-
-  val auditEndpoint =
-    Method.GET / "antifraud" / "settings" / "audit" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[AntifraudSettingsService]
-        tenantId <- request.queryZIO[Option[TenantId]]("tenantId")
-        global <- request.queryZIO[Option[Boolean]]("global")
-        limit <- request.queryZIO[Option[PageLimit]]("limit")
-        userId <- request.queryZIO[UserId]("userId")
-        response <- guarded(
-          service.audit(AntifraudSettingsAuditQuery(tenantId = tenantId, global = global, limit = limit), userId)
-            .map(records => Response.json(records.toJson)),
-        )
+        response <- guarded(service.reset(body).as(Response.status(Status.NoContent)))
       yield response
     }
 

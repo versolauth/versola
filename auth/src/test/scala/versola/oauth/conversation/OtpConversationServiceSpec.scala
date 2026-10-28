@@ -67,7 +67,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       smsAllowed: Boolean = true,
       afterRequested: zio.UIO[Unit] = ZIO.unit,
       decision: Decision = Decision.allow,
-      fakeDelay: zio.Duration = zio.Duration.Zero,
       val challengeVerifier: ChallengeVerifier = ChallengeVerifier.off,
   ):
     val otpService = stub[OtpService]
@@ -89,7 +88,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested, decision, fakeDelay)
+    val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested, decision)
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -356,33 +355,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           // A fake code is not charged to the range's budget.
           env.antifraud.smsAsked == List(false),
         )
-      },
-      test("a fake send waits as long as the antifraud sample says, a real one does not wait") {
-        val fake = Decision(DecisionAction.Fake, 0, Nil)
-        def run(decision: Decision, otp: ConversationStep.Otp) =
-          val env = Env(decision = decision, fakeDelay = 3.seconds)
-          for
-            _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
-            _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
-            _ <- env.otpService.prepareOtp.succeedsWith(otp)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            _ <- env.otpService.sendOtp.succeedsWith(())
-            fiber <- env.service.prepareInitialOtp(
-              authId,
-              initialConversation,
-              Right(Phone("+491512345678")),
-              factorIndex = 0,
-              proof = ProofInput.NoScript,
-            ).fork
-            _ <- TestClock.adjust(2.seconds)
-            early <- fiber.poll
-            _ <- TestClock.adjust(2.seconds)
-            _ <- fiber.join
-          yield early.isEmpty
-        for
-          fakeWaited <- run(fake, realOtp.copy(real = None))
-          realWaited <- run(Decision.allow, realOtp)
-        yield assertTrue(fakeWaited, !realWaited)
       },
       test("a code entered after a fake send is recorded as fake_verify") {
         val env = Env()

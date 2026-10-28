@@ -4,9 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.ZIOStubs
 import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
-import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
-import versola.util.PageLimit
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -21,34 +19,20 @@ import java.util.UUID
 
 object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val base = URL.empty / "antifraud" / "settings"
-  private val tenant = TenantId("tenant-a")
   private val admin = UserId(UUID.fromString("00000000-0000-0000-0000-0000000000f1"))
   private val attacker = UserId(UUID.fromString("00000000-0000-0000-0000-0000000000f2"))
 
   private val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
-  private val patch = AntifraudSettingsPatch(
-    challengeAt = None,
-    reviewAt = None,
-    blockAt = Some(80),
-    fakeSendDelayMillis = None,
-    pow = None,
-    thresholds = None,
-    smsLimits = Some(SmsLimitsDto(SmsLimitDto(10, 0, 0.1), Map("49" -> SmsLimitDto(2, 5, 0.2)))),
-    ruleWeights = Some(Map("velocity_phone_1h" -> 40)),
-    shadowRules = Some(Set("velocity_ip_1m")),
-  )
-  private val effective = AntifraudSettingsValues(
+  private val settings = AntifraudSettings(
     challengeAt = 0,
     reviewAt = 0,
     blockAt = 80,
-    fakeSendDelayMillis = 0,
     pow = PowDifficultyDto(14, 18, 15),
     thresholds = VelocityThresholdsDto(limit, limit, limit, limit, limit, 40),
-    smsLimits = SmsLimitsDto(SmsLimitDto(10, 0, 0.1), Map.empty),
-    ruleWeights = Map.empty,
-    shadowRules = Set.empty,
+    smsLimits = SmsLimitsDto(SmsLimitDto(10, 0, 0.1), Map("49" -> SmsLimitDto(2, 5, 0.2))),
+    ruleWeights = Map("velocity_phone_1h" -> 40),
+    shadowRules = Set("velocity_ip_1m"),
   )
-  private val view = AntifraudSettingsResponse(Some(tenant), Some(patch), effective)
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -87,56 +71,47 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def put(body: String) = Request.put(base, Body.fromString(body))
   private def delete(body: String) = Request.delete(base).withBody(Body.fromString(body))
-  private val putBody = s"""{"tenantId":"tenant-a","settings":${patch.toJson}}"""
+  private val putBody = s"""{"settings":${settings.toJson}}"""
 
   def spec = suite("central AntifraudSettingsController")(
     test("without the central credentials every endpoint is 401 and the service is not called") {
       val service = stub[AntifraudSettingsService]
       for
-        statuses <- ZIO.foreach(List(Request.get(base), put(putBody), delete("{}"), Request.get(base / "audit"))): r =>
+        statuses <- ZIO.foreach(List(Request.get(base), put(putBody), delete("{}"))): r =>
           asAdmin(r, admin).flatMap(run(_, service, authorized = false)).map(_.status)
       yield assertTrue(
         statuses.forall(_ == Status.Unauthorized),
         service.get.calls.isEmpty,
         service.put.calls.isEmpty,
-        service.delete.calls.isEmpty,
-        service.audit.calls.isEmpty,
+        service.reset.calls.isEmpty,
       )
     },
     test("a put is handed to the service with the userId edge added, whatever the client sent") {
       val service = stub[AntifraudSettingsService]
       for
-        _ <- service.put.succeedsWith(view)
+        _ <- service.put.succeedsWith(settings)
         response <- runAs(put(putBody.dropRight(1) + s""","userId":"$attacker"}"""), service)
         body <- response.body.asString
-        sent = service.put.calls.head
       yield assertTrue(
         response.status == Status.Ok,
-        body.fromJson[AntifraudSettingsResponse] == Right(view),
-        sent == PutAntifraudSettingsRequest(Some(tenant), patch, admin),
+        body.fromJson[AntifraudSettings] == Right(settings),
+        service.put.calls == List(PutAntifraudSettingsRequest(settings, admin)),
       )
     },
-    test("a get takes the tenant and the token's user") {
+    test("a get takes the token's user") {
       val service = stub[AntifraudSettingsService]
       for
-        _ <- service.get.succeedsWith(view)
-        response <- runAs(Request.get(base.addQueryParams(QueryParams("tenantId" -> "tenant-a", "userId" -> attacker.toString))), service)
+        _ <- service.get.succeedsWith(settings)
+        response <- runAs(Request.get(base.addQueryParam("userId", attacker.toString)), service)
         body <- response.body.asString
-      yield assertTrue(response.status == Status.Ok, body.fromJson[AntifraudSettingsResponse] == Right(view), service.get.calls == List((Some(tenant), admin)))
+      yield assertTrue(response.status == Status.Ok, body.fromJson[AntifraudSettings] == Right(settings), service.get.calls == List(admin))
     },
-    test("a delete names the scope in the body, and the audit takes the paging") {
+    test("a delete resets, with the userId edge added to the body") {
       val service = stub[AntifraudSettingsService]
       for
-        _ <- service.delete.succeedsWith(())
-        _ <- service.audit.succeedsWith(AntifraudSettingsAuditResponse(Nil))
-        deleted <- runAs(delete("""{"tenantId":"tenant-a"}"""), service)
-        audited <- runAs(Request.get((base / "audit").addQueryParams(QueryParams("global" -> "true", "limit" -> "5"))), service)
-      yield assertTrue(
-        deleted.status == Status.NoContent,
-        audited.status == Status.Ok,
-        service.delete.calls == List(DeleteAntifraudSettingsRequest(Some(tenant), admin)),
-        service.audit.calls == List((AntifraudSettingsAuditQuery(None, Some(true), Some(PageLimit(5))), admin)),
-      )
+        _ <- service.reset.succeedsWith(())
+        deleted <- runAs(delete("{}"), service)
+      yield assertTrue(deleted.status == Status.NoContent, service.reset.calls == List(DeleteAntifraudSettingsRequest(admin)))
     },
     test("a request without a userId reaches nothing") {
       val service = stub[AntifraudSettingsService]
@@ -145,14 +120,12 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         get <- run(Request.get(base), service)
       yield assertTrue(put.status == Status.BadRequest, get.status == Status.BadRequest, service.put.calls.isEmpty, service.get.calls.isEmpty)
     },
-    test("what auth refused is 400 with its reason, or 404") {
+    test("what auth refused is 400 with its reason") {
       val service = stub[AntifraudSettingsService]
       for
         _ <- service.put.failsWith(AntifraudListError.Invalid("blockAt must be between 0 and 100000"))
         invalid <- runAs(put(putBody), service)
         text <- invalid.body.asString
-        _ <- service.delete.failsWith(AntifraudListError.NotFound)
-        missing <- runAs(delete("{}"), service)
-      yield assertTrue(invalid.status == Status.BadRequest, text.contains("blockAt must be between"), missing.status == Status.NotFound)
+      yield assertTrue(invalid.status == Status.BadRequest, text.contains("blockAt must be between"))
     },
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

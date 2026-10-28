@@ -1,18 +1,15 @@
 package versola.antifraud
 
-import versola.oauth.client.model.TenantId
-import zio.*
 import zio.json.*
 
 /** What an operator changes while an attack is going on: the thresholds the score turns into an action at, the weights
-  * of the rules, which rules only record, the limits on codes sent to a range of numbers, and the timing of a fake
-  * send. Not deployment configuration, because a restart is too slow for it and empties the in-memory
-  * counters; it is stored in `af_settings` (see [[AntifraudTuning]]) and changed through the admin API.
+  * of the rules, which rules only record, the limits on codes sent to a range of numbers and the difficulty
+  * of a proof of work. Not deployment configuration, because a restart is too slow for it and empties the in-memory
+  * counters; it is stored in `af_settings` (see [[AntifraudTuningStore]]) and changed through the admin API.
   *
   * @param challengeAt    score from which a step is challenged; 0 disables the threshold (likewise the next two)
   * @param reviewAt       score from which a step is sent to review
   * @param blockAt        score from which a step is refused
-  * @param fakeSendDelayMillis how long a fake send waits; 0 waits as long as the recent real sends took
   * @param pow            how much work a proof-of-work challenge asks (see [[PowChallengeVerifier]])
   * @param thresholds     the limits (and weights) of the velocity rules
   * @param smsLimits      the limits on codes sent to a range of numbers
@@ -25,7 +22,6 @@ case class Tuning(
     challengeAt: Int,
     reviewAt: Int,
     blockAt: Int,
-    fakeSendDelayMillis: Long,
     pow: PowDifficulty,
     thresholds: VelocityRules.Thresholds,
     smsLimits: SmsLimits,
@@ -57,7 +53,6 @@ object Tuning:
     challengeAt = 0,
     reviewAt = 0,
     blockAt = 0,
-    fakeSendDelayMillis = 0,
     pow = PowDifficulty(minDifficulty = 14, maxDifficulty = 18, scoreStep = 15),
     thresholds = VelocityRules.Thresholds(
       phone = VelocityRules.Limit(perMinute = 0, perTenMinutes = 0, perHour = 0, perDay = 0, weight = 50),
@@ -72,28 +67,22 @@ object Tuning:
     shadowRules = Set.empty,
   )
 
-/** The tuning the rules and the budget read: what applies to a request of a tenant, from memory.
+/** The tuning the rules and the budget read, from memory.
   *
-  * Where the tuning comes from is the store's business ([[AntifraudTuningStore]]); this is what the engine, the counters
-  * and the budget are given. */
+  * Where it comes from is the store's business ([[AntifraudTuningStore]]); this is what the engine, the counters, the budget
+  * and the challenge are given. One tuning applies to the whole deployment. */
 trait AntifraudTuning:
-  /** What applies to a request of the tenant (`None`: where no tenant is known). Before the tuning has been read once,
-    * [[Tuning.off]]. */
-  def effective(tenant: Option[TenantId]): Tuning
-
-  /** Whether any tenant, or none, has a limit on codes sent: false lets the budget be skipped without looking the tenant up. */
-  def smsLimitsEnabled: Boolean
+  /** What applies. Before the tuning has been read once, [[Tuning.off]]. */
+  def current: Tuning
 
   /** False until the tuning has been read once. A request is then decided as `failure-action` says: nothing says what
     * the thresholds are, and they must not be taken to be 0. */
   def available: Boolean
 
 object AntifraudTuning:
-  /** A tuning that is never stored: `tuning` applies everywhere. */
+  /** A tuning that is never stored: `tuning` applies. */
   final class Fixed(tuning: Tuning) extends AntifraudTuning:
-    override def effective(tenant: Option[TenantId]): Tuning = tuning
-
-    override def smsLimitsEnabled: Boolean = tuning.smsLimits.enabled
+    override def current: Tuning = tuning
 
     override def available: Boolean = true
 

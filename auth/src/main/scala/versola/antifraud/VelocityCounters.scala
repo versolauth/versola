@@ -61,7 +61,7 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   */
 final class VelocityCounters(
     settings: VelocityCounters.Settings,
-    thresholds: Option[TenantId] => VelocityRules.Thresholds,
+    thresholds: () => VelocityRules.Thresholds,
     ipKey: String => UIO[Option[String]],
 ):
   import VelocityCounters.*
@@ -158,7 +158,7 @@ final class VelocityCounters(
       for
         at <- Clock.instant
         keys <- keysOf(ctx)
-      yield VelocityRules.withSignals(this, thresholds(ctx.tenantId), ctx, keys, at, extra)
+      yield VelocityRules.withSignals(this, thresholds(), ctx, keys, at, extra)
 
   /** Keys not counted because `maxKeys` were tracked and none could be made room for, since the start. More than 0 is
     * itself a sign of an attack (or of a `max-keys` that is too small for the traffic). */
@@ -249,7 +249,7 @@ object VelocityCounters:
 
   /** Counters that key an address by its network as it is: for tests, and where nothing is stored. */
   def apply(settings: Settings, thresholds: VelocityRules.Thresholds): VelocityCounters =
-    new VelocityCounters(settings, _ => thresholds, network => ZIO.succeed(Some(network)))
+    new VelocityCounters(settings, () => thresholds, network => ZIO.succeed(Some(network)))
 
   private def pack(minute: Long, count: Int): Long = (minute << 32) | (count.toLong & 0xffffffffL)
   private def minuteOf(packed: Long): Long = packed >>> 32
@@ -430,13 +430,13 @@ object VelocityCounters:
         counters <-
           if settings.enabled then
             for
-              counters <- ZIO.succeed(new VelocityCounters(settings, tenant => tuning.effective(tenant).thresholds, hash))
+              counters <- ZIO.succeed(new VelocityCounters(settings, () => tuning.current.thresholds, hash))
               instance <- ZIO.succeed(UUID.randomUUID())
               failing <- Ref.make(false)
               reported <- ZIO.foreach(List.fill(2)(0L))(Ref.make(_))
               _ <- Flusher(counters, repository, settings, instance, failing, reported(0), reported(1)).run
             yield counters
-          else ZIO.succeed(new VelocityCounters(settings, tenant => tuning.effective(tenant).thresholds, hash))
+          else ZIO.succeed(new VelocityCounters(settings, () => tuning.current.thresholds, hash))
       yield counters
 
   /** Rows deleted per statement of the upkeep. */

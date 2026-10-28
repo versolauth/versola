@@ -295,20 +295,14 @@ object ConversationService:
         case LimitStatus.RateLimited(retryAfter) => renderStep(authId, conversation, step(Some(retryAfter)))
         case LimitStatus.Allowed => renderStep(authId, conversation, step(None))
 
-    /** A real send is timed, and a fake one waits as long as a real one recently took, so that the answer to a
-      * request does not tell which of the two it was. */
-    private def sendTimed(
+    /** Sends the code; a fake step is not sent by the provider (see [[OtpService]]) and answers as soon as a real one would. */
+    private def sendOtp(
         step: ConversationStep.Otp,
         credential: Either[Email, Phone],
         authId: AuthId,
         conversation: ConversationRecord,
     ): Task[Unit] =
-      if step.isFake then
-        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales) *>
-          antifraudEvents.fakeSendDelay.flatMap(ZIO.sleep(_))
-      else
-        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales).timed.flatMap: (took, _) =>
-          antifraudEvents.sendTook(took)
+      otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales)
 
     private def sentOutcome(step: ConversationStep.Otp, decision: Decision): AntifraudOutcome =
       if !step.isFake then AntifraudOutcome.sent
@@ -372,7 +366,7 @@ object ConversationService:
                       // The flag goes up in the same uninterruptible step in which the send is known to have
                       // succeeded, so an interruption cannot fall between the two and give back a code that went.
                       ZIO.uninterruptibleMask(sending =>
-                        sending(sendTimed(sentStep, credential, authId, conversation)) <* sentOut.set(true),
+                        sending(sendOtp(sentStep, credential, authId, conversation)) <* sentOut.set(true),
                       )
                         .tapBoth(
                           _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error, Some(decision)),

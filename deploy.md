@@ -548,36 +548,36 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   ```
 
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
-  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, `GET /antifraud/settings/audit`, see
-  `central/open-api/central.yaml`; permissions `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the
-  in-memory velocity counters. The configuration has no key for any of them: they are the score thresholds (`challengeAt`,
-  `reviewAt`, `blockAt`), the proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of
-  any rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
-  `shadow:<name>`, adding no weight and forcing nothing), the limits on codes sent (`smsLimits`: a default and one per
-  number prefix, the longest prefix a number starts with deciding; the SMS budget below) and the timing of a fake
-  send (`fakeSendDelayMillis`, global only). There is no delay step: nothing holds an honest user's request back. What the configuration keeps is deployment: the switches, `decision.timeout` and
-  `failure-action`, the sizes (`velocity.*`, `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
+  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
+  `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
+  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `reviewAt`, `blockAt`), the
+  proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
+  rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
+  `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
+  number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
+  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending. What the
+  configuration keeps is deployment: the switches, `decision.timeout` and `failure-action`, the sizes (`velocity.*`,
+  `sms-budget.prefix-length` and `max-ranges`), the intervals and the retention.
 
-  The migration seeds the **global row** with everything off (nothing limited or weighed), so there is always one,
-  and it is the only source of what applies to a tenant without a row: `PUT` without `tenantId` changes the keys it names
-  of it and leaves the others, and it cannot be deleted. A **tenant's row** is a patch over the global row (a key it leaves
-  out is the global row's; a map or `thresholds` is replaced as a whole), and deleting it returns the tenant to the global
-  row. Every instance holds the result in memory and rebuilds it when `af_settings_version` changes, checked every
-  `antifraud.tuning.refresh-interval` (5 s), and in full once a minute; a change applies on the instance that took it at
-  once. **A read that fails keeps the last settings that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it
-  increasing**). An instance that starts with the database unreadable has none yet, and decides every request as
-  `decision.failure-action` says (rule `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity
-  counters count) until a read succeeds. Every change is audited with the row before and after. Per-tenant rows apply to
-  everything but the fake-send timing, which is global because a fake send waits where no tenant is known.
+  There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
+  own audit). The migration seeds it with everything off (nothing limited or weighed), so there is always one. `PUT`
+  replaces it as a whole (every key), `GET` reads it and `DELETE` puts the seeded values back. Every instance holds it in
+  memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
+  full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
+  that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the
+  database unreadable has none yet, and decides every request as `decision.failure-action` says (rule
+  `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity counters count) until a read succeeds.
 
   *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
   `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
-  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in as global settings:
+  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in (`PUT` replaces every key, so read the settings first):
 
   ```json
   PUT /antifraud/settings
   {
     "settings": {
+      "challengeAt": 0, "reviewAt": 0, "blockAt": 0,
+      "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
       "thresholds": {
         "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
         "ip":     {"perMinute": 10, "perTenMinutes": 0, "perHour": 0, "perDay": 0,   "weight": 10},
@@ -586,7 +586,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
         "prefix": {"perMinute": 0, "perTenMinutes": 60, "perHour": 200, "perDay": 0, "weight": 30},
         "trustedDiscount": 40
       },
-      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}}
+      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
+      "ruleWeights": {},
+      "shadowRules": []
     }
   }
   ```
@@ -595,7 +597,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
   `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
   rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
-  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. Put the thresholds back to 0 to go
+  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. `DELETE` the settings to go
   back; nothing it recorded needs undoing.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates

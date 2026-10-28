@@ -109,7 +109,7 @@ object AntifraudFixture:
        |    load-interval = "${sync.toMillis} millis"
        |    share-from = 1
        |  }
-       |  # The thresholds are not configuration: `tuned` writes them to the global row of af_settings.
+       |  # The thresholds are not configuration: `tuned` writes them to the row of af_settings.
        |  lists {
        |    enabled = true
        |    refresh-interval = "1 second"
@@ -214,20 +214,20 @@ object AntifraudFixture:
   private def writeGlobalSettings(settings: String): Task[Unit] =
     database: connection =>
       connection.setAutoCommit(false)
-      val update = connection.prepareStatement("UPDATE af_settings SET settings = ?, updated_by = 'e2e', updated_at = now() WHERE tenant_id = ''").nn
+      val update = connection.prepareStatement("UPDATE af_settings SET settings = ?, updated_by = 'e2e', updated_at = now() WHERE id = 1").nn
       update.setString(1, settings)
       update.executeUpdate()
       connection.createStatement().nn.executeUpdate("UPDATE af_settings_version SET version = version + 1 WHERE id = 1")
       connection.commit()
 
-  /** The fixture's thresholds, set the way the admin API would: in the global row of `af_settings` (the row the migration
+  /** The fixture's thresholds, set the way the admin API would: in the row of `af_settings` (the row the migration
     * seeds with everything off) and the bump of `af_settings_version` that tells the instances to reload. The row is put
     * back as it was when the fixture goes, so that the running stack, and the next run, find everything off. */
   private val tuned: ZIO[Scope, Throwable, Unit] =
     val limit = (perHour: Int) => Json.Obj("perMinute" -> Json.Num(0), "perTenMinutes" -> Json.Num(0), "perHour" -> Json.Num(perHour), "perDay" -> Json.Num(0), "weight" -> Json.Num(50))
     ZIO.acquireRelease(
       database: connection =>
-        val rs = connection.createStatement().nn.executeQuery("SELECT settings FROM af_settings WHERE tenant_id = ''").nn
+        val rs = connection.createStatement().nn.executeQuery("SELECT settings FROM af_settings WHERE id = 1").nn
         rs.next()
         rs.getString(1).nn,
     )(before => writeGlobalSettings(before).ignore).flatMap: before =>

@@ -461,7 +461,6 @@ object BootstrapService:
         endpointId("GET", "/antifraud/lists"),
         endpointId("GET", "/antifraud/lists/audit"),
         endpointId("GET", "/antifraud/settings"),
-        endpointId("GET", "/antifraud/settings/audit"),
       ),
     ),
     (
@@ -995,7 +994,6 @@ object BootstrapService:
     "GET" -> "/antifraud/settings",
     "PUT" -> "/antifraud/settings",
     "DELETE" -> "/antifraud/settings",
-    "GET" -> "/antifraud/settings/audit",
   )
 
   /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from

@@ -1,37 +1,37 @@
 package versola.antifraud
 
-import versola.oauth.client.model.TenantId
 import versola.user.authorizeInternal
 import versola.user.model.UserId
 import versola.util.CoreConfig
-import versola.util.PageLimit
 import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 
 /** The internal API of [[AntifraudTuningStore]], called by central, which owns the admin API: auth only trusts the internal
-  * token. `userId` is the admin who asked, which edge put in central's request from the verified token; it is recorded
-  * as who changed the settings. `tenantId` names the tenant's row; without it the global one.
+  * token. `userId` is the admin who asked, which edge put in central's request from the verified token; it is recorded as
+  * who made the change.
   */
 object AntifraudSettingsController extends Controller:
   type Env = Tracing & CoreConfig & AntifraudTuningStore
 
-  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint, auditEndpoint)
+  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint)
 
-  /** The row as stored (`stored`, absent where there is none) and what applies to the scope (`effective`). */
+  /** The row as stored, which is what applies. */
   val getEndpoint =
     Method.GET / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         _ <- request.queryZIO[UserId]("userId")
-        tenant <- request.queryZIO[Option[TenantId]]("tenantId")
         tuning <- ZIO.service[AntifraudTuningStore]
-        stored <- tuning.stored(tenant)
-      yield Response.json(SettingsView(tenant, stored, tuning.effective(tenant)).toJson)
+        stored <- tuning.stored
+        response <- stored match
+          case Some(settings) => ZIO.succeed(Response.json(settings.toJson))
+          case None => Observability.setError("antifraud_settings_not_found").as(Response.status(Status.NotFound))
+      yield response
     }
 
-  /** Replaces the row of the scope with the body's patch. */
+  /** Replaces the settings with the body's. */
   val putEndpoint =
     Method.PUT / "antifraud" / "settings" -> handler { (request: Request) =>
       for
@@ -39,40 +39,18 @@ object AntifraudSettingsController extends Controller:
         body <- request.bodyAs[SettingsPayload]
         tuning <- ZIO.service[AntifraudTuningStore]
         response <- guarded:
-          tuning.put(body.tenantId, body.settings, body.userId.toString) *>
-            ZIO.succeed(Response.json(SettingsView(body.tenantId, Some(body.settings), tuning.effective(body.tenantId)).toJson))
+          tuning.put(body.settings, body.userId.toString).as(Response.json(body.settings.toJson))
       yield response
     }
 
+  /** Puts the seeded values back (everything off). */
   val deleteEndpoint =
     Method.DELETE / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         userId <- request.queryZIO[UserId]("userId")
-        tenant <- request.queryZIO[Option[TenantId]]("tenantId")
         tuning <- ZIO.service[AntifraudTuningStore]
-        response <- guarded:
-          tuning.delete(tenant, userId.toString).flatMap:
-            case true => ZIO.succeed(Response.status(Status.NoContent))
-            case false => Observability.setError("antifraud_settings_not_found").as(Response.status(Status.NotFound))
-      yield response
-    }
-
-  /** `tenantId` narrows to one tenant, `global=true` to the global row. */
-  val auditEndpoint =
-    Method.GET / "antifraud" / "settings" / "audit" -> handler { (request: Request) =>
-      for
-        _ <- authorizeInternal(request)
-        _ <- request.queryZIO[UserId]("userId")
-        tenant <- request.queryZIO[Option[TenantId]]("tenantId")
-        global <- request.queryZIO[Option[Boolean]]("global")
-        limit <- request.queryZIO[Option[PageLimit]]("limit")
-        tuning <- ZIO.service[AntifraudTuningStore]
-        response <- guarded:
-          ZIO.fail(InvalidTuning("tenantId and global exclude each other")).when(global.contains(true) && tenant.isDefined) *>
-            tuning
-              .audit(if global.contains(true) then Some(None) else tenant.map(Some(_)), limit.getOrElse(PageLimit.Default))
-              .map(records => Response.json(records.toJson))
+        response <- guarded(tuning.reset(userId.toString).as(Response.status(Status.NoContent)))
       yield response
     }
 
@@ -81,6 +59,4 @@ object AntifraudSettingsController extends Controller:
       case e: InvalidTuning =>
         Observability.setError("invalid_antifraud_settings", Some(e.getMessage)).as(Response.text(e.getMessage).status(Status.BadRequest))
 
-  case class SettingsView(tenantId: Option[TenantId], stored: Option[TuningPatch], effective: Tuning) derives JsonCodec
-
-  case class SettingsPayload(tenantId: Option[TenantId], settings: TuningPatch, userId: UserId) derives JsonCodec
+  case class SettingsPayload(settings: Tuning, userId: UserId) derives JsonCodec

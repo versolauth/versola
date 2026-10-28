@@ -100,7 +100,7 @@ object PowChallengeVerifier:
       (for
         now <- Clock.instant
         seed <- secureRandom.nextBytes(16).map(Base64.urlEncode)
-        tuned = tuning.effective(subject.tenantId)
+        tuned = tuning.current
         difficulty = difficultyFor(tuned.pow, tuned.challengeAt, score)
         payload = Payload(
           tenant = subject.tenantId.map(_.toString),

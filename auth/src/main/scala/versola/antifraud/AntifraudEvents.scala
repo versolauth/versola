@@ -46,13 +46,6 @@ trait AntifraudEvents:
       repeated: Boolean,
   ): UIO[Decision]
 
-  /** A real code took `took` to hand to the provider; what a fake send imitates. */
-  def sendTook(took: Duration): UIO[Unit]
-
-  /** How long a fake send waits so that it is not told from a real one by its timing: a sample of the recent real
-    * ones. Zero while the decision engine is off or nothing was measured yet. */
-  def fakeSendDelay: UIO[Duration]
-
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
       authId: AuthId,
@@ -130,10 +123,6 @@ object AntifraudEvents:
     override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
 
-    override def sendTook(took: Duration): UIO[Unit] = ZIO.unit
-
-    override def fakeSendDelay: UIO[Duration] = ZIO.succeed(Duration.Zero)
-
     override def otpRequested(
         authId: AuthId,
         clientId: ClientId,
@@ -186,14 +175,13 @@ object AntifraudEvents:
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
-        budget = new SmsBudget(settings.smsBudget, tenant => tuning.effective(tenant).smsLimits)
+        budget = new SmsBudget(settings.smsBudget, () => tuning.current.smsLimits)
         events = Impl(
           queue,
           settings.queueCapacity,
           budget,
           antifraud,
           velocity,
-          SendLatency(),
           settings,
           tuning,
           securityService,
@@ -213,7 +201,6 @@ object AntifraudEvents:
       budget: SmsBudget,
       antifraud: Antifraud,
       velocity: VelocityCounters,
-      latency: SendLatency,
       settings: Settings,
       tuning: AntifraudTuning,
       securityService: SecurityService,
@@ -223,7 +210,7 @@ object AntifraudEvents:
   ) extends AntifraudEvents:
 
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
-      if !tuning.smsLimitsEnabled then ZIO.succeed(true)
+      if !tuning.current.smsLimits.enabled then ZIO.succeed(true)
       else
         for
           client <- configService.find(clientId)
@@ -290,17 +277,8 @@ object AntifraudEvents:
         challengeLevel = None,
       )
 
-    override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
-
-    override def fakeSendDelay: UIO[Duration] =
-      if !settings.decision.enabled then ZIO.succeed(Duration.Zero)
-      else
-        tuning.effective(None).fakeSendDelayMillis match
-          case 0L => Random.nextIntBounded(Int.MaxValue).map(latency.sample)
-          case millis => ZIO.succeed(Duration.fromMillis(millis))
-
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
-      ZIO.when(tuning.smsLimitsEnabled):
+      ZIO.when(tuning.current.smsLimits.enabled):
         configService.find(clientId).map(client => budget.release(client.map(_.tenantId), phone.filter(_.isDigit), at))
       .unit
 

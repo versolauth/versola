@@ -340,38 +340,38 @@ object AuthClientSpec extends ZIOSpecDefault:
         sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
-    test("the antifraud settings calls send the scope, the body and the userId to auth's /antifraud/settings") {
-      val patch = AntifraudSettingsPatch(
-        challengeAt = None,
-        reviewAt = None,
-        blockAt = Some(80),
-        fakeSendDelayMillis = None,
-        pow = None,
-        thresholds = None,
-        smsLimits = None,
-        ruleWeights = None,
-        shadowRules = None,
+    test("the antifraud settings calls send the body and the userId to auth's /antifraud/settings") {
+      val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
+      val settings = AntifraudSettings(
+        challengeAt = 0,
+        reviewAt = 0,
+        blockAt = 80,
+        pow = PowDifficultyDto(14, 18, 15),
+        thresholds = VelocityThresholdsDto(limit, limit, limit, limit, limit, 40),
+        smsLimits = SmsLimitsDto(SmsLimitDto(10, 0, 0.1), Map.empty),
+        ruleWeights = Map.empty,
+        shadowRules = Set.empty,
       )
       for
         seen <- Ref.make(List.empty[Request])
-        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("[]"))).toRoutes)
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(settings.toJson))).toRoutes)
         client <- ZIO.service[AuthClient]
-        _ <- client.antifraudSettingsAudit(AntifraudSettingsAuditQuery(None, Some(true), Some(PageLimit(3))), userId)
+        got <- client.getAntifraudSettings(userId)
+        put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId))
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
-        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(Some(tenantId), userId))
-        failed <- client.putAntifraudSettings(PutAntifraudSettingsRequest(None, patch, userId)).either
+        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId))
         requests <- seen.get
+        sent <- requests(1).body.asString
       yield assertTrue(
-        requests(0).url.path.segments == Chunk("antifraud", "settings", "audit"),
-        requests(0).url.queryParams.queryParam("global").contains("true"),
-        requests(0).url.queryParams.queryParam("limit").contains("3"),
+        got == settings,
+        put == settings,
+        requests(0).method == Method.GET,
+        requests(0).url.path.segments == Chunk("antifraud", "settings"),
         requests(0).url.queryParams.queryParam("userId").contains(userId.toString),
-        requests(1).method == Method.DELETE,
-        requests(1).url.path.segments == Chunk("antifraud", "settings"),
-        requests(1).url.queryParams.queryParam("tenantId").contains(tenantId.toString),
-        requests(1).url.queryParams.queryParam("userId").contains(userId.toString),
-        requests(2).method == Method.PUT,
-        failed.isLeft,
+        requests(1).method == Method.PUT,
+        sent.fromJson[Json.Obj].toOption.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        requests(2).method == Method.DELETE,
+        requests(2).url.queryParams.queryParam("userId").contains(userId.toString),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("auth's 400 and 404 are typed errors for an antifraud call, and any other failure is a failure") {

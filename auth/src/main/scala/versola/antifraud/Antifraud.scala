@@ -124,7 +124,7 @@ object Antifraud:
     private def failed: Decision = Decision(settings.failureAction, 0, List(ErrorRule))
 
     private[antifraud] def decide(ctx: AntifraudContext, rules: List[AntifraudRule]): Decision =
-      val t = tuning.effective(ctx.tenantId)
+      val t = tuning.current
       val (shadow, fired) = rules.filter(_.test(ctx)).partition(rule => t.shadowRules.contains(rule.name))
       // A rule that forces an action decides alone; its weight is not what it does.
       val score = fired.map(rule => if rule.forces.isDefined then rule.weight else t.ruleWeights.getOrElse(rule.name, rule.weight)).sum

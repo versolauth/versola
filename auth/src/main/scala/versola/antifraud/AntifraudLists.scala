@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   * ==Fake==
   * `fake` is invisible to a real person who lands on it (a recycled number, a shared device): they are told the
   * code was sent and nothing arrives. Use it for confirmed fraud only, and have a support path for "why am I not
-  * getting a code". The fake send imitates the latency of a real one (`SendLatency`). Hits are counted by list and
+  * getting a code". The fake send answers as soon as a real one would, without sending. Hits are counted by list and
   * kind of value in `antifraud_list_hits_total` (never by value).
   *
   * ==Key rotation==

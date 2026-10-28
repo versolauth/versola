@@ -155,7 +155,7 @@ object VelocityRules:
     * counters are off. */
   def ruleSet(settings: VelocityCounters.Settings, tuning: AntifraudTuning): Antifraud.RuleSet =
     new Antifraud.RuleSet:
-      override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.effective(None).thresholds) else Nil)
+      override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)
 
       override def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] =
-        ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.effective(ctx.tenantId).thresholds) else Nil)
+        ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)

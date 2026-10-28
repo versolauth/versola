@@ -21,7 +21,6 @@ final class RecordingAntifraudEvents(
     smsAllowed: Boolean = true,
     afterRequested: UIO[Unit] = zio.ZIO.unit,
     decision: Decision = Decision.allow,
-    fakeDelay: zio.Duration = zio.Duration.Zero,
 ) extends AntifraudEvents:
   import RecordingAntifraudEvents.Step
 
@@ -54,10 +53,6 @@ final class RecordingAntifraudEvents(
 
   override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
     zio.ZIO.succeed(synchronized(decided += repeated)) *> zio.ZIO.succeed(decision)
-
-  override def sendTook(took: zio.Duration): UIO[Unit] = zio.ZIO.unit
-
-  override def fakeSendDelay: UIO[zio.Duration] = zio.ZIO.succeed(fakeDelay)
 
   override def otpRequested(
       authId: AuthId,

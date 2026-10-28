@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
   *   - at least `minVolume` were sent and fewer than `minConversion` of them were verified.
   * It opens again by itself as the hour moves on. Both limits are off while they are 0.
   */
-final class SmsBudget(settings: SmsBudget.Settings, limits: Option[TenantId] => SmsLimits):
+final class SmsBudget(settings: SmsBudget.Settings, limits: () => SmsLimits):
   import SmsBudget.*
 
   private val windows = ConcurrentHashMap[Key, Window]()
@@ -35,7 +35,7 @@ final class SmsBudget(settings: SmsBudget.Settings, limits: Option[TenantId] => 
     * range the budget has no room to track is let through ([[Decision.Untracked]]): the limit must not become the
     * thing an attacker fills up. */
   def decide(tenantId: Option[TenantId], prefix: String, at: Instant, charge: Boolean, conversionBreaker: Boolean = true): Decision =
-    val limit = limits(tenantId).of(prefix)
+    val limit = limits().of(prefix)
     if !limit.enabled then Decision.Allowed
     else
       val k = key(tenantId, prefix)
@@ -65,12 +65,12 @@ final class SmsBudget(settings: SmsBudget.Settings, limits: Option[TenantId] => 
 
 object SmsBudget:
   /** A budget whose limits are `limits` everywhere, for where nothing is tuned. */
-  def apply(settings: Settings, limits: SmsLimits): SmsBudget = new SmsBudget(settings, _ => limits)
+  def apply(settings: Settings, limits: SmsLimits): SmsBudget = new SmsBudget(settings, () => limits)
 
   enum Decision:
     case Allowed, Refused, Untracked
 
-  /** The size of the budget, which a deployment sets; the limits themselves are tuned per tenant and range (see
+  /** The size of the budget, which a deployment sets; the limits themselves are tuned per range (see
     * [[AntifraudTuning]]).
     *
     * @param prefixLength   digits of the number, country code included, that make a range
