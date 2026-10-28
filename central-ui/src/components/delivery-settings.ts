@@ -268,8 +268,8 @@ export class VersolaDeliverySettings extends LitElement {
   /** The mistakes the draft has, with what is already saved to compare the password rule against. */
   private draftErrors(group: Group): FieldErrors {
     return group === 'smtp'
-      ? validateSmtpDraft(this.smtpDraft, this.record?.smtp ? { settings: this.record.smtp, hasPassword: this.record.hasSmtpPassword } : undefined)
-      : validateOtpProviderDraft(this.otpDraft, this.record?.otpProvider ? { settings: this.record.otpProvider, hasPassword: this.record.hasOtpProviderPassword } : undefined);
+      ? validateSmtpDraft(this.smtpDraft)
+      : validateOtpProviderDraft(this.otpDraft);
   }
 
   /** A save replaces both blocks, so the block that is not being edited is sent back as it is stored, its password

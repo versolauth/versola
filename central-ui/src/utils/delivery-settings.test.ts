@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PASSWORD_AGAIN,
   emptyOtpProviderDraft,
   emptySmtpDraft,
-  otpEndpointChanged,
   otpProviderDraftFrom,
   otpProviderFromDraft,
   passwordChange,
   smtpDraftFrom,
   smtpFromDraft,
-  smtpServerChanged,
   validateOtpProviderDraft,
   validateSmtpDraft,
   type OtpProviderDraft,
@@ -137,75 +134,5 @@ describe('passwordChange', () => {
 
   it('does not trim a typed password', () => {
     expect(passwordChange({ password: ' spaced ', clearPassword: false })).toBe(' spaced ');
-  });
-});
-
-const savedSmtp = { host: 'smtp.example.com', port: 587, username: 'mailer', from: 'noreply@example.com', subject: 'Code', startTls: true, enabled: true };
-const savedProvider = { method: 'POST', url: 'https://sms.example.com/send', username: 'sms', body: { phones: '{{phone}}' }, enabled: true };
-
-describe('smtpServerChanged', () => {
-  const draft = (patch: Partial<SmtpDraft> = {}): SmtpDraft => ({ ...smtpDraftFrom(savedSmtp), ...patch });
-
-  it('is false for the same server, however it is written', () => {
-    expect(smtpServerChanged(savedSmtp, draft())).toBe(false);
-    expect(smtpServerChanged(savedSmtp, draft({ host: ' SMTP.Example.com ', port: ' 587 ' }))).toBe(false);
-    expect(smtpServerChanged(savedSmtp, draft({ subject: 'Another subject', from: 'other@example.com', enabled: false }))).toBe(false);
-  });
-
-  it('is false for a port written another way', () => {
-    expect(smtpServerChanged(savedSmtp, draft({ port: '0587' }))).toBe(false);
-  });
-
-  it.each([
-    ['another host', { host: 'smtp.attacker.example' }],
-    ['another port', { port: '2525' }],
-    ['a port that is not a number', { port: 'abc' }],
-    ['another account', { username: 'someone-else' }],
-    ['STARTTLS switched off', { startTls: false }],
-  ])('is true for %s', (_what, patch) => {
-    expect(smtpServerChanged(savedSmtp, draft(patch))).toBe(true);
-  });
-});
-
-describe('otpEndpointChanged', () => {
-  const draft = (patch: Partial<OtpProviderDraft> = {}): OtpProviderDraft => ({ ...otpProviderDraftFrom(savedProvider), ...patch });
-
-  it('is false for the same origin and account, a path or a default port apart', () => {
-    expect(otpEndpointChanged(savedProvider, draft())).toBe(false);
-    expect(otpEndpointChanged(savedProvider, draft({ url: 'https://SMS.example.com:443/v2/send?x=1' }))).toBe(false);
-  });
-
-  it.each([
-    ['another host', { url: 'https://sms.attacker.example/send' }],
-    ['another scheme', { url: 'http://sms.example.com/send' }],
-    ['another port', { url: 'https://sms.example.com:8443/send' }],
-    ['another account', { username: 'someone-else' }],
-    ['no account', { username: '' }],
-    ['an address that is not a URL', { url: 'not a url' }],
-  ])('is true for %s', (_what, patch) => {
-    expect(otpEndpointChanged(savedProvider, draft(patch))).toBe(true);
-  });
-});
-
-describe('the saved password follows only the server it was saved for', () => {
-  const smtpSaved = { settings: savedSmtp, hasPassword: true };
-  const providerSaved = { settings: savedProvider, hasPassword: true };
-
-  it('asks for the password again when the server changes and the field is empty', () => {
-    expect(validateSmtpDraft({ ...smtpDraftFrom(savedSmtp), host: 'smtp.other.example' }, smtpSaved).password).toBe(PASSWORD_AGAIN);
-    expect(validateOtpProviderDraft({ ...otpProviderDraftFrom(savedProvider), url: 'https://sms.other.example/send' }, providerSaved).password).toBe(PASSWORD_AGAIN);
-  });
-
-  it('does not ask when a password is typed, when the box removes it, or when the server is the same', () => {
-    const moved = { ...smtpDraftFrom(savedSmtp), host: 'smtp.other.example' };
-    expect(validateSmtpDraft({ ...moved, password: 'new' }, smtpSaved).password).toBeUndefined();
-    expect(validateSmtpDraft({ ...moved, clearPassword: true }, smtpSaved).password).toBeUndefined();
-    expect(validateSmtpDraft({ ...smtpDraftFrom(savedSmtp), subject: 'Another' }, smtpSaved).password).toBeUndefined();
-  });
-
-  it('has nothing to protect when no password is saved or nothing is saved at all', () => {
-    const moved = { ...smtpDraftFrom(savedSmtp), host: 'smtp.other.example' };
-    expect(validateSmtpDraft(moved, { settings: savedSmtp, hasPassword: false }).password).toBeUndefined();
-    expect(validateSmtpDraft(moved).password).toBeUndefined();
   });
 });

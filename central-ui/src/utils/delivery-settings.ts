@@ -85,37 +85,7 @@ export function otpProviderDraftFrom(stored: OtpProviderDeliverySettings | undef
   };
 }
 
-/** What the form knows of a block that is already saved, to tell whether its password may follow the settings. */
-export interface SavedBlock<T> {
-  settings: T;
-  hasPassword: boolean;
-}
-
-export const PASSWORD_AGAIN = 'Enter the password again: it stays only with the server it was saved for.';
-
-/** Whether the draft reaches another server, port, account or STARTTLS setting than the saved block does. Central keeps a
- * saved password only for the server it was saved for, so a change that leaves the password empty is refused there. */
-export function smtpServerChanged(saved: SmtpDeliverySettings, draft: SmtpDraft): boolean {
-  return saved.host.trim().toLowerCase() !== draft.host.trim().toLowerCase()
-    || saved.port !== Number(draft.port.trim())
-    || saved.username !== draft.username.trim()
-    || saved.startTls !== draft.startTls;
-}
-
-/** Likewise for the SMS provider: the origin (scheme, host and port, default ports as they are written) and the account. */
-export function otpEndpointChanged(saved: OtpProviderDeliverySettings, draft: OtpProviderDraft): boolean {
-  let before: string;
-  let after: string;
-  try {
-    before = new URL(saved.url).origin;
-    after = new URL(draft.url.trim()).origin;
-  } catch {
-    return true;
-  }
-  return before !== after || (saved.username ?? '') !== draft.username.trim();
-}
-
-export function validateSmtpDraft(draft: SmtpDraft, saved?: SavedBlock<SmtpDeliverySettings>): FieldErrors {
+export function validateSmtpDraft(draft: SmtpDraft): FieldErrors {
   const errors: FieldErrors = {};
   const host = draft.host.trim();
   if (!host) errors.host = 'The server address is required.';
@@ -127,14 +97,13 @@ export function validateSmtpDraft(draft: SmtpDraft, saved?: SavedBlock<SmtpDeliv
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.from.trim())) errors.from = 'Enter an email address, such as noreply@example.com.';
   if (!draft.subject.trim()) errors.subject = 'The subject is required.';
   else if (CONTROL_CHARACTER.test(draft.subject.trim())) errors.subject = 'The subject must be one line.';
-  if (saved?.hasPassword && smtpServerChanged(saved.settings, draft) && draft.password === '' && !draft.clearPassword) errors.password = PASSWORD_AGAIN;
   return errors;
 }
 
 // Central parses the address with java.net.URI, which refuses these; the form says so before the round trip.
 const URL_CHARACTER_CENTRAL_REFUSES = /[\s{}|\\^`<>"]/;
 
-export function validateOtpProviderDraft(draft: OtpProviderDraft, saved?: SavedBlock<OtpProviderDeliverySettings>): FieldErrors {
+export function validateOtpProviderDraft(draft: OtpProviderDraft): FieldErrors {
   const errors: FieldErrors = {};
   if (!(OTP_METHODS as readonly string[]).includes(draft.method)) errors.method = 'Pick GET, POST, PUT or PATCH.';
   const url = draft.url.trim();
@@ -156,7 +125,6 @@ export function validateOtpProviderDraft(draft: OtpProviderDraft, saved?: SavedB
   const keys = draft.body.map(entry => entry.key.trim());
   if (keys.some(key => !key)) errors.body = 'Every body entry needs a name.';
   else if (new Set(keys).size !== keys.length) errors.body = 'Two body entries have the same name.';
-  if (saved?.hasPassword && otpEndpointChanged(saved.settings, draft) && draft.password === '' && !draft.clearPassword) errors.password = PASSWORD_AGAIN;
   return errors;
 }
 

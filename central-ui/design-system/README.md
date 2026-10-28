@@ -345,9 +345,6 @@ and removing a row moves focus to the row that took its place, or to Add entry. 
 like the other text fields. A save that replaces several groups reads the record without the read cache first (`fresh`) so a
 stale copy never puts back what another admin changed.
 
-A saved password stays with its server, so a draft that changes the server, port, account or STARTTLS (for SMS the origin or
-the account) and leaves the password empty is refused beside the Password field, before any request.
-
 ## Component catalogue
 
 | Component | Element | Use it for | Not for |
