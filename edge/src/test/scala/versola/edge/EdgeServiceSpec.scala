@@ -11,6 +11,7 @@ import versola.edge.model.*
 import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
+import versola.util.http.RateLimiter
 import versola.util.{EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
@@ -81,6 +82,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val sessionRepository = stub[session.EdgeSessionRepository]
     val revocationService = stub[TokenRevocationService]
     val permissionService = stub[PermissionService]
+    val rateLimiter: RateLimiter = Unsafe.unsafe(unsafe ?=> Runtime.default.unsafe.run(RateLimiter.make()).getOrThrow())
     val dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
 
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
@@ -240,6 +242,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         permissionService,
         dpopVerifier,
         env,
+        rateLimiter,
       )
 
   def spec = suite("EdgeService")(

@@ -6,17 +6,35 @@ import versola.util.{Email, Phone}
 import zio.http.Form
 import zio.schema.*
 
+/** What a request for a code says about the proof of work a challenge may ask of it. The forms that can solve one send
+  * their submit from script (`proof_inline`), and answer a challenge by sending the same submit again with the token
+  * and its solution (`proof_token`, `proof_solution`); a plain form post cannot, and is refused if a challenge is due.
+  */
+enum ProofInput derives Schema:
+  case NoScript
+  case Asked
+  case Answered(token: String, solution: String)
+
+object ProofInput:
+  val InlineField = "proof_inline"
+  val TokenField = "proof_token"
+  val SolutionField = "proof_solution"
+
 sealed trait Submission:
   def csrf: String
 
-case class PhoneSubmission(phone: Phone, csrf: String)
-  extends Submission derives Schema
+/** A submission that asks for a code to be sent, and so may be asked for a proof first. */
+sealed trait CodeRequest extends Submission:
+  def proof: ProofInput
 
-case class EmailSubmission(email: Email, csrf: String)
-  extends Submission derives Schema
+case class PhoneSubmission(phone: Phone, proof: ProofInput, csrf: String)
+  extends CodeRequest derives Schema
 
-case class OtpResendSubmission(csrf: String)
-  extends Submission derives Schema
+case class EmailSubmission(email: Email, proof: ProofInput, csrf: String)
+  extends CodeRequest derives Schema
+
+case class OtpResendSubmission(proof: ProofInput, csrf: String)
+  extends CodeRequest derives Schema
 
 case class OtpSubmission(code: OtpCode, csrf: String)
   extends Submission derives Schema

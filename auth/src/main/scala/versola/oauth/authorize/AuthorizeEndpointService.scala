@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
-import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
+import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission, ProofInput}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionService
@@ -319,9 +319,19 @@ object AuthorizeEndpointService:
         case AuthorizeResponse.Initialize(authId) =>
           request.loginHint match
             case Some(Left(email)) =>
-              conversationRouter.submit(authId, EmailSubmission(email, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
+              conversationRouter.submit(
+                authId,
+                EmailSubmission(email, ProofInput.NoScript, csrfToken),
+                uiLocales.flatMap(_.headOption),
+                None,
+              ).as(response)
             case Some(Right(phone)) =>
-              conversationRouter.submit(authId, PhoneSubmission(phone, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
+              conversationRouter.submit(
+                authId,
+                PhoneSubmission(phone, ProofInput.NoScript, csrfToken),
+                uiLocales.flatMap(_.headOption),
+                None,
+              ).as(response)
             case None => ZIO.succeed(response)
         case _ => ZIO.succeed(response)
 

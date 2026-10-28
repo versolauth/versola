@@ -5,6 +5,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, InjectTarget, PatchAudience, ResourceUri}
 import versola.util.DatabaseSpecBase
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import zio.test.*
 
 import java.util.UUID
@@ -79,6 +80,54 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         yield assertTrue(
           found == Some(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
           all == Vector(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
+        )
+      },
+      test("an endpoint's rate limit survives the round trip through the JSON column, and an endpoint stored without one reads back with none") {
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+          burst = 10,
+          by = DeclaredRateLimitBy.Client,
+          mode = GuardMode.Enforce,
+        )
+        val limited = endpointRecord(usersListEndpointId).copy(rateLimit = Some(limit))
+        val plain = endpointRecord(usersDeleteEndpointId, method = "DELETE")
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(limited, plain), None)
+          found <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.updateResource(
+            resourceId,
+            None,
+            PatchAudience(Set.empty, Set.empty),
+            Vector(limited.copy(rateLimit = None)),
+            Set.empty,
+          )
+          cleared <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          found.map(_.endpoints.map(_.rateLimit).toSet) == Some(Set(Some(limit), None)),
+          cleared.flatMap(_.endpoints.find(_.id == usersListEndpointId)).map(_.rateLimit) == Some(None),
+        )
+      },
+      test("the limits a resource sets for its audience survive the round trip, are replaced as a whole, and a resource has none by default") {
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+          burst = 50,
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+        )
+        val client = audience.head
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          fresh <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.updateAudienceRateLimits(resourceId, List(AudienceRateLimit(client, limit)))
+          set <- env.resourceRepository.findResource(resourceId)
+          all <- env.resourceRepository.getAll
+          _ <- env.resourceRepository.updateAudienceRateLimits(resourceId, Nil)
+          cleared <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          fresh.map(_.audienceRateLimits) == Some(Nil),
+          set.map(_.audienceRateLimits) == Some(List(AudienceRateLimit(client, limit))),
+          all.flatMap(_.audienceRateLimits) == Vector(AudienceRateLimit(client, limit)),
+          cleared.map(_.audienceRateLimits) == Some(Nil),
         )
       },
       test("create resource with secret") {

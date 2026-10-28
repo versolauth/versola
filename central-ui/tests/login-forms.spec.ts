@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
 
@@ -228,6 +229,74 @@ test.describe('credential', () => {
     expect(submitted[0].path).toBe('/challenge/email');
     expect(submitted[0].fields.get('email')).toBe('ada@example.com');
     expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+  });
+
+  type Seen = { path: string; query: URLSearchParams; fields: URLSearchParams };
+
+  /** Answers `pattern` with the next of `bodies` as JSON, and keeps what was sent, which the form harness's own route no longer sees. */
+  const answerWith = async (page: Page, pattern: string, bodies: object[], seen: Seen[]) =>
+    page.route(pattern, (route) => {
+      const request = route.request();
+      // Only what a script sends is answered here; a plain form post goes on to the harness's route.
+      if (!request.postData()?.includes('proof_inline')) return route.fallback();
+      const url = new URL(request.url());
+      seen.push({ path: url.pathname, query: url.searchParams, fields: new URLSearchParams(request.postData() ?? '') });
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(bodies[Math.min(seen.length, bodies.length) - 1]) });
+    });
+
+  const challenge = (params: object, kind = 'pow') => ({ challenge: { kind, token: 'signed.token', params } });
+
+  test('email: a request that must prove itself solves it unseen and makes the same request again with the answer', async ({ page }) => {
+    const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [challenge({ seed: 'abc', difficulty: '12' }), { next: '/challenge' }], seen);
+    const screens: string[] = [];
+    page.on('framenavigated', (frame) => frame === page.mainFrame() && screens.push(new URL(frame.url()).pathname));
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    // The same POST twice, from the credential page itself, then the one navigation to the next step.
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/email', '/challenge/email']);
+    expect(screens).not.toContain('/challenge/proof');
+    const [asked, answered] = seen.map((request) => request.fields);
+    expect(asked.get('proof_inline')).toBe('1');
+    expect(asked.has('proof_token')).toBe(false);
+    for (const fields of [asked, answered]) {
+      expect(fields.get('email')).toBe('ada@example.com');
+      expect(fields.get('csrf')).toBe(CSRF);
+    }
+    expect(answered.get('proof_token')).toBe('signed.token');
+    const digest = createHash('sha256').update(`abc:${answered.get('proof_solution')}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1] >> 4).toBe(0);
+  });
+
+  test('email: a challenge the page cannot answer ends in the plain form post, which the server refuses', async ({ page }) => {
+    const { t, submitted } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [challenge({}, 'widget')], seen);
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    expect(seen).toHaveLength(1);
+    expect(submitted.map((request) => request.path)).toEqual(['/challenge/email']);
+    expect(submitted[0].fields.has('proof_inline')).toBe(false);
+  });
+
+  test('email: a redirect comes back as data, so that a submit sent from script follows it', async ({ page }) => {
+    const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    const seen: Seen[] = [];
+    await answerWith(page, '**/challenge/email*', [{ next: '/challenge' }], seen);
+
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+    expect(seen.map((request) => request.fields.get('proof_inline'))).toEqual(['1']);
   });
 
   test('login: asks for a password too and posts both', async ({ page }) => {
