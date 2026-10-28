@@ -46,17 +46,6 @@ trait AntifraudEvents:
       repeated: Boolean,
   ): UIO[Decision]
 
-  /** Holds the request back as `decision` asks (a `Delay`; a `Challenge` too, when no challenge could be put to the
-    * client, see [[ChallengeVerifier]]): the pause is the friction. Returns at once for any other decision. */
-  def hold(decision: Decision): UIO[Unit]
-
-  /** A real code took `took` to hand to the provider; what a fake send imitates. */
-  def sendTook(took: Duration): UIO[Unit]
-
-  /** How long a fake send waits so that it is not told from a real one by its timing: a sample of the recent real
-    * ones. Zero while the decision engine is off or nothing was measured yet. */
-  def fakeSendDelay: UIO[Duration]
-
   /** An OTP was requested for `credential` and this is how it ended. */
   def otpRequested(
       authId: AuthId,
@@ -91,38 +80,56 @@ trait AntifraudEvents:
 
 object AntifraudEvents:
 
-  /** @param queueCapacity  events held while the writer catches up; one more is dropped and counted
-    * @param batchSize      the most events written in one round trip
-    * @param flushInterval  the writer rests this long after a batch that did not fill, which lets a trickle gather
-    *                       into one batch; a full batch is followed at once by the next
-    * @param retention      how long a day's partition is kept
-    * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
-    *                       leave the writer without a partition
-    * @param smsBudget      the limit on codes sent to one range of numbers, off by default
-    * @param decision       the rule engine that decides what to do with an OTP request, off by default
+  /** What a deployment sets (the `antifraud` block of the config).
+    *
+    * @param retention      how long a day's partition of the event log is kept; it bounds how long personal data is held
     * @param statsInterval  how often `af_dest_stats` is rolled up from the log
-    * @param statsLookback  how far back each rollup recomputes, so that events written late are still counted
     * @param statsRetention how long a minute of statistics is kept
-    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
-    * @param velocity       the velocity counters and the limits of their rules, off by default (see [[VelocityCounters]])
+    * @param smsBudget      the size of a range of numbers the SMS budget counts (see [[SmsBudget]])
+    * @param decision       the rule engine that decides what to do with an OTP request, off by default
+    * @param velocity       the velocity counters, off by default (see [[VelocityCounters]])
     */
   case class Settings(
-      queueCapacity: Int = 20000,
-      batchSize: Int = 1000,
-      flushInterval: Duration = 1.second,
-      retention: Duration = 14.days,
-      partitionsAhead: Int = 3,
-      smsBudget: SmsBudget.Settings = SmsBudget.Settings(),
-      decision: Antifraud.Settings = Antifraud.Settings(),
-      statsInterval: Duration = 1.minute,
-      statsLookback: Duration = 2.minutes,
-      statsRetention: Duration = 30.days,
-      statsPrefixLength: Int = 4,
-      velocity: VelocityCounters.Settings = VelocityCounters.Settings(),
+      retention: Duration,
+      statsInterval: Duration,
+      statsRetention: Duration,
+      smsBudget: SmsBudget.Settings,
+      decision: Antifraud.Settings,
+      velocity: VelocityCounters.Settings,
   )
 
-  object Settings:
-    val default: Settings = Settings()
+  /** What is not configuration: the sizes and the pace of the writer.
+    *
+    * @param queueCapacity   events held while the writer catches up; one more is dropped and counted
+    * @param batchSize       the most events written in one round trip
+    * @param flushInterval   the writer rests this long after a batch that did not fill, which lets a trickle gather
+    *                        into one batch; a full batch is followed at once by the next
+    * @param partitionsAhead days of partitions created beyond today, so a maintenance run that is late does not
+    *                        leave the writer without a partition
+    * @param statsLookback   how far back each rollup recomputes, so that events written late are still counted
+    * @param statsPrefixLength digits of a number, country code included, that make a range in `af_dest_stats`
+    * @param smsBudget       the size of the SMS budget
+    */
+  case class Sizing(
+      queueCapacity: Int,
+      batchSize: Int,
+      flushInterval: Duration,
+      partitionsAhead: Int,
+      statsLookback: Duration,
+      statsPrefixLength: Int,
+      smsBudget: SmsBudget.Sizing,
+  )
+
+  object Sizing:
+    val standard: Sizing = Sizing(
+      queueCapacity = 20000,
+      batchSize = 1000,
+      flushInterval = 1.second,
+      partitionsAhead = 3,
+      statsLookback = 2.minutes,
+      statsPrefixLength = 4,
+      smsBudget = SmsBudget.Sizing.standard,
+    )
 
   /** Records nothing. For tests of what calls it, and for a deployment that does not want the log. */
   object noop extends AntifraudEvents:
@@ -136,12 +143,6 @@ object AntifraudEvents:
 
     override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
-
-    override def hold(decision: Decision): UIO[Unit] = ZIO.unit
-
-    override def sendTook(took: Duration): UIO[Unit] = ZIO.unit
-
-    override def fakeSendDelay: UIO[Duration] = ZIO.succeed(Duration.Zero)
 
     override def otpRequested(
         authId: AuthId,
@@ -174,7 +175,14 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    Nothing,
+    AntifraudEvents,
+  ] =
+    liveWith(Sizing.standard)
+
+  def liveWith(sizing: Sizing): ZLayer[
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -184,34 +192,35 @@ object AntifraudEvents:
         settings <- ZIO.service[Settings]
         antifraud <- ZIO.service[Antifraud]
         velocity <- ZIO.service[VelocityCounters]
+        tuning <- ZIO.service[AntifraudTuning]
         securityService <- ZIO.service[SecurityService]
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
         configService <- ZIO.service[OAuthConfigurationService]
-        queue <- Queue.dropping[AntifraudEvent](settings.queueCapacity)
+        queue <- Queue.dropping[AntifraudEvent](sizing.queueCapacity)
         // The key of the destinations' hash, run through a fixed label so that what an event stores of a number
         // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
         // its own for it (one written before it existed) falls back on the sessions secret.
         rootKey = config.security.antifraudSubjectSecret.getOrElse(config.security.sessionsSecret)
         subjectKey <- securityService.mac(Secret("versola/antifraud/subject/v1".getBytes(StandardCharsets.UTF_8)), rootKey).map(Secret(_)).orDie
-        budget = SmsBudget(settings.smsBudget)
+        budget = new SmsBudget(settings.smsBudget, sizing.smsBudget, () => tuning.current.smsLimits)
         events = Impl(
           queue,
-          settings.queueCapacity,
+          sizing.queueCapacity,
           budget,
           antifraud,
           velocity,
-          SendLatency(),
           settings,
+          tuning,
           securityService,
           secureRandom,
           configService,
           subjectKey,
         )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
-        _ <- Rollup(repository, settings).run
-        _ <- Maintenance(repository, settings).run
-        _ <- Writer(queue, repository, settings).run
+        _ <- Rollup(repository, settings, sizing).run
+        _ <- Maintenance(repository, settings, sizing).run
+        _ <- Writer(queue, repository, sizing).run
       yield events
 
   class Impl(
@@ -220,8 +229,8 @@ object AntifraudEvents:
       budget: SmsBudget,
       antifraud: Antifraud,
       velocity: VelocityCounters,
-      latency: SendLatency,
       settings: Settings,
+      tuning: AntifraudTuning,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       configService: OAuthConfigurationService,
@@ -229,7 +238,7 @@ object AntifraudEvents:
   ) extends AntifraudEvents:
 
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
-      if !settings.smsBudget.enabled then ZIO.succeed(true)
+      if !tuning.current.smsLimits.enabled then ZIO.succeed(true)
       else
         for
           client <- configService.find(clientId)
@@ -296,19 +305,8 @@ object AntifraudEvents:
         challengeLevel = None,
       )
 
-    override def hold(decision: Decision): UIO[Unit] =
-      decision.action match
-        case DecisionAction.Delay | DecisionAction.Challenge => ZIO.sleep(settings.decision.delay)
-        case _ => ZIO.unit
-
-    override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
-
-    override def fakeSendDelay: UIO[Duration] =
-      if !settings.decision.enabled then ZIO.succeed(Duration.Zero)
-      else Random.nextIntBounded(Int.MaxValue).map(latency.sample)
-
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
-      ZIO.when(settings.smsBudget.enabled):
+      ZIO.when(tuning.current.smsLimits.enabled):
         configService.find(clientId).map(client => budget.release(client.map(_.tenantId), phone.filter(_.isDigit), at))
       .unit
 
@@ -429,7 +427,7 @@ object AntifraudEvents:
     * fills up. */
   private val shedFirst: Set[AntifraudOutcome] = Set(AntifraudOutcome.throttled, AntifraudOutcome.locked)
 
-  private class Writer(queue: Queue[AntifraudEvent], repository: AntifraudEventRepository, settings: Settings):
+  private class Writer(queue: Queue[AntifraudEvent], repository: AntifraudEventRepository, sizing: Sizing):
 
     /** Takes what has gathered, writes it, rests, and again. A failed write drops that batch and the loop goes on:
       * the next batch may well succeed. It rests after a batch that did not fill, and after a failed one, so a
@@ -437,13 +435,13 @@ object AntifraudEvents:
     private def loop(failing: Ref[Boolean]): UIO[Nothing] =
       (for
         first <- queue.take
-        rest <- queue.takeUpTo(settings.batchSize - 1)
+        rest <- queue.takeUpTo(sizing.batchSize - 1)
         batch = (first +: rest).toList
         _ <- AntifraudMetrics.queueSize(queue)
         ok <- write(batch, failing).onInterrupt(AntifraudMetrics.dropped("shutdown", batch.size))
         // A backlog (which is what an attack makes) is written back to back, so the write rate is not capped at
         // one batch per interval when it matters.
-        _ <- ZIO.sleep(settings.flushInterval).when(!ok || batch.size < settings.batchSize)
+        _ <- ZIO.sleep(sizing.flushInterval).when(!ok || batch.size < sizing.batchSize)
       yield ()).forever
 
     /** Whether the batch was written. The warning, with its stack, is logged once when writes start failing and
@@ -479,13 +477,13 @@ object AntifraudEvents:
         _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
       yield ()
 
-  private class Rollup(repository: AntifraudEventRepository, settings: Settings):
+  private class Rollup(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
     private val once: UIO[Unit] =
       Clock.instant.flatMap: now =>
         val to = now.truncatedTo(ChronoUnit.MINUTES)
-        val from = to.minusSeconds(settings.statsLookback.toSeconds)
-        (repository.rollupStats(from, to, settings.statsPrefixLength) *>
+        val from = to.minusSeconds(sizing.statsLookback.toSeconds)
+        (repository.rollupStats(from, to, sizing.statsPrefixLength) *>
           repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
           cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
           _ => ZIO.unit,
@@ -494,13 +492,13 @@ object AntifraudEvents:
     val run: URIO[Scope, Unit] =
       (ZIO.sleep(settings.statsInterval) *> once).forever.forkScoped.unit
 
-  private class Maintenance(repository: AntifraudEventRepository, settings: Settings):
+  private class Maintenance(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
     private val once: IO[Unit, Unit] =
       Clock.instant.flatMap: now =>
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
-        repository.maintainPartitions(today, settings.partitionsAhead + 1, keepFrom).foldCauseZIO(
+        repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
           cause =>
             AntifraudMetrics.partitionMaintenanceFailed *>
               ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
@@ -524,6 +522,11 @@ object AntifraudMetrics:
   private val queueSizeGauge = Metric.gauge("antifraud_event_queue_size")
 
   val enqueued: UIO[Unit] = enqueuedTotal.increment
+
+  private val tuningRefreshFailedTotal = Metric.counter("antifraud_tuning_refresh_failed_total")
+
+  /** The stored tuning could not be read; the instance goes on with the one it has (fail-open). Alert on it increasing. */
+  val tuningRefreshFailed: UIO[Unit] = tuningRefreshFailedTotal.increment
 
   private val smsRefusedTotal = Metric.counter("antifraud_sms_budget_refused_total")
 

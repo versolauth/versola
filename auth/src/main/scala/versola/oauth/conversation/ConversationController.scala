@@ -175,11 +175,14 @@ object ConversationController extends Controller:
   private def forScript(result: ConversationResult.Render, response: Response): Response =
     result match
       case ConversationResult.Challenged(challenge) =>
-        json(InlineStep(next = None, challenge = Some(InlineChallenge(challenge.kind, challenge.token, challenge.params))))
+        json(InlineStep(next = None, challenge = Some(InlineChallenge(challenge.kind, challenge.token, challenge.params)), otp = false))
       case _ =>
         response.header(Header.Location) match
           case Some(location) if response.status == Status.SeeOther =>
-            json(InlineStep(next = Some(location.renderedValue), challenge = None), response.removeHeader(Header.Location))
+            val sent = result match
+              case ConversationResult.RenderStep(otp: ConversationStep.Otp) => !otp.pending
+              case _ => false
+            json(InlineStep(next = Some(location.renderedValue), challenge = None, otp = sent), response.removeHeader(Header.Location))
           case _ => response
 
   private def json(step: InlineStep, base: Response = Response.ok): Response =

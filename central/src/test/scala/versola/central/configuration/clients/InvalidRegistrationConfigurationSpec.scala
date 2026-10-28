@@ -33,14 +33,15 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
   )
 
   private val consentFlowKeptSuite =
-    val consent = ConsentFlow(allowPartial = false, rememberDuration = None)
+    val consent = ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)
     suite("validateConsentFlowKept")(
       test("refuses to remove the consent flow of a client that has one") {
         val result = InvalidRegistrationConfiguration.validateConsentFlowKept(clientId, Some(Patch.Deleted), Some(consent))
         assertTrue(result.exists(_.reason.startsWith("consentFlow cannot be removed")))
       },
       test("accepts changing the consent flow of a client that has one") {
-        val change = Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None))
+        val change =
+          Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false))
         assertTrue(InvalidRegistrationConfiguration.validateConsentFlowKept(clientId, Some(change), Some(consent)).isEmpty)
       },
       test("accepts a patch that leaves the consent flow alone") {

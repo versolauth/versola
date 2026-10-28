@@ -28,6 +28,15 @@ object TypedClientApiSpec extends CentralApiSpec:
       "authMethod" -> Json.Str(authMethod),
       "issueEdgeClientCertificate" -> Json.Bool(false),
       "enrollEdgeClientCertificate" -> Json.Bool(false),
+      "theme" -> Json.Str("default"),
+      "otpTemplateId" -> Json.Str("default"),
+      "frontChannelLogoutSessionRequired" -> Json.Bool(false),
+      "dpopSigningAlgs" -> Json.Arr(),
+      "dpopBoundAccessTokens" -> Json.Bool(false),
+      "certificateBoundAccessTokens" -> Json.Bool(false),
+      "requireSignedRequestObject" -> Json.Bool(false),
+      "requirePushedAuthorizationRequests" -> Json.Bool(false),
+      "estEnrollment" -> Json.Bool(false),
     )
 
   private def nativeBody(id: String, authMethod: String = "none") =
@@ -41,6 +50,10 @@ object TypedClientApiSpec extends CentralApiSpec:
       "authMethod" -> Json.Str(authMethod),
       "issueEdgeClientCertificate" -> Json.Bool(false),
       "enrollEdgeClientCertificate" -> Json.Bool(false),
+      "theme" -> Json.Str("default"),
+      "otpTemplateId" -> Json.Str("default"),
+      "frontChannelLogoutSessionRequired" -> Json.Bool(false),
+      "dpopSigningAlgs" -> Json.Arr(),
     )
 
   private def serviceBody(id: String, authMethod: String = "client_secret") =
@@ -49,9 +62,16 @@ object TypedClientApiSpec extends CentralApiSpec:
       "id" -> Json.Str(id),
       "clientName" -> Fixtures.text("Typed service"),
       "allowedScopes" -> Json.Arr(Json.Str("openid")),
+      "permissions" -> Json.Arr(),
       "accessTokenTtl" -> Json.Num(3600),
+      "dpopBoundAccessTokens" -> Json.Bool(false),
+      "dpopSigningAlgs" -> Json.Arr(),
       "authMethod" -> Json.Str(authMethod),
+      "certificateBoundAccessTokens" -> Json.Bool(false),
+      "estEnrollment" -> Json.Bool(false),
     )
+
+  private val noChange = Fixtures.patch()
 
   private def read(central: CentralApi, clientId: String, expect: Json.Obj => Boolean = _ => true): Task[Option[Json.Obj]] =
     eventually(
@@ -137,7 +157,10 @@ object TypedClientApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.id("typed-service")
         record <- withKind(central, "service", serviceBody(id)) { _ =>
-          central.put(s"$path/service", Json.Obj("clientId" -> Json.Str(id), "accessTokenTtl" -> Json.Num(600)))
+          central.put(
+            s"$path/service",
+            Json.Obj("clientId" -> Json.Str(id), "scope" -> noChange, "permissions" -> noChange, "accessTokenTtl" -> Json.Num(600)),
+          )
             *> read(central, id, _.int("accessTokenTtl").contains(600))
         }
       yield assertTrue(record.flatMap(_.int("accessTokenTtl")).contains(600))
@@ -148,7 +171,10 @@ object TypedClientApiSpec extends CentralApiSpec:
         id <- CentralApi.id("typed-native")
         outcome <- withKind(central, "native", nativeBody(id)) { _ =>
           for
-            refused <- central.put(s"$path/web", Json.Obj("clientId" -> Json.Str(id), "accessTokenTtl" -> Json.Num(600)))
+            refused <- central.put(
+              s"$path/web",
+              Json.Obj("clientId" -> Json.Str(id), "redirectUris" -> noChange, "scope" -> noChange, "accessTokenTtl" -> Json.Num(600)),
+            )
             after <- read(central, id)
           yield (refused.status, after.flatMap(_.int("accessTokenTtl")))
         }
@@ -157,7 +183,10 @@ object TypedClientApiSpec extends CentralApiSpec:
     test("an update for a client that does not exist is not found") {
       for
         central <- api
-        missing <- central.put(s"$path/web", Json.Obj("clientId" -> Json.Str("typed-missing"), "accessTokenTtl" -> Json.Num(600)))
+        missing <- central.put(
+          s"$path/web",
+          Json.Obj("clientId" -> Json.Str("typed-missing"), "redirectUris" -> noChange, "scope" -> noChange, "accessTokenTtl" -> Json.Num(600)),
+        )
       yield assertTrue(missing.status == Status.NotFound)
     },
     test("a web client cannot lose its last redirect URI") {
@@ -167,7 +196,7 @@ object TypedClientApiSpec extends CentralApiSpec:
         refused <- withKind(central, "web", webBody(id)) { _ =>
           central.put(
             s"$path/web",
-            Json.Obj("clientId" -> Json.Str(id), "redirectUris" -> Fixtures.patch(remove = Set("http://localhost:3000"))),
+            Json.Obj("clientId" -> Json.Str(id), "scope" -> noChange, "redirectUris" -> Fixtures.patch(remove = Set("http://localhost:3000"))),
           )
         }
       yield assertTrue(refused.status == Status.BadRequest)

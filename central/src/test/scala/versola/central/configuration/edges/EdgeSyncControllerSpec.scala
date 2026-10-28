@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
   ClientCertificateIssuanceRepository,
@@ -46,6 +47,9 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.http.DeclaredRateLimitBy
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
 import versola.util.http.{
   AccessLogPolicy,
   DeclaredRateLimit,
@@ -111,7 +115,18 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroupId("partner-acme"))),
   )
 
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
     * `CentralSyncTokenService` mints it. */
@@ -169,6 +184,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     template = Some(ClientTemplate(ClientKind.web)),
     createdAt = registeredAt,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val clientA = client("web-a", tenantA)
@@ -206,7 +222,12 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
   )
 
-  private val declaredLimit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)), burst = 10, mode = GuardMode.Enforce)
+  private val declaredLimit = DeclaredRateLimit(
+    limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+    burst = 10,
+    mode = GuardMode.Enforce,
+    by = DeclaredRateLimitBy.None,
+  )
   private val otherEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-0000000007ff"))
   private val resourceA = resource("api-a", tenantA)
   private val resourceB = resource("api-b", tenantB)
@@ -342,16 +363,32 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
-  private val rateLimits = RateLimitPolicies(List(RateLimitPolicy(
-    name = "per-client",
-    by = List(RateLimitDimension.Client),
-    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
-    burst = 5,
-  )))
+  private val rateLimits = RateLimitPolicies(
+    List(RateLimitPolicy(
+      name = "per-client",
+      by = List(RateLimitDimension.Client),
+      limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+      burst = 5,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+      mode = GuardMode.Shadow,
+    )),
+    replicas = 1,
+  )
 
-  private val accessLogPolicy = AccessLogPolicy(mode = Some("full"))
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+  private val overloadPolicy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(100),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   private val syncResources =
     List(

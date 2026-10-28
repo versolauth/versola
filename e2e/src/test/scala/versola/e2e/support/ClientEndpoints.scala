@@ -38,9 +38,16 @@ object ClientEndpoints:
         else if !present("authFlow") && !body.get("redirectUris").exists { case Json.Arr(uris) => uris.nonEmpty; case _ => false } then "service"
         else "web"
 
+  /** The patches an update must state, whatever it changes: central has no implicit "no change" for them. */
+  private def noChange = Json.Obj("add" -> Json.Arr(), "remove" -> Json.Arr())
+
   private def only(body: Json.Obj, kind: String, method: Method): Json.Obj =
     val allowed = FakeCentral.allowedMembers((method, s"$Path/$kind"))
-    Json.Obj(body.fields.filter((member, _) => allowed.contains(member)))
+    val kept = Json.Obj(body.fields.filter((member, _) => allowed.contains(member)))
+    if method != Method.PUT then kept
+    else
+      val stated = FakeCentral.requiredMembers((method, s"$Path/$kind")) - "clientId"
+      Json.Obj(kept.fields ++ stated.filterNot(member => kept.get(member).isDefined).map(member => member -> noChange))
 
   /** The endpoint and body that register `body`. */
   def registration(body: Json.Obj): (String, Json.Obj) =

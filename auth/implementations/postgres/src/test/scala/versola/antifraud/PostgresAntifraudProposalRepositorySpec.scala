@@ -29,7 +29,7 @@ object PostgresAntifraudProposalRepositorySpec extends PostgresSpec:
   private val windowEnd = Instant.parse("2026-10-21T11:58:00Z")
   private val baselineStart = windowStart.minusSeconds(24 * 3600)
 
-  private val settings = AntifraudDetectors.Settings.default
+  private val settings = AntifraudTestSettings.analytics
   private val anomaly: PrefixAnomaly = settings.prefixAnomaly
   private val fakeVerify: FakeVerify = settings.fakeVerify
 

@@ -8,7 +8,7 @@ object AccessLogPolicyApplierSpec extends ZIOSpecDefault:
 
   private val base = AccessLogSettings(AccessLogMode.Off, slowMillis = 500, successSampleRate = 0.05)
 
-  private val sampled = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.5))
+  private val sampled = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.5), slowMillis = None)
 
   def spec = suite("AccessLogPolicyApplier")(
     test("a valid policy is applied over the base settings") {
@@ -30,7 +30,7 @@ object AccessLogPolicyApplierSpec extends ZIOSpecDefault:
       for
         current <- Ref.make(base)
         _ <- AccessLogPolicyApplier(Some(sampled), base, current.set)
-        result <- AccessLogPolicyApplier(Some(AccessLogPolicy(successSampleRate = Some(2.0))), base, current.set)
+        result <- AccessLogPolicyApplier(Some(AccessLogPolicy(successSampleRate = Some(2.0), mode = None, slowMillis = None)), base, current.set)
         now <- current.get
       yield assertTrue(result.left.exists(_.contains("successSampleRate")), now.mode == AccessLogMode.Sampled)
     },
@@ -40,10 +40,10 @@ object AccessLogPolicyApplierSpec extends ZIOSpecDefault:
         source <- Ref.make(Option.empty[AccessLogPolicy])
         fiber <- AccessLogPolicyApplier.run(source.get, base, current.set).fork
         _ <- TestClock.adjust(0.seconds)
-        _ <- source.set(Some(AccessLogPolicy(mode = Some("full"))))
+        _ <- source.set(Some(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)))
         _ <- TestClock.adjust(1.second)
         applied <- current.get
-        _ <- source.set(Some(AccessLogPolicy(mode = Some("loud"))))
+        _ <- source.set(Some(AccessLogPolicy(mode = Some("loud"), slowMillis = None, successSampleRate = None)))
         _ <- TestClock.adjust(1.second)
         after <- current.get
         _ <- fiber.interrupt

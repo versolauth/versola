@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
+import versola.util.http.RateLimitScope
 import versola.util.http.{Checkpoint, ClientIpSource, GuardMode, RateLimitDimension, RateLimitPolicy, RateLimitWindow, RateLimiter}
 import versola.util.{Secret, TestCertificates}
 import zio.*
@@ -38,7 +39,15 @@ object AddressLimitSpec extends ZIOSpecDefault:
   )
 
   private def policy(name: String, by: RateLimitDimension, limit: Int, mode: GuardMode = GuardMode.Enforce) =
-    RateLimitPolicy(name = name, by = List(by), limits = List(RateLimitWindow(limit = limit, windowSeconds = 3600)), burst = limit, mode = mode)
+    RateLimitPolicy(
+      name = name,
+      by = List(by),
+      limits = List(RateLimitWindow(limit = limit, windowSeconds = 3600)),
+      burst = limit,
+      mode = mode,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+    )
 
   /** The answer a proxied call gets, set per test; `/login` always redirects. */
   private def routes(proxied: Ref[Response]): Routes[RateLimiter & EdgeConfig, Nothing] =
@@ -85,7 +94,7 @@ object AddressLimitSpec extends ZIOSpecDefault:
           third.rawHeader("RateLimit-Policy").contains("\"per-ip\";q=2;w=3600"),
           third.rawHeader("RateLimit").exists(_.startsWith("\"per-ip\";r=0;t=")),
           first.rawHeader("RateLimit").isEmpty,
-          body == """{"error":"rate_limited","policy":"per-ip"}""",
+          body.isEmpty,
           other.status == Status.Unauthorized,
         )
       },

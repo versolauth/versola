@@ -517,6 +517,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         postLoginRedirectUri = RedirectUri("https://app.example/home"),
         cookieDomain = Some("app.example"),
         cookiePath = Some("/"),
+        returnTo = None,
         loginCookiePath = loginPath,
       )
       for
@@ -538,6 +539,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         accessToken = AccessToken("header.payload.sig"),
         cookieTtl = 1.hour,
         postLoginRedirectUri = RedirectUri("https://app.example/home"),
+        returnTo = None,
         cookieDomain = None,
         cookiePath = None,
         loginCookiePath = loginPath,

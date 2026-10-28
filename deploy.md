@@ -544,6 +544,91 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **Antifraud configuration.** Each antifraud key has exactly one home.
+  1. **Tuned during an attack** (thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow
+     rules): the stored settings below, changed through central's admin API, with no restart.
+  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**, as
+     for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
+     before the block existed, makes `auth` refuse to start naming the missing key). The chart takes the config from the
+     Secret you give it, so there is nothing to set in the chart's values. The keys, with what the generator writes:
+
+     ```hocon
+     antifraud {
+       retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
+       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up
+       stats-retention  = "30 days"
+       sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
+       decision {
+         enabled        = false        # the rule engine; off, nothing is evaluated
+         timeout        = "20 milliseconds"
+         failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails or
+                                       # is too slow, or the stored settings have not been read yet
+       }
+       velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
+       tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
+       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days" }
+       detectors { enabled = false, interval = "1 minute", retention = "90 days" }
+       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5 }
+     }
+     ```
+  3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
+     queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
+     `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
+     the detectors' pace and analytics. Where the items below name one of them with its value, that is the constant.
+
+  **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
+  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
+  `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
+  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `blockAt`), the
+  proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
+  rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
+  `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
+  number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
+  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending.
+
+  There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
+  own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
+  weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
+  everything off. `PUT`
+  replaces it as a whole (every key), `GET` reads it and `DELETE` puts everything off again. Every instance holds it in
+  memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
+  full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
+  that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the
+  database unreadable has none yet, and decides every request as `decision.failure-action` says (rule
+  `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity counters count) until a read succeeds.
+
+  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
+  `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
+  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in (`PUT` replaces every key, so read the settings first):
+
+  ```json
+  PUT /antifraud/settings
+  {
+    "settings": {
+      "challengeAt": 0, "blockAt": 0,
+      "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
+      "thresholds": {
+        "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
+        "ip":     {"perMinute": 10, "perTenMinutes": 0, "perHour": 0, "perDay": 0,   "weight": 10},
+        "device": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 60},
+        "asn":    {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 20},
+        "prefix": {"perMinute": 0, "perTenMinutes": 60, "perHour": 200, "perDay": 0, "weight": 30},
+        "trustedDiscount": 40
+      },
+      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
+      "ruleWeights": {},
+      "shadowRules": []
+    }
+  }
+  ```
+
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `smsLimits` is the one setting of the profile that
+  acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
+  `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
+  rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
+  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. `DELETE` the settings to go
+  back; nothing it recorded needs undoing.
+
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
   `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
@@ -569,7 +654,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
   Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
-  optional `antifraud` block of `auth`'s config.
+  `antifraud` block of `auth`'s config.
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
   recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
@@ -579,8 +664,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
   change made through another instance shows within that time, and a refresh that fails keeps the previous lists
   (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
-  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
-  interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
+  every 30 seconds, expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
+  interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
   an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
   `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
   `/antifraud/lists`; the console has no screen for them yet. Entries added by SQL skip the audit and the version bump (an
@@ -592,42 +677,43 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
-  `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
-  `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  5% of the last 24 hours of events (judged over at least
+  100 events) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
   `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
-  `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
+  30 seconds for the first successful load so that lists are enforced from the first
   request; if it fails it starts without them, logs it and retries every second. **Rotating
   `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
 
 - **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
-  minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
+  minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, a constant of the service,
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
   (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
   ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
   instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
   next run recomputes the last `stats-lookback` (2 minutes). A BRIN index on `af_event (at)` keeps that read to the
   blocks of those minutes.
-  Separately, `antifraud.sms-budget` closes a range (tenant plus the first `prefix-length` digits) for the next hour:
-  `sent-per-hour` (that many codes may be sent to it, no more) and `min-volume` with `min-conversion` (a range with at
-  least that many codes sent of which fewer than that share were verified). Both are **off by default** (`0`).
+  Separately, the SMS budget closes a range (tenant plus the first `antifraud.sms-budget.prefix-length` digits) for the next hour:
+  `sentPerHour` (that many codes may be sent to it, no more) and `minVolume` with `minConversion` (a range with at
+  least that many codes sent of which fewer than that share were verified), the tuned setting `smsLimits`. Both are
+  **off by default** (`0`).
   **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
   range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
   for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
   exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
-  unverified, which closes it. For that reason the conversion breaker (`min-volume`) is never applied to a number
-  whose region allows registration (`phoneRegions[].registration`); `sent-per-hour` is, so keep it well above the
+  unverified, which closes it. For that reason the conversion breaker (`minVolume`) is never applied to a number
+  whose region allows registration (`phoneRegions[].registration`); `sentPerHour` is, so keep it well above the
   real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
   range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
   someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
   candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
   an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
-  matters more than the pumping it protects against, leave `sent-per-hour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
+  matters more than the pumping it protects against, leave `sentPerHour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
   and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  `max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
+  10000 ranges are tracked; beyond that new ones are let through untracked
   (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
@@ -637,23 +723,22 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
   ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
-  The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
-  `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
-  keys first), `max-load-keys` (20000 per query, the busiest first) and
-  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
-  device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
-  window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
-  decision. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
+  The counters' sizes are constants of the service: `max-keys` (20000 per kind), `stripes` (8), `share-from` (3),
+  `max-flush-rows` (20000, a strict cap, the busiest keys first) and `max-load-keys` (20000 per query, the busiest first);
+  `flush-interval` and `load-interval` are keys of the block above. The limits are the tuned setting `thresholds`:
+  `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
+  prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
+  rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
   subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
   once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
-  context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
+  context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
   *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
   JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
   minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
   active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
   stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
   about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
-  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
+  (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
   full table does not stop counting: a new key takes the place of the oldest key seen only once
   (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
   has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
@@ -686,13 +771,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
   never creates one. **Off by default** (`antifraud.detectors.enabled`, `false`), and each detector has its own
-  `enabled`. The block is read whole: set every key of it (and of `prefix-anomaly` and `fake-verify`), or none.
-  Defaults: `interval` 1 minute, `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
+  `enabled`. `interval`, `retention` and `enabled` are keys of the block above; the rest are constants of the service: `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
   10 s, `max-proposals` 20 per detector and run, `candidates` 200 (ranges looked at closely, busiest first), `open-for`
   12 hours (an undecided proposal then expires), `cooldown` 24 hours (a value approved or rejected is not proposed
   again for that long), `ttl` 24 hours (what an entry made from a proposal lives), `retention` 90 days, `batch-size`
   1000.
-  `prefix-anomaly` proposes a range (tenant plus the first `stats-prefix-length` digits) for `fake` when in the last
+  `prefix-anomaly` proposes a range (tenant plus the first 4 digits) for `fake` when in the last
   `window` (15 minutes) it was asked for at least `min-requests` (50) codes, `spike-factor` (5) times what the
   `baseline` (24 hours before the window) gives for a window of that length (at least `baseline-floor`, 5), at least
   `min-sent` (20) were sent and its conversion (verified over sent) is at most `max-conversion` (0.2) and, if the
@@ -703,7 +787,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (a shorter prefix covers a longer one). Sequential numbers are not detected: the log keeps a number as a keyed hash
   and its first six digits, which cannot tell consecutive numbers from others.
   One instance runs a detector at a time (an advisory lock; the others skip it), each statement under
-  `antifraud.detectors.statement-timeout` and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
+  the statement timeout (10 s) and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
   with `DEFAULT 0` (the previous release's rollup does not name it); it counts `fake_verify` events. Proposals are
   counted in `antifraud_proposals_created_total{kind}`; **alert on** `antifraud_detector_failed_total{kind}` and
   `antifraud_proposal_housekeeping_failed_total` increasing: a failing detector is only a warning in the log. There
@@ -711,19 +795,22 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   follow-up.
 
 - **Challenges (a proof of work before a code is sent; no table, no new page).** A request for a code that the decision
-  engine scores at or above `antifraud.decision.challenge-at` (and below `block-at`) is no longer only held for
-  `antifraud.decision.delay`: nothing is sent until the client has done some work. The credential (email, phone) and
+  engine scores at or above the tuned `challengeAt` (and below `blockAt`) is not sent until the client has done some work. The credential (email, phone) and
   OTP-resend forms send their request from script (`proof_inline=1` among the fields) and auth answers
   `{"challenge": {"kind", "token", "params"}}` instead of a redirect, leaving the conversation where it was. The page
   finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
   request again** with two more fields, `proof_token` and `proof_solution`; the code is sent only if they are right. The
   person sees nothing but the submit they made. The request is judged again with its answer (a block, a fake and the
-  lists still apply, and the answer only settles a `Challenge`) but is not counted a second time by the velocity counters;
-  it does take a second turn of the per-credential OTP request limit. Measured in headless Chromium (4 workers, 2.7 M
+  lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
+  nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
+  paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
+  charged again. The same holds on the pending step below (the post that leaves it pays; the page's own ask for the code and
+  its answer do not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is
+  refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
   hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
   phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
-  higher is asked for more: `min-difficulty` (14) plus one bit per `score-step` (15) points above `challenge-at`, at most
-  `max-difficulty` (18).
+  higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
+  `maxDifficulty` (18).
   The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
   names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
   is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
@@ -731,19 +818,21 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
   count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
   hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
-  real bound is the per-credential OTP request limit, which every repeated request takes a turn of, and the token's
-  `ttl`; a guess costs the server one SHA-256.
-  **A challenged request that cannot answer is refused, not sent:** a plain form post (no JavaScript, the password forms
-  that lead on to a code, `/authorize` with `login_hint`) or a page that cannot solve the kind gets "access denied" as a
-  blocked request does, since sending it would be a way round the challenge for any script. Only a verifier that is
-  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, held and sent as it was before
-  challenges existed, and so does a `Challenge` that came of the engine failing (`antifraud_error`, `failure-action`)
-  for a request that cannot answer, so that an outage of the engine does not lock out the second factor after a password or
-  `login_hint`. `failure-action` stays `Delay` by default; set it to `Challenge` only if you want an engine that times out
-  to ask every request that can answer for a proof. Routing those two paths through a page that can solve is a follow-up.
-  The keys of the optional `antifraud.challenge` block are `enabled` (`true`), `min-difficulty`, `max-difficulty`,
-  `score-step`, `ttl` and `max-attempts`, **read whole: set every key, or none** (a block that leaves one out is not read at
-  all). The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
+  real bound is the per-credential OTP request limit, which a wrong answer is charged against, and the token's `ttl`; a guess
+  costs the server one SHA-256. The page's ask for a code from the pending step is the one request that is free and can be
+  repeated: it only gets a challenge (a MAC), never a code, and a right answer sends one code and ends the step.
+  **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
+  form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
+  step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
+  it can answer like the credential form does and which is the same request (not counted or charged again). When the code is sent the page shows it in place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
+  cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
+  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
+  `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
+  times out to ask every request for a proof.
+  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes) and `max-attempts` (5): the
+  switch and what a challenge lives for. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
+  `maxDifficulty` 18, `scoreStep` 15, in zero bits of a hash), so that it can be raised during an attack; the score it
+  starts at is the tuned `challengeAt`. The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
   column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
   `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and `antifraud_challenges_total{kind,outcome}`
   counts them. A script that does the work gets its code: the proof makes an attack cost CPU, it does not stop one, so keep
@@ -1108,6 +1197,39 @@ move together and `configure` is re-run)
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 
+### Request bodies state every field (breaking for API clients)
+
+`central`'s admin API no longer fills in values a caller leaves out. A field that has no meaning when missing used to
+decode to a default (`theme` to `"default"`, a missing boolean to `false`, a missing set to empty); it is now required, and a
+body that omits it is refused with `400`. A field typed as optional (`null` allowed) is still optional. The reason: a
+field left out by mistake used to become a security-relevant value (an unthrottled category, DPoP off, an empty scope patch)
+without anyone having chosen it.
+
+| Endpoint | Fields that must now be sent |
+|---|---|
+| `POST /configuration/clients/web` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `requireSignedRequestObject`, `requirePushedAuthorizationRequests`, `estEnrollment` (on top of the ones already required) |
+| `POST /configuration/clients/native` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopSigningAlgs` |
+| `POST /configuration/clients/service` | `permissions`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `estEnrollment` |
+| `PUT /configuration/clients/web`, `/native` | `redirectUris` and `scope` patches (`{"add":[],"remove":[]}` for no change) |
+| `PUT /configuration/clients/service` | `scope` and `permissions` patches |
+| `consentFlow` in any client body | `requiredScopes` (`[]`) and `offlineAccessOptional` (`false`) next to `allowPartial` |
+| `PATCH /configuration/edges/policies`, section `rateLimits` | `replicas`; and for every policy `by`, `scope`, `burst`, `cost`, `mode` |
+| `POST /configuration/resources` | `audienceRateLimits` (`[]` for none) |
+| `rateLimit` of a resource endpoint, and of an audience client | `burst`, `by`, `mode` next to `limits` |
+
+**Migrating a client of the API.** Send the fields above; the values to send for "as before" are the old defaults:
+`theme` and `otpTemplateId` `"default"`, the booleans `false`, `dpopSigningAlgs` and `permissions` `[]`, an unchanged patch
+`{"add":[],"remove":[]}`, a rate limit's `burst` `1`, `cost` `1`, `by` `[]` (policy) or `"none"` (declared limit), `scope`
+`"edge-wide"`, `mode` `"shadow"`, `replicas` `1`. The console, `versola-cli`, the load generator, `scripts/est-smoke.sh` and
+`openid-conformance/run.py` send them; a script of your own that posts a minimal body will start getting `400` and the reason is in
+`central`'s log. Read the new `required` lists in `central/open-api/central.yaml`.
+
+**Stored data.** Migration `V1032` adds `requiredScopes` and `offlineAccessOptional` to every stored `consent_flow`
+that lacks them, so no stored client is unreadable. `auth` and `edge` read configuration from `central` in the same shape:
+upgrade `central` first, then `auth` and `edge` (the configuration snapshot an `auth` or `edge` keeps for a start while `central` is unreachable is the raw answer
+of the older release and is decoded like a live one, so a snapshot that lacks a field cannot be used; start `central` first so the services
+refresh it).
+
 ### Overload protection
 
 When a service is asked for more than it can do, it should refuse the surplus quickly rather than queue it
@@ -1211,13 +1333,14 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
   - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
     whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
-    (`400`), so a misspelled section is an error and not a silent no-op. `400` also names the section and the first problem; `404` for
-    an unknown edge. The answer is the new state with the new `revisions`.
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` and `409` come with **no body** (a body would be a
+    contract callers parse; the reason of a `400` is in central's log as `invalid_policy`, and `dryRun` answers whether a body is valid); `404`
+    for an unknown edge. The answer is the new state with the new `revisions`.
   - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
     (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
-    written and the answer is `409` with the current state in `current`. A section that is not named has no precondition, so a client
+    written and the answer is `409` with no body: read the state again. A section that is not named has no precondition, so a client
     that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
-    it read and, on `409`, reads the edges again and says so.
+    it read and, on `409`, reads the edges again and says so; on `400` (the console validates, so it should not happen) it says central did not accept the values.
   - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
     writing nothing: for CI and automation.
   - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
@@ -1259,12 +1382,18 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
     cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
     platform and is to be verified on the first real load balancer.
 - **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
-  caller wait longest), and the body `{"error":"rate_limited","policy":"<name>"}`: the policy is named, never the key. A caller
+  caller wait longest) and **no body**: a body would be a contract; everything a caller can act on is in the headers, and the policy is named only by `RateLimit-Policy`, never the key. A caller
   passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
   (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
   refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
   policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
   has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
+- **The operator's view of refusals is the log, once a minute per policy.** Each edge and auth logs one line per policy that
+  refused something in the last minute (`... rate limit 'per-client' in the last 60 s: refused 12, would refuse (shadow) 0, ...`):
+  `WARN` when the policy enforced, `INFO` when it only counted in shadow, nothing when it did neither. It names no key, so it holds
+  nothing about a caller, and it is bounded by the number of policies however hard the edge is hit. A single refused request is not
+  logged by itself (a flood of them would be a flood of lines); its `429` names the policy in `RateLimit-Policy`, and a request
+  log line, when the access log is `full`, carries the error `rate_limited` with the same policy name.
 - **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
   protection refuses whoever is there, by priority, with `503`.
 - **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
@@ -1273,6 +1402,13 @@ then switch one policy at a time to `enforce`. Switching it back to `shadow` or 
   edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
   (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
   applies to each pod and N pods allow N times it. Change it when the number of pods changes.
+  **Counting pods automatically:** set `replicas-from = "dns:<name>"` in the edge config to count the pods from DNS instead. The
+  chart ships a headless Service for this (`<fullname>-edge-headless`, ready pods only) and puts its name in the environment variable
+  `VERSOLA_EDGE_HEADLESS_SERVICE` of the edge pods, so the edge's `env.conf` can say `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}` and nothing is
+  typed by hand; the edge resolves it every 10 seconds, keeps
+  the last good count if a lookup fails, and uses the policy's `replicas` until the first answer. The count in force and where it came
+  from are the gauge `edge_rate_limit_replicas{source="dns|policy"}`. Nothing detects Kubernetes at runtime: without the key the
+  policy's `replicas` is used.
 - **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
   `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
 
@@ -1319,7 +1455,7 @@ absent):
 | failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
 | entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
 
-An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds) and `{"error":"rate_limited"}`
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds), the `RateLimit` fields and no body
 before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
 address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
 secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a

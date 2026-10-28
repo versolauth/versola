@@ -5,15 +5,16 @@ import zio.json.JsonCodec
 case class RateLimit(maxAttempts: Int, windowSeconds: Int) derives JsonCodec
 
 case class SubmissionLimits(
-    otpRequest: List[RateLimit] = Nil,
-    otpSubmit: List[RateLimit] = Nil,
-    passwordSubmit: List[RateLimit] = Nil,
-    passkeyAssertion: List[RateLimit] = Nil,
-    banDurationSeconds: Int = 0,
+    otpRequest: List[RateLimit],
+    otpSubmit: List[RateLimit],
+    passwordSubmit: List[RateLimit],
+    passkeyAssertion: List[RateLimit],
+    banDurationSeconds: Int,
 ) derives JsonCodec
 
 object SubmissionLimits:
-  val empty: SubmissionLimits = SubmissionLimits()
+  val empty: SubmissionLimits =
+    SubmissionLimits(otpRequest = Nil, otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil, banDurationSeconds = 0)
 
   /** Mirrors `SubmissionLimits.recommended` in `central`'s equivalent model -- keep the two
     * in sync. Used as the fallback here (rather than `empty`) when a tenant has no

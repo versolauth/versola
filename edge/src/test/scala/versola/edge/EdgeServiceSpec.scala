@@ -57,6 +57,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
       permissions = Set.empty,
       accessTokenTtl = 15.minutes,
+      applicationType = ApplicationType.web,
     )
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
@@ -1359,6 +1360,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         maxAge = None,
       )),
       secret = None,
+      audienceRateLimits = Nil,
     )
 
   private val centralEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000000"))

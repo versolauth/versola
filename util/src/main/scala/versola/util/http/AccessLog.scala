@@ -102,9 +102,9 @@ object AccessLogSettings:
   *   `full`, `sampled` or `off`
   */
 final case class AccessLogPolicy(
-    mode: Option[String] = None,
-    slowMillis: Option[Long] = None,
-    successSampleRate: Option[Double] = None,
+    mode: Option[String],
+    slowMillis: Option[Long],
+    successSampleRate: Option[Double],
 ) derives JsonCodec, Schema:
 
   def validate: Either[String, AccessLogPolicy] =
@@ -122,4 +122,4 @@ final case class AccessLogPolicy(
     )
 
 object AccessLogPolicy:
-  val empty: AccessLogPolicy = AccessLogPolicy()
+  val empty: AccessLogPolicy = AccessLogPolicy(mode = None, slowMillis = None, successSampleRate = None)

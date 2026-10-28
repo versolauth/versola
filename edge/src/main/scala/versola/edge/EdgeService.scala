@@ -112,7 +112,7 @@ object EdgeService:
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
-      returnTo: Option[String] = None,
+      returnTo: Option[String],
       cookieDomain: Option[String],
       cookiePath: Option[String],
       loginCookiePath: Path,
@@ -441,11 +441,11 @@ object EdgeService:
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
-        // The policy is named, never the key or what else is being counted. `Retry-After` is whole seconds, rounded up.
-        case Outcome.RateLimited(policy, retryAfterSeconds, headers) =>
+        // No body: a body is a contract callers would parse, and everything a caller can act on is in the headers. `Retry-After` is whole
+        // seconds, rounded up; the policy is named by `RateLimit-Policy`, never the key or what else is being counted.
+        case Outcome.RateLimited(_, retryAfterSeconds, headers) =>
           ZIO.succeed(
-            Response.json(RateLimitedBody(error = "rate_limited", policy = policy).toJson)
-              .status(Status.TooManyRequests)
+            Response.status(Status.TooManyRequests)
               .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
               .addHeaders(Headers(headers.map((name, value) => Header.Custom(name, value)))),
           )
@@ -1410,9 +1410,6 @@ object EdgeService:
       claims: Json.Obj,
       rotatedCookie: Option[Cookie.Response],
   )
-
-  /** The `429` body: the closed error code and the policy that refused, nothing about the key. */
-  private case class RateLimitedBody(error: String, policy: String) derives JsonCodec
 
   private enum Outcome:
     case Unauthorized

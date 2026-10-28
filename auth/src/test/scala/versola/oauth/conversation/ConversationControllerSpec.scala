@@ -157,7 +157,8 @@ object ConversationControllerSpec extends UnitSpecBase:
         body <- response.body.asString
       yield
         // A script gets the redirect as data, a plain form the redirect itself.
-        (if scripted then assertTrue(response.status == Status.Ok, body.fromJson[InlineStep] == Right(InlineStep(Some(expectedLocation), None)))
+        (if scripted then
+           assertTrue(response.status == Status.Ok, body.fromJson[InlineStep] == Right(InlineStep(Some(expectedLocation), None, otp = true)))
          else assertTrue(response.status == Status.SeeOther, response.header(Header.Location).map(_.url.encode).contains(expectedLocation))) &&
           assertTrue(submitCalls == List(submission))
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -255,15 +256,31 @@ object ConversationControllerSpec extends UnitSpecBase:
 
   val spec = suite("ConversationController")(
     scriptSubmitTestCase(
-      description = "a script's submit gets the redirect as data instead of a 303",
+      description = "a script's submit gets the redirect as data instead of a 303, and is told that a code was sent",
       result = conversationResult,
-      expected = InlineStep(next = Some("/challenge"), challenge = None),
+      expected = InlineStep(next = Some("/challenge"), challenge = None, otp = true),
+      ProofInput.InlineField -> "1",
+    ),
+    scriptSubmitTestCase(
+      description = "a script's submit that left the code step pending is not told that a code was sent",
+      result = ConversationResult.RenderStep(
+        ConversationStep.Otp(
+          real = None,
+          timesRequested = 0,
+          timesSubmitted = 0,
+          factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
+        ),
+      ),
+      expected = InlineStep(next = Some("/challenge"), challenge = None, otp = false),
       ProofInput.InlineField -> "1",
     ),
     scriptSubmitTestCase(
       description = "a script's submit that was asked for a proof gets the challenge to answer, and nothing else",
       result = ConversationResult.Challenged(Challenge("pow", "tok.en", 16, Map("seed" -> "abc", "difficulty" -> "16"))),
-      expected = InlineStep(next = None, challenge = Some(InlineChallenge("pow", "tok.en", Map("seed" -> "abc", "difficulty" -> "16")))),
+      expected = InlineStep(next = None, challenge = Some(InlineChallenge("pow", "tok.en", Map("seed" -> "abc", "difficulty" -> "16"))), otp = false),
       ProofInput.InlineField -> "1",
     ),
     successfulSubmitTestCase(

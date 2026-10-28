@@ -69,12 +69,12 @@ simulated.
 
 `auth-profiles/off.conf` is the local dev config of `scripts/gen-env.scala` plus the two things the scenarios
 need: `env = prod` (a non-prod `auth` sends no SMS and always issues the same code) and an `otp-provider` pointing
-at the stub that `loadgen` serves on `:9100`. `sms-budget.conf` includes it and adds `antifraud.sms-budget`
-(`prefix-length = 6`, `sent-per-hour = 200`; the reasoning is in the file).
+at the stub that `loadgen` serves on `:9100`. `sms-budget.conf` includes it and sets `antifraud.sms-budget.prefix-length = 6`; the limit itself (`sentPerHour = 200`) is a stored setting
+set through central's `PUT /antifraud/settings`, no longer a key of the config (the reasoning is in the file).
 
 The next task that adds a mechanism adds a profile that **includes the previous one** and sets only its own keys
 (lists, velocity counters, `evaluate`), so the run of a profile differs from the run before it by exactly those
-keys: copy `sms-budget.conf`, include it, add the block, run with `AF_BASELINE` set to the `off` report.
+settings: copy `sms-budget.conf`, include it, set them through the admin API, run with `AF_BASELINE` set to the `off` report.
 
 ## Commands (the local stack)
 

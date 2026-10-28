@@ -2,6 +2,7 @@ package versola.antifraud
 
 import versola.oauth.client.model.{ClientId, TenantId}
 import zio.*
+import zio.config.magnolia.DeriveConfig
 
 /** What the rules get to see about one risky step: who asks, for what, from where. Every field but the action,
   * tenant and client is optional, because not every signal exists on every path (no device id before P1-1, no ASN
@@ -33,17 +34,18 @@ enum DecisionAction:
   /** Ask for proof first (a proof-of-work or a captcha token, P1-2). */
   case Challenge
 
-  /** Go on, slowly: the answer is held back (a tarpit). */
-  case Delay
-
   /** Answer as if the step succeeded and do nothing (P0-6). */
   case Fake
 
   /** Refuse. */
   case Block
 
-  /** Go on or refuse as configured, and put it in front of a person. */
-  case Review
+object DecisionAction:
+  /** Read from the config by name, in any case: `failure-action = "challenge"`. */
+  given DeriveConfig[DecisionAction] = DeriveConfig[String].mapOrFail: name =>
+    DecisionAction.values
+      .find(_.toString.equalsIgnoreCase(name))
+      .toRight(Config.Error.InvalidData(message = s"expected one of ${DecisionAction.values.mkString(", ")}, got $name"))
 
 /** @param score      the sum of the weights of the fired rules
   * @param firedRules names of the rules that matched, for the event log and for explaining a decision
@@ -74,29 +76,22 @@ trait Antifraud:
 object Antifraud:
 
   /** @param enabled        off by default: nothing changes for a deployment that does not turn it on
-    * @param delayAt        score from which the step is delayed; 0 disables the threshold
-    * @param challengeAt    score from which the step is challenged; 0 disables
-    * @param reviewAt       score from which the step is sent to review; 0 disables
-    * @param blockAt        score from which the step is refused; 0 disables
-    * @param delay          how long a `Delay` holds the request back
+    * The thresholds and weights are not here: they are tuned during an attack (see [[AntifraudTuning]]).
+    *
     * @param timeout        the longest an evaluation may take
     * @param failureAction  the decision when evaluation fails or times out
     */
   case class Settings(
-      enabled: Boolean = false,
-      delayAt: Int = 0,
-      challengeAt: Int = 0,
-      reviewAt: Int = 0,
-      blockAt: Int = 0,
-      delay: Duration = 2.seconds,
-      timeout: Duration = 20.millis,
-      failureAction: DecisionAction = DecisionAction.Delay,
+      enabled: Boolean,
+      timeout: Duration,
+      failureAction: DecisionAction,
   )
 
-  /** The engine over the rules the given sources supply; each component that adds rules is listed where the layer
-    * is assembled. */
-  def live(ruleSets: List[RuleSet]): URLayer[AntifraudEvents.Settings, Antifraud] =
-    ZLayer.fromFunction((settings: AntifraudEvents.Settings) => Impl(settings.decision, ruleSets): Antifraud)
+  /** The engine over the rules of the components that add them: the lists and the velocity limits. A component that adds
+    * rules is added here, where the engine is, not in the application's wiring. */
+  val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists, Antifraud] =
+    ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists) =>
+      Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud
 
   /** The rule a decision made of a failed evaluation names. */
   val ErrorRule = "antifraud_error"
@@ -108,11 +103,18 @@ object Antifraud:
   trait RuleSet:
     def rules: UIO[List[AntifraudRule]]
 
-  class Impl(settings: Settings, ruleSets: List[RuleSet]) extends Antifraud:
+    /** The rules for this request; a source whose rules depend on the tenant overrides it. */
+    def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] = rules
+
+  /** `settings` has what a deployment sets (the switch, the timeout, the action on failure); what is tuned during an
+    * attack (the thresholds, the weights, the rules that only record) is `tuning`'s, per tenant. */
+  class Impl(settings: Settings, ruleSets: List[RuleSet], tuning: AntifraudTuning) extends Antifraud:
     override def evaluate(ctx: AntifraudContext): UIO[Decision] =
       if !settings.enabled then ZIO.succeed(Decision.allow)
+      // Nothing says what the thresholds are, and they must not be taken to be 0.
+      else if !tuning.available then ZIO.succeed(Decision(settings.failureAction, 0, List("antifraud_tuning_unavailable")))
       else
-        ZIO.foreach(ruleSets)(_.rules).map(_.flatten)
+        ZIO.foreach(ruleSets)(_.rulesFor(ctx)).map(_.flatten)
           .map(decide(ctx, _))
           .timeoutTo(failed)(identity)(settings.timeout)
           .catchAllCause(_ => ZIO.succeed(failed))
@@ -120,14 +122,14 @@ object Antifraud:
     private def failed: Decision = Decision(settings.failureAction, 0, List(ErrorRule))
 
     private[antifraud] def decide(ctx: AntifraudContext, rules: List[AntifraudRule]): Decision =
-      val fired = rules.filter(_.test(ctx))
-      val score = fired.map(_.weight).sum
-      val names = fired.map(_.name)
+      val t = tuning.current
+      val (shadow, fired) = rules.filter(_.test(ctx)).partition(rule => t.shadowRules.contains(rule.name))
+      // A rule that forces an action decides alone; its weight is not what it does.
+      val score = fired.map(rule => if rule.forces.isDefined then rule.weight else t.ruleWeights.getOrElse(rule.name, rule.weight)).sum
+      val names = fired.map(_.name) ++ shadow.map(rule => s"shadow:${rule.name}")
       val forced = fired.flatMap(_.forces).maxByOption(_.ordinal)
       val byScore =
-        if settings.blockAt > 0 && score >= settings.blockAt then DecisionAction.Block
-        else if settings.reviewAt > 0 && score >= settings.reviewAt then DecisionAction.Review
-        else if settings.challengeAt > 0 && score >= settings.challengeAt then DecisionAction.Challenge
-        else if settings.delayAt > 0 && score >= settings.delayAt then DecisionAction.Delay
+        if t.blockAt > 0 && score >= t.blockAt then DecisionAction.Block
+        else if t.challengeAt > 0 && score >= t.challengeAt then DecisionAction.Challenge
         else DecisionAction.Allow
       Decision(Seq(Some(byScore), forced).flatten.maxBy(_.ordinal), score, names)

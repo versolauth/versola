@@ -31,7 +31,7 @@ object DeclaredRateLimitService:
             resource <- sorted
             endpoint <- resource.endpoints.toList
             limit <- endpoint.rateLimit
-          yield DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = endpoint.template(resource.resourceId), limit = limit)
+          yield DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = endpoint.template(resource.resourceId), limit = limit, resource = "")
         val audiences =
           for
             resource <- sorted
