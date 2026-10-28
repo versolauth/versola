@@ -23,6 +23,10 @@ object AccessLogSpec extends ZIOSpecDefault:
         assertTrue(
           (0 until 200).forall(i => none.logReceive(400, failed = false, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(503, failed = false, 1, traceId(i))),
+          // a rate-limit refusal is not a line per refusal: it follows the success rules (slow and sampled lines only)
+          (0 until 200).forall(i => !none.logReceive(429, failed = false, 1, traceId(i))),
+          none.logReceive(429, failed = false, 500, traceId(1)),
+          none.logReceive(429, failed = true, 1, traceId(1)),
           (0 until 200).forall(i => none.logReceive(200, failed = true, 1, traceId(i))),
           (0 until 200).forall(i => none.logReceive(302, failed = true, 1, traceId(i))),
         )
@@ -76,24 +80,10 @@ object AccessLogSpec extends ZIOSpecDefault:
         )
       },
     ),
-    suite("parse")(
-      test("defaults are full, 500 ms, 1 in 20") {
-        val s = AccessLogSettings.parse(None, None, None)
+    suite("defaults")(
+      test("a service logs every request, 500 ms slow, 1 in 20 sampled, unless it says otherwise") {
+        val s = AccessLogSettings.default
         assertTrue(s.mode == AccessLogMode.Full, s.slowMillis == 500, s.successSampleRate == 0.05)
-      },
-      test("a service default replaces full when the mode is unset, and an explicit mode still wins") {
-        val edge = AccessLogSettings.parse(None, None, None, AccessLogMode.Off)
-        val explicit = AccessLogSettings.parse(Some("full"), None, None, AccessLogMode.Off)
-        val invalid = AccessLogSettings.parse(Some("verbose"), None, None, AccessLogMode.Off)
-        assertTrue(edge.mode == AccessLogMode.Off, explicit.mode == AccessLogMode.Full, invalid.mode == AccessLogMode.Off)
-      },
-      test("reads valid values") {
-        val s = AccessLogSettings.parse(Some(" Sampled "), Some("250"), Some("0.1"))
-        assertTrue(s.mode == AccessLogMode.Sampled, s.slowMillis == 250, s.successSampleRate == 0.1)
-      },
-      test("an invalid value falls back to its default") {
-        val s = AccessLogSettings.parse(Some("verbose"), Some("-1"), Some("1.5"))
-        assertTrue(s == AccessLogSettings.default, AccessLogSettings.parse(None, Some("x"), Some("nan")) == AccessLogSettings.default)
       },
       test("isSlow is inclusive of the threshold") {
         assertTrue(sampled.isSlow(500), !sampled.isSlow(499))
@@ -103,24 +93,24 @@ object AccessLogSpec extends ZIOSpecDefault:
       test("an empty policy leaves the base alone and any field patches only itself") {
         assertTrue(
           AccessLogPolicy.empty.applyTo(sampled) == sampled,
-          AccessLogPolicy(mode = Some("off")).applyTo(sampled) == sampled.copy(mode = AccessLogMode.Off),
-          AccessLogPolicy(slowMillis = Some(100)).applyTo(sampled) == sampled.copy(slowMillis = 100),
-          AccessLogPolicy(successSampleRate = Some(0.5)).applyTo(sampled) == sampled.copy(successSampleRate = 0.5),
+          AccessLogPolicy(mode = Some("off"), slowMillis = None, successSampleRate = None).applyTo(sampled) == sampled.copy(mode = AccessLogMode.Off),
+          AccessLogPolicy(slowMillis = Some(100), mode = None, successSampleRate = None).applyTo(sampled) == sampled.copy(slowMillis = 100),
+          AccessLogPolicy(successSampleRate = Some(0.5), mode = None, slowMillis = None).applyTo(sampled) == sampled.copy(successSampleRate = 0.5),
         )
       },
       test("validate rejects an unknown mode and out-of-range numbers") {
         assertTrue(
-          AccessLogPolicy(mode = Some("loud")).validate.isLeft,
-          AccessLogPolicy(slowMillis = Some(-1)).validate.isLeft,
-          AccessLogPolicy(slowMillis = Some(600001)).validate.isLeft,
-          AccessLogPolicy(successSampleRate = Some(1.01)).validate.isLeft,
-          AccessLogPolicy(successSampleRate = Some(-0.1)).validate.isLeft,
+          AccessLogPolicy(mode = Some("loud"), slowMillis = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(slowMillis = Some(-1), mode = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(slowMillis = Some(600001), mode = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(successSampleRate = Some(1.01), mode = None, slowMillis = None).validate.isLeft,
+          AccessLogPolicy(successSampleRate = Some(-0.1), mode = None, slowMillis = None).validate.isLeft,
           AccessLogPolicy(Some("sampled"), Some(500), Some(0.05)).validate.isRight,
           AccessLogPolicy.empty.validate.isRight,
         )
       },
       test("round-trips through JSON, absent fields staying absent") {
-        val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+        val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1), slowMillis = None)
         assertTrue(
           policy.toJson.fromJson[AccessLogPolicy] == Right(policy),
           "{}".fromJson[AccessLogPolicy] == Right(AccessLogPolicy.empty),

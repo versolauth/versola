@@ -377,9 +377,12 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         direct <- f.nextSetup
         viaPending <- f.nextSetup
+        // The polls that wait for the entries to be loaded are requests for a number too, and take steps of its limit:
+        // they use a number of their own, so that the two under test start with none.
+        probe <- f.nextSetup
         directIp = randomIp()
         pendingIp = randomIp()
-        _ <- seeded(f.a, direct)(ListEntry("watch", "ip", directIp), ListEntry("watch", "ip", pendingIp))
+        _ <- seeded(f.a, probe)(ListEntry("watch", "ip", directIp), ListEntry("watch", "ip", pendingIp))
         auth = f.a.auth
         before <- AntifraudFixture.otpRequestSteps(direct.phone.get) <*> AntifraudFixture.otpRequestSteps(viaPending.phone.get)
         // The credential form: asked, then answered.

@@ -55,8 +55,8 @@ trait ConversationService:
   /** Sends the first code of a step, unless the antifraud decision asks for a proof first. A `Challenge` is put to a
     * client that can answer one (`proof` says so) as [[ConversationResult.Challenged]], with nothing sent and the
     * conversation left where it is, and the same request is made again with the answer; a client that cannot answer
-    * one is refused, as a blocked request is. Only a verifier that is off or fails lets such a request through, held
-    * for the delay a `Challenge` was before challenges existed.
+    * one is refused, as a blocked request is. Only a verifier that is off or fails lets such a request through, as a
+    * plain send.
     */
   def prepareInitialOtp(
       authId: AuthId,
@@ -294,20 +294,14 @@ object ConversationService:
         case LimitStatus.RateLimited(retryAfter) => renderStep(authId, conversation, step(Some(retryAfter)))
         case LimitStatus.Allowed => renderStep(authId, conversation, step(None))
 
-    /** A real send is timed, and a fake one waits as long as a real one recently took, so that the answer to a
-      * request does not tell which of the two it was. */
-    private def sendTimed(
+    /** Sends the code; a fake step is not sent by the provider (see [[OtpService]]) and answers as soon as a real one would. */
+    private def sendOtp(
         step: ConversationStep.Otp,
         credential: Either[Email, Phone],
         authId: AuthId,
         conversation: ConversationRecord,
     ): Task[Unit] =
-      if step.isFake then
-        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales) *>
-          antifraudEvents.fakeSendDelay.flatMap(ZIO.sleep(_))
-      else
-        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales).timed.flatMap: (took, _) =>
-          antifraudEvents.sendTook(took)
+      otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales)
 
     private def sentOutcome(step: ConversationStep.Otp, decision: Decision): AntifraudOutcome =
       if !step.isFake then AntifraudOutcome.sent
@@ -320,11 +314,8 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
         decision: Decision,
-        challenged: Boolean,
     ): Task[ConversationResult.Render] =
       for
-        // A request that solved its challenge has paid already.
-        _ <- ZIO.unless(challenged)(antifraudEvents.hold(decision))
         effectiveUserId = conversation.userId
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
         otp <- otpService.prepareOtp(
@@ -374,7 +365,7 @@ object ConversationService:
                       // The flag goes up in the same uninterruptible step in which the send is known to have
                       // succeeded, so an interruption cannot fall between the two and give back a code that went.
                       ZIO.uninterruptibleMask(sending =>
-                        sending(sendTimed(sentStep, credential, authId, conversation)) <* sentOut.set(true),
+                        sending(sendOtp(sentStep, credential, authId, conversation)) <* sentOut.set(true),
                       )
                         .tapBoth(
                           _ => otpRequested(authId, conversation, credential, AntifraudOutcome.provider_error, Some(decision)),
@@ -457,10 +448,10 @@ object ConversationService:
           if decision.action == DecisionAction.Block then
             otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
           else if decision.action != DecisionAction.Challenge then
-            sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+            sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else if solved then
             challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None) *>
-              sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = true)
+              sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
       yield result
 
@@ -535,8 +526,8 @@ object ConversationService:
       )
 
     /** A `Challenge` that was not answered rightly: put it to the client, leave it pending when the client cannot answer
-      * here, or refuse the request when the client has answered wrongly too often. A challenge that cannot be made at all (the verifier is off, or
-      * failed) is the engine failing open: held and sent. */
+      * here, or refuse the request when the client has answered wrongly too often. A challenge that cannot be made at all
+      * (the verifier is off, or failed) is the engine failing open: sent. */
     private def challenge(
         authId: AuthId,
         conversation: ConversationRecord,
@@ -555,7 +546,7 @@ object ConversationService:
       for
         _ <- ZIO.when(attempts > 0)(challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_failed, decision, level = None))
         result <-
-          if !challengeVerifier.enabled then sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+          if !challengeVerifier.enabled then sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else if attempts >= challengeVerifier.maxAttempts then refuse
           else if proof == ProofInput.NoScript then leavePending(authId, conversation, credential, factorIndex, decision)
           else
@@ -563,7 +554,7 @@ object ConversationService:
               case Some(challenge) =>
                 challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, Some(challenge.level))
                   .as(ConversationResult.Challenged(challenge): ConversationResult.Render)
-              case None => sendInitialOtp(authId, conversation, credential, factorIndex, decision, challenged = false)
+              case None => sendInitialOtp(authId, conversation, credential, factorIndex, decision)
       yield result
 
     override def prepareInitialPassword(

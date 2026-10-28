@@ -5,6 +5,7 @@ import { buttonStyles, cardStyles, editorStyles, formStyles, methodBadgeStyles, 
 import type { InjectRule, InjectTarget, ResourceEndpoint, ResourceEndpointId } from '../types';
 import type { SaveResourceEndpointPayload } from '../utils/central-api';
 import { validateCel } from '../utils/cel-validator';
+import { declaredFromDraft, declaredSnapshot, declaredSummary, draftFromDeclared, hasErrors as declaredHasErrors, type DeclaredDraft } from '../utils/declared-rate-limit';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { formatDurationShort, parseDurationShort } from '../utils/duration';
@@ -12,6 +13,7 @@ import { statusIcon } from './status-icon';
 import { breakPath } from './break-text';
 import { acrValues, methodBadge } from './resource-endpoints-table';
 import './cel-editor';
+import './declared-rate-limit-editor';
 import './nav-toggle';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
@@ -32,6 +34,8 @@ type Draft = {
   stepUpCondition: string;
   stepUpAcr: string;
   maxAge: string;
+  /** The limit declared on the endpoint; null is none. */
+  rateLimit: DeclaredDraft | null;
   baseline: string | null;
 };
 
@@ -67,11 +71,12 @@ function cloneInject(rules: InjectRule[]): InjectRule[] {
   return rules.map(rule => ({ ...rule }));
 }
 
-function snapshot(draft: Pick<Draft, 'method' | 'path' | 'fetchUserInfo' | 'allow' | 'inject' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'>): string {
+function snapshot(draft: Pick<Draft, 'method' | 'path' | 'fetchUserInfo' | 'allow' | 'inject' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge' | 'rateLimit'>): string {
   return JSON.stringify([
     draft.method, draft.path.trim(), draft.fetchUserInfo, draft.allow.trim(),
     draft.inject.map(rule => [rule.target, rule.name.trim(), rule.expression.trim()]),
     draft.stepUpCondition.trim(), draft.stepUpAcr.trim().split(/\s+/).filter(Boolean).join(' '), parseDurationShort(draft.maxAge) ?? draft.maxAge.trim(),
+    declaredSnapshot(draft.rateLimit),
   ]);
 }
 
@@ -87,6 +92,7 @@ function toDraft(endpoint: ResourceEndpoint): Draft {
     stepUpCondition: endpoint.stepUpCondition ?? '',
     stepUpAcr: endpoint.stepUpAcr ?? '',
     maxAge: endpoint.maxAge != null ? formatDurationShort(endpoint.maxAge) : '',
+    rateLimit: draftFromDeclared(endpoint.rateLimit),
     baseline: null,
   };
   draft.baseline = snapshot(draft);
@@ -98,6 +104,7 @@ function toPayload(draft: Draft): SaveResourceEndpointPayload {
   const condition = draft.stepUpCondition.trim();
   const acr = acrValues(draft.stepUpAcr).join(' ');
   const maxAge = parseDurationShort(draft.maxAge);
+  const rateLimit = declaredFromDraft(draft.rateLimit);
   return {
     ...(draft.id !== null ? { id: draft.id } : {}),
     method: draft.method,
@@ -108,6 +115,8 @@ function toPayload(draft: Draft): SaveResourceEndpointPayload {
     stepUpCondition: condition.length > 0 ? condition : null,
     stepUpAcr: acr.length > 0 ? acr : null,
     maxAge,
+    // Left out when there is none: the endpoint is written whole, so absent removes the limit.
+    ...(rateLimit ? { rateLimit } : {}),
   };
 }
 
@@ -765,7 +774,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
   private async add() {
     const draft: Draft = {
       key: `new-${++this.nextNew}`, id: null, method: 'GET', path: '/', fetchUserInfo: false, allow: '',
-      inject: [], stepUpCondition: '', stepUpAcr: '', maxAge: '', baseline: null,
+      inject: [], stepUpCondition: '', stepUpAcr: '', maxAge: '', rateLimit: null, baseline: null,
     };
     this.drafts = [...this.drafts, draft];
     this.filter = '';
@@ -854,6 +863,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         if (!result.valid) return { draftKey: draft.key, message: `Invalid step-up condition in ${label}: ${result.error.message}` };
       }
       if (this.maxAgeError(draft)) return { draftKey: draft.key, message: `Max auth age must be a number and a unit (30s, 5m, 1h, 1d) in ${label}` };
+      if (declaredHasErrors(draft.rateLimit, 'endpoint')) return { draftKey: draft.key, message: `The rate limit is not valid in ${label}` };
       for (const rule of draft.inject) {
         const named = rule.name ? ` for ${rule.name}` : '';
         if (!rule.name.trim()) return { draftKey: draft.key, message: `Inject name is required in ${label}` };
@@ -867,7 +877,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
 
   private hasProblem(draft: Draft): boolean {
     const badCel = (text: string) => text.trim() !== '' && !validateCel(text).valid;
-    return !!(this.pathError(draft) || this.clashError(draft) || this.maxAgeError(draft) || this.injectErrors(draft).some(Boolean)
+    return !!(this.pathError(draft) || this.clashError(draft) || this.maxAgeError(draft) || declaredHasErrors(draft.rateLimit, 'endpoint') || this.injectErrors(draft).some(Boolean)
       || badCel(draft.allow) || badCel(draft.stepUpCondition)
       || draft.inject.some(rule => rule.expression.trim() === '' || badCel(rule.expression)));
   }
@@ -1087,6 +1097,21 @@ export class VersolaResourceEndpointsEditor extends LitElement {
       </section>`;
   }
 
+  /** Rarely changed, so it starts folded: the summary says what is set, and it opens by itself when the limit is wrong. */
+  private renderRateLimit(draft: Draft) {
+    const wrong = declaredHasErrors(draft.rateLimit, 'endpoint') && this.problem?.draftKey === draft.key;
+    const summary = draft.rateLimit ? declaredSummary(declaredFromDraft(draft.rateLimit), 'endpoint') : 'No limit';
+    return html`
+      <section class="editor-box" aria-labelledby="panel-rate-limit">
+        <details class="fold" ?open=${wrong}>
+          <summary><h3 id="panel-rate-limit">Rate limit</h3><span class="fold-hint">${summary}</span></summary>
+          <p class="editor-sub">How often this endpoint may be called. Edge refuses calls over the limit with 429 before they reach the resource.</p>
+          <versola-declared-rate-limit-editor owner="endpoint" fieldId="endpoint-rl" .draft=${draft.rateLimit} ?disabled=${this.saving} ?submitted=${this.problem?.draftKey === draft.key}
+            @draft-change=${(e: CustomEvent<{ draft: DeclaredDraft | null }>) => this.patch(draft.key, { rateLimit: e.detail.draft })}></versola-declared-rate-limit-editor>
+        </details>
+      </section>`;
+  }
+
   private renderInject(draft: Draft) {
     const errors = this.injectErrors(draft);
     return html`
@@ -1145,6 +1170,7 @@ export class VersolaResourceEndpointsEditor extends LitElement {
         ${this.renderWho(draft)}
         ${this.renderStepUp(draft)}
         ${this.renderInject(draft)}
+        ${this.renderRateLimit(draft)}
       </div>`;
   }
 

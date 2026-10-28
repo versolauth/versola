@@ -60,6 +60,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId), tokens = None)
@@ -388,7 +389,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         test("a partner's app is announced with its name and logo") {
           val partner = clientRecord.copy(
             logoUri = Some("https://acme.test/app.svg"),
-            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
           )
           page(conversationRecord, client = Some(partner)).map: body =>
             assertTrue(
@@ -861,7 +862,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val tokens = List("openid", "offline_access", "phone", "email").map(ScopeToken(_))
         val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
         val client = clientRecord.copy(
-          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))),
+          consentFlow =
+            Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")), offlineAccessOptional = false)),
         )
         val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
         // `deselectable` follows `scope` within each serialized row.
@@ -893,7 +895,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val tokens = List("openid", "offline_access").map(ScopeToken(_))
         val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
         val client = clientRecord.copy(
-          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, offlineAccessOptional = true)),
+          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, offlineAccessOptional = true, requiredScopes = Set.empty)),
         )
         val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
         def deselectable(body: String, scope: String): Boolean =

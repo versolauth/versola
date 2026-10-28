@@ -241,6 +241,8 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           subjectHash = "h1",
           destPrefix = Some("491512"),
           userAgent = Some(ua),
+          score = None,
+          rules = Nil,
         )
         _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
         _ <- events.insertBatch(

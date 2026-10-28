@@ -66,10 +66,11 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
-  private val settings = AntifraudLists.Settings.default.copy(enabled = true)
+  private val settings = AntifraudTestSettings.lists.copy(enabled = true)
 
-  // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
-  private val engine = Antifraud.Settings(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
+  // challenge 50, block 100: a watch (20) is only visible in the score
+  private val engine = AntifraudTestSettings.decision.copy(enabled = true)
+  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 50, blockAt = 100)
 
   private def ctx(
       ip: Option[String] = None,
@@ -92,7 +93,7 @@ object AntifraudListsSpec extends UnitSpecBase:
 
   private def make(repository: FakeRepository, config: AntifraudLists.Settings = settings) =
     val cache = AntifraudLists.ListCache()
-    (AntifraudLists.Impl(repository, config, cache), cache)
+    (AntifraudLists.Impl(repository, config, AntifraudTestSettings.listsPolicy, cache), cache)
 
   private def add(
       lists: AntifraudLists,
@@ -124,13 +125,13 @@ object AntifraudListsSpec extends UnitSpecBase:
     def rules = ZIO.succeed(List(AntifraudRule("range_closed", 0, Some(DecisionAction.Block), _ => true)))
 
   private def decide(lists: AntifraudLists, others: Antifraud.RuleSet*)(c: AntifraudContext) =
-    Antifraud.Impl(engine, lists.ruleSet :: others.toList).evaluate(c)
+    AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList, thresholds).evaluate(c)
 
   def spec = suite("AntifraudLists")(
     test("contributes no rule while off, whatever the table holds") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
-      val (off, _) = make(repository, AntifraudLists.Settings.default)
+      val (off, _) = make(repository, AntifraudTestSettings.lists)
       for
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
         offRules <- off.ruleSet.rules
@@ -150,7 +151,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(
         blocked == Decision(DecisionAction.Block, 0, List("deny_list:device_id")),
         faked == Decision(DecisionAction.Fake, 0, List("fake_list:prefix")),
-        watched == Decision(DecisionAction.Delay, 20, List("watch_list:cidr")),
+        watched == Decision(DecisionAction.Allow, 20, List("watch_list:cidr")),
         clean == Decision.allow,
       )
     },
@@ -273,7 +274,7 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- TestClock.adjust(settings.refreshInterval) *> ZIO.yieldNow.repeatN(20)
           after <- decide(lists)(ctx(deviceId = Some("d")))
           _ <- decide(lists)(ctx(deviceId = Some("d")))
-          _ <- TestClock.adjust(settings.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
+          _ <- TestClock.adjust(AntifraudTestSettings.listsPolicy.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
           written <- ZIO.succeed(repository.written)
         yield assertTrue(before == Decision.allow, after.action == DecisionAction.Block, written.map(_.count) == List(2L))
     },

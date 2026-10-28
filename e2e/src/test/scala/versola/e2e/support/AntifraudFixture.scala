@@ -96,33 +96,22 @@ object AntifraudFixture:
   private val APorts = Ports(9021, 9022, 9027, 9028)
   private val BPorts = Ports(9023, 9024, 9029, 9030)
 
-  /** Appended to the running auth's `env.conf`. `timeout` is lengthened from the 20 ms a production evaluation is held
+  /** Appended to the running auth's `env.conf`, which has the whole `antifraud` block (every key is required; see gen-env), so these only change what the specs need. `timeout` is lengthened from the 20 ms a production evaluation is held
     * to, so that a busy CI machine does not turn a decision into `antifraud_error` (a fail-open `Challenge`). */
   private def antifraudConfig(sync: Duration): String =
     s"""
        |antifraud {
-       |  decision { enabled = true, challenge-at = 15, block-at = 50, timeout = "5 seconds" }
+       |  decision { enabled = true, timeout = "5 seconds" }
+       |  tuning { refresh-interval = "1 second" }
        |  velocity {
        |    enabled = true
        |    flush-interval = "${sync.toMillis} millis"
        |    load-interval = "${sync.toMillis} millis"
-       |    share-from = 1
-       |    thresholds {
-       |      phone { per-hour = $PhoneLimitPerHour, weight = 50 }
-       |      ip { per-hour = $IpLimitPerHour, weight = 50 }
-       |    }
        |  }
-       |  # No key of the lists' block has a default of its own: a block that leaves one out is not read at all.
+       |  # The thresholds are not configuration: `tuned` writes them to the row of af_settings.
        |  lists {
        |    enabled = true
        |    refresh-interval = "1 second"
-       |    hit-flush-interval = "30 seconds"
-       |    watch-weight = 20
-       |    allow-weight = 1000
-       |    max-traffic-share = 0.05
-       |    share-min-events = 100
-       |    audit-retention = "365 days"
-       |    startup-timeout = "30 seconds"
        |  }
        |}
        |""".stripMargin
@@ -198,10 +187,75 @@ object AntifraudFixture:
         // With a limit nothing can reach (1000 in an hour), so that the steps of it a request takes are recorded and can be counted.
         _ <- oauth.upsertChallengeSettings(otpRequestLimits = """[{"maxAttempts":1000,"windowSeconds":3600}]""")
         setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
-        // Both at once: each waits for central and loads the configuration.
+        _ <- tuned
+        // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
+        // is when they first read it.
         instances <- launch("antifraud-a", config, client, APorts) <&> launch("antifraud-b", config, client, BPorts)
         unused <- Ref.make(setups)
       yield AntifraudFixture(instances._1, instances._2, unused)
+
+  private def database[A](use: Connection => A): Task[A] =
+    for
+      url <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_URL"))).map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
+      user <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_USER"))).map(_.getOrElse("dev"))
+      password <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_PASSWORD"))).map(_.getOrElse("1234"))
+      result <- ZIO.attemptBlocking:
+        val connection: Connection = DriverManager.getConnection(url, user, password).nn
+        try use(connection)
+        finally connection.close()
+    yield result
+
+  private def writeSettings(settings: String): Task[Unit] =
+    database: connection =>
+      connection.setAutoCommit(false)
+      val upsert = connection.prepareStatement(
+        """INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, ?, 'e2e', now())
+          |ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = 'e2e', updated_at = now()""".stripMargin,
+      ).nn
+      upsert.setString(1, settings)
+      upsert.executeUpdate()
+      bump(connection)
+      connection.commit()
+
+  private def bump(connection: Connection): Unit =
+    connection.createStatement().nn.executeUpdate(
+      "INSERT INTO af_settings_version (id, version) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET version = af_settings_version.version + 1",
+    )
+
+  private def deleteSettings: Task[Unit] =
+    database: connection =>
+      connection.setAutoCommit(false)
+      connection.createStatement().nn.executeUpdate("DELETE FROM af_settings WHERE id = 1")
+      bump(connection)
+      connection.commit()
+
+  /** The fixture's thresholds, set the way the admin API would: in the row of `af_settings` and the bump of
+    * `af_settings_version` that tells the instances to reload. The row is put back as it was when the fixture goes (or
+    * removed, if there was none, which fails the fixture first), so that the running stack, and the next run, find everything off. */
+  private val tuned: ZIO[Scope, Throwable, Unit] =
+    val limit = (perHour: Int) =>
+      Json.Obj(
+        "perMinute" -> Json.Num(0),
+        "perTenMinutes" -> Json.Num(0),
+        "perHour" -> Json.Num(perHour),
+        "perDay" -> Json.Num(0),
+        "weight" -> Json.Num(50),
+      )
+    ZIO.acquireRelease(
+      database: connection =>
+        val rs = connection.createStatement().nn.executeQuery("SELECT settings FROM af_settings WHERE id = 1").nn
+        if rs.next() then Some(rs.getString(1).nn) else None,
+    )(before => before.fold(deleteSettings)(writeSettings).ignore).flatMap: before =>
+      for
+        text <- ZIO.fromOption(before).orElseFail(RuntimeException("af_settings has no row: auth's bootstrap writes it when the stack starts"))
+        row <- ZIO.fromEither(text.fromJson[Json.Obj]).mapError(RuntimeException(_))
+        thresholds = row.get("thresholds").collect { case o: Json.Obj => o }.getOrElse(Json.Obj())
+        tuned = row
+          .add("challengeAt", Json.Num(15))
+          .add("blockAt", Json.Num(50))
+          .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
+        _ <- writeSettings(tuned.toJson)
+      yield ()
 
   /** What the specs seed the lists with, the way [[versola.antifraud.AntifraudListRepository.upsert]] stores an entry:
     * the row, and the bump of `af_list_version` that tells the instances to reload. There is no endpoint that

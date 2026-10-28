@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
   ClientCertificateIssuanceRepository,
@@ -25,7 +26,14 @@ import versola.central.configuration.clients.{
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.{Permission, PermissionRecord, PermissionService}
-import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRecord, ResourceService}
+import versola.central.configuration.resources.{
+  AudienceRateLimit,
+  ResourceEndpointId,
+  ResourceEndpointRecord,
+  ResourceId,
+  ResourceRecord,
+  ResourceService,
+}
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleService}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -39,7 +47,21 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.DeclaredRateLimitBy
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
+import versola.util.http.{
+  AccessLogPolicy,
+  DeclaredRateLimit,
+  GuardMode,
+  InboundPolicy,
+  Observability,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitWindow,
+}
 import versola.util.{Base64, JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -93,7 +115,18 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroupId("partner-acme"))),
   )
 
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, requireDpopNonce = true)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    edgeKeyPair.toPublicJwk,
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
     * `CentralSyncTokenService` mints it. */
@@ -151,6 +184,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     template = Some(ClientTemplate(ClientKind.web)),
     createdAt = registeredAt,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val clientA = client("web-a", tenantA)
@@ -188,6 +222,13 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
   )
 
+  private val declaredLimit = DeclaredRateLimit(
+    limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+    burst = 10,
+    mode = GuardMode.Enforce,
+    by = DeclaredRateLimitBy.None,
+  )
+  private val otherEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-0000000007ff"))
   private val resourceA = resource("api-a", tenantA)
   private val resourceB = resource("api-b", tenantB)
 
@@ -322,10 +363,47 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+  private val rateLimits = RateLimitPolicies(
+    List(RateLimitPolicy(
+      name = "per-client",
+      by = List(RateLimitDimension.Client),
+      limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+      burst = 5,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+      mode = GuardMode.Shadow,
+    )),
+    replicas = 1,
+  )
+
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)
+
+  private val overloadPolicy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(100),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   private val syncResources =
-    List("clients", "resources", "roles", "permissions", "jwks", "dpop", "overload", "auth-request-presets", "server-metadata")
+    List(
+      "clients",
+      "resources",
+      "roles",
+      "permissions",
+      "jwks",
+      "dpop",
+      "overload",
+      "access-log",
+      "rate-limits",
+      "auth-request-presets",
+      "server-metadata",
+    )
 
   private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString
@@ -381,6 +459,37 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             payload.resources.map(_.tenantId) == Vector(tenantA),
             recovered.toVector == resourceSecret.toVector,
           ),
+      ),
+      testCase(
+        description = "resources: the rate limit declared on an endpoint travels to the edge, and an endpoint without one carries none",
+        request = Request.get(sync("resources")),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.resources.getResourcesForSync.succeedsWith(
+            Vector(
+              resourceA.copy(endpoints =
+                Vector(
+                  resourceA.endpoints.head.copy(rateLimit = Some(declaredLimit)),
+                  resourceA.endpoints.head.copy(id = otherEndpointId, path = "/health"),
+                ),
+              ),
+            ),
+          ),
+        verify = (response, _) =>
+          for payload <- decodeBody[GetResourcesSyncResponse](response)
+          yield assertTrue(payload.resources.head.endpoints.map(_.rateLimit) == Vector(Some(declaredLimit), None)),
+      ),
+      testCase(
+        description = "resources: the limits the resource sets for its audience travel to the edge",
+        request = Request.get(sync("resources")),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.resources.getResourcesForSync.succeedsWith(
+            Vector(resourceA.copy(audienceRateLimits = List(AudienceRateLimit(clientA.id, declaredLimit)))),
+          ),
+        verify = (response, _) =>
+          for payload <- decodeBody[GetResourcesSyncResponse](response)
+          yield assertTrue(payload.resources.head.audienceRateLimits == List(AudienceRateLimit(clientA.id, declaredLimit))),
       ),
       // Edge stays on the previous secret until it is removed, so a rotation does not cut it
       // off from the resources it fronts.
@@ -456,6 +565,42 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for body <- decodeBody[EdgeOverloadSyncResponse](response)
           yield assertTrue(body.overloadPolicy.isEmpty),
+      ),
+      testCase(
+        description = "access-log: the calling edge's own policy",
+        request = Request.get(sync("access-log")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord.copy(accessLogPolicy = Some(accessLogPolicy)))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeAccessLogSyncResponse](response)
+          yield assertTrue(body.accessLogPolicy.contains(accessLogPolicy)),
+      ),
+      testCase(
+        description = "access-log: an edge with no policy set is served null",
+        request = Request.get(sync("access-log")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord)),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeAccessLogSyncResponse](response)
+          yield assertTrue(body.accessLogPolicy.isEmpty),
+      ),
+      testCase(
+        description = "rate-limits: the calling edge's own policies",
+        request = Request.get(sync("rate-limits")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord.copy(rateLimitPolicies = Some(rateLimits)))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeRateLimitSyncResponse](response)
+          yield assertTrue(body.rateLimitPolicies.contains(rateLimits)),
+      ),
+      testCase(
+        description = "rate-limits: an edge with none set is served null",
+        request = Request.get(sync("rate-limits")),
+        expectedStatus = Status.Ok,
+        setup = services => services.edges.find.succeedsWith(Some(edgeRecord)),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeRateLimitSyncResponse](response)
+          yield assertTrue(body.rateLimitPolicies.isEmpty),
       ),
       testCase(
         description = "jwks: the public document",

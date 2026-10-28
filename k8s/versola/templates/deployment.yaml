@@ -122,6 +122,12 @@ spec:
               value: "0.0.0.0"
             - name: CONFIG_PATH
               value: /app/config/env.conf
+            {{- if eq $name "edge" }}
+            # The name of the headless Service that lists the ready edge pods (edge-headless-service.yaml). The edge's env.conf can count its
+            # pods from it: `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}`.
+            - name: VERSOLA_EDGE_HEADLESS_SERVICE
+              value: {{ printf "%s-edge-headless" (include "versola.fullname" $) | quote }}
+            {{- end }}
             # The migration Job + RUN_MIGRATIONS wiring is #209 -- every
             # replica stays a plain server until that lands.
             - name: RUN_MIGRATIONS
