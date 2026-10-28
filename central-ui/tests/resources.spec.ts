@@ -1025,7 +1025,7 @@ test.describe('create', () => {
 
     expect((await findRequest(api.requests, 'POST', '/configuration/resources')).body).toEqual({
       tenantId: shopTenant, resourceId: 'invoices-api', resource: 'https://invoices.example.com',
-      audience: ['storefront-web'], endpoints: [], internal: false,
+      audience: ['storefront-web'], endpoints: [], internal: false, audienceRateLimits: [],
     });
     await expect(page.getByRole('heading', { level: 1, name: 'invoices-api' })).toBeVisible();
     await expect(page).toHaveURL(/id=invoices-api/);

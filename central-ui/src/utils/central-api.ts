@@ -904,7 +904,7 @@ export async function createResource(
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
   const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, resourceId, resource, audience, endpoints: serializedEndpoints, internal },
+    body: { tenantId, resourceId, resource, audience, endpoints: serializedEndpoints, internal, audienceRateLimits: [] },
   });
   resourcesStore.clear();
   return { resourceId: response.resourceId, endpoints: serializedEndpoints, secret: response.secret };

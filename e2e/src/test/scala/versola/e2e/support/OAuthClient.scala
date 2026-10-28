@@ -1333,6 +1333,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "audience" -> Json.Arr(Chunk.fromIterable(audience.map(Json.Str(_)))),
         "endpoints" -> Json.Arr(),
         "internal" -> Json.Bool(internal),
+        "audienceRateLimits" -> Json.Arr(),
       ).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/configuration/resources", body)

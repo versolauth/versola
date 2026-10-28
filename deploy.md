@@ -1107,6 +1107,7 @@ without anyone having chosen it.
 | `PUT /configuration/clients/service` | `scope` and `permissions` patches |
 | `consentFlow` in any client body | `requiredScopes` (`[]`) and `offlineAccessOptional` (`false`) next to `allowPartial` |
 | `PATCH /configuration/edges/policies`, section `rateLimits` | `replicas`; and for every policy `by`, `scope`, `burst`, `cost`, `mode` |
+| `POST /configuration/resources` | `audienceRateLimits` (`[]` for none) |
 | `rateLimit` of a resource endpoint, and of an audience client | `burst`, `by`, `mode` next to `limits` |
 
 **Migrating a client of the API.** Send the fields above; the values to send for "as before" are the old defaults:

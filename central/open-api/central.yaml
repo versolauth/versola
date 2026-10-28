@@ -4430,6 +4430,7 @@ components:
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
+      required: [tenantId, resourceId, resource, audience, endpoints, internal, audienceRateLimits]
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
