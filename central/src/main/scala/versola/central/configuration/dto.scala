@@ -200,7 +200,7 @@ case class UpdateResourceRequest(
     createEndpoints: Vector[CreateResourceEndpointRequest],
     /** Replaces the limits set for audience clients, as a whole: absent leaves them (those of clients removed from the audience in
       * this request are dropped), an empty list removes them all. */
-    audienceRateLimits: Option[List[AudienceRateLimit]] = None,
+    audienceRateLimits: Option[List[AudienceRateLimit]],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(

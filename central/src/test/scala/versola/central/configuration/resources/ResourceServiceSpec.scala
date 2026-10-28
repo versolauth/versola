@@ -125,6 +125,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         rateLimit = None,
       ),
     ),
+    audienceRateLimits = None,
   )
 
   class Env(initial: Vector[ResourceRecord] = Vector.empty):
@@ -289,6 +290,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         audience = PatchAudience(Set.empty, Set.empty),
         deleteEndpoints = Set.empty,
         createEndpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(bad))),
+        audienceRateLimits = None,
       )
       for
         _ <- env.repository.findResource.succeedsWith(None)
@@ -938,6 +940,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for
@@ -972,6 +975,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for
@@ -1006,6 +1010,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for

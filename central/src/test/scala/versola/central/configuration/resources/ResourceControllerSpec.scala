@@ -115,6 +115,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         rateLimit = None,
       ),
     ),
+    audienceRateLimits = None,
   )
 
   private val resourceRecords = Vector(
