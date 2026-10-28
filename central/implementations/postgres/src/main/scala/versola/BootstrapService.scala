@@ -425,7 +425,6 @@ object BootstrapService:
         endpointId("PUT", "/configuration/system-settings"),
         endpointId("PUT", "/configuration/delivery-settings"),
         endpointId("DELETE", "/configuration/delivery-settings"),
-        endpointId("POST", "/configuration/delivery-settings/test"),
       ),
     ),
     (
@@ -906,7 +905,6 @@ object BootstrapService:
     "GET" -> "/configuration/delivery-settings",
     "PUT" -> "/configuration/delivery-settings",
     "DELETE" -> "/configuration/delivery-settings",
-    "POST" -> "/configuration/delivery-settings/test",
     "GET" -> "/configuration/challenges/otp-templates",
     "PUT" -> "/configuration/challenges/otp-templates",
     "DELETE" -> "/configuration/challenges/otp-templates",

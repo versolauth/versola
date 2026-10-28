@@ -55,7 +55,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         yield assertTrue(r.email.isEmpty, r.emailOrigin == Origin.Absent, r.sms.isEmpty, r.smsOrigin == Origin.Absent)
       },
       test("prefers a block saved in central that is switched on, and says it overrides auth.conf") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Usable(centralSmtp, enabled = true)), Some(Saved.Usable(centralSms, enabled = true))))
+        for r <- resolved(withBoth, Fetched(Some(Saved(centralSmtp, enabled = true)), Some(Saved(centralSms, enabled = true))))
         yield assertTrue(
           r.email.isDefined,
           r.emailOrigin == Origin.Central,
@@ -66,15 +66,15 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         )
       },
       test("uses a block saved in central when auth.conf has none, without calling it an override") {
-        for r <- resolved(withNeither, Fetched(Some(Saved.Usable(centralSmtp, enabled = true)), None))
+        for r <- resolved(withNeither, Fetched(Some(Saved(centralSmtp, enabled = true)), None))
         yield assertTrue(r.email.isDefined, r.emailOrigin == Origin.Central, !r.emailOverridesConfig)
       },
       test("sends nothing through a block saved in central that is switched off, even when auth.conf has one") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Usable(centralSmtp, enabled = false)), Some(Saved.Usable(centralSms, enabled = false))))
+        for r <- resolved(withBoth, Fetched(Some(Saved(centralSmtp, enabled = false)), Some(Saved(centralSms, enabled = false))))
         yield assertTrue(r.email.isEmpty, r.emailOrigin == Origin.Off, r.sms.isEmpty, r.smsOrigin == Origin.Off)
       },
       test("decides each channel on its own: saving only an SMTP server keeps the SMS provider of auth.conf") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Usable(centralSmtp, enabled = true)), None))
+        for r <- resolved(withBoth, Fetched(Some(Saved(centralSmtp, enabled = true)), None))
         yield assertTrue(
           r.emailOrigin == Origin.Central,
           r.smsOrigin == Origin.Config,
@@ -82,19 +82,11 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         )
       },
       test("decides each channel on its own: saving only an SMS provider keeps the SMTP server of auth.conf") {
-        for r <- resolved(withBoth, Fetched(None, Some(Saved.Usable(centralSms, enabled = true))))
+        for r <- resolved(withBoth, Fetched(None, Some(Saved(centralSms, enabled = true))))
         yield assertTrue(r.emailOrigin == Origin.Config, r.email.isDefined, r.smsOrigin == Origin.Central)
       },
-      test("sends nothing through a block saved in central that auth cannot read, and does not fall back to auth.conf") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Unusable), Some(Saved.Unusable)))
-        yield assertTrue(r.email.isEmpty, r.emailOrigin == Origin.Invalid, r.sms.isEmpty, r.smsOrigin == Origin.Invalid)
-      },
-      test("an unreadable block takes only its own channel with it") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Unusable), Some(Saved.Usable(centralSms, enabled = true))))
-        yield assertTrue(r.emailOrigin == Origin.Invalid, r.email.isEmpty, r.smsOrigin == Origin.Central, r.sms.isDefined)
-      },
       test("switching one channel off leaves the other as it was") {
-        for r <- resolved(withBoth, Fetched(Some(Saved.Usable(centralSmtp, enabled = false)), None))
+        for r <- resolved(withBoth, Fetched(Some(Saved(centralSmtp, enabled = false)), None))
         yield assertTrue(r.emailOrigin == Origin.Off, r.email.isEmpty, r.smsOrigin == Origin.Config, r.sms.isDefined)
       },
     ).provide(TestClient.layer),
@@ -112,7 +104,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         for
           client <- ZIO.service[Client]
           answers <- Ref.make(List[Task[Fetched]](
-            ZIO.succeed(Fetched(Some(Saved.Usable(centralSmtp, enabled = false)), None)),
+            ZIO.succeed(Fetched(Some(Saved(centralSmtp, enabled = false)), None)),
             ZIO.fail(EndpointMissing()),
           ))
           sync = new CacheSource[Fetched]:
@@ -126,7 +118,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         for
           client <- ZIO.service[Client]
           answers <- Ref.make(List[Task[Fetched]](
-            ZIO.succeed(Fetched(Some(Saved.Usable(centralSmtp, enabled = false)), None)),
+            ZIO.succeed(Fetched(Some(Saved(centralSmtp, enabled = false)), None)),
             ZIO.fail(EndpointMissing()),
           ))
           sync = new CacheSource[Fetched]:
@@ -148,10 +140,10 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
               current.get.map(fetched => DeliveryChannels.resolve(config = withNeither, client = client, central = fetched))
           channels <- DeliveryChannels.make(source, 1.hour)
           before <- channels.email
-          _ <- current.set(Fetched(Some(Saved.Usable(centralSmtp, enabled = true)), None))
+          _ <- current.set(Fetched(Some(Saved(centralSmtp, enabled = true)), None))
           _ <- channels.refresh
           after <- channels.email
-          _ <- current.set(Fetched(Some(Saved.Usable(centralSmtp, enabled = false)), None))
+          _ <- current.set(Fetched(Some(Saved(centralSmtp, enabled = false)), None))
           _ <- channels.refresh
           off <- channels.email
         yield assertTrue(before.isEmpty, after.isDefined, off.isEmpty)

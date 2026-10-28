@@ -131,17 +131,6 @@ The script first asks for the environment **Name** (default `local`):
     - `central/dev/env.conf`
     - `edge/dev/env.conf`
 
-  `auth/dev/env.conf` also gets `deliver-outside-prod = true`, the one target that does. Outside
-  `prod` auth otherwise sends no one-time code and no temporary password: the code is a fixed one and
-  nothing leaves the process. With the key, they are sent through the SMTP server or SMS provider
-  configured in `auth.conf` or saved in the console (**Delivery**), and while there is none auth logs a
-  warning and sends nothing. The e2e job stages this config, which is how `DeliveryFlowSpec` proves a
-  mail and a text message arrive. Showing a temporary password in a response stays a non-production
-  feature either way.
-
-  **The one-time code outside `prod` is still the fixed, guessable one**, so with the key on a real
-  message carries a code anyone can guess. Keep the key to a stack only you can reach, and never copy it
-  into a configuration that is exposed.
 - **`docker-local`** — also runs non-interactively, for the case where auth/central/edge
   each run in their own container on one Docker Compose bridge network, sitting behind
   nginx as the single published port (used by `versola bootstrap local`). Files are

@@ -1871,12 +1871,6 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
   // ── Build config files ────────────────────────────────────────────────────────
 
-  // Outside production auth sends no code or temporary password at all (`env` is not `prod`). The local stack is the one
-  // target that is never anybody's real deployment and that tests delivery end to end (the e2e job stages it), so it
-  // alone turns delivery on: through the SMTP server or SMS provider configured below or saved in the console, and doing
-  // nothing, with a warning, while there is none. No other target gets the key.
-  val deliverOutsideProdBlock =
-    if isLocal then "deliver-outside-prod = true\n\n" else ""
   // #745: limits on auth's channel that is not mutual TLS. Absent, auth applies its defaults: failed client authentication
   // (`/token`, `/par`, `/introspect`, `/revoke`) 20 a minute per address, enforced; `/authorize` counted in shadow. A local setup (and
   // the e2e suite, whose negative tests fail client authentication from one address on purpose) starts in shadow.
@@ -1918,7 +1912,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
-       |${deliverOutsideProdBlock}# otel-exporter = "http://localhost:4317"
+       |# otel-exporter = "http://localhost:4317"
        |
        |bootstrap {
        |  login = "$bootstrapLogin"

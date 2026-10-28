@@ -1430,12 +1430,6 @@ notification and refuses to start, naming this setting, if it cannot.
     setting, or the scheme, host, port or username of the SMS address, without sending the password
     again, is refused with `400` instead of silently keeping the old password for the new server. An
     `otpProvider.url` that the HTTP client cannot parse is refused too.
-  - A temporary password whose channel (email or SMS) has no server behind it, none configured or the
-    saved one switched off, now fails the reset instead of reporting success for a password nobody was
-    told. `auth` answers `503` with the channel named (`central` still reports it as a failed call). The reset stores nothing in that case.
-  - `deliver-outside-prod` is an `auth.conf` key that exists for test stacks. It is off by default and must
-    stay off on anything reachable: outside `prod` the one-time code is a fixed one, so a real message
-    would carry a code anyone can guess. `gen-env` writes it for the `local` target only.
 - **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
   version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules

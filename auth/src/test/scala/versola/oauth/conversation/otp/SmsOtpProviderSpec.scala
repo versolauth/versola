@@ -60,12 +60,6 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
       for result <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(phone, "hello").either
       yield assertTrue(result.left.exists(_.isInstanceOf[ChannelUnavailable]))
     },
-    test("is available exactly when a sender is configured") {
-      for
-        withSender <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, Some(RecordingSender()))).available
-        without <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None)).available
-      yield assertTrue(withSender, !without)
-    },
     test("fails when the sender fails, so a caller can undo what it stored for the message") {
       val failing = new SmsSender:
         override def send(to: Phone, message: String): Task[Unit] = ZIO.fail(RuntimeException("provider down"))

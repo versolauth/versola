@@ -4,7 +4,6 @@ import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.{
   CheckPassword,
   DeliveryChannel,
-  PasswordChannelUnavailable,
   PasswordDeliveryUnavailable,
   PasswordHistoryChanged,
   PasswordReuseError,
@@ -153,16 +152,14 @@ object PasswordService:
         // Resolve the recipient before storing anything: if the requested channel has no matching
         // contact we must fail fast, otherwise we would leave an active-but-undisclosed temporary
         // password that locks the user out.
-        recipient <- if config.delivers(env) then resolveRecipient(userId, channel) else ZIO.none
-        // Likewise before anything is stored: a password that is stored and then not delivered locks the user out.
-        _ <- ensureChannelAvailable(userId, recipient)
+        recipient <- if env.isProd then resolveRecipient(userId, channel) else ZIO.none
         plaintext <- generateTemporaryPassword(passwordRegex)
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
         _ <- setTemporaryPassword(userId, plaintext, expiresAt)
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
-          .when(config.delivers(env))
+          .when(env.isProd)
       yield Option.when(reveal)(plaintext)
 
     /** Resolves the concrete contact for the requested delivery channel, failing with
@@ -184,15 +181,6 @@ object PasswordService:
             contact match
               case Some(value) => ZIO.some(value)
               case None => ZIO.fail(PasswordDeliveryUnavailable(userId, deliveryChannel))
-
-    private def ensureChannelAvailable(userId: UserId, recipient: Option[Either[Email, Phone]]): Task[Unit] =
-      recipient match
-        case None => ZIO.unit
-        case Some(contact) =>
-          val (available, deliveryChannel) = contact match
-            case Left(_) => (emailOtpProvider.available, DeliveryChannel.email)
-            case Right(_) => (smsOtpProvider.available, DeliveryChannel.sms)
-          available.flatMap(ok => ZIO.fail(PasswordChannelUnavailable(userId, deliveryChannel)).unless(ok)).unit
 
     private def deliverPassword(
         password: Password,

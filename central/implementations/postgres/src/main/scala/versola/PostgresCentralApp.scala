@@ -26,7 +26,7 @@ import versola.central.configuration.clients.{
   OAuthClientRepository,
   OAuthClientService,
 }
-import versola.central.configuration.delivery.{DeliverySettingsController, DeliverySettingsRepository, DeliverySettingsService, DeliveryTestService}
+import versola.central.configuration.delivery.{DeliverySettingsController, DeliverySettingsRepository, DeliverySettingsService}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{
   EdgeCertificateIssuer,
@@ -148,7 +148,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       DeliverySettingsRepository &
       SystemSettingsService &
       DeliverySettingsService &
-      DeliveryTestService &
       CacheSyncRepository &
       CacheSyncService &
       SecurityService &
@@ -300,7 +299,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       OtpChallengeService.live >++>
       SystemSettingsService.live >++>
       DeliverySettingsService.live >++>
-      DeliveryTestService.live >++>
       CacheSyncService.live >++>
       AuthClient.live >++>
       UserService.live >++>

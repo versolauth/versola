@@ -37,11 +37,6 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
       result <- DeliverySettingsSyncClient.Impl(config = config, centralSyncTokenService = tokenService(client), securityService = security).getAll
     yield result
 
-  private def usable[A](saved: DeliverySettingsSyncClient.Saved[A]): DeliverySettingsSyncClient.Saved.Usable[A] =
-    saved match
-      case value: DeliverySettingsSyncClient.Saved.Usable[A @unchecked] => value
-      case DeliverySettingsSyncClient.Saved.Unusable => throw AssertionError("the block was expected to be usable")
-
   private val smtp =
     """{"host":"smtp.example.com","port":587,"username":"mailer","from":"noreply@example.com","subject":"Your code","startTls":true,"enabled":true}"""
 
@@ -65,8 +60,8 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
           s"""{"stored":true,"smtp":$smtp,"smtpPassword":"$smtpPassword","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
         )
         fetched <- fetch
-        smtpBlock <- ZIO.fromOption(fetched.smtp.map(usable)).orElseFail(RuntimeException("no smtp block"))
-        smsBlock <- ZIO.fromOption(fetched.otpProvider.map(usable)).orElseFail(RuntimeException("no otp provider block"))
+        smtpBlock <- ZIO.fromOption(fetched.smtp).orElseFail(RuntimeException("no smtp block"))
+        smsBlock <- ZIO.fromOption(fetched.otpProvider).orElseFail(RuntimeException("no otp provider block"))
       yield assertTrue(
         smtpBlock.enabled,
         smtpBlock.settings.host == "smtp.example.com",
@@ -88,22 +83,22 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
       for
         _ <- serve(Status.Ok, s"""{"stored":true,"smtp":${smtp.replace("smtp.example.com", " smtp.example.com ")}}""")
         fetched <- fetch
-      yield assertTrue(fetched.smtp.exists(usable(_).settings.host == "smtp.example.com"))
+      yield assertTrue(fetched.smtp.exists(_.settings.host == "smtp.example.com"))
     },
     test("has no password for a block saved without one") {
       for
         _ <- serve(Status.Ok, s"""{"stored":true,"smtp":$smtp,"otpProvider":${provider()}}""")
         fetched <- fetch
       yield assertTrue(
-        fetched.smtp.exists(usable(_).settings.password.isEmpty),
-        fetched.otpProvider.exists(usable(_).settings.password.isEmpty),
+        fetched.smtp.exists(_.settings.password.isEmpty),
+        fetched.otpProvider.exists(_.settings.password.isEmpty),
       )
     },
     test("keeps a block that is switched off, marked as off") {
       for
         _ <- serve(Status.Ok, s"""{"stored":true,"otpProvider":${provider(enabled = false)}}""")
         fetched <- fetch
-      yield assertTrue(fetched.smtp.isEmpty, fetched.otpProvider.exists(!usable(_).enabled))
+      yield assertTrue(fetched.smtp.isEmpty, fetched.otpProvider.exists(!_.enabled))
     },
     test("is empty when central holds nothing") {
       for
@@ -123,7 +118,7 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         result <- fetch.either
       yield assertTrue(result.isLeft)
     },
-    test("marks a block whose password was not encrypted under the shared secret as unusable, and keeps the other block") {
+    test("fails the fetch when a password was not encrypted under the shared secret, so the cache keeps what it has") {
       for
         smsPassword <- transportEncrypted("sms-s3cret")
         _ <- serve(
@@ -132,24 +127,15 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
               Array.fill(40)(1.toByte),
             )}","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
         )
-        fetched <- fetch
-      yield assertTrue(
-        fetched.smtp.contains(DeliverySettingsSyncClient.Saved.Unusable),
-        fetched.otpProvider.exists(usable(_).settings.password.contains("sms-s3cret")),
-      )
+        result <- fetch.either
+      yield assertTrue(result.isLeft)
     },
-    test("marks a method auth does not use, an address it cannot read and a sender that is not an address as unusable, without failing the fetch") {
+    test("fails the fetch for an address that is not an URL and for a sender that is not an email address") {
       for
-        _ <- serve(Status.Ok, s"""{"stored":true,"otpProvider":${provider(method = "DELETE")}}""")
-        deleteMethod <- fetch
         _ <- serve(Status.Ok, s"""{"stored":true,"otpProvider":${provider(url = "not a url")}}""")
-        badUrl <- fetch
+        badUrl <- fetch.either
         _ <- serve(Status.Ok, s"""{"stored":true,"smtp":${smtp.replace("noreply@example.com", "not-an-address")}}""")
-        badFrom <- fetch
-      yield assertTrue(
-        deleteMethod.otpProvider.contains(DeliverySettingsSyncClient.Saved.Unusable),
-        badUrl.otpProvider.contains(DeliverySettingsSyncClient.Saved.Unusable),
-        badFrom.smtp.contains(DeliverySettingsSyncClient.Saved.Unusable),
-      )
+        badFrom <- fetch.either
+      yield assertTrue(badUrl.isLeft, badFrom.isLeft)
     },
   ).provide(TestClient.layer, ZLayer.make[SecurityService](SecureRandom.live, SecurityService.live)) @@ silentLogging

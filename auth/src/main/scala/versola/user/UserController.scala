@@ -4,7 +4,7 @@ import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.{PasswordChannelUnavailable, PasswordReuseError}
+import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
@@ -295,16 +295,10 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
-        password <- passwordService
-          .resetPassword(body.userId, body.expiresInSeconds, body.channel)
-          .map(Right(_))
-          // The channel has no usable server behind it right now: nothing was stored, and the caller can tell this apart from a crash.
-          .catchSome { case unavailable: PasswordChannelUnavailable => ZIO.succeed(Left(unavailable)) }
+        password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
       yield password match
-        case Right(Some(plaintext)) => Response.json(ResetPasswordResponse(plaintext).toJson)
-        case Right(None) => Response.status(Status.NoContent)
-        case Left(unavailable) =>
-          Response.text(s"the ${unavailable.channel} delivery channel is not available").status(Status.ServiceUnavailable)
+        case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
+        case None => Response.status(Status.NoContent)
     }
 
   val setPasswordEndpoint =
