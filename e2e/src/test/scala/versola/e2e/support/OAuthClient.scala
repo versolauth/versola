@@ -588,6 +588,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * `"query.jwt"`, `"fragment.jwt"`.
         */
       responseMode: Option[String] = None,
+      /** The address the tenant's IP header (`X-Forwarded-For`) carries, which the antifraud rules key on. */
+      ip: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -619,7 +621,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "request_uri" -> Some(uri),
         ),
       ).collect { case (k, Some(v)) => k -> v }
-      req = Request.get(base.addQueryParams(params))
+      req = ip.fold(Request.get(base.addQueryParams(params)))(address =>
+        Request.get(base.addQueryParams(params)).addHeader(Header.Custom("X-Forwarded-For", address)),
+      )
       reqWithSession = sessionCookie.fold(req)(sc =>
         req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc)))),
       )
@@ -1489,6 +1493,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * these two. Central takes both or neither. */
       logoLight: Option[String] = None,
       logoDark: Option[String] = None,
+      /** The tenant's limits on codes asked for one credential, as a JSON array of `{"maxAttempts", "windowSeconds"}`.
+        * None (the default) is no limit, and then nothing is recorded; a limit too high to be reached is what a spec that
+        * counts the steps of it wants. */
+      otpRequestLimits: String = "[]",
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1502,7 +1510,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "phoneRegions": $phoneRegions,
          |  "emailRegistration": $emailRegistration,
          |  "defaultRoles": $defaultRoles,
-         |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
+         |  "submissionLimits": {"otpRequest":$otpRequestLimits,"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
          |  "passkeySettings": {"rpId":"localhost","rpName":"Versola","origins":["http://localhost:3000"],"userVerification":"preferred"},

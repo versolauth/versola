@@ -711,6 +711,24 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("\"resendAfter\":30"))
       },
+      test("renders a step left with no code sent as pending, and one with a code sent as not") {
+        def render(step: ConversationStep.Otp) =
+          val env = Env()
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+            _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
+            _ <- env.configuration.getLocales.succeedsWith(locales)
+            _ <- env.configuration.getTenantLogo.succeedsWith(None)
+            _ <- env.configuration.getOtpSettings.succeedsWith(OtpSettings(6, 60))
+            response <- env.service.renderStep(conversationRecord.copy(step = step), None)
+            body <- response.body.asString
+          yield body
+        for
+          pending <- render(ConversationStep.Otp(None, 0, 0, 0, false, 0, None))
+          sent <- render(ConversationStep.Otp(None, 1, 0, 0, false, 0, None))
+        yield assertTrue(pending.contains("\"pending\":true"), sent.contains("\"pending\":false"))
+      },
       test("renders a masked destination for the OTP recipient") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
