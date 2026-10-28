@@ -622,6 +622,40 @@ const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
   ],
 };
 
+/**
+ * The members central's requests declare without a default (`TypedClientRequests`, `dto.scala`): a body that leaves one out is
+ * refused with 400 there, so it is here, and a console that forgets one fails its test and not a user.
+ */
+const REQUIRED_CREATE: Record<ClientKindDto, string[]> = {
+  web: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'theme', 'otpTemplateId',
+    'frontChannelLogoutSessionRequired', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'authMethod', 'certificateBoundAccessTokens',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+    'estEnrollment',
+  ],
+  device: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'theme', 'otpTemplateId',
+    'frontChannelLogoutSessionRequired', 'dpopSigningAlgs', 'authMethod', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+  ],
+  service: [
+    'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'authMethod', 'certificateBoundAccessTokens', 'estEnrollment',
+  ],
+};
+
+const REQUIRED_UPDATE: Record<ClientKindDto, string[]> = {
+  web: ['clientId', 'redirectUris', 'scope'],
+  device: ['clientId', 'redirectUris', 'scope'],
+  service: ['clientId', 'scope', 'permissions'],
+};
+
+const REQUIRED_RESOURCE_CREATE = ['tenantId', 'resourceId', 'resource', 'audience', 'endpoints', 'internal', 'audienceRateLimits'];
+
+function missingMembers(body: unknown, required: string[]): string[] {
+  const present = (body ?? {}) as Record<string, unknown>;
+  return required.filter(name => present[name] === undefined);
+}
+
 function unknownMembers(body: unknown, allowed: string[]): string[] {
   return Object.keys((body ?? {}) as Record<string, unknown>).filter(name => !allowed.includes(name));
 }
@@ -756,6 +790,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const payload = body as CreateClientRequest;
         const tenantClients = state.clients[payload.tenantId] ?? [];
 
+        const missing = typedKind ? missingMembers(body, REQUIRED_CREATE[typedKind]) : [];
+        if (missing.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missing.map(name => `.${name}(missing)`).join(' ')}` });
+          return;
+        }
         const extra = typedKind ? unknownMembers(body, CREATE_MEMBERS[typedKind]) : [];
         if (extra.length > 0) {
           await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
@@ -814,6 +853,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         if (typedKind) {
+          const missing = missingMembers(body, REQUIRED_UPDATE[typedKind]);
+          if (missing.length > 0) {
+            await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missing.map(name => `.${name}(missing)`).join(' ')}` });
+            return;
+          }
           const extra = unknownMembers(body, UPDATE_MEMBERS[typedKind]);
           if (extra.length > 0) {
             await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
@@ -1093,6 +1137,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'POST') {
+        const missingResource = missingMembers(body, REQUIRED_RESOURCE_CREATE);
+        if (missingResource.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missingResource.map(name => `.${name}(missing)`).join(' ')}` });
+          return;
+        }
         const payload = body as CreateResourceRequest;
         let endpointId = nextEndpointId(state);
         const createdResource: ResourceDto = {
