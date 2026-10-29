@@ -8,7 +8,7 @@ import zio.{IO, ZLayer}
   * central passes the admin's request on with who the admin is (`userId`, from edge). Auth's refusals are
   * [[AntifraudListError]]s, as for the lists. */
 trait AntifraudSettingsService:
-  def get(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings]
+  def get: IO[AntifraudListError | Throwable, AntifraudSettings]
 
   def put(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings]
 
@@ -20,8 +20,8 @@ object AntifraudSettingsService:
     ZLayer.fromFunction(Impl(_))
 
   class Impl(authClient: AuthClient) extends AntifraudSettingsService:
-    override def get(userId: UserId): IO[AntifraudListError | Throwable, AntifraudSettings] =
-      authClient.getAntifraudSettings(userId)
+    override def get: IO[AntifraudListError | Throwable, AntifraudSettings] =
+      authClient.getAntifraudSettings
 
     override def put(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings] =
       authClient.putAntifraudSettings(request)

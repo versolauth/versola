@@ -22,7 +22,6 @@ object AntifraudSettingsController extends Controller:
     Method.GET / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        _ <- request.queryZIO[UserId]("userId")
         tuning <- ZIO.service[AntifraudTuningStore]
         stored <- tuning.stored
       yield Response.json(stored.getOrElse(Tuning.off).toJson)

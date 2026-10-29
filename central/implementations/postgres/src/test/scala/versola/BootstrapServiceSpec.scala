@@ -293,9 +293,10 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
       assertTrue(
         antifraud.size == 8,
-        antifraud.forall((method, path) =>
+        antifraud.filterNot(_ == ("GET" -> "/antifraud/settings")).forall((method, path) =>
           injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
         ),
+        injected("GET", "/antifraud/settings").isEmpty,
         injected("GET", "/users").isEmpty,
       )
     },

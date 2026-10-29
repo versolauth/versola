@@ -2736,16 +2736,12 @@ paths:
         What applies to the whole deployment. The migration seeds the row with everything off, so there is always one.
         Nothing in auth's configuration sets these values.
       operationId: getAntifraudSettings
-      parameters:
-        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The settings.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudSettings' }
-        '400':
-          description: A parameter is not valid (including a missing `userId`).
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
