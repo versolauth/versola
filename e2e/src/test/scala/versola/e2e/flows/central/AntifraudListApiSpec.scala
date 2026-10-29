@@ -6,6 +6,8 @@ import zio.http.{Method, Status}
 import zio.json.ast.Json
 import zio.test.*
 
+import java.util.UUID
+
 /** The antifraud lists' admin API: central passes the request to auth, which owns the lists and validates the entries.
   *
   * Central is called directly, so these specs play the part of edge and send the `userId` it would add from the verified
@@ -36,9 +38,12 @@ object AntifraudListApiSpec extends CentralApiSpec:
     )
 
   /** An address of its own for the entry: an exact kind every request carries, unlike a device id (refused until
-    * P1-1 issues one). */
+    * P1-1 issues one). Not from the test `Random`, whose seed is the same in every test, so two tests would draw the
+    * same address and find each other's entries. */
   private def address: UIO[String] =
-    Random.nextLongBounded(1L << 24).map(bits => s"10.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${(bits & 0xff).max(3)}")
+    ZIO.succeed:
+      val bits = UUID.randomUUID().getLeastSignificantBits
+      s"10.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${(bits & 0xff).max(3)}"
 
   /** Creates an entry, and removes it when `use` is done. */
   private def withEntry[A](central: CentralApi, body: Json)(use: Json.Obj => Task[A]): Task[A] =
