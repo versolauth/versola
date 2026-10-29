@@ -81,18 +81,25 @@ need: `env = prod` (a non-prod `auth` sends no SMS and always issues the same co
 at the stub that `loadgen` serves on `:9100`. Each profile after it **includes the one before** and sets only its
 own keys, so a run differs from the one it is compared with by exactly those:
 
-| Profile | Adds | What the stored settings hold (`tuning/`) |
+| Profile | Adds | The stored settings it was recorded with |
 |---|---|---|
-| `sms-budget` | `antifraud.sms-budget.prefix-length = 6` | `sms-budget.json`: `sentPerHour 200` per range, every limit 0 |
+| `sms-budget` | `antifraud.sms-budget.prefix-length = 6` | `sentPerHour 200` per range, every limit 0 |
 | `lists` | `decision.enabled`, `lists.enabled` (no entry: the cost of the lookup and of `evaluate`) | the same |
 | `velocity` | `velocity.enabled` (counting, flushing, loading; no limit fires) | the same |
-| `evaluate` | `challenge.enabled = false` (above) | `evaluate.json`: `blockAt 50`; phone 3/5/10/20 a minute/10 min/hour/day, weight 60; ip 30/100/300/1000, weight 50; prefix 150/600/2000/10000, weight 50 |
-| `evaluate-no-budget` (the same profile) | nothing | `evaluate-no-budget.json`: `evaluate.json` with `sentPerHour 0`: the velocity limits alone |
+| `evaluate` | `challenge.enabled = false` (above) | `blockAt 50`; phone 3/5/10/20 a minute/10 min/hour/day, weight 60; ip 30/100/300/1000, weight 50; prefix 150/600/2000/10000, weight 50 |
+| `evaluate-no-budget` (the same profile) | nothing | the `evaluate` settings with `sentPerHour 0`: the velocity limits alone |
 
 The limits are stored settings, not keys of the config: in a deployment they are set through central's
-`PUT /antifraud/settings` (deploy.md). The local stack is driven by the `utils` client, which has no antifraud
-permission, so `tune.sh <json>` writes the row as the API would and bumps the version (`auth` rereads it within
-`antifraud.tuning.refresh-interval`, 5 s). Run it after `auth` has started with the profile and before the run.
+`PUT /antifraud/settings` (deploy.md), and `auth` rereads them within `antifraud.tuning.refresh-interval` (5 s).
+The local stack is driven by the `utils` client, which has no antifraud permission, so the settings of each profile
+are written straight into `af_settings` by the `tune.sh` of the runbook (below), after `auth` has started with the
+profile and before the run.
+
+**The scripts that drive a whole ladder of runs, the settings of each profile and the recorded runs are not here:**
+they are in [versolauth/loadgen-runbook](https://github.com/versolauth/loadgen-runbook), `scripts/antifraud-local/`
+(the stack on ports of its own, `run-profile.sh` per profile, `tune.sh`, the settings JSON, the table maker) and
+`docs/12-antifraud-p0-local.md` (the runs of 2026-10-29 and what they say). This folder holds what the tool itself
+needs: the scenarios, the profiles and the commands to run one by hand.
 
 ## Commands (the local stack)
 
@@ -136,16 +143,18 @@ AF_LABEL=off-repeat AF_REPORT=loadgen/antifraud/results/off-repeat.json AF_BASEL
   loadgen/target/universal/stage/bin/loadgen -Denv.path=loadgen/antifraud/loadgen.conf
 
 # 8. Restart auth with the profile switched on, put its settings in, and run against the baseline
-#    (stop auth, then the auth line of step 5 with auth-profiles/sms-budget.conf; wait for readiness)
-loadgen/antifraud/tune.sh loadgen/antifraud/tuning/sms-budget.json
+#    (stop auth, then the auth line of step 5 with auth-profiles/sms-budget.conf; wait for readiness; write the
+#    profile's settings into af_settings and bump af_settings_version, which is what the runbook's tune.sh does)
 AF_LABEL=sms-budget AF_REPORT=loadgen/antifraud/results/sms-budget.json AF_BASELINE=loadgen/antifraud/results/off.json \
   loadgen/target/universal/stage/bin/loadgen -Denv.path=loadgen/antifraud/loadgen.conf
 
 # 9. The same for lists.conf and velocity.conf (settings unchanged), then evaluate.conf with its limits
-loadgen/antifraud/tune.sh loadgen/antifraud/tuning/evaluate.json
 AF_LABEL=evaluate AF_REPORT=loadgen/antifraud/results/evaluate.json AF_BASELINE=loadgen/antifraud/results/off.json \
   loadgen/target/universal/stage/bin/loadgen -Denv.path=loadgen/antifraud/loadgen.conf
 ```
+
+`results/` is not committed (`.gitignore`): the first run of a ladder is always `off`, and it is the baseline of the
+ones after it. The runs that were recorded are in the runbook (above).
 
 The process exits non-zero when a verdict is `Fail`. Restart `auth` between runs of different profiles; the budget
 remembers an hour, and the `prefix-attack` range is drawn afresh for each run so that a second run does not meet
@@ -168,7 +177,7 @@ database and adds no migration, so it is untouched.
 
 ## Reading the numbers
 
-- Everything runs on one machine in the runs recorded below (loadgen, `auth`, `central`, `edge`, Postgres): the
+- Everything runs on one machine in the runs the runbook records (loadgen, `auth`, `central`, `edge`, Postgres): the
   absolute latencies are of a laptop, only differences between runs on the same machine mean anything, and
   `off-repeat` is what a difference of nothing looks like.
 - Added p99 is a difference of two p99s of a few hundred to a few thousand samples: its error is several
@@ -180,75 +189,7 @@ database and adds no migration, so it is untouched.
 
 ## Results
 
-> **Example output of one run on one machine, not a benchmark and not a property of any deployment.** The reports
-> are committed so that the next profile has something to be compared with and the tool's output has an example;
-> they are to be replaced by a run of the same commands on the machine that matters.
-
-Recorded on 2026-10-29 on a MacBook (Apple silicon) with `loadgen`, `auth`, `central`, `edge`, the nginx terminator
-and Postgres 18 (docker, plain) all on it, each a default-settings JVM from `stage`, built from `main` at `4b6ca47a`
-(before #875). `auth` was restarted and `af_velocity` emptied before each run; every run was compared with `off`.
-Complete reports (every call, every outcome, `auth`'s counters) are in `results/`, one `.md` and the `.json` it was
-made from, per profile: `off`, `off-repeat` (the noise), `sms-budget`, `lists`, `velocity`, `evaluate` and
-`evaluate-no-budget`.
-
-**Latency** (added p99 against `off`, ms; p50 / p99 of `off` in the first column). Of the 19 call rows of each run
-none is over its limit. `off-repeat` puts the noise of a run at about 4 ms either way; the one figure outside it,
-`otp-verify` at +9.5 ms in `evaluate`, was -3.2 ms in the run after it with the same profile (`evaluate-no-budget`),
-so it is noise too, not a cost of the limits. Nothing of antifraud is on the `/token` and refresh paths, and nothing
-shows there.
-
-| Call (scenario) | `off` p50 / p99 | `off-repeat` added p99 | `sms-budget` added p99 | `lists` added p99 | `velocity` added p99 | `evaluate` added p99 | `evaluate-no-budget` added p99 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `otp-request` (normal) | 3.6 / 9.2 | -2.3 | -1.2 | -2.2 | -0.8 | +0.7 | -0.1 |
-| `otp-verify` (normal) | 9.4 / 19.4 | -3.6 | -0.2 | -4.8 | -2.3 | +9.5 | -3.2 |
-| `token` (normal) | 3.4 / 9.6 | -3.1 | -0.9 | -3.6 | -2.9 | +0.0 | -2.1 |
-| `refresh` (normal) | 2.9 / 7.5 | -1.6 | +0.6 | -2.1 | -1.4 | +1.1 | -1.4 |
-| `token` (token-control) | 5.0 / 8.0 | -0.2 | +0.1 | -0.9 | +1.4 | +3.0 | -0.9 |
-| `refresh` (token-control) | 6.9 / 13.5 | -1.4 | +0.6 | -1.3 | +1.6 | +0.8 | +1.2 |
-
-**Effectiveness and false positives** (the checks judged on each run alone; limits: at most 10 % of an attack's codes
-sent, at most 1 % of legitimate requests refused):
-
-| Scenario | `off` | `off-repeat` | `sms-budget` | `lists` | `velocity` | `evaluate` | `evaluate-no-budget` |
-|---|---|---|---|---|---|---|---|
-| prefix-attack: share of codes sent | 1.000 **Fail** (2400 of 2400) | 1.000 **Fail** (2400 of 2400) | 0.068 Pass (162 of 2400) | 0.073 Pass (176 of 2400) | 0.069 Pass (165 of 2400) | 0.037 Pass (90 of 2400) | 0.037 Pass (90 of 2400) |
-| device-attack: share of codes sent | 1.000 **Fail** (2400 of 2400) | 1.000 **Fail** (2400 of 2400) | 0.992 **Fail** (2380 of 2400) | 0.992 **Fail** (2381 of 2400) | 0.991 **Fail** (2379 of 2400) | 0.037 Pass (90 of 2400) | 0.037 Pass (90 of 2400) |
-| distributed-attack: share of codes sent | 1.000 **Fail** (2400 of 2400) | 1.000 **Fail** (2400 of 2400) | 0.063 Pass (152 of 2400) | 0.062 Pass (149 of 2400) | 0.058 Pass (140 of 2400) | 0.071 Pass (171 of 2400) | 0.188 **Fail** (450 of 2400) |
-| conversion-mimicking: share of codes sent | 1.000 **Fail** (1200 of 1200) | 1.000 **Fail** (1200 of 1200) | 0.098 Pass (117 of 1200) | 0.109 **Fail** (131 of 1200) | 0.102 **Fail** (122 of 1200) | 0.050 Pass (60 of 1200) | 0.050 Pass (60 of 1200) |
-| targeted-phone: share of codes sent | 1.000 **Fail** (300 of 300) | 1.000 **Fail** (300 of 300) | 0.430 **Fail** (129 of 300) | 0.423 **Fail** (127 of 300) | 0.430 **Fail** (129 of 300) | 0.017 Pass (5 of 300) | 0.017 Pass (5 of 300) |
-| verify-guessing: guesses accepted | 0 Pass (3000 guesses) | 0 Pass (3000 guesses) | 0 Pass (2850 guesses) | 0 Pass (2870 guesses) | 0 Pass (2895 guesses) | 0 Pass (300 guesses) | 0 Pass (300 guesses) |
-| normal: legitimate refused | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) | 0.000 Pass (0 of 2400) |
-| mixed-attack: legitimate **in the attacked range** refused | 0.000 Pass (0 of 249) | 0.000 Pass (0 of 264) | 0.963 **Fail** (207 of 215) | 0.910 **Fail** (213 of 234) | 0.927 **Fail** (243 of 262) | 0.554 **Fail** (144 of 260) | 0.000 Pass (0 of 235) |
-| mixed-attack: legitimate **elsewhere** refused | 0.000 Pass (0 of 2151) | 0.000 Pass (0 of 2136) | 0.029 **Fail** (63 of 2185) | 0.031 **Fail** (68 of 2166) | 0.032 **Fail** (68 of 2138) | 0.015 **Fail** (32 of 2140) | 0.003 Pass (7 of 2165) |
-
-What it says:
-
-- **The finished P0 stack stops every attack shape the scenarios have, at 20 requests a second from one place.**
-  With the limits on (`evaluate`) the one-source attacks are cut to 90 codes of 2400 (`prefix-attack`,
-  `device-attack`: the address limit, 30 a minute, is what fires; the three minutes of each run let 30 through three
-  times), the targeted number to 5 of 300 (the phone limit: this is also what ends the lockout of its owner by
-  SMS bombing), the conversion-mimicking range to 60 of 1200, and the guessing to 60 codes and no guess taken.
-  Legitimate users with the attack running elsewhere are not touched (`normal`: 0 of 2400 refused).
-- **The distributed attack is the one left standing, and it is a trade-off, not a limit to tune.** 500 sources at
-  about five requests each are under every address limit; what stops them is the range: the velocity limit of 150
-  a minute lets 450 of 2400 through (19 %, `evaluate-no-budget`), and the range budget on top of it closes the range
-  for the hour after 200 codes and brings that down to 171 (7 %, `evaluate`). The price of the budget is the users in
-  that range: in `mixed-attack` 144 of 260 (55 %) of the legitimate sign-ins to the attacked range were refused by
-  the budget, and 32 of 2140 (1.5 %) elsewhere, in the two ranges earlier scenarios had closed within the hour.
-  **Without the budget the velocity limits alone refuse no legitimate user in the attacked range (0 of 235) and 7 of
-  2165 elsewhere**, and let the distributed pumping send 19 %. A deployment chooses between the two: a budget set
-  above a range's real hourly peak (not 200) keeps most of the first without the second, and the finer answers
-  (a device identity, so that distinct phones per device count: P1-1; the line type of the numbers: P3-1) are what
-  make the choice unnecessary.
-- **The lists and the counting cost nothing visible**: `lists` (the engine deciding on every request, no entry) and
-  `velocity` (counting, flushing, loading, no limit) are within the noise on every call, and their verdicts are the
-  budget's, as before.
-- **The range budget alone** (`sms-budget`) is what it was: it stops the one-range attacks and nothing else
-  (`device-attack` 99 %, `targeted-phone` 43 %), and refuses 96 % of the legitimate users in the range it closes.
-- **The first `evaluate` run was thrown away**: `auth` reads the counts the previous instance flushed as another
-  instance's, so it inherited the hour of attacks the `velocity` run had made and refused 4 % of `normal`'s users in
-  the ranges attacked then. Empty `af_velocity` between runs; a deployment does not have this (its instances are
-  meant to share), but a restart after an attack keeps the attack's counts for the hour, by design.
-- **Not measured:** any rate above 20-50 requests a second; more than one `auth` instance (the budget is per
-  instance, the counters converge within flush + load); a proof of work (above); the hot-key behaviour of the
-  counters and the CPU, GC and database volume per instance; a real SMS provider's latency.
+The recorded runs (seven profiles on one machine, 2026-10-29, built from `main` at `4b6ca47a`) and what they say are
+in the runbook, `docs/12-antifraud-p0-local.md`, with every report (`.json` and `.md`) next to it. In short: the
+finished P0 stack stops every one-source attack and SMS bombing of one number and refuses no legitimate user outside
+the attacked range; the distributed attack is a trade-off between the range budget and the users of the range.
