@@ -9,17 +9,28 @@ import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, LocalDate, ZoneOffset}
 
-class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration = 5.seconds) extends AntifraudEventRepository, BasicCodecs:
+/** @param lockTimeout      how long partition maintenance waits for the lock on `af_event`
+  * @param statementTimeout the longest one statement of the writer, the rollup or the prune may take: a statement
+  *                         that hangs (a partition being locked, a slow disk) would otherwise hold the single writer
+  *                         fiber while the queue fills and drops
+  */
+class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration = 5.seconds, statementTimeout: Duration = 30.seconds)
+  extends AntifraudEventRepository,
+    BasicCodecs:
   import PgCodec.SeqCodec
   import PostgresAntifraudEventRepository.*
   import SqlArrayCodec.StringSqlArrayCodec
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
+  private def timed()(using DbCon): Unit =
+    sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
+
   override def insertBatch(events: List[AntifraudEvent]): Task[Unit] =
     if events.isEmpty then ZIO.unit
     else
       xa.transactMeasured("insert-antifraud-events"):
+        timed()
         batchUpdate(events): event =>
           sql"""
             INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
@@ -35,6 +46,7 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
 
   override def rollupStats(from: Instant, to: Instant, prefixLength: Int): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):
+      timed()
       val locked = sql"SELECT pg_try_advisory_xact_lock($RollupLock)".query[Boolean].run().head
       if !locked then false
       else
@@ -64,7 +76,8 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
         true
 
   override def pruneStats(before: Instant): Task[Unit] =
-    xa.connectMeasured("prune-antifraud-stats"):
+    xa.transactMeasured("prune-antifraud-stats"):
+      timed()
       sql"DELETE FROM af_dest_stats WHERE minute < ${before.atOffset(ZoneOffset.UTC)}".update.run()
     .unit
 

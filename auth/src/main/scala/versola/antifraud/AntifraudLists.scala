@@ -28,10 +28,13 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *     `allow_list:<value type>` (weight `-allow-weight`, which outweighs the score of the other rules, so that the step goes
   *     on unless one of them forces an action: allow never overrides a forcing rule of another source, such as a
   *     blocked destination range).
-  *  1. **Allow is for exact subjects only** (a destination hash, a device, an address or a /32 or /128 network):
-  *     an allow outweighs the whole score, so one on a network, ASN, prefix, mail domain, fingerprint or user agent
-  *     would exempt a population from every score-based rule. Such an entry is refused at creation. It never
-  *     cancels a forcing rule, nor the SMS budget, which is decided outside the score.
+  *  1. **Allow is for exact subjects only** (a destination hash, an address or a /32 or /128 network): an allow
+  *     outweighs the whole score, so one on a network, ASN, prefix, mail domain, fingerprint or user agent would
+  *     exempt a population from every score-based rule, and one on a device id would exempt whoever presents the id,
+  *     which a client chooses until P1-1 issues it. Such an entry is refused at creation. It never cancels a forcing
+  *     rule, nor the SMS budget, which is decided outside the score.
+  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, `asn`, see [[ListValues.live]]) is refused
+  *     too: accepted, it would be audited and shown in a dry run and match nothing.
   *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
   *
@@ -249,9 +252,12 @@ object AntifraudLists:
     private def validate(entry: NewListEntry, now: Instant): IO[InvalidListEntry, String] =
       for
         value <- ZIO.fromEither(ListValues.normalize(entry.valueType, entry.value)).mapError(InvalidListEntry(_))
+        _ <- ZIO
+          .fail(InvalidListEntry(s"no request carries a value of kind ${entry.valueType} yet, so the entry would match nothing"))
+          .when(!ListValues.live.contains(entry.valueType))
         _ <- ZIO.fail(InvalidListEntry("expiresAt is not in the future")).when(entry.expiresAt.exists(!_.isAfter(now)))
         _ <- ZIO
-          .fail(InvalidListEntry("an allow is for an exact subject only: a phone_hash, device_id, ip or a /32 or /128 network"))
+          .fail(InvalidListEntry("an allow is for an exact subject only: a phone_hash, ip or a /32 or /128 network"))
           .when(entry.listType == AntifraudListType.allow && !ListValues.allowable(entry.valueType, value))
         _ <- ZIO
           .fail(InvalidListEntry("an entry that names many clients, or an automated one, needs expiresAt"))

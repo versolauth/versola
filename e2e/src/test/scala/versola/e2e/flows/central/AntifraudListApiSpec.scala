@@ -35,7 +35,10 @@ object AntifraudListApiSpec extends CentralApiSpec:
       ) ++ tenantId.map(t => "tenantId" -> Json.Str(t)) ++ extra,
     )
 
-  private def device(prefix: String): UIO[String] = CentralApi.id(prefix)
+  /** An address of its own for the entry: an exact kind every request carries, unlike a device id (refused until
+    * P1-1 issues one). */
+  private def address: UIO[String] =
+    Random.nextLongBounded(1L << 24).map(bits => s"10.${(bits >>> 16) & 0xff}.${(bits >>> 8) & 0xff}.${(bits & 0xff).max(3)}")
 
   /** Creates an entry, and removes it when `use` is done. */
   private def withEntry[A](central: CentralApi, body: Json)(use: Json.Obj => Task[A]): Task[A] =
@@ -61,11 +64,11 @@ object AntifraudListApiSpec extends CentralApiSpec:
       for
         central <- api
         admin_ = central.asAdmin(adminId)
-        value <- device("dev")
-        created <- admin_.post(lists, entry("device_id", value, extra = Map("reason" -> Json.Str("e2e"))))
+        value <- address
+        created <- admin_.post(lists, entry("ip", value, extra = Map("reason" -> Json.Str("e2e"))))
         json <- created.obj
         id = json.str("id").getOrElse("")
-        listed <- admin_.get(lists, "global" -> "true", "valueType" -> "device_id", "limit" -> "500")
+        listed <- admin_.get(lists, "global" -> "true", "valueType" -> "ip", "limit" -> "500")
         listedValues <- listed.items("entries").map(_.flatMap(_.str("value")).toSet)
         audited <- admin_.get(s"$lists/audit", "entryId" -> id)
         auditRecords <- audited.items("records")
@@ -116,7 +119,7 @@ object AntifraudListApiSpec extends CentralApiSpec:
         second <- admin_.post(lists, body)
         secondJson <- second.obj
         _ <- ZIO.foreachDiscard(firstJson.str("id"))(id => admin_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id))))
-        wrongKind <- admin_.post(lists, Json.Obj("listType" -> Json.Str("deny"), "valueType" -> Json.Str("device_id"), "phone" -> Json.Str(phone)))
+        wrongKind <- admin_.post(lists, Json.Obj("listType" -> Json.Str("deny"), "valueType" -> Json.Str("ip"), "phone" -> Json.Str(phone)))
       yield assertTrue(
         first.status == Status.Created,
         firstJson.str("value").exists(v => v.nonEmpty && !v.contains(phone.stripPrefix("+"))),
@@ -129,10 +132,10 @@ object AntifraudListApiSpec extends CentralApiSpec:
       for
         central <- api
         admin_ = central.asAdmin(adminId)
-        value <- device("preview")
-        previewed <- admin_.post(s"$lists/preview", entry("device_id", value))
+        value <- address
+        previewed <- admin_.post(s"$lists/preview", entry("ip", value))
         counts <- previewed.obj
-        listed <- admin_.get(lists, "global" -> "true", "valueType" -> "device_id", "limit" -> "500").flatMap(_.items("entries"))
+        listed <- admin_.get(lists, "global" -> "true", "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries"))
       yield assertTrue(
         previewed.status == Status.Ok,
         counts.has("total"),

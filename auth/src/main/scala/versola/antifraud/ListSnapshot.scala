@@ -2,7 +2,6 @@ package versola.antifraud
 
 import versola.oauth.client.model.TenantId
 
-import java.net.InetAddress
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
@@ -93,7 +92,8 @@ object ListSnapshot:
 
   /** An entry with how specific its value is.
     *
-    * Specificity, from the most to the least: an exact address, destination, or device (1000), a network (500 plus
+    * Specificity, from the most to the least: an exact address, destination, or device (1000; a network of one address,
+    * `/32` or `/128`, is that address, so a deny on it ties with an allow on the address and wins), a network (500 plus
     * its prefix length), a JA4 fingerprint (450), a user agent (400), a number prefix (300 plus its length), an
     * autonomous system (200), a mail domain (100). A fingerprint and a user agent rank below any network: they are
     * easily copied and one value covers many real clients, so they must not outvote an address. Only entries of one request are compared, so the numbers say
@@ -152,7 +152,7 @@ object ListSnapshot:
               val (v6, key) = parseIp(address).get
               val bits = length.toInt
               val level = netIndex.getOrElseUpdate(v6, mutable.Map.empty).getOrElseUpdate(bits, mutable.Map.empty)
-              add(level, key, Indexed(v, 500 + bits))
+              add(level, key, Indexed(v, if bits == (if v6 then 128 else 32) then 1000 else 500 + bits))
             case other =>
               val specificity = other match
                 case AntifraudValueType.ja4_hash => 450
@@ -176,21 +176,9 @@ object ListSnapshot:
   def sha256Hex(text: String): String =
     MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)).map("%02x".format(_)).mkString
 
-  /** `Some((isIpv6, key))` for an address literal, `None` for anything else, a host name included: nothing here may
-    * reach the resolver. An IPv4-mapped IPv6 address is the IPv4 address. */
-  private[antifraud] def parseIp(text: String): Option[(Boolean, IpKey)] =
-    val trimmed = text.trim
-    val literal =
-      trimmed.nonEmpty && trimmed.length <= 45 && trimmed.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f'))
-    if !literal || !(trimmed.contains(':') || trimmed.count(_ == '.') == 3) then None
-    else
-      scala.util.Try(InetAddress.getByName(trimmed).getAddress).toOption.collect:
-        case Array(a, b, c, d) =>
-          val v4 = ((a & 0xffL) << 24) | ((b & 0xffL) << 16) | ((c & 0xffL) << 8) | (d & 0xffL)
-          (false, IpKey(v4 << 32, 0L))
-        case bytes if bytes.length == 16 =>
-          def word(from: Int) = bytes.slice(from, from + 8).foldLeft(0L)((acc, b) => (acc << 8) | (b & 0xffL))
-          (true, IpKey(word(0), word(8)))
+  /** `Some((isIpv6, key))` for an address literal, `None` for anything else, a host name included: the text is read by
+    * [[IpLiteral]] and nothing here reaches the resolver. An IPv4-mapped IPv6 address is the IPv4 address. */
+  private[antifraud] def parseIp(text: String): Option[(Boolean, IpKey)] = IpLiteral.parse(text)
 
 /** Checks and canonicalises the value of an entry, so that what is stored is what a lookup compares. */
 object ListValues:
@@ -228,11 +216,25 @@ object ListValues:
             case _ => Left("a network is address/length")
 
   /** `allow` is for exact subjects only: an allow on a network, an ASN, a prefix, a mail domain, a fingerprint or a
-    * user agent would exempt a whole population from the score. A network is exact at /32 or /128. */
+    * user agent would exempt a whole population from the score. A network is exact at /32 or /128. A device id is
+    * not one until it is issued and attested by the service (P1-1): what a client presents of its own cannot buy an
+    * exemption. */
   def allowable(valueType: AntifraudValueType, normalized: String): Boolean = valueType match
-    case AntifraudValueType.phone_hash | AntifraudValueType.device_id | AntifraudValueType.ip => true
+    case AntifraudValueType.phone_hash | AntifraudValueType.ip => true
     case AntifraudValueType.cidr => normalized.endsWith("/32") || normalized.endsWith("/128")
     case _ => false
+
+  /** The kinds of value some request carries today, so that an entry of the kind can match. A `device_id`, `ja4_hash`
+    * or `asn` entry would be accepted, audited and shown in a dry run, and match nothing, until P1-1 and P1-3 fill
+    * the signals; such an entry is refused instead. */
+  val live: Set[AntifraudValueType] = Set(
+    AntifraudValueType.phone_hash,
+    AntifraudValueType.prefix,
+    AntifraudValueType.ip,
+    AntifraudValueType.cidr,
+    AntifraudValueType.ua_hash,
+    AntifraudValueType.email_domain,
+  )
 
   /** Entries that name many clients (anything but an exact subject, and a network wider than /24 or /48) must
     * expire, so that a wrong one does not outlive the attack it was made for. */

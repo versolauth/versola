@@ -50,7 +50,10 @@ object VelocityRulesSpec extends UnitSpecBase:
       yield assertTrue(reached == Decision.allow, over == Decision(DecisionAction.Block, 50, List("velocity_phone_10m")))
     },
     test("a limit applies to its key and window only, and 0 is no limit") {
-      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 50), prefix = AntifraudTestSettings.limit.copy(perHour = 5, weight = 10)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(
+        ip = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 50),
+        prefix = AntifraudTestSettings.limit.copy(perHour = 5, weight = 10),
+      ))
       for
         ip <- decide(s, 3)
         both <- decide(s, 6)
@@ -63,7 +66,10 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("ranges are counted per tenant, the phone is not") {
-      val s = settings(AntifraudTestSettings.thresholds.copy(prefix = AntifraudTestSettings.limit.copy(perHour = 2), phone = AntifraudTestSettings.limit.copy(perHour = 2)))
+      val s = settings(AntifraudTestSettings.thresholds.copy(
+        prefix = AntifraudTestSettings.limit.copy(perHour = 2),
+        phone = AntifraudTestSettings.limit.copy(perHour = 2),
+      ))
       val counters = VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds)
       for
         _ <- ZIO.foreachDiscard(List("t", "t", "u"))(t => counters.recordAndSnapshot(ctx.copy(tenantId = Some(TenantId(t)))))
@@ -72,7 +78,11 @@ object VelocityRulesSpec extends UnitSpecBase:
     },
     test("carries the counts in the signals, only of the windows with a limit, and leaves other signals alone") {
       val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 1, perDay = 9)))
-      VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds).recordAndSnapshot(ctx.copy(signals = Map("x" -> "y"))).map: out =>
+      VelocityCounters(
+        s.settings,
+        AntifraudTestSettings.velocityLimits,
+        s.tuning.thresholds,
+      ).recordAndSnapshot(ctx.copy(signals = Map("x" -> "y"))).map: out =>
         assertTrue(out.signals == Map("x" -> "y", "velocity.ip.1m" -> "1", "velocity.ip.24h" -> "1"))
     },
     test("a snapshot counts the request as if it were recorded, without recording it, so a refused step is not counted") {
@@ -93,7 +103,8 @@ object VelocityRulesSpec extends UnitSpecBase:
       )
     },
     test("a known user is let off part of the weight, and only when a velocity rule fired") {
-      val s = settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 2, weight = 50), trustedDiscount = 40))
+      val s =
+        settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 2, weight = 50), trustedDiscount = 40))
       val counters = VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds)
       val known = ctx.copy(signals = Map("device.known" -> "true"))
       val recent = ctx.copy(signals = Map("session.recent_success" -> "true"))
@@ -103,7 +114,8 @@ object VelocityRulesSpec extends UnitSpecBase:
         a <- counters.snapshot(known).flatMap(antifraud(s, blockAt = 50).evaluate)
         b <- counters.snapshot(recent).flatMap(antifraud(s, blockAt = 50).evaluate)
         c <- counters.snapshot(denied).flatMap(antifraud(s, blockAt = 50).evaluate)
-        quiet <- VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds).snapshot(known).flatMap(antifraud(s).evaluate)
+        quiet <-
+          VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds).snapshot(known).flatMap(antifraud(s).evaluate)
       yield assertTrue(
         a == Decision(DecisionAction.Allow, 10, List("velocity_phone_1h", "velocity_known_user")),
         b.score == 10,
@@ -128,6 +140,10 @@ object VelocityRulesSpec extends UnitSpecBase:
         network("1.2.3").isEmpty,
         network("1.2.3.4, 5.6.7.8").isEmpty,
         network("fe80::1%eth0").isEmpty,
+        // Not literals: InetAddress would have looked these up as host names.
+        network("1.2.3.456").isEmpty,
+        network("ab.cd.ef.ab").isEmpty,
+        network("dead.beef.cafe.de").isEmpty,
       )
     },
     test("has no rules while the counters are off, whatever the limits") {

@@ -38,7 +38,9 @@ trait AntifraudEvents:
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
     * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
     * A `repeated` request is one that was challenged and is made again with its answer: it is judged, but not counted
-    * a second time. */
+    * a second time. What is counted here is the request's source (address, device, ASN, range); the destination is
+    * counted by [[otpRequested]] when a code is really sent, so that asking for codes to somebody else's number, and
+    * being challenged or faked for it, never raises the count that is held against that number's owner. */
   def decideOtpRequest(
       clientId: ClientId,
       userAgent: Option[String],
@@ -277,13 +279,14 @@ object AntifraudEvents:
             asn = None,
             userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
             ja4 = None,
-            signals = Map.empty,
+            signals = credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap,
           )
-          // Decided on the counts with this request in them, and counted only if it is let through: a request that is
-          // refused, or one aimed at somebody else's number, must not raise the count used against that number's owner.
+          // Decided on the counts with this request in them, and counted only if it is let through. The number itself
+          // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged
+          // or faked sends nothing, and counting it would let anyone raise the count held against the number's owner.
           counted <- velocity.snapshot(context)
           decision <- antifraud.evaluate(counted)
-          _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context))
+          _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context.copy(subjectHash = None)))
           _ <- AntifraudMetrics.decided(decision.action)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
@@ -339,7 +342,30 @@ object AntifraudEvents:
         outcome: AntifraudOutcome,
         decision: Option[Decision],
     ): UIO[Unit] =
-      event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, decision)
+      ZIO.when(outcome == AntifraudOutcome.sent)(countSent(clientId, credential)) *>
+        event(authId, clientId, userAgent, credential, AntifraudAction.otp_request, outcome, decision)
+
+    /** The one count of the destination: a code sent to it. Its other keys were counted when the request was decided. */
+    private def countSent(clientId: ClientId, credential: Either[Email, Phone]): UIO[Unit] =
+      (for
+        client <- configService.find(clientId)
+        hash <- subjectHash(credential)
+        _ <- velocity.record(
+          AntifraudContext(
+            tenantId = client.map(_.tenantId),
+            clientId = clientId,
+            action = AntifraudAction.otp_request,
+            subjectHash = Some(hash),
+            destPrefix = None,
+            deviceId = None,
+            ip = None,
+            asn = None,
+            userAgent = None,
+            ja4 = None,
+            signals = Map.empty,
+          ),
+        )
+      yield ()).catchAllCause(cause => ZIO.logDebugCause("could not count a sent code", cause))
 
     override def challengeStep(
         authId: AuthId,
@@ -377,6 +403,9 @@ object AntifraudEvents:
       securityService.mac(Secret(subject.getBytes(StandardCharsets.UTF_8)), subjectKey).map(Base64Url.encode)
 
     private def destPrefix(phone: Phone): String = phone.filter(_.isDigit).take(AntifraudEvents.destPrefixLength)
+
+    /** What follows the last `@`, as the `email_domain` list entries are stored (lower case). */
+    private def emailDomain(email: Email): String = email.substring(email.lastIndexOf('@') + 1).trim.toLowerCase
 
     private def event(
         authId: AuthId,
@@ -479,10 +508,16 @@ object AntifraudEvents:
 
   private class Rollup(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
+    // Each run recomputes at least two intervals, so that a minute is rolled up twice whatever the interval is, and
+    // never less than the lookback, which covers events the writer was late with.
+    private val lookback: Duration =
+      if settings.statsInterval.multipliedBy(2).compareTo(sizing.statsLookback) > 0 then settings.statsInterval.multipliedBy(2)
+      else sizing.statsLookback
+
     private val once: UIO[Unit] =
       Clock.instant.flatMap: now =>
         val to = now.truncatedTo(ChronoUnit.MINUTES)
-        val from = to.minusSeconds(sizing.statsLookback.toSeconds)
+        val from = to.minusSeconds(lookback.toSeconds)
         (repository.rollupStats(from, to, sizing.statsPrefixLength) *>
           repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
           cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
