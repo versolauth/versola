@@ -1,6 +1,7 @@
 package versola.oauth.consent
 
 import versola.oauth.authorize.model.Prompt
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
@@ -53,6 +54,7 @@ object ConsentServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private def clientWith(
@@ -289,11 +291,12 @@ object ConsentServiceSpec extends UnitSpecBase:
       },
     ),
     suite("ConsentFlow json")(
-      test("a flow synced from a central that predates required scopes has none") {
-        val decoded = """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow]
+      test("a flow that does not state requiredScopes and offlineAccessOptional is refused, not read as empty") {
+        val missing = """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow]
+        val stated = """{"allowPartial":true,"rememberDuration":null,"requiredScopes":[],"offlineAccessOptional":false}""".fromJson[ConsentFlow]
         assertTrue(
-          decoded == Right(ConsentFlow(allowPartial = true, rememberDuration = None)),
-          decoded.map(_.offlineAccessOptional) == Right(false),
+          missing.isLeft,
+          stated == Right(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
         )
       },
     ),

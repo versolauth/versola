@@ -75,6 +75,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
       CreateResourceEndpointRequest(
         createdEndpointId,
@@ -86,9 +87,11 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
     ),
     internal = false,
+    audienceRateLimits = Nil,
   )
 
   private val updateRequest = UpdateResourceRequest(
@@ -107,6 +110,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
       CreateResourceEndpointRequest(
         createdEndpointId,
@@ -118,8 +122,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       ),
     ),
+    audienceRateLimits = None,
   )
 
   class Env(initial: Vector[ResourceRecord] = Vector.empty):
@@ -272,13 +278,19 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateResource refuses a replacement endpoint whose rate limit breaks a rule") {
       val env = new Env
-      val bad = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)), burst = 2)
+      val bad = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 60)),
+        burst = 2,
+        by = DeclaredRateLimitBy.None,
+        mode = GuardMode.Shadow,
+      )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
         audience = PatchAudience(Set.empty, Set.empty),
         deleteEndpoints = Set.empty,
         createEndpoints = Vector(createRequest.endpoints.head.copy(rateLimit = Some(bad))),
+        audienceRateLimits = None,
       )
       for
         _ <- env.repository.findResource.succeedsWith(None)
@@ -337,6 +349,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -366,6 +379,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -391,6 +405,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -418,6 +433,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -441,6 +457,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -464,6 +481,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -487,6 +505,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
           CreateResourceEndpointRequest(
             createdEndpointId,
@@ -498,6 +517,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -521,6 +541,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
           CreateResourceEndpointRequest(
             createdEndpointId,
@@ -532,6 +553,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -557,6 +579,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -580,6 +603,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -606,6 +630,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
           CreateResourceEndpointRequest(
             createdEndpointId,
@@ -617,6 +642,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -640,6 +666,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -669,6 +696,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -694,6 +722,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = Some("request.body.amount >"),
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -721,6 +750,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = Some("'mfa'"), // string instead of boolean
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -750,6 +780,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = Some("true"),
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -764,7 +795,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("createResource stores the limits the resource sets for its audience, and refuses one that is not valid") {
       val env = new Env
-      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), burst = 50, mode = GuardMode.Enforce)
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        burst = 50,
+        mode = GuardMode.Enforce,
+        by = DeclaredRateLimitBy.None,
+      )
       val client = audience.head
       def with_(limits: AudienceRateLimit*) = createRequest.copy(audienceRateLimits = limits.toList)
       for
@@ -790,7 +826,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateResource replaces the audience limits as a whole, keeps them when absent, and drops those of a client it removes") {
-      val limit = DeclaredRateLimit(limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)), mode = GuardMode.Enforce)
+      val limit = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
+        mode = GuardMode.Enforce,
+        burst = 1,
+        by = DeclaredRateLimitBy.None,
+      )
       val other = ClientId("other-client")
       val both = resource.copy(
         audience = List(audience.head, other),
@@ -864,6 +905,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
       )
@@ -895,8 +937,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for
@@ -928,8 +972,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for
@@ -961,8 +1007,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           ),
         ),
+        audienceRateLimits = None,
       )
 
       for

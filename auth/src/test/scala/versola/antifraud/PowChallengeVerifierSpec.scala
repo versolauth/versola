@@ -23,17 +23,16 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
 
   private val settings = PowChallengeVerifier.Settings(
     enabled = true,
-    minDifficulty = 8,
-    maxDifficulty = 12,
-    scoreStep = 10,
     ttl = 2.minutes,
     maxAttempts = 4,
   )
 
+  private val difficulty = PowDifficulty(minDifficulty = 8, maxDifficulty = 12, scoreStep = 10)
+
   private def verifier(s: PowChallengeVerifier.Settings = settings): UIO[ChallengeVerifier] =
     PowChallengeVerifier.live.build.map(_.get[ChallengeVerifier]).provideSome[Scope](
       ZLayer.succeed(s),
-      ZLayer.succeed(AntifraudEvents.Settings.default.copy(decision = Antifraud.Settings(enabled = true, challengeAt = 40))),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(AntifraudTestSettings.tuning.copy(challengeAt = 40, pow = difficulty))),
       ZLayer.succeed(TestEnvConfig.coreConfig),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -61,16 +60,16 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
     suite("difficulty")(
       test("starts at the minimum for a request that only just reached the threshold, and grows a bit per step of score") {
         assertTrue(
-          PowChallengeVerifier.difficultyFor(settings, challengeAt = 40, score = 40) == 8,
-          PowChallengeVerifier.difficultyFor(settings, challengeAt = 40, score = 59) == 9,
-          PowChallengeVerifier.difficultyFor(settings, challengeAt = 40, score = 60) == 10,
+          PowChallengeVerifier.difficultyFor(difficulty, challengeAt = 40, score = 40) == 8,
+          PowChallengeVerifier.difficultyFor(difficulty, challengeAt = 40, score = 59) == 9,
+          PowChallengeVerifier.difficultyFor(difficulty, challengeAt = 40, score = 60) == 10,
         )
       },
       test("never goes below the minimum or above the maximum, and a failure's score of 0 is the minimum") {
         assertTrue(
-          PowChallengeVerifier.difficultyFor(settings, challengeAt = 40, score = 0) == 8,
-          PowChallengeVerifier.difficultyFor(settings, challengeAt = 40, score = 10000) == 12,
-          PowChallengeVerifier.difficultyFor(settings.copy(scoreStep = 0), challengeAt = 40, score = 10000) == 8,
+          PowChallengeVerifier.difficultyFor(difficulty, challengeAt = 40, score = 0) == 8,
+          PowChallengeVerifier.difficultyFor(difficulty, challengeAt = 40, score = 10000) == 12,
+          PowChallengeVerifier.difficultyFor(difficulty.copy(scoreStep = 0), challengeAt = 40, score = 10000) == 8,
         )
       },
       test("counts leading zero bits") {

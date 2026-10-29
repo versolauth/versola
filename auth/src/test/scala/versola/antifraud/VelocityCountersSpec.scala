@@ -12,7 +12,10 @@ import java.util.UUID
 object VelocityCountersSpec extends UnitSpecBase:
 
   private val t0 = Instant.parse("2026-10-21T10:00:00Z")
-  private val on = VelocityCounters.Settings(enabled = true)
+  private val on = AntifraudTestSettings.velocity.copy(enabled = true)
+
+  private def newCounters(settings: VelocityCounters.Settings, limits: VelocityCounters.Limits = AntifraudTestSettings.velocityLimits) =
+    VelocityCounters(settings, limits, AntifraudTestSettings.thresholds)
 
   import VelocityKey.*
   import VelocityWindow.*
@@ -45,10 +48,16 @@ object VelocityCountersSpec extends UnitSpecBase:
       failing <- Ref.make(false)
     yield (InMemoryRepository(rows, failing), failing)
 
-  private def instance(repo: VelocityRepository, settings: VelocityCounters.Settings): ZIO[Scope, Nothing, VelocityCounters] =
-    VelocityCounters.live.build.map(_.get).provideSome[Scope](
+  private def instance(
+      repo: VelocityRepository,
+      settings: VelocityCounters.Settings,
+      limits: VelocityCounters.Limits,
+      tuning: Tuning = Tuning.off,
+  ): ZIO[Scope, Nothing, VelocityCounters] =
+    VelocityCounters.liveWith(limits).build.map(_.get).provideSome[Scope](
       ZLayer.succeed(repo),
-      ZLayer.succeed(settings),
+      ZLayer.succeed(AntifraudTestSettings.events.copy(velocity = settings)),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed(TestEnvConfig.coreConfig),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -60,7 +69,7 @@ object VelocityCountersSpec extends UnitSpecBase:
 
   def spec = suite("VelocityCounters")(
     test("counts exactly what many fibers record at once, per key") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       for
         _ <- ZIO.foreachParDiscard(1 to 200): fiber =>
           ZIO.succeed:
@@ -77,7 +86,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("many parallel recorders on one hot key finish quickly and lose nothing") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       for
         _ <- ZIO.foreachParDiscard(1 to 256)(_ =>
           ZIO.succeed((1 to 4000).foreach(i => counters.record(prefix, "tenant/4915", t0.plusSeconds(i % 1800)))),
@@ -89,7 +98,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("a window is the current minute and the ones before it, and older minutes drop out") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       counters.record(ip, "a", t0)
       counters.record(ip, "a", t0.plusSeconds(61))
       val at = t0.plusSeconds(61)
@@ -105,7 +114,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("a late or out-of-order record lands in its own minute") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       counters.record(ip, "a", t0.plusSeconds(300))
       counters.record(ip, "a", t0)
       counters.record(ip, "a", t0.plusSeconds(120))
@@ -116,13 +125,13 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("a key busy for more than a day keeps at most a day of minutes") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       (0 until 3000).foreach(minute => counters.record(ip, "busy", t0.plusSeconds(minute * 60L)))
       val now = t0.plusSeconds(2999 * 60L)
       assertTrue(counters.count(ip, "busy", OneDay, now) == 1440, counters.count(ip, "busy", OneHour, now) == 60)
     },
     test("evicts keys idle for a day and keeps the others") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       counters.record(ip, "old", t0)
       counters.record(ip, "recent", t0.plusSeconds(20 * 3600))
       counters.record(phone, "old", t0)
@@ -130,7 +139,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       assertTrue(counters.size == 1, counters.count(ip, "recent", OneDay, t0.plusSeconds(25 * 3600)) == 1)
     },
     test("a full table makes room for a new key by dropping the oldest key seen once, and keeps the established ones") {
-      val counters = VelocityCounters(on.copy(maxKeys = 3))
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 3))
       counters.record(ip, "hot", t0)
       counters.record(ip, "hot", t0)
       (1 to 1000).foreach(i => counters.record(ip, s"junk$i", t0))
@@ -145,7 +154,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("fails open for a new key, and counts it, only when every key held has been seen again; per kind") {
-      val counters = VelocityCounters(on.copy(maxKeys = 2))
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 2))
       List("a", "b").foreach(k => (1 to 2).foreach(_ => counters.record(ip, k, t0)))
       counters.record(ip, "c", t0)
       counters.record(ip, "a", t0)
@@ -160,12 +169,12 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("cuts a key to a bounded length") {
-      val counters = VelocityCounters(on)
+      val counters = newCounters(on)
       counters.record(ip, "x" * 10000, t0)
       assertTrue(counters.count(ip, "x" * VelocityCounters.maxKeyLength, OneDay, t0) == 1)
     },
     test("drains only the minutes that changed, at the absolute total, and a failed write is made good") {
-      val counters = VelocityCounters(on.copy(shareFrom = 1))
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(shareFrom = 1))
       counters.record(ip, "a", t0)
       counters.record(ip, "a", t0)
       val first = counters.drain(t0, 100)
@@ -182,7 +191,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("drains the busiest keys first and never more rows than the limit, and the rest follows") {
-      val counters = VelocityCounters(on.copy(shareFrom = 1))
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(shareFrom = 1))
       (1 to 50).foreach(i => counters.record(prefix, s"junk$i", t0))
       (1 to 30).foreach(_ => counters.record(asn, "64500", t0))
       (1 to 5).foreach(_ => counters.record(phone, "h", t0))
@@ -195,7 +204,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("shares a key only from shareFrom requests, and no more than the limit at a time") {
-      val counters = VelocityCounters(on.copy(shareFrom = 3))
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(shareFrom = 3))
       counters.record(ip, "quiet", t0)
       counters.record(ip, "quiet", t0)
       val before = counters.drain(t0, 100)
@@ -206,12 +215,13 @@ object VelocityCountersSpec extends UnitSpecBase:
       assertTrue(before.isEmpty, limited.size == 2, counters.drain(t0, 100).size == 4)
     },
     test("instances add what the others flushed: a count converges within a flush and a load interval") {
-      val settings = on.copy(shareFrom = 1)
+      val settings = on
+      val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
       for
         (repo, _) <- repository
         _ <- TestClock.setTime(t0)
-        a <- instance(repo, settings)
-        b <- instance(repo, settings)
+        a <- instance(repo, settings, limits)
+        b <- instance(repo, settings, limits)
         _ <- ZIO.succeed((1 to 7).foreach(_ => a.record(ip, "shared", t0)))
         _ <- ZIO.succeed((1 to 5).foreach(_ => b.record(ip, "shared", t0)))
         before = (a.count(ip, "shared", TenMinutes, t0), b.count(ip, "shared", TenMinutes, t0))
@@ -220,12 +230,13 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(before == (7, 5), after == (12, 12))
     },
     test("minutes an instance wrote late, older than the recent ones, are found by the slices of the load") {
-      val settings = on.copy(shareFrom = 1)
+      val settings = on
+      val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
       for
         (repo, _) <- repository
         _ <- TestClock.setTime(t0)
-        a <- instance(repo, settings)
-        b <- instance(repo, settings)
+        a <- instance(repo, settings, limits)
+        b <- instance(repo, settings, limits)
         _ <- rounds(1)
         // Written after b's first load, for a minute five hours back, as an instance does when its database was down.
         _ <- ZIO.succeed(a.record(ip, "late", t0.minusSeconds(5 * 3600)))
@@ -235,12 +246,13 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(soon == 0, b.count(ip, "late", OneDay, t0) == 1)
     },
     test("a database that is down leaves the per-instance count, and what was not written is written later") {
-      val settings = on.copy(shareFrom = 1)
+      val settings = on
+      val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
       for
         (repo, failing) <- repository
         _ <- TestClock.setTime(t0)
-        a <- instance(repo, settings)
-        b <- instance(repo, settings)
+        a <- instance(repo, settings, limits)
+        b <- instance(repo, settings, limits)
         _ <- failing.set(true)
         _ <- ZIO.succeed(a.record(ip, "x", t0))
         _ <- rounds(4)
@@ -251,7 +263,9 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(down == (1, 0), up == 1)
     },
     test("an address is counted as its network under a keyed hash: spellings and a /64 are one key, and no address is stored") {
-      val settings = on.copy(shareFrom = 1, thresholds = VelocityRules.Thresholds(ip = VelocityRules.Limit(perDay = 1000)))
+      val settings = on
+      val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
+      val tuned = AntifraudTestSettings.tuning.copy(thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perDay = 1000)))
       def ctx(ip: String) = AntifraudContext(
         tenantId = None,
         clientId = ClientId("c"),
@@ -268,7 +282,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       for
         (repo, _) <- repository
         _ <- TestClock.setTime(t0)
-        a <- instance(repo, settings)
+        a <- instance(repo, settings, limits, tuned)
         _ <- a.record(ctx("2001:db8:0:1::1"))
         _ <- a.record(ctx("2001:0db8:0000:0001:ffff:ffff:ffff:ffff"))
         _ <- a.record(ctx("203.0.113.9"))
@@ -289,12 +303,13 @@ object VelocityCountersSpec extends UnitSpecBase:
       )
     },
     test("a load reads only what changed, and a rewritten minute replaces the old one") {
-      val settings = on.copy(shareFrom = 1)
+      val settings = on
+      val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
       for
         (repo, _) <- repository
         _ <- TestClock.setTime(t0)
-        a <- instance(repo, settings)
-        b <- instance(repo, settings)
+        a <- instance(repo, settings, limits)
+        b <- instance(repo, settings, limits)
         _ <- ZIO.succeed((1 to 2).foreach(_ => a.record(phone, "p", t0)))
         _ <- rounds(4)
         first = b.count(phone, "p", TenMinutes, t0)
@@ -303,7 +318,7 @@ object VelocityCountersSpec extends UnitSpecBase:
       yield assertTrue(first == 2, b.count(phone, "p", TenMinutes, t0) == 5)
     },
     test("while off nothing is counted or started") {
-      val counters = VelocityCounters.off
+      val counters = AntifraudTestSettings.velocityOff
       for
         ctx <- counters.recordAndSnapshot(AntifraudContext(
           tenantId = None,

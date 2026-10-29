@@ -120,6 +120,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -153,6 +154,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)

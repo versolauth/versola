@@ -21,16 +21,16 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
       test("round-trips") {
         assertTrue(valid.toJson.fromJson[DeclaredRateLimit] == Right(valid))
       },
-      test("defaults: strict spacing, one bucket for the owner, shadow") {
-        val parsed = """{"limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+      test("every field is required: nothing has an implicit value") {
+        val full = Map("limits" -> """[{"limit":5,"windowSeconds":1}]""", "burst" -> "1", "by" -> "\"none\"", "mode" -> "\"shadow\"")
+        def body(without: Option[String]) = full.removedAll(without).map((k, v) => s"\"$k\":$v").mkString("{", ",", "}")
         assertTrue(
-          parsed == Right(DeclaredRateLimit(limits = List(RateLimitWindow(5, 1)))),
-          parsed.map(_.by) == Right(DeclaredRateLimitBy.None),
-          parsed.map(_.mode) == Right(GuardMode.Shadow),
+          body(None).fromJson[DeclaredRateLimit].isRight,
+          full.keys.forall(k => body(Some(k)).fromJson[DeclaredRateLimit].left.exists(_.contains(k))),
         )
       },
       test("the strings are the documented ones, the same as a policy's") {
-        val parsed = """{"by":"client","mode":"enforce","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+        val parsed = """{"by":"client","mode":"enforce","burst":1,"limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
         val json = valid.toJson
         assertTrue(
           parsed.map(r => (r.by, r.mode)) == Right((DeclaredRateLimitBy.Client, GuardMode.Enforce)),
@@ -39,11 +39,11 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
         )
       },
       test("an unknown mode is refused with the same message as a policy's") {
-        val parsed = """{"mode":"loud","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+        val parsed = """{"mode":"loud","by":"none","burst":1,"limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
         assertTrue(parsed.left.exists(_.contains("mode must be off, shadow or enforce")))
       },
       test("an unknown key is refused with the choices") {
-        val parsed = """{"by":"session","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
+        val parsed = """{"by":"session","mode":"shadow","burst":1,"limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[DeclaredRateLimit]
         assertTrue(parsed.left.exists(_.contains("by must be one of subject, client, none")))
       },
     ),
@@ -75,7 +75,15 @@ object DeclaredRateLimitSpec extends ZIOSpecDefault:
         )
       },
       test("the edge's own policies cannot take the names of the declared ones") {
-        val taken = RateLimitPolicy(name = "resource-client", limits = List(RateLimitWindow(1, 1)))
+        val taken = RateLimitPolicy(
+          name = "resource-client",
+          limits = List(RateLimitWindow(1, 1)),
+          by = Nil,
+          scope = RateLimitScope.EdgeWide,
+          burst = 1,
+          cost = 1,
+          mode = GuardMode.Shadow,
+        )
         val result = RateLimitPolicy.validateAll(List(taken))
         assertTrue(result.left.exists(_.contains("reserved")))
       },

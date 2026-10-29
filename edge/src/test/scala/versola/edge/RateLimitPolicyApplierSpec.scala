@@ -1,5 +1,6 @@
 package versola.edge
 
+import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.{
   Checkpoint,
   DeclaredLimit,
@@ -10,6 +11,7 @@ import versola.util.http.{
   RateLimitDimension,
   RateLimitKeys,
   RateLimitPolicy,
+  RateLimitScope,
   RateLimitWindow,
   RateLimiter,
 }
@@ -24,6 +26,9 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       by = List(RateLimitDimension.Client),
       limits = List(RateLimitWindow(limit = 1, windowSeconds = 3600)),
       mode = mode,
+      scope = RateLimitScope.EdgeWide,
+      burst = 1,
+      cost = 1,
     )
 
   private val keys = RateLimitKeys(client = "web")
@@ -79,7 +84,7 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       yield assertTrue(none.isEmpty, one == List("one"), !off, limiter.names.isEmpty)
     },
     test("declared limits are applied with the policies; one that breaks a rule is left out and the others stay") {
-      val good = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce)
+      val good = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
       val bad = good.copy(burst = 5)
       for
         limiter <- RateLimiter.make()
@@ -99,7 +104,7 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
       )
     },
     test("run follows the declared source, and a change to an unrelated policy keeps a declaration's buckets") {
-      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce)
+      val declared = DeclaredRateLimit(limits = List(RateLimitWindow(1, 3600)), mode = GuardMode.Enforce, burst = 1, by = DeclaredRateLimitBy.None)
       val limit = DeclaredLimit(DeclaredOwner.Audience, "web", declared, resource = "api")
       for
         policies <- Ref.make(List.empty[RateLimitPolicy])
@@ -135,6 +140,8 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
         limits = List(RateLimitWindow(limit = 40, windowSeconds = 60)),
         burst = 4,
         mode = GuardMode.Enforce,
+        scope = RateLimitScope.EdgeWide,
+        cost = 1,
       )
       for
         alone <- RateLimiter.make()
@@ -171,7 +178,12 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
           override val current: UIO[List[RateLimitPolicy]] = held.get
           override val replicas: UIO[Int] = ZIO.succeed(3)
           override val refreshNow: Task[Unit] = ZIO.unit
-        limit = DeclaredLimit(DeclaredOwner.Audience, "web", DeclaredRateLimit(limits = List(RateLimitWindow(1, 60))), resource = "api")
+        limit = DeclaredLimit(
+          DeclaredOwner.Audience,
+          "web",
+          DeclaredRateLimit(limits = List(RateLimitWindow(1, 60)), burst = 1, by = DeclaredRateLimitBy.None, mode = GuardMode.Shadow),
+          resource = "api",
+        )
         declaredService = new DeclaredRateLimitService:
           override val current: UIO[List[DeclaredLimit]] = ZIO.succeed(List(limit))
         source = (ZLayer.succeed[RateLimitPolicyService](service) ++ ZLayer.succeed[DeclaredRateLimitService](declaredService)) >>>

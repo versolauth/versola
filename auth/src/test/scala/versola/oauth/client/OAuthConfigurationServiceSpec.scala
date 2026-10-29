@@ -49,6 +49,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -80,6 +81,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))
@@ -416,7 +418,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(result == OtpSettings.default)
     },
     test("getSubmissionLimits returns limits from challenge settings for known client") {
-      val limits = SubmissionLimits(banDurationSeconds = 30)
+      val limits = SubmissionLimits(banDurationSeconds = 30, otpRequest = Nil, otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil)
       for
         env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(submissionLimits = limits)))
         result <- env.getSubmissionLimits(clientId1)

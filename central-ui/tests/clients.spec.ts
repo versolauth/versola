@@ -345,6 +345,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     mtlsAuth: null,
     certificateBoundAccessTokens: false,
     jwks: null,
+    estEnrollment: false,
   });
   // A service client is registered at its own endpoint, which has no redirect URIs, flows,
   // branding, PAR or JAR to send: the endpoint records what kind it is.
@@ -716,6 +717,7 @@ for (const profile of ['fapi2', 'standard'] as const) {
       // central issues it; only a native app's edge enrols for its own.
       issueEdgeClientCertificate: true,
       enrollEdgeClientCertificate: false,
+      estEnrollment: false,
       mtlsAuth: null,
       jwks: null,
       requirePushedAuthorizationRequests: true,
@@ -1697,6 +1699,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     requirePushedAuthorizationRequests: true,
     issueEdgeClientCertificate: true,
     enrollEdgeClientCertificate: false,
+    estEnrollment: false,
   });
 
   // The client should NOT be added to the list
