@@ -1,5 +1,6 @@
 package versola.oauth.clientauth
 
+import versola.util.CoreConfig
 import versola.util.http.{
   Checkpoint,
   ClientIpSource,
@@ -10,13 +11,12 @@ import versola.util.http.{
   RateLimitDimension,
   RateLimitKeys,
   RateLimitPolicy,
+  RateLimitScope,
   RateLimitWindow,
   RateLimiter,
 }
-import versola.util.CoreConfig
 import zio.*
 import zio.http.*
-import zio.json.{EncoderOps, JsonEncoder}
 import zio.logging.logContext
 
 /** Limits on auth's own channel, the one that is not mutual TLS (#745): the endpoints a client authenticates to with a secret it
@@ -81,6 +81,8 @@ object ClientAuthThrottle:
         limits = List(RateLimitWindow(limit = perMinute, windowSeconds = 60)),
         burst = burst,
         mode = mode,
+        scope = RateLimitScope.EdgeWide,
+        cost = 1,
       )
     for
       failed <- RateLimiter.make(metricPrefix = "auth")
@@ -116,8 +118,6 @@ object ClientAuthThrottle:
     if method == Method.POST && FailedAuthenticationPatterns.contains(pattern) then Kind.FailedAuth
     else if pattern == "/authorize" then Kind.Entry
     else Kind.None
-
-  private case class RateLimitedBody(error: String) derives JsonEncoder
 
   /** Wraps the routes of the main listener. Not applied to the mutual-TLS listener: a certificate is not a guessable secret. */
   def apply[Env <: ClientAuthThrottle, Err](routes: Routes[Env, Err]): Routes[Env, Err] =
@@ -165,8 +165,8 @@ object ClientAuthThrottle:
       case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
         Observability.setError("rate_limited", Some(policy)) *>
           ZIO.fail(
-            Response.json(RateLimitedBody(error = "rate_limited").toJson)
-              .status(Status.TooManyRequests)
+            // no body: a body here would be a contract; `Retry-After` and `RateLimit` say what a caller can act on
+            Response.status(Status.TooManyRequests)
               .addHeader(Header.CacheControl.NoStore)
               .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
               .addHeaders(Headers(limiter.responseHeaders(limited).map((name, value) => Header.Custom(name, value)))),

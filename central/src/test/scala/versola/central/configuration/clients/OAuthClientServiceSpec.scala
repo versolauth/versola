@@ -161,6 +161,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -198,6 +199,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val createRequest = CreateClientRequest(
@@ -485,7 +487,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val secretBytes = Array.fill(32)(11.toByte)
       val encryptedBytes = Array.fill(48)(17.toByte)
       val storedSecret = Secret(encryptedBytes)
-      val consentFlow = ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
+      val consentFlow =
+        ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds), requiredScopes = Set.empty, offlineAccessOptional = false)
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
@@ -506,7 +509,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         logoUri = None,
         policyUri = None,
         tosUri = None,
-        consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
+        consentFlow =
+          Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days), requiredScopes = Set.empty, offlineAccessOptional = false)),
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
@@ -521,6 +525,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         template = None,
         createdAt = Instant.EPOCH,
         themeOverrides = None,
+        applicationType = ApplicationType.web,
       )
 
       for
@@ -558,7 +563,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("registerClient stores the theme overrides it was given, and none for an empty value") {
       val env = new Env()
       val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)
-      val partnerRequest = createRequest.copy(consentFlow = Some(ConsentFlowDto(allowPartial = true, rememberDuration = None)))
+      val partnerRequest = createRequest.copy(consentFlow =
+        Some(ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+      )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
@@ -591,7 +598,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateClient hands the theme overrides of a partner client to the repository, and an empty value to clear them") {
-      val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
+      val partner = cachedClient.copy(consentFlow =
+        Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+      )
       val env = new Env(Vector(partner))
       val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
 
@@ -612,7 +621,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
       val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
       val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
-      val partner = new Env(Vector(cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))))
+      val partner = new Env(Vector(cachedClient.copy(consentFlow =
+        Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+      )))
       val refused = (result: Either[Any, Unit]) =>
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
@@ -625,7 +636,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // the same patch that gives the consent flow is a partner's from the start
         giving <- firstParty.service.updateClient(noopUpdate.copy(
           themeOverrides = Some(overrides),
-          consentFlow = Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None))),
+          consentFlow = Some(Patch.Modified(ConsentFlowDto(
+            allowPartial = true,
+            rememberDuration = None,
+            requiredScopes = Set.empty,
+            offlineAccessOptional = false,
+          ))),
         )).either
         // clearing is always allowed, so a client with overrides from before can be brought in line
         clearing <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides =
@@ -671,7 +687,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateClient maps request to repository call") {
       val env = new Env()
-      val consentFlow = ConsentFlowDto(allowPartial = false, rememberDuration = Some(30.days.toSeconds))
+      val consentFlow =
+        ConsentFlowDto(allowPartial = false, rememberDuration = Some(30.days.toSeconds), requiredScopes = Set.empty, offlineAccessOptional = false)
 
       for
         _ <- env.repository.find.succeedsWith(None)
@@ -689,7 +706,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
               scope = updateRequest.scope,
               permissions = updateRequest.permissions,
               accessTokenTtl = Some(900.seconds),
-              consentFlow = Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
+              consentFlow = Some(Patch.Modified(ConsentFlow(
+                allowPartial = false,
+                rememberDuration = Some(30.days),
+                requiredScopes = Set.empty,
+                offlineAccessOptional = false,
+              ))),
             ),
           ),
         ),
@@ -903,7 +925,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateClient refuses to remove the consent flow of a partner client") {
-      val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
+      val partner = cachedClient.copy(consentFlow =
+        Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+      )
       val env = new Env(Vector(partner))
 
       for

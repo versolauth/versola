@@ -796,7 +796,7 @@ test.describe('rate limit declared on an endpoint', () => {
       createEndpoints: [{
         id: 4, method: 'PUT', path: '/orders/{orderId}/address', fetchUserInfo: false, allow: 'has(request.body.postalCode)', inject: [],
         stepUpCondition: null, stepUpAcr: null, maxAge: null,
-        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], mode: 'shadow', by: 'client' },
+        rateLimit: { limits: [{ limit: 120, windowSeconds: 60 }], burst: 1, mode: 'shadow', by: 'client' },
       }],
     });
   });
@@ -1025,7 +1025,7 @@ test.describe('create', () => {
 
     expect((await findRequest(api.requests, 'POST', '/configuration/resources')).body).toEqual({
       tenantId: shopTenant, resourceId: 'invoices-api', resource: 'https://invoices.example.com',
-      audience: ['storefront-web'], endpoints: [], internal: false,
+      audience: ['storefront-web'], endpoints: [], internal: false, audienceRateLimits: [],
     });
     await expect(page.getByRole('heading', { level: 1, name: 'invoices-api' })).toBeVisible();
     await expect(page).toHaveURL(/id=invoices-api/);

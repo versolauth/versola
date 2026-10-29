@@ -16,6 +16,61 @@ const PASSWORD_REGEX = '^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$';
 test.describe('otp', () => {
   const step = { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' };
 
+  test('a step left with no code sent asks for it by itself, as a resend, and answers the proof it is given', async ({ page }) => {
+    const seen: Array<{ path: string; fields: URLSearchParams }> = [];
+    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true } }, {
+      beforeRender: async (p) => {
+        await p.route('**/challenge/otp/resend*', (route) => {
+          const request = route.request();
+          seen.push({ path: new URL(request.url()).pathname, fields: new URLSearchParams(request.postData() ?? '') });
+          const body = seen.length === 1 ? { challenge: { kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '12' } } } : { next: '/challenge', otp: true };
+          return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+        });
+      },
+    });
+
+    await expect.poll(() => seen.length).toBe(2);
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/otp/resend', '/challenge/otp/resend']);
+    expect(seen[0].fields.get('proof_inline')).toBe('1');
+    expect(seen[1].fields.get('proof_token')).toBe('signed.token');
+    const digest = createHash('sha256').update(`abc:${seen[1].fields.get('proof_solution')}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1] >> 4).toBe(0);
+    // Shown in place: the page is the same one, with the wait for the next code running, and the code field ready.
+    await expect(page.getByText(t.resend_in.replace('{seconds}', '60'))).toBeVisible();
+    await expect(page.getByRole('textbox')).toBeFocused();
+    await expect(page.getByRole('heading', { name: t.title })).toBeVisible();
+  });
+
+  test('a resend that sends a code is shown in place too, with the wait of the step started again', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 0, resendInterval: 45 } });
+    await page.route('**/challenge/otp/resend*', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: true }) }));
+    const navigations: string[] = [];
+    page.on('framenavigated', (frame) => frame === page.mainFrame() && navigations.push(frame.url()));
+
+    await page.getByRole('button', { name: t.resend_button }).click();
+
+    await expect(page.getByText(t.resend_in.replace('{seconds}', '45'))).toBeVisible();
+    expect(navigations).toEqual([]);
+  });
+
+  test('a resend whose answer is not a sent code leaves the page for the step it names', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 0, resendInterval: 45 } });
+    await page.route('**/challenge/otp/resend*', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: false }) }));
+
+    await page.getByRole('button', { name: t.resend_button }).click();
+
+    await expect(page.getByText('next page')).toBeVisible();
+  });
+
+  test('a step with a code sent does not ask for one', async ({ page }) => {
+    const { submitted } = await renderForm(page, 'otp', { step });
+    await page.waitForTimeout(300);
+    expect(submitted).toHaveLength(0);
+  });
+
   test('says where the code was sent', async ({ page }) => {
     const { t } = await renderForm(page, 'otp', { step });
 

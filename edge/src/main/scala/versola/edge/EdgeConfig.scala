@@ -87,6 +87,9 @@ case class EdgeConfig(
     // proxy sets the header, because a forwarded header is only as trustworthy as the network path that guards it.
     clientIp: ClientIpSource = ClientIpSource.Socket,
     clientIpHeader: String = "X-Real-IP",
+    // How many edge pods share the traffic, for the per-pod share of a rate limit: `dns:<name>`, see [[ReplicaCounter]]. Absent: the `replicas` of
+    // the policy set in central.
+    replicasFrom: Option[String] = None,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
@@ -153,6 +156,7 @@ object EdgeConfig:
         _ <- refuseNativeWithoutDpop(config)
         _ <- refuseUnimplementedMode(config)
         _ <- refuseCentralWithoutMutualTls(config)
+        _ <- ZIO.foreachDiscard(config.replicasFrom)(spec => ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)))
       yield config,
     )
 

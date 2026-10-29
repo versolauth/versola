@@ -162,7 +162,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       logoUri = None,
       policyUri = None,
       tosUri = None,
-      consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
+      consentFlow =
+        Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days), requiredScopes = Set.empty, offlineAccessOptional = false)),
       dpopBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
       dpopMinRsaKeySize = None,
@@ -177,6 +178,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       template = Some(ClientTemplate(ClientKind.web)),
       createdAt = registeredAt,
       themeOverrides = None,
+      applicationType = ApplicationType.web,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -213,6 +215,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = registeredAt,
       themeOverrides = None,
+      applicationType = ApplicationType.web,
     ),
   )
 
@@ -229,6 +232,27 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
+    theme = "default",
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    generateJwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
+    edgeClientCertificate = None,
+    estEnrollment = false,
   )
 
   private val partnerTheme =
@@ -247,6 +271,20 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
+    theme = "default",
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = None,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    edgeClientCertificate = None,
   )
 
   private val createServiceRequest = CreateServiceClientRequest(
@@ -256,6 +294,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     allowedScopes = Set(readScope),
     accessTokenTtl = 300,
     authMethod = AuthMethod.client_secret,
+    permissions = Set.empty,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    generateJwks = None,
+    estEnrollment = false,
   )
 
   private val nativeRecord = clients.head.copy(
@@ -438,7 +485,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 policyUri = None,
                 tosUri = None,
                 consentFlow = Some(
-                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds)),
+                  ConsentFlowDto(
+                    allowPartial = true,
+                    rememberDuration = Some(14.days.toSeconds),
+                    requiredScopes = Set.empty,
+                    offlineAccessOptional = false,
+                  ),
                 ),
                 dpopBoundAccessTokens = false,
                 dpopSigningAlgs = Set.empty,
@@ -453,6 +505,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 applicationType = ApplicationType.web,
                 kind = ClientKind.web,
                 themeOverrides = None,
+                est = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -487,6 +540,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 applicationType = ApplicationType.web,
                 kind = ClientKind.web,
                 themeOverrides = None,
+                est = None,
               ),
             ),
           ),

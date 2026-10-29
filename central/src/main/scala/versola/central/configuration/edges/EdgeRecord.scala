@@ -44,12 +44,12 @@ case class EdgeRecord(
     publicKey: Json.Obj,
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
-    overloadPolicy: Option[OverloadPolicy] = None,
-    accessLogPolicy: Option[AccessLogPolicy] = None,
-    rateLimitPolicies: Option[RateLimitPolicies] = None,
-    policyMeta: Option[Map[String, PolicySectionMeta]] = None,
-    groupId: EdgeGroupId = EdgeGroup.DefaultId,
-    groupKind: EdgeGroupKind = EdgeGroupKind.FirstParty,
+    overloadPolicy: Option[OverloadPolicy],
+    accessLogPolicy: Option[AccessLogPolicy],
+    rateLimitPolicies: Option[RateLimitPolicies],
+    policyMeta: Option[Map[String, PolicySectionMeta]],
+    groupId: EdgeGroupId,
+    groupKind: EdgeGroupKind,
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

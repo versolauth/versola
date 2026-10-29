@@ -5,12 +5,12 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{AccessLogPolicy, Controller, OverloadPolicy, RateLimitPolicies, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Controller, Observability, OverloadPolicy, RateLimitPolicies, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
-import zio.{Duration, ZIO}
+import zio.{Duration, UIO, ZIO}
 
 import java.time.Instant
 
@@ -200,29 +200,23 @@ object EdgeController extends Controller:
         dryRun <- request.url.queryZIO[Option[String]]("dryRun").map(_.contains("true"))
         body <- request.bodyAs[Json.Obj]
         response <- EdgePoliciesPatch.parse(body) match
-          case Left(error) => ZIO.succeed(policyError(error))
+          case Left(error) => policyError(error)
           case Right(patch) =>
-            service.patchPolicies(edgeId, patch, dryRun).map:
-              case None => Response.status(Status.NotFound)
+            service.patchPolicies(edgeId, patch, dryRun).flatMap:
+              case None => ZIO.succeed(Response.status(Status.NotFound))
               case Some(Left(error)) => policyError(error)
-              case Some(Right(record)) => Response.json(EdgePoliciesResponse.of(record).toJson)
+              case Some(Right(record)) => ZIO.succeed(Response.json(EdgePoliciesResponse.of(record).toJson))
       yield response
     }
 
-  private def policyError(error: PolicyPatchError): Response =
-    error match
-      case PolicyPatchError.Conflict(section, current) =>
-        Response.json(PolicyPatchErrorResponse(
-          error.message,
-          Some(section.key),
-          Some(EdgePoliciesResponse.of(current)),
-        ).toJson).status(Status.Conflict)
-      case PolicyPatchError.Invalid(section, _) =>
-        Response.json(PolicyPatchErrorResponse(error.message, Some(section.key), None).toJson).status(Status.BadRequest)
-      case PolicyPatchError.Malformed(section, _) =>
-        Response.json(PolicyPatchErrorResponse(error.message, Some(section.key), None).toJson).status(Status.BadRequest)
-      case PolicyPatchError.UnknownSection(_) =>
-        Response.json(PolicyPatchErrorResponse(error.message, None, None).toJson).status(Status.BadRequest)
+  /** No body, whatever the reason: a body would be a contract (`400` is not an answer a client of the console should ever get, since the console
+    * validates what it sends, and a `409` is answered by reading the state again). The reason is in central's log for the operator.
+    */
+  private def policyError(error: PolicyPatchError): UIO[Response] =
+    val status = error match
+      case _: PolicyPatchError.Conflict => Status.Conflict
+      case _ => Status.BadRequest
+    Observability.setError(if status == Status.Conflict then "policy_conflict" else "invalid_policy", Some(error.message)).as(Response.status(status))
 
   /** The starting set of rate limit policies (all in `shadow`) that the console offers with one click and an operator can send
     * to [[patchEdgePoliciesEndpoint]]; the same on every edge, so it is not read from one.
@@ -263,7 +257,7 @@ object EdgeController extends Controller:
 case class RegisterEdgeRequest(
     id: EdgeId,
     /** The group the edge joins and never leaves; absent means `default`. */
-    groupId: Option[EdgeGroupId] = None,
+    groupId: Option[EdgeGroupId],
 ) derives Schema, JsonCodec
 
 case class GetEdgeGroupsResponse(
@@ -279,12 +273,12 @@ case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
     requireDpopNonce: Boolean,
-    overloadPolicy: Option[OverloadPolicy] = None,
-    accessLogPolicy: Option[AccessLogPolicy] = None,
-    rateLimitPolicies: Option[RateLimitPolicies] = None,
+    overloadPolicy: Option[OverloadPolicy],
+    accessLogPolicy: Option[AccessLogPolicy],
+    rateLimitPolicies: Option[RateLimitPolicies],
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
     policyRevisions: Map[String, Int] = Map.empty,
-    groupId: EdgeGroupId = EdgeGroup.DefaultId,
+    groupId: EdgeGroupId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
     identityChainEndsAt: Option[Instant] = None,
 ) derives Schema, JsonCodec
@@ -312,11 +306,11 @@ case class EdgeRateLimitSyncResponse(
 /** The policy sections of an edge: absent when none is set, with how often and when each section last changed. */
 case class EdgePoliciesResponse(
     edgeId: EdgeId,
-    overload: Option[OverloadPolicy] = None,
-    accessLog: Option[AccessLogPolicy] = None,
-    rateLimits: Option[RateLimitPolicies] = None,
-    revisions: Map[String, Int] = Map.empty,
-    updatedAt: Map[String, Instant] = Map.empty,
+    overload: Option[OverloadPolicy],
+    accessLog: Option[AccessLogPolicy],
+    rateLimits: Option[RateLimitPolicies],
+    revisions: Map[String, Int],
+    updatedAt: Map[String, Instant],
 ) derives Schema, JsonCodec
 
 object EdgePoliciesResponse:
@@ -330,13 +324,6 @@ object EdgePoliciesResponse:
       revisions = meta.view.mapValues(_.revision).toMap,
       updatedAt = meta.view.mapValues(_.updatedAt).toMap,
     )
-
-/** `400` or `409` of the policies patch; `current` is the state the patch lost to, on `409`. */
-case class PolicyPatchErrorResponse(
-    error: String,
-    section: Option[String] = None,
-    current: Option[EdgePoliciesResponse] = None,
-) derives Schema, JsonCodec
 
 case class GetAllEdgesResponse(
     edges: List[EdgeResponse],

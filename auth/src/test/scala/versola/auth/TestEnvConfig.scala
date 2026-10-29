@@ -5,6 +5,7 @@ import com.nimbusds.jose.jwk.{Curve, ECKey, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   AuthMethod,
   ClientId,
@@ -123,6 +124,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   /** [[clientCertificate]]'s own public key as an RFC 7517 key set, which is what RFC 8705

@@ -6,6 +6,7 @@ import com.nimbusds.jose.jwk.{Curve, JWK}
 import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.{
   AuthFactor,
   AuthFactorType,
@@ -20,6 +21,7 @@ import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.{DeclaredRateLimit, GuardMode, RateLimitWindow}
 import versola.util.theme.{ThemeOverrides, ThemeTokens}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
@@ -80,6 +82,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = Instant.EPOCH,
       themeOverrides = None,
+      applicationType = ApplicationType.web,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
@@ -247,6 +250,31 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    test("the edge policies API is reachable from the console: registered as endpoints, read with edges:read and changed with edges:manage") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      def grantedBy(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      assertTrue(
+        prod.contains("GET" -> "/configuration/edges/policies"),
+        prod.contains("PATCH" -> "/configuration/edges/policies"),
+        prod.contains("GET" -> "/configuration/edges/rate-limits/recommended"),
+        grantedBy("edges:read").contains(endpointId("GET", "/configuration/edges/policies")),
+        grantedBy("edges:read").contains(endpointId("GET", "/configuration/edges/rate-limits/recommended")),
+        grantedBy("edges:manage").contains(endpointId("PATCH", "/configuration/edges/policies")),
+        // reading is not changing: edges:read must not carry the patch
+        !grantedBy("edges:read").contains(endpointId("PATCH", "/configuration/edges/policies")),
+      )
+    },
+    test("every endpoint the edge permissions grant is registered as an endpoint of the central resource") {
+      val registered = BootstrapService.centralEndpoints(EnvName.Prod).toSet
+      val granted = BootstrapService.permissionCatalog
+        .filter(entry => Set("edges:read", "edges:manage").contains(entry._1.toString))
+        .flatMap(_._3)
+      val missing = granted.filterNot(id => registered.exists((method, path) => endpointId(method, path) == id))
+      assertTrue(granted.nonEmpty, missing.isEmpty)
+    },
     test("registers central's service endpoints outside production only") {
       val nonProd = BootstrapService.centralEndpoints(EnvName.Test("local"))
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)
@@ -267,12 +295,15 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
       assertTrue(
         antifraud.size == 8,
-        antifraud.filterNot((method, path) => method == "GET" && path.startsWith("/antifraud/lists")).forall((method, path) =>
-          injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        antifraud.filterNot((method, path) => method == "GET" && (path.startsWith("/antifraud/lists") || path == "/antifraud/settings")).forall(
+          (method, path) =>
+            injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
         ),
         injected("GET", "/antifraud/lists").isEmpty,
         injected("GET", "/antifraud/lists/audit").isEmpty,
+        injected("GET", "/antifraud/settings").isEmpty,
         injected("POST", "/antifraud/lists").nonEmpty,
+        injected("PUT", "/antifraud/settings").nonEmpty,
         injected("GET", "/users").isEmpty,
       )
     },
@@ -367,6 +398,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         limits = List(RateLimitWindow(limit = 30, windowSeconds = 60)),
         burst = 5,
         mode = GuardMode.Enforce,
+        by = DeclaredRateLimitBy.None,
       )
       val tuned = seeded.map(endpoint => endpoint.copy(rateLimit = Some(limit)))
       assertTrue(BootstrapService.mergeAccountEndpoints(seeded, tuned.map(endpoint => endpoint.id -> endpoint).toMap) == tuned)

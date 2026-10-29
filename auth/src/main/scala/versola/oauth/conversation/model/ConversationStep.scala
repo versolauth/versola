@@ -33,6 +33,10 @@ object ConversationStep:
   ) extends ConversationStep(StepId.Otp):
     def isFake: Boolean = real.isEmpty
 
+    /** The step a request for a code that has to prove itself is left on, before any code is sent (`timesRequested` is 1
+      * from the first send on): the page asks for the code by itself, as a resend, and answers the challenge there. */
+    def pending: Boolean = timesRequested == 0
+
   object Otp:
     case class Real(code: OtpCode)
 

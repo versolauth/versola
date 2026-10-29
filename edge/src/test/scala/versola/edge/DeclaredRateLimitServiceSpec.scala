@@ -59,7 +59,7 @@ object DeclaredRateLimitServiceSpec extends ZIOSpecDefault:
     test("an endpoint's limit is found by the same template R3 keys on, and an endpoint without one adds nothing") {
       for current <- service(api).current
       yield assertTrue(
-        current == List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = "GET /resources/api/orders/{id}", limit = perMinute)),
+        current == List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = "GET /resources/api/orders/{id}", limit = perMinute, resource = "")),
         current.head.selector == orders.template(ResourceId("api")),
       )
     },

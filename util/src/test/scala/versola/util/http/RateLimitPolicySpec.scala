@@ -12,6 +12,7 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
     burst = 20,
     cost = 2,
     mode = GuardMode.Enforce,
+    scope = RateLimitScope.EdgeWide,
   )
 
   private def invalid(policy: RateLimitPolicy, fragment: String) =
@@ -24,17 +25,26 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         val json = valid.toJson
         assertTrue(json.fromJson[RateLimitPolicy] == Right(valid))
       },
-      test("defaults: no dimensions, edge-wide, burst 1, cost 1, shadow") {
-        val parsed = """{"name":"all","limits":[{"limit":5,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
+      test("every field is required: nothing has an implicit value") {
+        val full = Map(
+          "name" -> "\"all\"",
+          "by" -> "[]",
+          "scope" -> "\"edge-wide\"",
+          "limits" -> "[{\"limit\":5,\"windowSeconds\":1}]",
+          "burst" -> "1",
+          "cost" -> "1",
+          "mode" -> "\"shadow\"",
+        )
+        def body(without: Option[String]) = full.removedAll(without).map((k, v) => s"\"$k\":$v").mkString("{", ",", "}")
         assertTrue(
-          parsed == Right(RateLimitPolicy(name = "all", limits = List(RateLimitWindow(5, 1)))),
-          parsed.map(_.mode) == Right(GuardMode.Shadow),
-          parsed.map(_.burst) == Right(1),
+          body(None).fromJson[RateLimitPolicy].isRight,
+          full.keys.forall(k => body(Some(k)).fromJson[RateLimitPolicy].left.exists(_.contains(k))),
+          """{"policies":[]}""".fromJson[RateLimitPolicies].left.exists(_.contains("replicas")),
         )
       },
       test("the strings are the documented ones") {
         val parsed =
-          """{"name":"a","by":["ip","client","subject","session","jkt"],"scope":"endpoint","mode":"off","limits":[{"limit":1,"windowSeconds":1}]}"""
+          """{"name":"a","by":["ip","client","subject","session","jkt"],"scope":"endpoint","mode":"off","burst":1,"cost":1,"limits":[{"limit":1,"windowSeconds":1}]}"""
             .fromJson[RateLimitPolicy]
         assertTrue(
           parsed.map(_.by.map(_.wire)) == Right(List("ip", "client", "subject", "session", "jkt")),
@@ -43,9 +53,16 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
       test("an unknown dimension, scope or mode is refused with a message that names the choices") {
-        val dim = """{"name":"a","by":["user"],"limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
-        val scope = """{"name":"a","scope":"pod","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
-        val mode = """{"name":"a","mode":"loud","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[RateLimitPolicy]
+        val dim =
+          """{"name":"a","by":["user"],"scope":"edge-wide","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+            RateLimitPolicy,
+          ]
+        val scope = """{"name":"a","by":[],"scope":"pod","burst":1,"cost":1,"mode":"shadow","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+          RateLimitPolicy,
+        ]
+        val mode = """{"name":"a","by":[],"scope":"edge-wide","burst":1,"cost":1,"mode":"loud","limits":[{"limit":1,"windowSeconds":1}]}""".fromJson[
+          RateLimitPolicy,
+        ]
         assertTrue(
           dim.left.exists(_.contains("dimension must be one of ip, client, subject, session, jkt")),
           scope.left.exists(_.contains("scope must be one of edge-wide, resource, endpoint")),
@@ -128,12 +145,12 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         import zio.json.*
         val set = RateLimitPolicies(List(valid), replicas = 3)
         assertTrue(
-          RateLimitPolicies().replicas == 1,
+          RateLimitPolicies(policies = Nil, replicas = 1).replicas == 1,
           set.validate.isRight,
           RateLimitPolicies(List(valid), replicas = 0).validate.left.exists(_.contains("replicas")),
           RateLimitPolicies(List(valid), replicas = 1001).validate.isLeft,
           set.toJson.fromJson[RateLimitPolicies] == Right(set),
-          """{"policies":[]}""".fromJson[RateLimitPolicies] == Right(RateLimitPolicies.empty),
+          """{"policies":[],"replicas":1}""".fromJson[RateLimitPolicies] == Right(RateLimitPolicies.empty),
         )
       },
     ),

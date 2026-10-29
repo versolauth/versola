@@ -32,6 +32,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
     subjectHash = "h",
     destPrefix = None,
     userAgent = None,
+    score = None,
+    rules = Nil,
   )
 
   private case class Env(repository: Stub[AntifraudEventRepository], configService: Stub[OAuthConfigurationService])

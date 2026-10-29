@@ -10,6 +10,8 @@ import java.time.Instant
 
 object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
 
+  private given DbCodec[Instant] = DbCodec.InstantCodec
+
   private val at = Instant.parse("2026-10-26T10:00:00Z")
 
   private val tuned = Tuning.off.copy(
@@ -46,6 +48,15 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
         row <- repository.find
         version <- repository.version
       yield assertTrue(first, !second, !third, row.contains(tuned), version == 2L)
+    },
+    test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run())
+        failure <- repository.find.flip
+        raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
+      yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
     },
     test("a put replaces the row as a whole and moves the version") {
       for

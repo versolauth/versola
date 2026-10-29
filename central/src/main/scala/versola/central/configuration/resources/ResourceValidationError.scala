@@ -1,10 +1,9 @@
 package versola.central.configuration.resources
 
 import versola.central.configuration.clients.ClientId
-import zio.json.JsonCodec
-import zio.schema.{Schema, derived}
 
-enum ResourceValidationError derives JsonCodec, Schema:
+/** Why a resource was refused. Not a wire type: central answers `400` with no body and records this in its log. */
+enum ResourceValidationError:
   case InvalidResourceId
   case ReservedResourceId
   case InvalidAllowExpression(endpointId: ResourceEndpointId, expression: String, message: String)

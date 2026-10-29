@@ -9,16 +9,17 @@ const valid = (patch: Partial<PolicyDraft> = {}): PolicyDraft => ({
 
 describe('rate limit policies', () => {
   it('an empty draft sends an empty list, which removes the policies', () => {
-    expect(policiesFromDraft(emptyDraft())).toEqual({ policies: [] });
+    expect(policiesFromDraft(emptyDraft())).toEqual({ replicas: 1, policies: [] });
     expect(isEmptyPolicies({ policies: [] })).toBe(true);
     expect(isEmptyPolicies(undefined)).toBe(true);
     expect(draftFromPolicies(undefined)).toEqual(emptyDraft());
   });
 
-  it('sends numbers, trims, leaves burst and cost out when empty, and keeps dimensions in a fixed order', () => {
+  it('sends numbers, trims, sends burst and cost as 1 when empty, and keeps dimensions in a fixed order', () => {
     const body = policiesFromDraft({ replicas: '', policies: [valid({ name: ' per-client ', by: ['jkt', 'client'], burst: ' 5 ' })] });
     expect(body).toEqual({
-      policies: [{ name: 'per-client', by: ['client', 'jkt'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, mode: 'shadow' }],
+      replicas: 1,
+      policies: [{ name: 'per-client', by: ['client', 'jkt'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, cost: 1, mode: 'shadow' }],
     });
   });
 
@@ -68,9 +69,9 @@ describe('rate limit policies', () => {
     expect(Object.keys(errors).sort()).toEqual(['0.limit.0', '0.name', '0.window.0']);
   });
 
-  it('replicas: sent only when set, validated like the server, round-tripped, and read as 1 when absent', () => {
+  it('replicas: sent as 1 when empty, validated like the server, round-tripped, and read as 1 when absent', () => {
     expect(policiesFromDraft({ ...emptyDraft(), replicas: ' 3 ' })).toEqual({ replicas: 3, policies: [] });
-    expect(policiesFromDraft(emptyDraft())).toEqual({ policies: [] });
+    expect(policiesFromDraft(emptyDraft())).toEqual({ replicas: 1, policies: [] });
     expect(validateDraft({ ...emptyDraft(), replicas: '0' }).replicas).toBe('replicas must be between 1 and 1000');
     expect(validateDraft({ ...emptyDraft(), replicas: '1001' }).replicas).toBe('replicas must be between 1 and 1000');
     expect(validateDraft({ ...emptyDraft(), replicas: 'two' }).replicas).toBeDefined();

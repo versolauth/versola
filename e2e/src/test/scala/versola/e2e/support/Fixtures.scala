@@ -110,6 +110,7 @@ object Fixtures:
         // their own certificate or none, never one central issues.
         "issueEdgeClientCertificate" -> Json.Bool(false),
         "enrollEdgeClientCertificate" -> Json.Bool(false),
+        "estEnrollment" -> Json.Bool(false),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
@@ -403,6 +404,7 @@ object Fixtures:
       "audience" -> strings(audience),
       "endpoints" -> Json.Arr(Chunk.fromIterable(endpoints)),
       "internal" -> Json.Bool(internal),
+      "audienceRateLimits" -> Json.Arr(),
     )
 
   /** The audience is a patch, not a replacement: `addAudience`/`removeAudience` name the two

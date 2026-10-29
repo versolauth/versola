@@ -75,10 +75,10 @@ export function declaredFromDraft(draft: DeclaredDraft | null): DeclaredRateLimi
   if (!draft) return null;
   const body: DeclaredRateLimit = {
     limits: draft.limits.map(window => ({ limit: Number(window.limit.trim()), windowSeconds: Number(window.windowSeconds.trim()) })),
+    burst: draft.burst.trim() !== '' ? Number(draft.burst.trim()) : 1,
+    by: draft.by,
     mode: draft.mode,
   };
-  if (draft.by !== 'none') body.by = draft.by;
-  if (draft.burst.trim() !== '') body.burst = Number(draft.burst.trim());
   return body;
 }
 
