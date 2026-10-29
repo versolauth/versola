@@ -46,5 +46,5 @@ case class EnrollEdgeRequest(
   * key), and, where the chain of the edge ends, when -- so that the edge can warn long before. */
 case class EdgeIdentityResponse(
     certificate: String,
-    chainEndsAt: Option[Instant] = None,
+    chainEndsAt: Option[Instant],
 ) derives JsonCodec, Schema

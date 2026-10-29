@@ -54,12 +54,13 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
       "scope" -> Json.Str("resource"),
       "limits" -> Json.Arr(Json.Obj("limit" -> Json.Num(limit), "windowSeconds" -> Json.Num(3600))),
       "burst" -> Json.Num(limit),
+      "cost" -> Json.Num(1),
       "mode" -> Json.Str(mode),
     )
 
   /** `PATCH /configuration/edges/policies` with the `rateLimits` section: the policies, or `null` (none) when there are none. */
   private def setPolicies(policies: Json*) =
-    patchSection(if policies.isEmpty then Json.Null else Json.Obj("policies" -> Json.Arr(policies*)))
+    patchSection(if policies.isEmpty then Json.Null else Json.Obj("policies" -> Json.Arr(policies*), "replicas" -> Json.Num(1)))
 
   private def patchSection(section: Json, query: (String, String)*) =
     ZIO.serviceWithZIO[CentralApi](_.patch("/configuration/edges/policies", Json.Obj("rateLimits" -> section), ("edgeId" -> edgeId) +: query*))
@@ -74,15 +75,15 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
       reachEdge *> effect).ensuring((setPolicies() *> reachEdge).ignore)
 
   def spec = suite("Edge: rate limits")(
-    test("central refuses a policy set that does not validate, and says which") {
+    test("central refuses a policy set that does not validate, with no body (the reason is in its log)") {
       for
         refused <- setPolicies(policy("Bad Name", "shadow", 10))
         tooBig <- setPolicies(policy("burst-too-big", "shadow", 10).add("burst", Json.Num(11)))
       yield assertTrue(
         refused.status == Status.BadRequest,
-        refused.body.contains("rateLimits") && refused.body.contains("name"),
+        refused.body.isEmpty,
         tooBig.status == Status.BadRequest,
-        tooBig.body.contains("burst"),
+        tooBig.body.isEmpty,
       )
     },
     test("central serves the recommended set, all in shadow, and accepts it as it is") {
@@ -90,7 +91,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         central <- ZIO.service[CentralApi]
         recommended <- central.get("/configuration/edges/rate-limits/recommended")
         policies <- recommended.items("policies")
-        stored <- patchSection(Json.Obj("policies" -> Json.Arr(policies*)))
+        stored <- patchSection(Json.Obj("policies" -> Json.Arr(policies*), "replicas" -> Json.Num(1)))
         _ <- setPolicies()
       yield assertTrue(
         recommended.status == Status.Ok,
@@ -108,7 +109,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
     test("a patch that names a revision is refused with 409 when the section has moved on, and a dry run writes nothing") {
       for
         central <- ZIO.service[CentralApi]
-        first <- patchSection(Json.Obj("policies" -> Json.Arr(policy("e2e-revision", "shadow", 10))))
+        first <- patchSection(Json.Obj("policies" -> Json.Arr(policy("e2e-revision", "shadow", 10)), "replicas" -> Json.Num(1)))
         revision <- first.obj.map(_.obj("revisions").flatMap(_.num("rateLimits")).map(_.intValue).getOrElse(-1))
         stale <- central.patch(
           "/configuration/edges/policies",
@@ -122,11 +123,11 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
       yield assertTrue(
         first.status == Status.Ok,
         stale.status == Status.Conflict,
-        stale.body.contains("e2e-revision"),
+        stale.body.isEmpty,
         dry.status == Status.Ok,
         stored.body.contains("e2e-revision"),
         unknown.status == Status.BadRequest,
-        unknown.body.contains("unknown section"),
+        unknown.body.isEmpty,
       )
     },
     test("an enforced policy answers 429 with Retry-After, and the upstream never sees the refused call") {
@@ -147,7 +148,8 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
           second.status == Status.Ok,
           third.status == Status.TooManyRequests,
           third.response.rawHeader("Retry-After").flatMap(_.toIntOption).exists(_ >= 1),
-          third.body.contains("e2e-enforced"),
+          third.response.rawHeader("RateLimit-Policy").exists(_.contains("e2e-enforced")),
+          third.body.isEmpty,
           seen.size == 2,
         ).label("two calls pass the limit of two, the third is refused before the upstream")
     },

@@ -1,5 +1,7 @@
 package versola.edge
 
+import versola.util.http.GuardMode
+import versola.util.http.RateLimitScope
 import versola.util.http.{RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
 import zio.*
 import zio.http.*
@@ -44,8 +46,16 @@ object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
       request <- seen.get.someOrFail(RuntimeException("no request captured"))
     yield (policy, request)
 
-  private val policy = RateLimitPolicy(name = "per-client", by = List(RateLimitDimension.Client), limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)), burst = 5)
-  private val policies = RateLimitPolicies(List(policy))
+  private val policy = RateLimitPolicy(
+    name = "per-client",
+    by = List(RateLimitDimension.Client),
+    limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+    burst = 5,
+    scope = RateLimitScope.EdgeWide,
+    cost = 1,
+    mode = GuardMode.Shadow,
+  )
+  private val policies = RateLimitPolicies(List(policy), replicas = 1)
 
   def spec = suite("RateLimitPolicySyncClient")(
     test("reads this edge's rate-limits policy off central, as itself") {
@@ -54,7 +64,7 @@ object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
         request.method == Method.GET,
         request.url.path.encode.contains("edge/sync/rate-limits"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
-        got == EdgeRateLimitPolicies(List(policy)),
+        got == EdgeRateLimitPolicies(List(policy), replicas = 1),
       )
     },
     test("carries no edge id of its own: central answers from the key the call is signed with") {
@@ -65,12 +75,12 @@ object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
       for
         (nullPolicy, _) <- served("""{"rateLimitPolicies": null}""")
         (absent, _) <- served("""{}""")
-      yield assertTrue(nullPolicy == EdgeRateLimitPolicies(Nil), absent == EdgeRateLimitPolicies(Nil))
+      yield assertTrue(nullPolicy == EdgeRateLimitPolicies(Nil, replicas = 1), absent == EdgeRateLimitPolicies(Nil, replicas = 1))
     },
     // A central that predates the endpoint has nothing to say; the edge must still start.
     test("a central without the endpoint (404) means no policy, not a failed load") {
       for (got, _) <- served("""{"error":"not found"}""", Status.NotFound)
-      yield assertTrue(got == EdgeRateLimitPolicies(Nil))
+      yield assertTrue(got == EdgeRateLimitPolicies(Nil, replicas = 1))
     },
     test("any other failure of central fails the load, like every other sync") {
       for exit <- served("""{}""", Status.InternalServerError).exit

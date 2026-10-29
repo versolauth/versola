@@ -120,6 +120,8 @@ tags:
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
     description: Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+  - name: Antifraud settings
+    description: Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an attack. Stored and applied by auth, without a restart.
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -648,11 +650,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateResourceResponse'
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -670,11 +668,7 @@ paths:
         '204':
           description: Resource updated.
         '400':
-          description: The resource or one of its endpoints is invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceValidationError'
+          description: The resource or one of its endpoints is invalid. There is no body, the reason is in central's log.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -2471,7 +2465,7 @@ paths:
         - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
 
         **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
-        named section is still at that revision; otherwise nothing is written and the answer is `409` with the current state in `current`. A
+        named section is still at that revision; otherwise nothing is written and the answer is `409` with no body (read the state again). A
         section that is not named has no precondition, so a client that only ever patches its own section needs none. A change that changes
         nothing does not move the revision.
 
@@ -2517,21 +2511,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/EdgePolicies'
         '400':
-          description: A key that is not a section, a section of the wrong shape, or a section that does not validate. `section` names it.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A key that is not a section, a section of the wrong shape, or a section that does not validate. **No body**: a body would be a
+            contract. The console validates what it sends, so it should not meet this; the reason is in central's log (`invalid_policy`).
+            To find out whether a body is valid without writing it, use `dryRun=true`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
         '409':
-          description: A section named in `expectedRevisions` has changed since it was read. Nothing was written; `current` is the state.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EdgePoliciesError'
+          description: |
+            A section named in `expectedRevisions` has changed since it was read. Nothing was written. No body: read the state again with `GET`.
 
   /configuration/edges/rate-limits/recommended:
     get:
@@ -2738,6 +2728,76 @@ paths:
               schema: { $ref: '#/components/schemas/AntifraudListAuditResponse' }
         '400':
           description: A parameter is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Antifraud settings ───────────────────────────────
+  /antifraud/settings:
+    get:
+      tags: [Antifraud settings]
+      summary: The settings
+      description: |
+        What applies to the whole deployment. The migration seeds the row with everything off, so there is always one.
+        Nothing in auth's configuration sets these values.
+      operationId: getAntifraudSettings
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Antifraud settings]
+      summary: Replace the settings
+      description: |
+        Replaces the settings with `settings`, every key of it. This instance of auth applies it at once, the others within
+        `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+
+        `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
+        `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
+        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
+      operationId: putAntifraudSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                settings: { $ref: '#/components/schemas/AntifraudSettings' }
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [settings, userId]
+      responses:
+        '200':
+          description: The settings as stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+        '400':
+          description: The body is not valid, or auth refused the settings (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Antifraud settings]
+      summary: Reset the settings
+      operationId: deleteAntifraudSettings
+      description: Puts everything off. The caller is in the body, where edge adds `userId` for a request that is not a `GET`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [userId]
+      responses:
+        '204':
+          description: Reset.
+        '400':
+          description: The body is not valid.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -3259,7 +3319,8 @@ components:
       required: [primary, equivalents, otpType]
     ConsentFlowDto:
       type: object
-      description: Whether and how the consent screen is shown before a grant is issued.
+      description: Whether and how the consent screen is shown before a grant is issued. Every member except `rememberDuration` is required.
+      required: [allowPartial, requiredScopes, offlineAccessOptional]
       properties:
         allowPartial:
           type: boolean
@@ -3271,7 +3332,6 @@ components:
           uniqueItems: true
           items:
             type: string
-          default: []
           description: |
             Scopes the user cannot deselect when the client requests them, on top of `openid`
             and `offline_access`, which are always required. The consent screen keeps them
@@ -3281,7 +3341,6 @@ components:
             granted or denied.
         offlineAccessOptional:
           type: boolean
-          default: false
           description: |
             Lets the user deselect `offline_access` ("long-lived access"). When they do, the
             client receives no refresh token and must be able to sign the user in again. A
@@ -3679,7 +3738,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, requireSignedRequestObject, requirePushedAuthorizationRequests, estEnrollment]
     CreateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -3804,7 +3863,7 @@ components:
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
-      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
+      required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopSigningAlgs]
     CreateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -3913,7 +3972,7 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
-      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod]
+      required: [tenantId, id, clientName, allowedScopes, accessTokenTtl, authMethod, permissions, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, estEnrollment]
     UpdateWebClientRequest:
       type: object
       additionalProperties: false
@@ -4039,7 +4098,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateNativeClientRequest:
       type: object
       additionalProperties: false
@@ -4130,7 +4189,7 @@ components:
             the theme's own again). A non-empty value is refused with 400 unless the client asks
             for consent after the update (it has a `consentFlow`, or this request gives it one);
             an empty object is always accepted.
-      required: [clientId]
+      required: [clientId, redirectUris, scope]
     UpdateServiceClientRequest:
       type: object
       additionalProperties: false
@@ -4201,7 +4260,7 @@ components:
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
             assertions with. `null` means the client does not use the method.
-      required: [clientId]
+      required: [clientId, scope, permissions]
     CreateClientResponse:
       type: object
       description: |
@@ -4508,6 +4567,7 @@ components:
       required: [id, path, method, fetchUserInfo, inject]
     CreateResourceRequest:
       type: object
+      required: [tenantId, resourceId, resource, audience, endpoints, internal, audienceRateLimits]
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
@@ -4576,85 +4636,6 @@ components:
         secret:
           $ref: '#/components/schemas/Secret'
       required: [secret]
-    ResourceValidationError:
-      type: object
-      description: |
-        A single-member object naming the rejected case, e.g.
-        `{"InvalidAllowExpression": {"endpointId": "...", "expression": "...", "message": "..."}}`.
-      minProperties: 1
-      maxProperties: 1
-      properties:
-        InvalidResourceId:
-          type: object
-        ReservedResourceId:
-          type: object
-        InvalidAllowExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidInjectExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            ruleName:
-              type: string
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, ruleName, expression, message]
-        InvalidStepUpConditionExpression:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            expression:
-              type: string
-            message:
-              type: string
-          required: [endpointId, expression, message]
-        InvalidEndpointPath:
-          type: object
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-          required: [endpointId]
-        InvalidRateLimit:
-          type: object
-          description: The endpoint's `rateLimit` breaks a rule of a rate limit policy; `message` names the rule.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            message:
-              type: string
-          required: [endpointId, message]
-        InvalidAudienceRateLimit:
-          type: object
-          description: A limit set for an audience client breaks a rule of a rate limit policy, names a client that is not in the audience, or repeats a client.
-          properties:
-            clientId:
-              $ref: '#/components/schemas/ClientId'
-            message:
-              type: string
-          required: [clientId, message]
-        AmbiguousEndpointPath:
-          type: object
-          description: |
-            Another endpoint with the same method matches exactly the same requests, differing
-            only in its path parameter names.
-          properties:
-            endpointId:
-              $ref: '#/components/schemas/ResourceEndpointId'
-            path:
-              type: string
-          required: [endpointId, path]
     CreateClaim:
       type: object
       properties:
@@ -6561,12 +6542,13 @@ components:
           description: In `sampled`, the share of traces whose successful requests are logged. Default 0.05.
     RateLimitPolicies:
       type: object
+      description: Every field is required; nothing has an implicit value.
+      required: [policies, replicas]
       properties:
         replicas:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: |
             How many edge pods share the traffic. Each pod enforces `limit / replicas` of every window (and `burst / replicas`,
             rounded up, never below `cost`), so the edge as a whole allows about the limit written here. As exact as the balancer
@@ -6578,7 +6560,7 @@ components:
             $ref: '#/components/schemas/RateLimitPolicy'
     RateLimitPolicy:
       type: object
-      required: [name, limits]
+      required: [name, by, scope, limits, burst, cost, mode]
       properties:
         name:
           type: string
@@ -6599,7 +6581,6 @@ components:
         scope:
           type: string
           enum: [edge-wide, resource, endpoint]
-          default: edge-wide
           description: |
             `edge-wide` keeps one bucket per key; `resource` and `endpoint` one per key and resource, or per key and
             registered endpoint template. A policy narrower than the edge is checked after the caller's permissions are
@@ -6624,22 +6605,19 @@ components:
         burst:
           type: integer
           minimum: 1
-          default: 1
           description: How many requests may arrive together. Not above the smallest `limit`. `1` is strict spacing.
         cost:
           type: integer
           minimum: 1
           maximum: 1000
-          default: 1
           description: What one request takes from the bucket. Not above `burst`.
         mode:
           type: string
           enum: [off, shadow, enforce]
-          default: shadow
           description: '`off` ignores the policy; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     DeclaredRateLimit:
       type: object
-      required: [limits]
+      required: [limits, burst, by, mode]
       description: |
         A rate limit declared by the owner of an API (on a resource endpoint, or for a client of a resource's audience), not in the
         edge's own set. The rules are those of `RateLimitPolicy` (windows, burst, mode); `cost` is always 1. It applies together
@@ -6666,12 +6644,10 @@ components:
         burst:
           type: integer
           minimum: 1
-          default: 1
           description: How many calls may arrive together. Not above the smallest `limit`. `1` is strict spacing.
         by:
           type: string
           enum: [subject, client, none]
-          default: none
           description: |
             What a bucket is keyed on. On an endpoint, `none` is one bucket for the endpoint, `client` one per client and
             `subject` one per user. On an audience client, `none` is one bucket for that client on the resource and `subject` one per
@@ -6679,7 +6655,6 @@ components:
         mode:
           type: string
           enum: [off, shadow, enforce]
-          default: shadow
           description: '`off` ignores the limit; `shadow` counts what would be refused and refuses nothing; `enforce` refuses with `429` and `Retry-After`.'
     AudienceRateLimit:
       type: object
@@ -6733,16 +6708,6 @@ components:
             accessLog: { type: integer, minimum: 0 }
             rateLimits: { type: integer, minimum: 0 }
           additionalProperties: false
-    EdgePoliciesError:
-      type: object
-      required: [error]
-      properties:
-        error: { type: string }
-        section:
-          type: string
-          enum: [overload, accessLog, rateLimits]
-        current:
-          $ref: '#/components/schemas/EdgePolicies'
     SetEdgeDpopRequest:
       type: object
       properties:
@@ -6854,3 +6819,66 @@ components:
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
       required: [id, at, action, actor, entryId, listType, valueType, value]
+    AntifraudVelocityLimit:
+      type: object
+      description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.
+      properties:
+        perMinute: { type: integer, minimum: 0 }
+        perTenMinutes: { type: integer, minimum: 0 }
+        perHour: { type: integer, minimum: 0 }
+        perDay: { type: integer, minimum: 0 }
+        weight: { type: integer }
+      required: [perMinute, perTenMinutes, perHour, perDay, weight]
+    AntifraudVelocityThresholds:
+      type: object
+      properties:
+        phone: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        ip: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        device: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        asn: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        prefix: { $ref: '#/components/schemas/AntifraudVelocityLimit' }
+        trustedDiscount: { type: integer, minimum: 0 }
+      required: [phone, ip, device, asn, prefix, trustedDiscount]
+    AntifraudPowDifficulty:
+      type: object
+      description: The work a proof-of-work challenge asks, in zero bits of a hash (each bit doubles it, and a phone has to do it). `minDifficulty` at the challenge score, at most `maxDifficulty`, one more bit for each `scoreStep` of score above it (0 for none).
+      properties:
+        minDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        maxDifficulty: { type: integer, minimum: 0, maximum: 32 }
+        scoreStep: { type: integer, minimum: 0 }
+      required: [minDifficulty, maxDifficulty, scoreStep]
+    AntifraudSmsLimit:
+      type: object
+      description: Codes allowed to one range of numbers per hour (0 for no limit), and the conversion below which a range with `minVolume` codes sent is closed (0 `minVolume` for no breaker).
+      properties:
+        sentPerHour: { type: integer, minimum: 0 }
+        minVolume: { type: integer, minimum: 0 }
+        minConversion: { type: number, minimum: 0, maximum: 1 }
+      required: [sentPerHour, minVolume, minConversion]
+    AntifraudSmsLimits:
+      type: object
+      description: "`byPrefix` is keyed by the leading digits of a number, country code included; the longest key a number starts with decides."
+      properties:
+        default: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+        byPrefix:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/AntifraudSmsLimit' }
+      required: [default, byPrefix]
+    AntifraudSettings:
+      type: object
+      description: What applies to the whole deployment. A map, or `thresholds`, is set as a whole.
+      properties:
+        challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `blockAt`). }
+        blockAt: { type: integer, minimum: 0 }
+        pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
+        thresholds: { $ref: '#/components/schemas/AntifraudVelocityThresholds' }
+        smsLimits: { $ref: '#/components/schemas/AntifraudSmsLimits' }
+        ruleWeights:
+          type: object
+          description: The weight of a rule by its name, in place of its own.
+          additionalProperties: { type: integer }
+        shadowRules:
+          type: array
+          description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
+          items: { type: string }
+      required: [challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]

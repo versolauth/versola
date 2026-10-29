@@ -24,6 +24,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       requireDpopNonce = true,
       groupId = groupId,
       groupKind = kind,
+      overloadPolicy = None,
+      accessLogPolicy = None,
+      rateLimitPolicies = None,
+      policyMeta = None,
     )
 
   private class InMemoryTokens(state: Ref[Map[String, (EdgeId, Instant, Boolean)]]) extends EdgeEnrollmentTokenRepository:

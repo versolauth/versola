@@ -16,6 +16,7 @@ object SSOClientWarmUpSpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.MutualTls(certificateMaterial),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   private val secretClient = OAuthClient(
@@ -23,6 +24,7 @@ object SSOClientWarmUpSpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret("s3cret".getBytes("UTF-8").nn)),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   def spec = suite("SSOClientWarmUp")(

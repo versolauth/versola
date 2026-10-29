@@ -90,12 +90,12 @@ final case class RateLimitWindow(limit: Int, windowSeconds: Int) derives JsonCod
   */
 final case class RateLimitPolicy(
     name: String,
-    by: List[RateLimitDimension] = Nil,
-    scope: RateLimitScope = RateLimitScope.EdgeWide,
+    by: List[RateLimitDimension],
+    scope: RateLimitScope,
     limits: List[RateLimitWindow],
-    burst: Int = 1,
-    cost: Int = 1,
-    mode: GuardMode = GuardMode.Shadow,
+    burst: Int,
+    cost: Int,
+    mode: GuardMode,
 ) derives JsonCodec, Schema:
   import RateLimitPolicy.*
 
@@ -136,7 +136,7 @@ final case class RateLimitPolicy(
   * `replicas` is how many edge pods share the traffic: each pod enforces `limit / replicas` (and `burst / replicas`, rounded up),
   * so the edge as a whole allows about the limit the operator wrote. As exact as the balancer is even; there is no shared counter.
   */
-final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil, replicas: Int = 1) derives JsonCodec, Schema:
+final case class RateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int) derives JsonCodec, Schema:
   def validate: Either[String, RateLimitPolicies] =
     for
       _ <- RateLimitPolicy.check(
@@ -148,7 +148,7 @@ final case class RateLimitPolicies(policies: List[RateLimitPolicy] = Nil, replic
 
 object RateLimitPolicies:
   val MaxReplicas = 1000
-  val empty: RateLimitPolicies = RateLimitPolicies()
+  val empty: RateLimitPolicies = RateLimitPolicies(policies = Nil, replicas = 1)
 
   /** The starting set an operator can add to an edge with one click (central serves it, so the console and the API agree).
     * Every policy is in `shadow`: the edge counts what it would refuse, and the operator reads `would_limit` for a week
@@ -167,18 +167,25 @@ object RateLimitPolicies:
     *     every call counts.
     */
   val recommended: RateLimitPolicies = RateLimitPolicies(
-    List(
+    replicas = 1,
+    policies = List(
       RateLimitPolicy(
         name = "per-client",
         by = List(RateLimitDimension.Client),
+        scope = RateLimitScope.EdgeWide,
         limits = List(RateLimitWindow(limit = 120000, windowSeconds = 60)),
         burst = 5000,
+        cost = 1,
+        mode = GuardMode.Shadow,
       ),
       RateLimitPolicy(
         name = "per-user",
         by = List(RateLimitDimension.Subject),
+        scope = RateLimitScope.EdgeWide,
         limits = List(RateLimitWindow(limit = 300, windowSeconds = 60), RateLimitWindow(limit = 5000, windowSeconds = 3600)),
         burst = 60,
+        cost = 1,
+        mode = GuardMode.Shadow,
       ),
       RateLimitPolicy(
         name = "per-user-endpoint",
@@ -186,18 +193,26 @@ object RateLimitPolicies:
         scope = RateLimitScope.Endpoint,
         limits = List(RateLimitWindow(limit = 120, windowSeconds = 60)),
         burst = 30,
+        cost = 1,
+        mode = GuardMode.Shadow,
       ),
       RateLimitPolicy(
         name = "per-address",
         by = List(RateLimitDimension.Ip),
+        scope = RateLimitScope.EdgeWide,
         limits = List(RateLimitWindow(limit = 600, windowSeconds = 60)),
         burst = 100,
+        cost = 1,
+        mode = GuardMode.Shadow,
       ),
       RateLimitPolicy(
         name = "per-certificate",
         by = List(RateLimitDimension.Certificate),
+        scope = RateLimitScope.EdgeWide,
         limits = List(RateLimitWindow(limit = 60000, windowSeconds = 60)),
         burst = 2000,
+        cost = 1,
+        mode = GuardMode.Shadow,
       ),
     ),
   )

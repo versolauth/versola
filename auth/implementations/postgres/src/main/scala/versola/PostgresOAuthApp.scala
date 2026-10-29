@@ -10,10 +10,15 @@ import versola.antifraud.{
   AntifraudListRepository,
   AntifraudLists,
   AntifraudProposalRepository,
+  AntifraudSettingsController,
+  AntifraudSettingsRepository,
+  AntifraudTuning,
+  AntifraudTuningStore,
   ChallengeVerifier,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
+  PostgresAntifraudSettingsRepository,
   PostgresVelocityRepository,
   PowChallengeVerifier,
   VelocityCounters,
@@ -135,6 +140,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudListRepository &
       AntifraudLists &
       AntifraudProposalRepository &
+      AntifraudSettingsRepository &
+      AntifraudTuning &
+      AntifraudTuningStore &
       AntifraudDetectors &
       ConversationRenderService &
       OtpService &
@@ -177,6 +185,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       MetadataController.routes,
       UserController.routes,
       AntifraudListController.routes,
+      AntifraudSettingsController.routes,
       ServiceController.routes,
       LogoutController.routes,
       EstController.routes,
@@ -255,6 +264,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresVelocityRepository.live >++>
       PostgresAntifraudListRepository.live >++>
       PostgresAntifraudProposalRepository.live >++>
+      PostgresAntifraudSettingsRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -266,47 +276,33 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
 
-  /** The `antifraud` block of the config, every key of which is optional; without it the defaults apply. */
+  /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](
-        _.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]).withDefault(AntifraudEvents.Settings.default)),
-      )
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings])))
 
-  /** `antifraud.challenge`, optional like the rest of the block. */
+  /** `antifraud.challenge` */
   private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](
-        _.load(
-          Config.Nested(
-            "antifraud",
-            Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings]).withDefault(PowChallengeVerifier.Settings.default),
-          )
-            .withDefault(PowChallengeVerifier.Settings.default),
-        ),
+        _.load(Config.Nested("antifraud", Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings]))),
       )
 
-  /** `antifraud.lists`, optional like the rest of the block. */
+  /** `antifraud.lists` */
   private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](
-        _.load(
-          Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]).withDefault(AntifraudLists.Settings.default))
-            .withDefault(AntifraudLists.Settings.default),
-        ),
-      )
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]))))
 
-  /** `antifraud.detectors`, optional like the rest of the block. */
+  /** `antifraud.tuning` */
+  private val antifraudTuningSettings: ZLayer[ConfigProvider, Config.Error, AntifraudTuningStore.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("tuning", deriveConfig[AntifraudTuningStore.Settings]))))
+
+  /** `antifraud.detectors` */
   private val antifraudDetectorSettings: ZLayer[ConfigProvider, Config.Error, AntifraudDetectors.Settings] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](
-        _.load(
-          Config.Nested(
-            "antifraud",
-            Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]).withDefault(AntifraudDetectors.Settings.default),
-          )
-            .withDefault(AntifraudDetectors.Settings.default),
-        ),
+        _.load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]))),
       )
 
   /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
@@ -376,12 +372,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       antifraudSettings >++>
       antifraudListSettings >++>
       AntifraudLists.live >++>
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings) => settings.velocity) >++>
+      antifraudTuningSettings >++>
+      AntifraudTuningStore.live >++>
       VelocityCounters.live >++>
-      // Each component that adds rules is listed here.
-      ZLayer.fromFunction((settings: AntifraudEvents.Settings, lists: AntifraudLists) =>
-        Antifraud.Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity))): Antifraud,
-      ) >++>
+      Antifraud.live >++>
       AntifraudEvents.live >++>
       antifraudDetectorSettings >++>
       AntifraudDetectors.live >++>

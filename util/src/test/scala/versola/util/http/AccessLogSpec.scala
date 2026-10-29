@@ -93,24 +93,24 @@ object AccessLogSpec extends ZIOSpecDefault:
       test("an empty policy leaves the base alone and any field patches only itself") {
         assertTrue(
           AccessLogPolicy.empty.applyTo(sampled) == sampled,
-          AccessLogPolicy(mode = Some("off")).applyTo(sampled) == sampled.copy(mode = AccessLogMode.Off),
-          AccessLogPolicy(slowMillis = Some(100)).applyTo(sampled) == sampled.copy(slowMillis = 100),
-          AccessLogPolicy(successSampleRate = Some(0.5)).applyTo(sampled) == sampled.copy(successSampleRate = 0.5),
+          AccessLogPolicy(mode = Some("off"), slowMillis = None, successSampleRate = None).applyTo(sampled) == sampled.copy(mode = AccessLogMode.Off),
+          AccessLogPolicy(slowMillis = Some(100), mode = None, successSampleRate = None).applyTo(sampled) == sampled.copy(slowMillis = 100),
+          AccessLogPolicy(successSampleRate = Some(0.5), mode = None, slowMillis = None).applyTo(sampled) == sampled.copy(successSampleRate = 0.5),
         )
       },
       test("validate rejects an unknown mode and out-of-range numbers") {
         assertTrue(
-          AccessLogPolicy(mode = Some("loud")).validate.isLeft,
-          AccessLogPolicy(slowMillis = Some(-1)).validate.isLeft,
-          AccessLogPolicy(slowMillis = Some(600001)).validate.isLeft,
-          AccessLogPolicy(successSampleRate = Some(1.01)).validate.isLeft,
-          AccessLogPolicy(successSampleRate = Some(-0.1)).validate.isLeft,
+          AccessLogPolicy(mode = Some("loud"), slowMillis = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(slowMillis = Some(-1), mode = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(slowMillis = Some(600001), mode = None, successSampleRate = None).validate.isLeft,
+          AccessLogPolicy(successSampleRate = Some(1.01), mode = None, slowMillis = None).validate.isLeft,
+          AccessLogPolicy(successSampleRate = Some(-0.1), mode = None, slowMillis = None).validate.isLeft,
           AccessLogPolicy(Some("sampled"), Some(500), Some(0.05)).validate.isRight,
           AccessLogPolicy.empty.validate.isRight,
         )
       },
       test("round-trips through JSON, absent fields staying absent") {
-        val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1))
+        val policy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1), slowMillis = None)
         assertTrue(
           policy.toJson.fromJson[AccessLogPolicy] == Right(policy),
           "{}".fromJson[AccessLogPolicy] == Right(AccessLogPolicy.empty),
