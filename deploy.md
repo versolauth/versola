@@ -31,7 +31,7 @@ Two ways to put Versola on 80/443, chosen with `--proxy` (it must be given on ev
 
 ```
 browser ──443──▶ versola-proxy (TLS, Let's Encrypt) ──▶ auth  127.0.0.1:8080
-                                                    └──▶ edge  127.0.0.1:8095 ──▶ central 127.0.0.1:8090
+                                                    └──▶ edge  127.0.0.1:8095 ──▶ versola-proxy 127.0.0.1:8090 ──▶ central 127.0.0.1:28090
 ```
 
 All routing — which path goes to `auth` and which to `edge`, the admin console, legacy redirects —
@@ -44,25 +44,34 @@ decide, and nothing else inbound.
 
 | Service | App (`PORT`) | Additional (`APORT`) | Diagnostics (`DPORT`) |
 |---|---|---|---|
-| `auth` | 8080 | 8082 (Account Settings, internal) | 8081 |
-| `central` | 8090 | — | 8091 |
+| `auth` | 8080 | 9082 (Account Settings, internal) | 8081 |
+| `central` | 28090 (8090 is `versola-proxy`'s front) | — | 28091 |
 | `edge` | 8095 | — | 8096 |
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 8082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 9083, loopback; `versola-proxy` fronts it on 8083, and fronts `APORT` on 8082). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 9082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
+
+On `vps` the reverse proxy also fronts `central`: it listens on `127.0.0.1:8090`, the address `auth`,
+`edge` and the console call, and `central` itself listens 20000 higher, on `28090` (`PORT`) and
+`28091` (`DPORT`), so that `versola rollout` can move it through a temporary second replica
+(`28190`/`28191`) without an outage. Probe `central`'s `/readiness` on `28091`, not `8091`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
 (up to two minutes) and are not serving meanwhile. `versola up` starts `central`, waits for its
-`/readiness`, then `auth` and `edge`, and `versola-proxy` last.
+`/readiness`, then the `versola-proxy` front of `central` (`auth` and `edge` call `central` through it),
+then `auth` and `edge`, and waits for the whole proxy last.
 
 ### Where things live on the host
 
 | Path / object | What it is |
 |---|---|
 | `~/.versola/active/state.json` | the live deployment: version, bundle, `--auth-url`, proxy mode, `--postgres-host`, `--postgres-db` |
-| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt` |
+| `~/.versola/active/proxy-vps/` | the proxy's generated configuration, one `gen-NNNNNN` directory per change plus `current`; each is checked with `nginx -t` before the reload |
+| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `overrides.yml` (the ports moved behind the proxy; written by `up`), `replicas.yml` (while a service has more than one replica), `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt`, `secrets.schema.json` |
+| `~/.versola/active/postgres-ca.crt` | the copy of `--postgres-ca` that later runs reuse |
+| `~/.versola/openbao/vps-postgres-role.sql` | the SQL that creates or updates the database role (mode `600`); you run it with `sudo -u postgres psql` |
 | `~/.versola/openbao/vps.json` | AppRole credentials `versola-cli` uses to read/write secrets |
 | `~/.versola/openbao/vps-admin.json` | OpenBao root token + unseal key. **Keep a copy off the host** — neither is recoverable if lost |
 | Volume `versola-openbao-file-vps` | OpenBao's data (all secrets). Survives `down` |
@@ -159,16 +168,20 @@ schema it points at, and two services sharing one abort with `FlywayValidateExce
 ([6.1](#61-flywayvalidateexception)).
 
 On the first `configure` against an empty OpenBao the Postgres password is generated then, so the
-role gets it only afterwards. `configure` prints the statements:
-```
-CREATE ROLE "versola_app" WITH LOGIN PASSWORD '…';   -- if the role doesn't exist yet
-ALTER ROLE "versola_app" WITH PASSWORD '…';          -- if it already exists
+role gets it only afterwards. `configure` never prints the password: it writes the SQL that gives the
+role that password to `~/.versola/openbao/vps-postgres-role.sql` (readable only by you; it creates the
+role if it doesn't exist, and sets the password and allows login if it does) and prints the command
+to run it:
+
+```bash
+sudo -u postgres psql < ~/.versola/openbao/vps-postgres-role.sql
 ```
 
 On the managed cluster the role and database come from the cloud (user `versola_app` owning `auth`;
 there is no superuser). Set the password as `versola_app` itself or with
 `yc managed-postgresql user update versola_app --cluster-name <name> --password …` (the pooler applies
-it a few seconds late), then create the schemas. These `PG*` variables are what every `psql`/`pg_dump`
+it a few seconds late); the password is `POSTGRES_PASSWORD` in the bundle's `auth.secrets.env`, the CLI
+does not print it. Then create the schemas. These `PG*` variables are what every `psql`/`pg_dump`
 in this document assumes:
 
 ```bash
@@ -178,7 +191,8 @@ export PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' ~/.versola/active/bundle-*/auth.s
 for s in auth central edge; do psql -c "CREATE SCHEMA IF NOT EXISTS $s AUTHORIZATION versola_app"; done
 ```
 
-The password is printed only on that first run; it also stays in the bundle's `auth.secrets.env`.
+The file is written only on that first run; the password itself is kept in OpenBao and in the bundle's
+`auth.secrets.env`.
 
 <a id="postgres-tls"></a>
 **Postgres TLS.** Every connection (the pool and the `LISTEN` connection) uses `sslmode=verify-full`
@@ -187,6 +201,65 @@ vps you do not write this — `--postgres-ca` copies the CA into the bundle, mou
 the services and the `migrate` container and sets `postgres.ssl-root-cert`. A URL that does not
 verify (`disable|allow|prefer|require`) logs a warning and, when `env = "prod"`, stops the service
 from starting; loopback hosts are exempt.
+
+<a id="postgres-own-ca"></a>
+**Postgres with your own CA.** If your Postgres is self-hosted and no public CA signed its
+certificate, make a CA and a server certificate yourself. Keep `ca.key` off the database host (it can
+sign a certificate for any name); only `ca.crt` goes to Versola.
+
+```bash
+# 1. The CA, valid 10 years
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -key ca.key -sha256 -days 3650 -subj "/CN=Postgres CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out ca.crt
+
+# 2. The server's key and a request. The SAN is what is checked: it must list every name and IP
+#    address that the CLI and the services connect to (the host in --postgres-host).
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -subj "/CN=db.example.com" \
+  -addext "subjectAltName=DNS:db.example.com,IP:10.0.0.5" -out server.csr
+
+# 3. Sign it with the CA
+printf 'subjectAltName=DNS:db.example.com,IP:10.0.0.5\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -sha256 \
+  -extfile server.ext -out server.crt
+openssl verify -CAfile ca.crt server.crt     # server.crt: OK
+```
+
+On the database host, put `server.crt` and `server.key` in a directory readable by `postgres` (the key
+must be owned by `postgres` with mode `0600`, or Postgres refuses to start), and set in
+`postgresql.conf`:
+
+```
+ssl = on
+ssl_cert_file = '<dir>/server.crt'
+ssl_key_file = '<dir>/server.key'
+listen_addresses = 'localhost,10.0.0.5'
+```
+
+In `pg_hba.conf`, a `hostssl` line for the role and no plain `host` line, so a connection without TLS
+is refused (the address is the client's, as Postgres sees it):
+
+```
+hostssl  all  versola_app  <address of the Versola host>/32  scram-sha-256
+```
+
+Restart Postgres, copy `ca.crt` to the machine that runs Versola, and check from there:
+
+```bash
+openssl s_client -starttls postgres -connect db.example.com:5432 -CAfile ca.crt \
+  -verify_hostname db.example.com -verify_return_error </dev/null 2>&1 | grep Verification   # Verification: OK
+psql "host=db.example.com user=versola_app dbname=auth sslmode=verify-full sslrootcert=ca.crt" \
+  -c "select ssl from pg_stat_ssl where pid = pg_backend_pid()"                               # t
+```
+
+Then `versola configure vps <version> … --postgres-host db.example.com:5432 --postgres-ca ~/ca.crt`.
+Use the name that is in the SAN: another name fails verification even when it resolves to the same
+machine, and only the literal `127.0.0.1`, `localhost` and `[::1]` are exempt. `ca.crt` must be the root
+certificate (a file with only an intermediate CA does not verify). If you use an intermediate CA, append
+it to `server.crt` after the server's certificate, so that the server sends the whole chain. Renew `server.crt` with the same CA
+before it expires; `--postgres-ca` does not change.
 
 ### Migrate, start, verify
 
@@ -291,33 +364,51 @@ nothing.
    replica, `configure` refuses: use `versola rollout` (below) or remove the extra replicas first.
 7. **Verify** with the checks in [2](#migrate-start-verify) and `versola status`.
 
-#### Without stopping: `versola rollout`
-
-`versola-cli` 0.2.10 and later. For a release whose migrations are additive and whose previous
-version runs on the new schema (read the release notes — before 1.0 this is not promised), steps
-5–6 can be replaced by:
-
-````bash
-versola rollout <version> --dry-run              # plan, secrets plan, pending migrations; changes nothing
-versola rollout <version> --assume-compatible    # cut off? run the same command again
-````
-
-It prepares the new version next to the running one (including the secrets plan above), migrates,
-restarts `central` (the admin console is down until it is ready), then replaces each `auth` and
-`edge` replica behind a temporary extra one, so they keep serving. Before the extra replica starts
-it checks free memory (1156 MiB, about 1.13 GiB) and Postgres connections; `--no-surge` does
-without it. `versola rollout --abort` goes back to the previous version while the rollout is
-unfinished (migrations and secrets stay). Copy `~/.versola/active/state.json` and take the dump of
-step 4 first. `rollout` has so far been exercised with stand-in images only, not two real releases —
-details in `versola-cli`'s README.
-
 #### Tag naming
 
 The image tag is the git tag verbatim, with no `v` prefix (`0.7.1`), and that is the `<version>` `versola configure` takes.
 
+### Without stopping: `versola rollout`
+
+On `vps`, when the release only *adds* migrations and the running version keeps working on the new
+schema, `versola rollout` replaces the running version while it serves. Releases before 1.0 do not
+promise that compatibility, so read the release notes and say you did with `--assume-compatible`:
+
+```bash
+versola rollout <version> --dry-run          # the plan, the secrets plan, the pending migrations; changes nothing
+versola rollout <version> --assume-compatible
+```
+
+Take the dump of step 4 first: the migrations are applied before anything is replaced and cannot be
+rolled back. Then `central` moves through a temporary second replica, and `auth` and `edge` are
+replaced one replica at a time behind a temporary extra one, so no service has fewer replicas serving
+than before. If the run is cut off (an error, Ctrl-C, a dropped SSH session), the same command
+continues where it stopped.
+
+Before a temporary replica starts, `rollout` checks that the server has the memory for one more JVM
+(what a running replica uses now, never less than 900 MiB, plus 256 MiB: at least about 1.13 GiB free)
+and that Postgres has the connections for its pool plus 3 spare; `versola replica add` makes the same
+Postgres check. If either is short it refuses with the numbers before anything changes (the checks run
+again before each temporary replica): free the memory or raise `max_connections`, or use `--no-surge`,
+which replaces replicas with no extra one, so one fewer serves meanwhile (an `auth` or `edge` with a
+single replica then also needs `--allow-downtime`).
+
+`central` is replaced in place, and the admin console and self-registration are unavailable until it is
+ready, only with `--no-surge`, or on the first rollout of a deployment made before the proxy fronted
+`central`; `auth` and `edge` keep serving meanwhile. Connections to `auth`'s mutual-TLS port (8083) that
+the old proxy workers hold are closed 30 seconds after each proxy reload: idle ones are reopened by
+`edge`, a request in flight at that moment fails. The
+[`versola-cli` README](https://github.com/versolauth/versola-cli#rollout-version--rollout---abort-vps)
+has the details.
+
 ### Rollback
 
-If the release only *added* migrations and the previous version runs on the newer schema, going back
+While a `versola rollout` is unfinished, `versola rollout --abort` goes back to the version it came
+from (add `--no-surge` if the rollout needed it); the migrations and secrets stay. Replicas whose
+version did not change are not recreated, unless the previous bundle is gone: then the previous
+version is configured anew and every replica is recreated. For a release that predates the secrets
+schema, that path needs `--allow-legacy-secrets`. After a rollout has finished there is nothing to abort. Otherwise,
+if the release only *added* migrations and the previous version runs on the newer schema, going back
 is `versola configure vps <previous> …` + `versola up` (install the matching CLI if needed). If the
 migrations must be undone, restore the database **before** starting the previous version — never run
 it against a schema only the new release understands:
@@ -1551,15 +1642,15 @@ notification and refuses to start, naming this setting, if it cannot.
   password. Being closed by versolauth/versola#832: central already stores the delivery settings
   (`PUT /configuration/delivery-settings`; migration `V1033`, one new table, additive, no action), but
   auth does not read them yet, so until that part lands a saved record changes nothing.
-- **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
-  version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
+- **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
+  `versola rollout` moves all three without an outage when the release is compatible (see
+  [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short
+  outage of `versola up`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules
   in [1](#1-overview).
 - **Single zone, and the VM is a single point of failure.** `kz1-a` is the region's only zone; the
   VM's Docker volumes (OpenBao's data, the CA's keys) are backed up by nothing but your own copies of
   `vps-admin.json` and the dumps above.
-- `configure` prints the OpenBao AppRole `role-id` and `secret-id` on every run, so they reach
-  terminal scrollback; OpenBao listens on `127.0.0.1` only.
 
 ---
 
@@ -1578,10 +1669,6 @@ Two services share one schema and therefore one `flyway_schema_history`. Check t
 `?currentSchema=` in the service's log. A **checksum mismatch** (`Migration checksum mismatch for
 migration version …`) means a release edited a migration production had already applied; there is no
 clean fix except [recreating that schema](#recreating-the-database) — check for it before migrating.
-
-`versola migrate --dry-run` currently reports *pending* migrations as a validation failure too
-(`Detected resolved migration not applied to database`); that is a known bug in the dry run, not a
-problem with the database, and plain `versola migrate` applies them fine.
 
 ### 6.2 `central` crashes with `FileNotFoundException: forms/common.css`
 
@@ -1604,7 +1691,7 @@ Work inwards:
 ```bash
 docker ps --format '{{.Names}}  {{.Status}}' | grep versola
 curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/.well-known/openid-configuration
-curl -sf http://127.0.0.1:8091/readiness && echo central ok
+curl -sf http://127.0.0.1:28091/readiness && echo central ok
 curl -sf http://127.0.0.1:8081/readiness && echo auth ok
 curl -sf http://127.0.0.1:8096/readiness && echo edge ok
 ```
@@ -1643,8 +1730,9 @@ DELETE FROM central.user_outbox_dead WHERE id = '<event-id>';
 
 OpenBao comes back **sealed** after every restart and mounts `openbao.hcl` from a bundle directory;
 if that bundle was removed it can't start. Neither affects running services (their secrets are in
-`*.secrets.env`); both only block the next `configure`, which recreates the container and unseals it
-from `vps-admin.json`. Without that file (or with `--setup-openbao`):
+`*.secrets.env`). Before it logs in, `versola configure`, `rollout` and `secrets plan|test|login` unseal
+OpenBao themselves with the key in `vps-admin.json`, and `configure` also recreates a container whose
+bundle was removed. Without that file (or with `--setup-openbao`):
 `docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-vps bao operator unseal`.
 
 ### 6.9 "container name already in use"
@@ -1666,7 +1754,8 @@ Failed to initialize pool: SSL error: (certificate_unknown) PKIX path building f
 ```
 
 The database's certificate is signed by a CA the JVM does not trust and the services verify it. Give
-`configure` the CA with `--postgres-ca <file>`, then `versola up`; do not edit the bundle. Check with
+`configure` the CA with `--postgres-ca <file>`, then `versola up`; do not edit the bundle (to make a CA for a self-hosted Postgres, see
+[Postgres with your own CA](#postgres-own-ca)). Check with
 `ls ~/.versola/active/bundle-*/postgres-ca/` (`ca.crt`) and
 `grep ssl-root-cert ~/.versola/active/bundle-*/*.conf` (three hits).
 
