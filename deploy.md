@@ -1546,11 +1546,27 @@ notification and refuses to start, naming this setting, if it cannot.
   shows how limits interact with the heap settings). With `network_mode: host`, each of three JVMs
   sizes its heap from the *host's* memory (`MaxRAMPercentage=75`); `doctor`/`configure` check
   available memory first, which lowers the risk but doesn't remove it.
-- **No supported way to change configuration on `vps`** (OTP provider, SMTP, …), so **SMTP and SMS are
-  not configured in prod**: password resets and additional admin accounts can't deliver a temporary
-  password. Being closed by versolauth/versola#832: central already stores the delivery settings
-  (`PUT /configuration/delivery-settings`; migration `V1033`, one new table, additive, no action), but
-  auth does not read them yet, so until that part lands a saved record changes nothing.
+- **No supported way to change the rest of `auth.conf` on `vps`**, so its `smtp` and `otp-provider`
+  blocks are not there. The delivery channels are the exception (versolauth/versola#832): the SMTP
+  server and the SMS provider are set in the admin console, on **Delivery** (`security:manage`), kept in
+  central (`/configuration/delivery-settings`, migration `V1033`, one new table, additive, no action) and
+  picked up by auth at its next configuration refresh (5 minutes on `vps`) without a restart. Until
+  one is saved, a `vps` deployment has no channel: password resets and additional admin accounts can't
+  deliver a temporary password. Each channel is decided on its own, so a block that is not saved in
+  central keeps using the matching block of `auth.conf`, if there is one. Upgrade in any order: an auth that
+  is older does not read the record, and an auth that is newer than its central treats the missing
+  endpoint as nothing saved.
+
+  **Behaviour changes to know before upgrading** (the timeouts apply to every deployment, also one that sends
+  through `auth.conf` only):
+  - SMTP connections now give up after 10 seconds without an answer (connect, read and write), and the
+    call to an SMS provider after 10 seconds in all. Neither had a limit; a server that was slower than
+    that and worked will now fail.
+  - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
+  - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
+    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
+    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
 - **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
   version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules

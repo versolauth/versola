@@ -60,6 +60,7 @@ import versola.oauth.conversation.{
   ConversationService,
   PostgresConversationRepository,
 }
+import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
@@ -146,6 +147,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
+      DeliveryChannels &
       SmsOtpProvider &
       EmailOtpProvider &
       UserInfoService &
@@ -349,6 +351,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PushedAuthorizationService.live >++>
       OtpGenerationService.live >++>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >++>
+      // The SMTP server and SMS provider saved in central, else the blocks of auth.conf; reloaded on the configuration interval.
+      DeliveryChannels.live >++>
       EmailOtpProvider.live >++>
       SmsOtpProvider.live >++>
       OtpService.live >++>

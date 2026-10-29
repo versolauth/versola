@@ -2,10 +2,8 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.util.{CoreConfig, Phone}
-import zio.http.*
-import zio.json.EncoderOps
-import zio.json.ast.Json
+import versola.oauth.delivery.DeliveryChannels
+import versola.util.Phone
 import zio.{Task, URLayer, ZIO, ZLayer}
 
 trait SmsOtpProvider:
@@ -14,47 +12,20 @@ trait SmsOtpProvider:
   def send(phone: Phone, message: String): Task[Unit]
 
 object SmsOtpProvider:
-  val live: URLayer[Client & CoreConfig, SmsOtpProvider] =
-    ZLayer.fromFunction: (client: Client, config: CoreConfig) =>
-      config.otpProvider match
-        case Some(otpConfig) => GenericHttpSmsOtpProvider(client, otpConfig)
-        case None => NoOpSmsOtpProvider
+  val live: URLayer[DeliveryChannels, SmsOtpProvider] =
+    ZLayer.fromFunction(Impl(_))
 
-object NoOpSmsOtpProvider extends SmsOtpProvider:
-  override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =
-    ZIO.logWarning("OTP provider is not configured; skipping SMS OTP delivery")
+  /** Sends through whatever SMS provider is configured when the message goes out: the one saved in central or the
+    * `otp-provider` block of `auth.conf` (see [[DeliveryChannels]]), so a change applies without a restart. Nothing is
+    * sent, and the reason is logged, when neither exists or the saved one is switched off.
+    */
+  class Impl(channels: DeliveryChannels) extends SmsOtpProvider:
+    override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =
+      channels.sms.flatMap:
+        case Some(sender) => sender.send(phone, template.replace("{{code}}", code))
+        case None => ZIO.logWarning("OTP provider is not configured or is switched off; skipping SMS delivery")
 
-  override def send(phone: Phone, message: String): Task[Unit] =
-    ZIO.logWarning("OTP provider is not configured; skipping SMS delivery")
-
-class GenericHttpSmsOtpProvider(
-    httpClient: Client,
-    otpConfig: CoreConfig.OtpProvider,
-) extends SmsOtpProvider:
-
-  override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =
-    send(phone, template.replace("{{code}}", code))
-
-  override def send(phone: Phone, message: String): Task[Unit] =
-    val fields = otpConfig.body.map((key, value) => key -> render(value, phone, message))
-    val body = Json.Obj(fields.map((key, value) => key -> Json.Str(value)).toSeq*)
-    val baseRequest = Request(
-      method = otpConfig.method,
-      url = otpConfig.url,
-      body = Body.fromString(body.toJson),
-    ).addHeader(Header.ContentType(MediaType.application.json))
-    val request = (otpConfig.username, otpConfig.password) match
-      case (Some(username), Some(password)) =>
-        baseRequest.addHeader(Header.Authorization.Basic(username, password))
-      case _ =>
-        baseRequest
-    ZIO.scoped(httpClient.request(request)).flatMap: response =>
-      ZIO
-        .fail(RuntimeException(s"OTP provider responded with ${response.status.code}"))
-        .when(!response.status.isSuccess)
-        .unit
-
-  private def render(value: String, phone: Phone, message: String): String =
-    value
-      .replace("{{phone}}", phone)
-      .replace("{{message}}", message)
+    override def send(phone: Phone, message: String): Task[Unit] =
+      channels.sms.flatMap:
+        case Some(sender) => sender.send(phone, message)
+        case None => ZIO.logWarning("OTP provider is not configured or is switched off; skipping SMS delivery")

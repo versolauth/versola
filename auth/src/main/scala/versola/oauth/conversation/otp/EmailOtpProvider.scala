@@ -1,13 +1,10 @@
 package versola.oauth.conversation.otp
 
-import jakarta.mail.internet.{InternetAddress, MimeMessage}
-import jakarta.mail.{Authenticator, Message, PasswordAuthentication, Session, Transport}
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.util.{CoreConfig, Email}
+import versola.oauth.delivery.DeliveryChannels
+import versola.util.Email
 import zio.{Task, URLayer, ZIO, ZLayer}
-
-import java.util.Properties
 
 trait EmailOtpProvider:
   def sendOtp(
@@ -19,45 +16,20 @@ trait EmailOtpProvider:
   def send(email: Email, message: String): Task[Unit]
 
 object EmailOtpProvider:
-  val live: URLayer[CoreConfig, EmailOtpProvider] =
-    ZLayer.fromFunction: (config: CoreConfig) =>
-      config.smtp match
-        case Some(smtp) => SMTPOtpProvider(smtp)
-        case None => NoOpEmailOtpProvider
+  val live: URLayer[DeliveryChannels, EmailOtpProvider] =
+    ZLayer.fromFunction(Impl(_))
 
-object NoOpEmailOtpProvider extends EmailOtpProvider:
-  override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
-    ZIO.logWarning("SMTP is not configured; skipping email OTP delivery")
+  /** Sends through whatever SMTP server is configured when the message goes out: the one saved in central or the `smtp`
+    * block of `auth.conf` (see [[DeliveryChannels]]), so a change applies without a restart. Nothing is sent, and the
+    * reason is logged, when neither exists or the saved one is switched off.
+    */
+  class Impl(channels: DeliveryChannels) extends EmailOtpProvider:
+    override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
+      channels.email.flatMap:
+        case Some(sender) => sender.send(email, template.replace("{{code}}", code))
+        case None => ZIO.logWarning("SMTP is not configured or is switched off; skipping email delivery")
 
-  override def send(email: Email, message: String): Task[Unit] =
-    ZIO.logWarning("SMTP is not configured; skipping email delivery")
-
-class SMTPOtpProvider(config: CoreConfig.SmtpConfig) extends EmailOtpProvider:
-
-  private val session =
-    val props = Properties()
-    props.put("mail.smtp.host", config.host)
-    props.put("mail.smtp.port", config.port.toString)
-    props.put("mail.smtp.auth", "true")
-    props.put("mail.smtp.starttls.enable", config.startTls.toString)
-    Session.getInstance(
-      props,
-      new Authenticator:
-        override protected def getPasswordAuthentication: PasswordAuthentication =
-          PasswordAuthentication(config.username, config.password),
-    )
-
-  override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
-    send(email, render(template, code))
-
-  override def send(email: Email, message: String): Task[Unit] =
-    ZIO.attemptBlocking:
-      val mail = MimeMessage(session)
-      mail.setFrom(InternetAddress(config.from))
-      mail.setRecipient(Message.RecipientType.TO, InternetAddress(email))
-      mail.setSubject(config.subject)
-      mail.setContent(message, "text/html; charset=utf-8")
-      Transport.send(mail)
-
-  private def render(template: String, code: OtpCode): String =
-    template.replace("{{code}}", code)
+    override def send(email: Email, message: String): Task[Unit] =
+      channels.email.flatMap:
+        case Some(sender) => sender.send(email, message)
+        case None => ZIO.logWarning("SMTP is not configured or is switched off; skipping email delivery")

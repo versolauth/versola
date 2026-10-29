@@ -31,7 +31,10 @@ object DeliverySettingsService:
       smtpPassword: Option[String],
       otpProvider: Option[OtpProviderDeliverySettings],
       otpProviderPassword: Option[String],
-  ) derives JsonDecoder // No encoder on purpose: the type holds the plaintext passwords.
+  ) derives JsonDecoder: // No encoder on purpose: the type holds the plaintext passwords.
+    override def toString: String =
+      s"Update(smtp=$smtp, smtpPassword=${smtpPassword.fold("none")(_ => "***")}, otpProvider=$otpProvider, " +
+        s"otpProviderPassword=${otpProviderPassword.fold("none")(_ => "***")})"
 
   /** Names the field and the rule, never a value, so the message is safe in a response and in the error context. */
   case class ValidationError(message: String)
@@ -116,10 +119,11 @@ object DeliverySettingsService:
       repository.delete() *> refreshNow
 
     /** A write is read back at once, so an admin's next read on this instance shows it instead of waiting for the change
-      * notification. A failed read here only costs that: the write is done, and the notification refreshes the cache anyway.
+      * notification. A failed read here only costs that: the write is done, and the notification refreshes the cache anyway,
+      * so it is logged and not raised.
       */
     private def refreshNow: Task[Unit] =
-      sync().ignoreLogged
+      sync().catchAllCause(cause => ZIO.logWarningCause("Could not read the delivery settings back after a write", cause))
 
     override def sync(): Task[Unit] =
       source.getAll.flatMap(cache.set)

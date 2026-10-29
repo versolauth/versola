@@ -1,6 +1,7 @@
 package versola.central.configuration.delivery
 
 import versola.util.{Email, Secret}
+import zio.http.URL
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
@@ -9,7 +10,7 @@ import scala.util.Try
 
 /** How auth delivers one-time codes and temporary passwords: an SMTP server for email and an
   * HTTP provider for SMS. One record per deployment, the counterpart of the `smtp` and
-  * `otp-provider` blocks of `auth.conf`, which it replaces once it is stored (#832).
+  * `otp-provider` blocks of `auth.conf`: a block stored here is used instead of the matching block of the file (#832).
   *
   * The password of each block is kept apart from the rest of it, so that no type that is ever
   * serialised -- the admin API's responses, the stored JSON -- can carry one by accident. The
@@ -80,6 +81,9 @@ object OtpProviderDeliverySettings:
         // answer of the admin API, which is exactly what the password field exists to avoid.
         case Some(uri) if Option(uri.getRawUserInfo).isDefined =>
           Some("otpProvider.url must not carry credentials; use username and the password field")
+        // Auth reads the address with another parser than `java.net.URI`: one that central accepts and auth cannot read would
+        // be a saved block that sends nothing, so it is refused here.
+        case Some(_) if URL.decode(settings.url).isLeft => Some("otpProvider.url must be an absolute HTTP(S) URL")
         case Some(_) =>
           if settings.username.exists(_.trim.isEmpty) then Some("otpProvider.username must not be empty when present")
           else if settings.username.exists(hasControlCharacter) then Some("otpProvider.username must not contain control characters")
