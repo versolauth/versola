@@ -77,6 +77,37 @@ if [ "$TARGET" = "vps" ] && [ -z "$AUTH_URL" ]; then
   echo "versola-tools: AUTH_URL is required when TARGET=vps (e.g. https://auth.example.com)" >&2
   exit 1
 fi
+
+# POSTGRES_MODE (vps only, optional): `external` (the default) leaves Postgres to the deployment, as it
+# always was; `bundled` adds a `postgres` service to the compose fragment, with the role, the database
+# and the three schemas created on its first start. The container runs with network_mode: host and
+# listens on 127.0.0.1:5432 only, so that is the one address POSTGRES_HOST can be (and what it defaults
+# to) and the services' URLs get `sslmode=disable` from gen-env.scala's loopback rule. Its TLS is not
+# a thing a CA file could be given for, so POSTGRES_CA_FILE is refused with it.
+POSTGRES_MODE="${POSTGRES_MODE:-external}"
+case "$POSTGRES_MODE" in
+  external|bundled) ;;
+  *)
+    echo "versola-tools: unknown POSTGRES_MODE '$POSTGRES_MODE' (expected external or bundled)" >&2
+    exit 1
+    ;;
+esac
+if [ "$POSTGRES_MODE" = "bundled" ]; then
+  if [ "$TARGET" != "vps" ]; then
+    echo "versola-tools: POSTGRES_MODE=bundled is only supported when TARGET=vps" >&2
+    exit 1
+  fi
+  POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1:5432}"
+  if [ "$POSTGRES_HOST" != "127.0.0.1:5432" ]; then
+    echo "versola-tools: POSTGRES_HOST must be 127.0.0.1:5432 (or unset) when POSTGRES_MODE=bundled; the container listens there only" >&2
+    exit 1
+  fi
+  if [ -n "${POSTGRES_CA_FILE:-}" ]; then
+    echo "versola-tools: POSTGRES_CA_FILE cannot be combined with POSTGRES_MODE=bundled (the container speaks no TLS)" >&2
+    exit 1
+  fi
+  export POSTGRES_HOST
+fi
 if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   echo "versola-tools: POSTGRES_HOST is required when TARGET=vps (e.g. 127.0.0.1:5432)" >&2
   exit 1
@@ -273,8 +304,43 @@ else
   COMPOSE_TEMPLATE=compose.fragment.yml.template
 fi
 if [ "$TARGET" = "vps" ]; then
+  # bundled: the lines the template marks `#@PG@` lose the marker, and the role and database the
+  # container creates are the ones gen-env wrote into the configs (the three configs must agree: a
+  # per-service --*-postgres-user would otherwise point a service at a role nobody created). external:
+  # those lines are dropped, which leaves the file as it was before bundled existed.
+  if [ "$POSTGRES_MODE" = "bundled" ]; then
+    pg_role=
+    for svc in auth central edge; do
+      role=$(sed -n '/^postgres {/,/^}/s/^  user = "\([^"]*\)"$/\1/p' .local/env/vps/$svc.conf)
+      if [ -z "$role" ]; then
+        echo "versola-tools: the Postgres user of $svc.conf is not a plain role name the container can create (none found on a line of the form user = \"name\")" >&2
+        exit 1
+      fi
+      if [ -n "$pg_role" ] && [ "$role" != "$pg_role" ]; then
+        echo "versola-tools: POSTGRES_MODE=bundled needs one Postgres user for auth, central and edge (found '$pg_role' and '$role')" >&2
+        exit 1
+      fi
+      pg_role=$role
+    done
+    # `pg_` names are reserved by Postgres, and an identifier is at most 63 bytes: either one would only
+    # fail later, inside the container's first start.
+    case "$pg_role" in
+      ''|[!a-z_]*|*[!a-z0-9_]*|pg_*)
+        echo "versola-tools: the Postgres user '$pg_role' is not a plain role name (lowercase letters, digits and '_', not starting with 'pg_') the container can create" >&2
+        exit 1
+        ;;
+    esac
+    if [ "${#pg_role}" -gt 63 ]; then
+      echo "versola-tools: the Postgres user '$pg_role' is not a plain role name: longer than 63 characters" >&2
+      exit 1
+    fi
+    pg_sed="s/^#@PG@//"
+  else
+    pg_role=
+    pg_sed="/^#@PG@/d"
+  fi
   # The validated public names (possibly empty) become `mtls-init`'s environment.
-  sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
+  sed -e "$pg_sed" -e "s/@POSTGRES_USER@/$pg_role/g" -e "s/@POSTGRES_DB@/${POSTGRES_DB:-auth}/g" -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
     "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 else
   sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
@@ -291,6 +357,13 @@ if [ "$TARGET" = "vps" ]; then
   # image, which has neither). Read by other users than ours, hence 644.
   cp mtls-init.sh step-ca-intermediates.sh "$OUT_DIR"/
   chmod 644 "$OUT_DIR"/mtls-init.sh "$OUT_DIR"/step-ca-intermediates.sh
+  # The bundled Postgres' first-start script (mounted by the `postgres` service); absent otherwise, so an
+  # `external` bundle holds exactly the files it did before, and a reused OUT_DIR keeps no stale copy.
+  rm -f "$OUT_DIR"/postgres-init-schemas.sh
+  if [ "$POSTGRES_MODE" = "bundled" ]; then
+    cp postgres-init-schemas.sh "$OUT_DIR"/
+    chmod 644 "$OUT_DIR"/postgres-init-schemas.sh
+  fi
 else
   cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 fi

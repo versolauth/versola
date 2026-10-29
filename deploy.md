@@ -66,6 +66,7 @@ source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_m
 | `~/.versola/openbao/vps.json` | AppRole credentials `versola-cli` uses to read/write secrets |
 | `~/.versola/openbao/vps-admin.json` | OpenBao root token + unseal key. **Keep a copy off the host** — neither is recoverable if lost |
 | Volume `versola-openbao-file-vps` | OpenBao's data (all secrets). Survives `down` |
+| Volume `versola-postgres-data-vps` | the bundled Postgres' data ([bundled mode](#bundled-postgres) only). Declared `external`, so `compose down --volumes` and uninstall leave it |
 | Volume `versola-acme-vps` | Let's Encrypt state (`--proxy nginx`) |
 | Volumes `versola-step-ca-vps`, `versola-central-ca-vps`, `versola-mtls-vps` | the internal CA's keys, central's access to it, auth's mTLS certificate. Not in OpenBao or the database |
 
@@ -83,7 +84,8 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - Docker and the Compose plugin (Debian: Docker CE from Docker's apt repository — `docker.io` has no
   Compose plugin; add the deploy user to the `docker` group). `versola doctor --target vps` checks
   them, plus memory and disk.
-- The managed PostgreSQL 18 cluster and the CA file that signed its certificate.
+- PostgreSQL 18: either the managed cluster and the CA file that signed its certificate, or, in
+  [bundled mode](#bundled-postgres), nothing: the bundle runs the database in a container.
 - A DNS record for the `--auth-url` host pointing at the host's public IP **before `versola up`**
   (Let's Encrypt validates over port 80). Behind Cloudflare it must be *DNS only* while the
   certificate is issued.
@@ -179,6 +181,37 @@ for s in auth central edge; do psql -c "CREATE SCHEMA IF NOT EXISTS $s AUTHORIZA
 ```
 
 The password is printed only on that first run; it also stays in the bundle's `auth.secrets.env`.
+
+<a id="bundled-postgres"></a>
+**Bundled Postgres.** With `POSTGRES_MODE=bundled` (a `versola-tools` input; the default `external` is
+everything above, unchanged) the compose file also runs the database, so none of the SQL above is run by
+hand. The `postgres` service is the pinned `postgres:<major>.<minor>` image (the PostgreSQL release the
+project is verified against; a major upgrade is never automatic, a release can move the tag to a newer minor), on the host network and
+listening on `127.0.0.1:5432` only, never on a public interface. Its healthcheck gates `migrate` and the
+three services. The first start with an empty data directory creates the role (the user in the configs),
+the database (`--postgres-db`, `auth` by default) and the three schemas owned by that role; a later start
+finds the data directory and initialises nothing. The password reaches the container through
+`postgres.secrets.env` (`POSTGRES_PASSWORD` only), written by `versola-cli` from the same value it stores
+in OpenBao. `env_file` makes it part of the container's configuration, so `docker inspect` shows it to
+anyone who can use Docker on the VM; it is in no image layer, log line or generator output. The services
+connect with `sslmode=disable`, which is what the loopback rule above writes.
+
+The data lives in the external Docker volume `versola-postgres-data-vps` on the VM, created by
+`versola-cli` before the first start, so it survives container recreation, `compose down --volumes`,
+uninstall and a redeploy. Nothing but a backup protects it: the volume is not in OpenBao and not in a
+managed cluster's snapshots, so take `pg_dump` backups ([3](#3-releases-and-recovery)) and keep a copy off
+the host. A dump goes through the container, since there is no native server to `sudo -u postgres`
+into: `(umask 077; docker exec versola-postgres-vps pg_dump -U versola_app -Fc auth > ~/versola-backup-$(date +%Y%m%d-%H%M%S).dump)`
+(`auth` is `--postgres-db`; `-U` is the role in the configs). Like the external role, the password is
+read once, at initialisation: changing it later in OpenBao does not change the role's.
+
+Two things to know. The image makes `POSTGRES_USER` a superuser, so the services connect as one, unlike
+the plain role the external setup asks for. And the container uses the host network, so port 5432 on
+the VM must be free: a native Postgres already listening there stops the container from starting.
+
+Sizing: `max_connections` is 150 and `shared_buffers` 256 MB, for a server with 4 GB of RAM; the services'
+pools (auth 10, central 15, edge 10 per replica; central and edge add one `LISTEN` connection each) and a
+rollout's stand-ins fit in it.
 
 <a id="postgres-tls"></a>
 **Postgres TLS.** Every connection (the pool and the `LISTEN` connection) uses `sslmode=verify-full`

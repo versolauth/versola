@@ -46,6 +46,48 @@ services:
       - ./openbao.hcl:/openbao/config/openbao.hcl:ro
       - versola-openbao-file-vps:/openbao/file
 
+#@PG@  # ---- Bundled Postgres (POSTGRES_MODE=bundled) ------------------------------------------------------
+#@PG@  # Only in a bundle generated with POSTGRES_MODE=bundled; in the default `external` mode every line
+#@PG@  # marked like this one is dropped, so that bundle is the same file it always was. The role, the
+#@PG@  # database and the three schemas are created by the image's first start (POSTGRES_USER/DB and
+#@PG@  # postgres-init-schemas.sh) and never again: the image skips its init when the data directory is not
+#@PG@  # empty. The password comes from postgres.secrets.env, which versola-cli writes with this one
+#@PG@  # variable and nothing else of auth's secrets. `listen_addresses` is what keeps it off the public
+#@PG@  # interface: with network_mode: host there is no `ports:` to restrict. The pinned tag is the
+#@PG@  # PostgreSQL release the project verifies against; a major upgrade is not automatic.
+#@PG@  postgres:
+#@PG@    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+#@PG@    container_name: versola-postgres-vps
+#@PG@    restart: unless-stopped
+#@PG@    network_mode: host
+#@PG@    env_file:
+#@PG@      - ./postgres.secrets.env
+#@PG@    environment:
+#@PG@      POSTGRES_USER: "@POSTGRES_USER@"
+#@PG@      POSTGRES_DB: "@POSTGRES_DB@"
+#@PG@    # 150 connections: auth 10, central 15 and edge 10 pool connections (central and edge add a LISTEN connection
+#@PG@    # each) per replica, the rollout's stand-ins, `migrate` and the reserved superuser slots. shared_buffers is
+#@PG@    # sized for a server with 4 GB of RAM, where the three JVMs take most of the memory.
+#@PG@    command:
+#@PG@      - postgres
+#@PG@      - -c
+#@PG@      - listen_addresses=127.0.0.1
+#@PG@      - -c
+#@PG@      - max_connections=150
+#@PG@      - -c
+#@PG@      - shared_buffers=256MB
+#@PG@    healthcheck:
+#@PG@      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+#@PG@      # The first start runs initdb and the schema script before it accepts connections; failures in this
+#@PG@      # window do not count, so a slow disk cannot make `depends_on: service_healthy` fail the `up`.
+#@PG@      start_period: 30s
+#@PG@      interval: 5s
+#@PG@      timeout: 5s
+#@PG@      retries: 12
+#@PG@    volumes:
+#@PG@      - versola-postgres-data-vps:/var/lib/postgresql
+#@PG@      - ./postgres-init-schemas.sh:/docker-entrypoint-initdb.d/10-schemas.sh:ro
+#@PG@
   # Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go),
   # which runs this via `docker compose run --rm migrate`. Same role as
   # compose.fragment.yml.template's own `migrate` service -- see the long
@@ -66,6 +108,9 @@ services:
     # No `platform:` pin, same reasoning as central/auth/edge below.
     network_mode: host
     command: ["migrate"]
+#@PG@    depends_on:
+#@PG@      postgres:
+#@PG@        condition: service_healthy
     # This one container mounts all three services' config files below and
     # resolves each in turn (see MigrateTool.readConnection) -- and Typesafe
     # Config's own resolve() requires every ${VAR} substitution in a config
@@ -139,6 +184,8 @@ services:
     depends_on:
       mtls-init:
         condition: service_completed_successfully
+#@PG@      postgres:
+#@PG@        condition: service_healthy
     volumes:
       - ./central.conf:/app/config/env.conf:ro
       - ./postgres-ca:/etc/versola/postgres-ca:ro
@@ -165,6 +212,8 @@ services:
         condition: service_started
       mtls-init:
         condition: service_completed_successfully
+#@PG@      postgres:
+#@PG@        condition: service_healthy
     network_mode: host
     environment:
       PORT: 8080
@@ -204,6 +253,8 @@ services:
         condition: service_started
       mtls-init:
         condition: service_completed_successfully
+#@PG@      postgres:
+#@PG@        condition: service_healthy
     network_mode: host
     environment:
       PORT: 8095
@@ -337,3 +388,7 @@ volumes:
   versola-step-ca-vps:
   versola-central-ca-vps:
   versola-mtls-vps:
+#@PG@  # The customer's data: created by versola-cli like OpenBao's volume, so `compose down --volumes` and
+#@PG@  # uninstall cannot remove it.
+#@PG@  versola-postgres-data-vps:
+#@PG@    external: true
