@@ -8,7 +8,7 @@
 -- request.
 CREATE TABLE af_settings (
     id         SMALLINT    NOT NULL PRIMARY KEY,
-    settings   TEXT        NOT NULL,
+    settings   JSONB       NOT NULL,
     updated_by TEXT        NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );

@@ -1013,7 +1013,8 @@ object BootstrapService:
     * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
     * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
-    if path.startsWith("/antifraud/") then
+    // Reading the settings needs no one to name: nothing records who read them.
+    if path.startsWith("/antifraud/") && !(method == "GET" && path == "/antifraud/settings") then
       Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
     else Vector.empty
 
