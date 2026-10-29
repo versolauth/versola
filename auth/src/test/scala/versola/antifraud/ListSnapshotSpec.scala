@@ -162,6 +162,24 @@ object ListSnapshotSpec extends UnitSpecBase:
           s.lookup(ctx(ip = Some("203.0.113.10")), now).decisive.map(_.listType).contains(AntifraudListType.deny),
         )
       },
+      test("a network of one address is the address: a deny on it ties with an allow on the address, and wins") {
+        val s = snapshot(
+          entry(AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.9"),
+          entry(AntifraudListType.deny, AntifraudValueType.cidr, "203.0.113.9/32"),
+          entry(AntifraudListType.allow, AntifraudValueType.ip, "2001:db8::1"),
+          entry(AntifraudListType.deny, AntifraudValueType.cidr, "2001:db8::1/128"),
+          entry(AntifraudListType.allow, AntifraudValueType.ip, "198.51.100.3"),
+          entry(AntifraudListType.deny, AntifraudValueType.cidr, "198.51.100.2/31"),
+        )
+        def winner(ip: String) = s.lookup(ctx(ip = Some(ip)), now).decisive.map(_.listType)
+        assertTrue(
+          winner("203.0.113.9").contains(AntifraudListType.deny),
+          winner("2001:db8::1").contains(AntifraudListType.deny),
+          // a network of two addresses is still a network: the address is more specific
+          winner("198.51.100.3").contains(AntifraudListType.allow),
+          winner("198.51.100.2").contains(AntifraudListType.deny),
+        )
+      },
       test("a denied address inside an allowed network is denied; a longer network beats a shorter one") {
         val s = snapshot(
           entry(AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.0/24"),

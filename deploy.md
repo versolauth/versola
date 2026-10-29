@@ -704,7 +704,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
-  `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
+  `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, so a row
+  can live up to one day longer than the retention). The migration creates the parent only, and a partition can be created or dropped
   only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
   read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
   different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
@@ -730,8 +731,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud` block of `auth`'s config.
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
-  recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
-  hash, a mail domain): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
+  recognise at once (a destination hash, a number prefix, an IP or network, a user-agent hash, the mail domain of an
+  address a code is asked for; an ASN, a device or a JA4 hash is refused until a request carries one, P1-1 and P1-3,
+  since such an entry would match nothing): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
   outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
   are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
   turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
@@ -747,7 +749,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
   else changes for a deployment that is upgraded. Edge tells central who the admin is (an inject rule for `userId`, a query parameter of a `GET` and a body field of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). There is no per-tenant admin: whoever holds the permissions may change every entry, global ones included. A call to central with the resource secret but no `userId` is `400`. A `phone_hash` entry is made from a phone number (`phone`); the
   number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
-  Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
+  Safety rules the service enforces: `allow` only for an exact subject (phone hash, address, /32 or /128; a network of
+  one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
   5% of the last 24 hours of events (judged over at least
@@ -765,7 +768,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
   ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
   instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
-  next run recomputes the last `stats-lookback` (2 minutes). A BRIN index on `af_event (at)` keeps that read to the
+  next run recomputes the last `stats-lookback` (2 minutes, or twice `stats-interval` when that is longer, so that
+  every minute is rolled up twice; an event the writer was later with than that is never counted, which under an
+  attack makes the statistics a lower estimate, as the log itself is). A BRIN index on `af_event (at)` keeps that read to the
   blocks of those minutes.
   Separately, the SMS budget closes a range (tenant plus the first `antifraud.sms-budget.prefix-length` digits) for the next hour:
   `sentPerHour` (that many codes may be sent to it, no more) and `minVolume` with `minConversion` (a range with at
@@ -791,9 +796,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
 
-- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per phone (the keyed hash), network of the IP
-  address, device, ASN and range of numbers over the last minute, 10 minutes, hour and day, for the antifraud rules. They
-  count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
+- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per network of the IP address, device, ASN
+  and range of numbers, and **codes sent** per phone (the keyed hash), over the last minute, 10 minutes, hour and day,
+  for the antifraud rules. The phone key is the one that counts sends and not requests: a request that is refused,
+  challenged or faked sends nothing, and were it counted, asking for codes to somebody else's number from anywhere
+  would raise the count held against that number's owner until the number is blocked. So the `phone` limits bound
+  the codes a number can be sent (SMS bombing), and cannot lock its owner out. They
+  count *requests* (or sends), not distinct values: how many different phones one device, address or ASN asked for, or how many
   ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
   The counters' sizes are constants of the service: `max-keys` (20000 per kind), `stripes` (8), `share-from` (3),
@@ -893,7 +902,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
   real bound is the per-credential OTP request limit, which a wrong answer is charged against, and the token's `ttl`; a guess
   costs the server one SHA-256. The page's ask for a code from the pending step is the one request that is free and can be
-  repeated: it only gets a challenge (a MAC), never a code, and a right answer sends one code and ends the step.
+  repeated: while the decision is still `Challenge` it only gets a challenge (a MAC), and a right answer sends one code
+  and ends the step; once the decision has become `Allow` (the counters have cooled, a list entry expired) the ask itself
+  sends the code, once, as the request it stands for would have.
   **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
   form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
   step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
