@@ -21,6 +21,7 @@ import zio.{Config, Duration}
   * @param maxInFlight      sessions started at once; an arrival past it waits, and the wait is counted
   * @param warmupSessions   unmeasured logins before the first scenario, so that it does not pay for the JIT and the pool
   * @param queueSampleEvery how often `antifraud_event_queue_size` is read while a scenario runs
+  * @param sources          where the requests come from, as `auth` sees it (see [[SourcesConfig]])
   * @param attackSmsCeiling the most of an attack's requested codes that may be sent (0.1: nine in ten must be stopped);
   *                         an attack scenario above it fails the effectiveness check whatever the latency says
   * @param legitRefusalCeiling the most of legitimate users' requests that may be refused (0.01); the check of the
@@ -43,6 +44,7 @@ case class AntifraudConfig(
     normal: NormalTrafficConfig,
     prefixAttack: AttackConfig,
     deviceAttack: AttackConfig,
+    distributedAttack: AttackConfig,
     tokenControl: TokenControlConfig,
     mixed: MixedConfig,
     mimicking: MimickingConfig,
@@ -56,6 +58,7 @@ case class AntifraudConfig(
     controlTolerance: Duration,
     addedLatencyCeiling: Duration,
     seed: Option[Long],
+    sources: SourcesConfig,
 ):
   def selected: List[AntifraudScenario] = if scenarios.isEmpty then AntifraudScenario.values.toList else scenarios
 
@@ -107,6 +110,16 @@ case class NormalTrafficConfig(
 /** `rate` codes requested per second for `duration`, none of them verified. */
 case class AttackConfig(rate: Double, duration: Duration)
 
+/** Where the requests come from, as `auth` sees it. Every request of this process leaves one socket, so without
+  * this the whole run is one client to the velocity counters and the lists; with `header` set, each session carries a
+  * source address in it (the header the tenant's `ipHeader` names, which the stack has to take from this process's
+  * address), drawn as follows: a legitimate session from a pool of `legit` addresses (a few users share one, as behind
+  * a NAT), a distributed attack from a pool of `distributed` addresses, and every other attack from one address of its
+  * own, so that a source an earlier scenario got blocked does not carry over. An empty `header` sends none.
+  */
+case class SourcesConfig(header: String, legit: Int, distributed: Int):
+  def enabled: Boolean = header.nonEmpty
+
 /** Legitimate sign-ins at `normalRate` while an attack on one range runs at `attackRate`, for `duration`;
   * `legitInRangeShare` of the legitimate users dial a number inside the attacked range. What a closed range
   * does to them is the cost of the budget.
@@ -136,6 +149,10 @@ enum AntifraudScenario(val wire: String):
 
   /** One source cycling through many numbers, spread over all ranges, none verified. */
   case DeviceAttack extends AntifraudScenario("device-attack")
+
+  /** Many sources (a botnet, a proxy pool) asking for codes to numbers of one range, none verified: what a per-source
+    * limit does not see. */
+  case DistributedAttack extends AntifraudScenario("distributed-attack")
 
   /** Legitimate sign-ins, some inside the range, while the range is attacked: the false positives. */
   case MixedAttack extends AntifraudScenario("mixed-attack")
