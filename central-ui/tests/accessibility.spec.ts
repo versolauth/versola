@@ -13,7 +13,7 @@ import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, u
  * that catches missing labels, low contrast and similar, next to looking at the screenshots
  * (see .claude/rules/frontend.md). Tags are the WCAG 2.0/2.1 levels A and AA axe documents.
  */
-const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges', 'security', 'otp-templates', 'authorization-details', 'keys', 'system-settings'];
+const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges', 'security', 'otp-templates', 'authorization-details', 'keys', 'system-settings', 'delivery'];
 const themes = ['light', 'dark'] as const;
 
 /** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */
@@ -485,6 +485,40 @@ for (const theme of themes) {
       await clean();
     });
   }
+
+  test(`Delivery settings with both blocks, both editors and a refused save have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    const stored = {
+      smtp: { host: 'smtp.example.com', port: 587, username: 'mailer', from: 'noreply@example.com', subject: 'Your verification code', startTls: true, enabled: true },
+      smtpPassword: 'example-password',
+      otpProvider: { method: 'POST', url: 'https://sms.example.com/send', username: 'sms-account', body: { phones: '{{phone}}' }, enabled: false },
+      otpProviderPassword: 'example-password',
+    };
+    await loadAdminApp(page, { path: '/?view=delivery', state: { deliverySettings: stored } });
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+    await expect(page.getByRole('region', { name: 'Email' })).toContainText('smtp.example.com:587');
+    await clean();
+    await page.getByRole('button', { name: 'Remove settings' }).click();
+    await expect(page.getByRole('dialog', { name: 'Remove delivery settings' })).toBeVisible();
+    await clean();
+    await page.getByRole('dialog', { name: 'Remove delivery settings' }).getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit email' }).click();
+    await page.getByLabel('Server address *').fill('');
+    await page.getByRole('button', { name: 'Save email settings' }).click();
+    await expect(page.getByText('The server address is required.')).toBeVisible();
+    await clean();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard' }).click();
+    await page.getByRole('region', { name: 'SMS' }).getByRole('button', { name: 'Edit SMS' }).click();
+    await page.getByLabel('Body entry 1 name').fill('');
+    await page.getByRole('button', { name: 'Save SMS settings' }).click();
+    await expect(page.getByText('Every body entry needs a name.')).toBeVisible();
+    await clean();
+    await loadAdminApp(page, { path: '/?view=delivery', state: { deliveryFailure: 'central is unreachable' } });
+    await expect(page.getByRole('heading', { name: 'Could not load the delivery settings' })).toBeVisible();
+    await clean();
+  });
 
   test(`System settings with its locale form and password editor have no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);

@@ -612,3 +612,39 @@ export interface UserRefreshToken {
   dpopBound: boolean;
 }
 
+
+// Global (not tenant-scoped) delivery settings: the SMTP server and the SMS provider auth sends codes and temporary
+// passwords through. Passwords are write-only: central reports only whether one is stored.
+export interface SmtpDeliverySettings {
+  host: string;
+  port: number;
+  username: string;
+  from: string;
+  subject: string;
+  startTls: boolean;
+  enabled: boolean;
+}
+
+export interface OtpProviderDeliverySettings {
+  method: string;
+  url: string;
+  username?: string | null;
+  body: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface DeliverySettingsRecord {
+  smtp?: SmtpDeliverySettings;
+  hasSmtpPassword: boolean;
+  otpProvider?: OtpProviderDeliverySettings;
+  hasOtpProviderPassword: boolean;
+}
+
+/** A save replaces both blocks: one left out is removed with its password. A password left out or `null` keeps the
+ * stored one, `''` clears it, any other value replaces it. */
+export interface DeliverySettingsUpdate {
+  smtp?: SmtpDeliverySettings;
+  smtpPassword?: string | null;
+  otpProvider?: OtpProviderDeliverySettings;
+  otpProviderPassword?: string | null;
+}

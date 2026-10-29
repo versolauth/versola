@@ -30,6 +30,7 @@ import './otp-templates-list';
 import './authorization-details-list';
 import './keys-metadata';
 import './system-settings';
+import './delivery-settings';
 
 // The account settings page is auth's self-service surface (served by edge at
 // /resources/auth/settings), not part of the console's own /central API.
@@ -342,6 +343,7 @@ export class VersolaAdmin extends LitElement {
       case 'otp-templates':
       case 'authorization-details':
       case 'system-settings':
+      case 'delivery':
         return p.has('security:read');
       case 'users':
         return p.has('users:read');
@@ -375,6 +377,7 @@ export class VersolaAdmin extends LitElement {
       case 'otp-templates':
       case 'authorization-details':
       case 'system-settings':
+      case 'delivery':
         return p.has('security:manage');
       case 'users':
         return p.has('users:manage');
@@ -471,7 +474,7 @@ export class VersolaAdmin extends LitElement {
     locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
   };
 
-  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'forms', 'themes']);
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
 
   /** The views whose records belong to the selected tenant: switching it closes the open record.
     * A global view keeps its record (the selector also fires on load, picking the first tenant). */
@@ -623,6 +626,8 @@ export class VersolaAdmin extends LitElement {
       case 'system-settings':
         return html`<versola-system-settings .canManage=${this.canManage('system-settings')} .route=${this.recordRoute}
           .canReadLocales=${this.adminPermissions.has('locales:read')} .canManageLocales=${this.adminPermissions.has('locales:manage')}></versola-system-settings>`;
+      case 'delivery':
+        return html`<versola-delivery-settings .canManage=${this.canManage('delivery')} .route=${this.recordRoute}></versola-delivery-settings>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

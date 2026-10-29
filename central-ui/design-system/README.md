@@ -328,11 +328,22 @@ the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline er
 field with `aria-invalid` and `aria-describedby`), a bottom action row separated by a top border
 with Cancel and the one primary submit. No second Close at the top.
 
-**Settings pages** (System settings, Security, Keys & metadata). Security's section rail uses the
+**Settings pages** (System settings, Delivery, Security, Keys & metadata). Security's section rail uses the
 sidebar's item treatment: `--sidebar-hover-bg` on hover, `--accent-subtle` / `--accent-text` with a 3px
 `--accent` bar for the section in view. Read-only cards in the
 record pattern: label/value rows, one Edit per group, never a read view shaped like disabled
 inputs, never two primary buttons in one region.
+
+**Delivery** (`delivery-settings.ts`) is a settings page whose groups are secrets-bearing: one record card per channel (Email, SMS)
+with its own Edit that opens that group as a page, and a danger card that removes the whole record. A password is
+**write-only**: the record card shows a `Saved` / `Not set` chip, never a value, and the editor's password field is always
+empty (`type="password"`, `autocomplete="new-password"`) with the rule under it: empty keeps the saved one, typing replaces
+it, and a checkbox, only while one is saved, removes it (disabled while something is typed, because the typed value wins).
+A list of name/value pairs (the SMS body) is rows of two inputs with an icon-only Remove (`aria-label` naming the row) and a
+`+ Add entry` button, inside a `role="group"` labelled by its kicker; a bad row gets `aria-invalid` and `aria-describedby`,
+and removing a row moves focus to the row that took its place, or to Add entry. `formStyles` styles `input[type="password"]`
+like the other text fields. A save that replaces several groups reads the record without the read cache first (`fresh`) so a
+stale copy never puts back what another admin changed.
 
 ## Component catalogue
 
