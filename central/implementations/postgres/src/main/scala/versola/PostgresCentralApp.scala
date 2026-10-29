@@ -26,6 +26,7 @@ import versola.central.configuration.clients.{
   OAuthClientRepository,
   OAuthClientService,
 }
+import versola.central.configuration.delivery.{DeliverySettingsController, DeliverySettingsRepository, DeliverySettingsService}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{
   EdgeCertificateIssuer,
@@ -63,6 +64,7 @@ import versola.configuration.clients.{
   PostgresEdgeCertificateEnrollmentRepository,
   PostgresOAuthClientRepository,
 }
+import versola.configuration.delivery.PostgresDeliverySettingsRepository
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
 import versola.configuration.edges.{
   PostgresEdgeCertificateRepository,
@@ -143,7 +145,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       ChallengeSettingsRepository &
       ChallengeSettingsService &
       SystemSettingsRepository &
+      DeliverySettingsRepository &
       SystemSettingsService &
+      DeliverySettingsService &
       CacheSyncRepository &
       CacheSyncService &
       SecurityService &
@@ -184,6 +188,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ThemeController.routes,
       OtpChallengeController.routes,
       SystemSettingsController.routes,
+      DeliverySettingsController.routes,
       UserController.routes,
       AntifraudListController.routes,
       AntifraudSettingsController.routes,
@@ -254,6 +259,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOtpChallengeRepository.live >++>
           PostgresChallengeSettingsRepository.live >++>
           PostgresSystemSettingsRepository.live >++>
+          PostgresDeliverySettingsRepository.live >++>
           PostgresCacheSyncRepository.live >++>
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
@@ -294,6 +300,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ThemeService.live >++>
       OtpChallengeService.live >++>
       SystemSettingsService.live >++>
+      DeliverySettingsService.live >++>
       CacheSyncService.live >++>
       AuthClient.live >++>
       UserService.live >++>

@@ -1650,7 +1650,9 @@ notification and refuses to start, naming this setting, if it cannot.
   available memory first, which lowers the risk but doesn't remove it.
 - **No supported way to change configuration on `vps`** (OTP provider, SMTP, …), so **SMTP and SMS are
   not configured in prod**: password resets and additional admin accounts can't deliver a temporary
-  password.
+  password. Being closed by versolauth/versola#832: central already stores the delivery settings
+  (`PUT /configuration/delivery-settings`; migration `V1033`, one new table, additive, no action), but
+  auth does not read them yet, so until that part lands a saved record changes nothing.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short
