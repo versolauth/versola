@@ -62,7 +62,7 @@ object Comparison:
 case class Check(scenario: String, name: String, value: Double, limit: Double, verdict: Verdict)
 
 object Checks:
-  private val attacks = Set("prefix-attack", "device-attack", "conversion-mimicking", "targeted-phone")
+  private val attacks = Set("prefix-attack", "device-attack", "distributed-attack", "conversion-mimicking", "targeted-phone")
 
   private def share(part: Long, whole: Long): Double = if whole == 0L then 0.0 else part.toDouble / whole
 

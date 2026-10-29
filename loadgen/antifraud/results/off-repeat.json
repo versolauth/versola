@@ -1,40 +1,40 @@
 {
   "label" : "off-repeat",
-  "startedAt" : "2026-10-23T07:42:14.177726Z",
+  "startedAt" : "2026-10-29T10:17:08.042226Z",
   "scenarios" : [
     {
       "scenario" : "normal",
-      "seconds" : 120.034375375,
+      "seconds" : 120.017675792,
       "arrivals" : 2400,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 2400,
           "errors" : 0,
-          "p50Ms" : 3.673,
-          "p99Ms" : 6.871,
-          "maxMs" : 13.391
+          "p50Ms" : 3.525,
+          "p99Ms" : 6.903,
+          "maxMs" : 27.295
         },
         "otp-verify" : {
-          "count" : 2037,
+          "count" : 2028,
           "errors" : 0,
-          "p50Ms" : 8.615,
-          "p99Ms" : 15.103,
-          "maxMs" : 23.391
+          "p50Ms" : 8.503,
+          "p99Ms" : 15.735,
+          "maxMs" : 20.911
         },
         "refresh" : {
-          "count" : 15263,
+          "count" : 15264,
           "errors" : 0,
-          "p50Ms" : 3.239,
-          "p99Ms" : 5.963,
-          "maxMs" : 24.127
+          "p50Ms" : 3.137,
+          "p99Ms" : 5.883,
+          "maxMs" : 25.631
         },
         "token" : {
-          "count" : 2037,
+          "count" : 2028,
           "errors" : 0,
-          "p50Ms" : 3.517,
-          "p99Ms" : 6.375,
-          "maxMs" : 9.439
+          "p50Ms" : 3.603,
+          "p99Ms" : 6.443,
+          "maxMs" : 8.815
         }
       },
       "otp" : {
@@ -42,43 +42,43 @@
         "sent" : 2400,
         "refused" : 0,
         "other" : 0,
-        "verified" : 2037,
+        "verified" : 2028,
         "rejected" : 0,
         "failed" : 0,
-        "notEntered" : 363
+        "notEntered" : 372
       },
       "failures" : {},
       "smsSent" : 2400,
       "smsRanges" : 110,
-      "smsBusiestRange" : 33,
+      "smsBusiestRange" : 36,
       "auth" : {
-        "enqueued" : 4487.0,
-        "written" : 4574.0,
+        "enqueued" : 4470.0,
+        "written" : 4564.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
-        "queueSize" : 0.0
+        "queueSize" : 1.0
       }
     },
     {
       "scenario" : "token-control",
-      "seconds" : 63.293655583,
+      "seconds" : 63.213781417,
       "arrivals" : 3000,
       "waited" : 0,
       "latencies" : {
         "refresh" : {
           "count" : 3000,
           "errors" : 0,
-          "p50Ms" : 8.471,
-          "p99Ms" : 12.599,
-          "maxMs" : 20.751
+          "p50Ms" : 8.167,
+          "p99Ms" : 12.071,
+          "maxMs" : 29.119
         },
         "token" : {
           "count" : 1000,
           "errors" : 0,
-          "p50Ms" : 4.955,
-          "p99Ms" : 8.175,
-          "maxMs" : 22.431
+          "p50Ms" : 4.723,
+          "p99Ms" : 7.855,
+          "maxMs" : 10.055
         }
       },
       "otp" : {
@@ -94,28 +94,28 @@
       "failures" : {},
       "smsSent" : 1000,
       "smsRanges" : 110,
-      "smsBusiestRange" : 16,
+      "smsBusiestRange" : 17,
       "auth" : {
         "enqueued" : 2010.0,
-        "written" : 2039.0,
+        "written" : 2044.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
-        "queueSize" : 0.0
+        "queueSize" : 1.0
       }
     },
     {
       "scenario" : "prefix-attack",
-      "seconds" : 119.9912495,
+      "seconds" : 119.97570125,
       "arrivals" : 2400,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 2400,
           "errors" : 0,
-          "p50Ms" : 6.511,
-          "p99Ms" : 9.911,
-          "maxMs" : 14.615
+          "p50Ms" : 5.795,
+          "p99Ms" : 11.175,
+          "maxMs" : 25.471
         }
       },
       "otp" : {
@@ -134,7 +134,7 @@
       "smsBusiestRange" : 2400,
       "auth" : {
         "enqueued" : 2400.0,
-        "written" : 2386.0,
+        "written" : 2400.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
@@ -143,16 +143,16 @@
     },
     {
       "scenario" : "device-attack",
-      "seconds" : 119.994063833,
+      "seconds" : 119.977325709,
       "arrivals" : 2400,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 2400,
           "errors" : 0,
-          "p50Ms" : 6.615,
-          "p99Ms" : 11.151,
-          "maxMs" : 21.871
+          "p50Ms" : 5.819,
+          "p99Ms" : 11.903,
+          "maxMs" : 22.511
         }
       },
       "otp" : {
@@ -168,9 +168,9 @@
       "failures" : {},
       "smsSent" : 2400,
       "smsRanges" : 110,
-      "smsBusiestRange" : 34,
+      "smsBusiestRange" : 35,
       "auth" : {
-        "enqueued" : 2395.0,
+        "enqueued" : 2399.0,
         "written" : 2398.0,
         "dropped" : {},
         "smsRefused" : 0.0,
@@ -179,38 +179,75 @@
       }
     },
     {
+      "scenario" : "distributed-attack",
+      "seconds" : 119.97190325,
+      "arrivals" : 2400,
+      "waited" : 0,
+      "latencies" : {
+        "otp-request" : {
+          "count" : 2400,
+          "errors" : 0,
+          "p50Ms" : 6.383,
+          "p99Ms" : 13.151,
+          "maxMs" : 33.311
+        }
+      },
+      "otp" : {
+        "requested" : 2400,
+        "sent" : 2400,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 0,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 0
+      },
+      "failures" : {},
+      "smsSent" : 2400,
+      "smsRanges" : 1,
+      "smsBusiestRange" : 2400,
+      "auth" : {
+        "enqueued" : 2401.0,
+        "written" : 2392.0,
+        "dropped" : {},
+        "smsRefused" : 0.0,
+        "smsBudgetFull" : 0.0,
+        "queueSize" : 0.0
+      }
+    },
+    {
       "scenario" : "mixed-attack",
-      "seconds" : 119.993951,
+      "seconds" : 119.987224875,
       "arrivals" : 4800,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 4800,
           "errors" : 0,
-          "p50Ms" : 3.635,
-          "p99Ms" : 6.623,
-          "maxMs" : 21.983
+          "p50Ms" : 3.045,
+          "p99Ms" : 6.787,
+          "maxMs" : 15.791
         },
         "otp-verify" : {
-          "count" : 2054,
+          "count" : 2017,
           "errors" : 0,
-          "p50Ms" : 8.919,
-          "p99Ms" : 15.631,
-          "maxMs" : 29.103
+          "p50Ms" : 8.295,
+          "p99Ms" : 16.607,
+          "maxMs" : 29.519
         },
         "refresh" : {
-          "count" : 15363,
+          "count" : 15118,
           "errors" : 0,
-          "p50Ms" : 3.685,
-          "p99Ms" : 6.559,
-          "maxMs" : 18.655
+          "p50Ms" : 2.901,
+          "p99Ms" : 6.875,
+          "maxMs" : 55.263
         },
         "token" : {
-          "count" : 2045,
+          "count" : 2017,
           "errors" : 0,
-          "p50Ms" : 4.039,
-          "p99Ms" : 7.575,
-          "maxMs" : 10.607
+          "p50Ms" : 3.399,
+          "p99Ms" : 7.239,
+          "maxMs" : 14.575
         }
       },
       "otp" : {
@@ -224,57 +261,57 @@
         "notEntered" : 0
       },
       "legitInRange" : {
-        "requested" : 238,
-        "sent" : 238,
+        "requested" : 264,
+        "sent" : 264,
         "refused" : 0,
         "other" : 0,
-        "verified" : 197,
-        "rejected" : 9,
-        "failed" : 0,
-        "notEntered" : 32
-      },
-      "legitElsewhere" : {
-        "requested" : 2162,
-        "sent" : 2162,
-        "refused" : 0,
-        "other" : 0,
-        "verified" : 1848,
+        "verified" : 212,
         "rejected" : 0,
         "failed" : 0,
-        "notEntered" : 314
+        "notEntered" : 52
+      },
+      "legitElsewhere" : {
+        "requested" : 2136,
+        "sent" : 2136,
+        "refused" : 0,
+        "other" : 0,
+        "verified" : 1805,
+        "rejected" : 0,
+        "failed" : 0,
+        "notEntered" : 331
       },
       "failures" : {},
       "smsSent" : 4800,
       "smsRanges" : 110,
-      "smsBusiestRange" : 2655,
+      "smsBusiestRange" : 2676,
       "auth" : {
-        "enqueued" : 6859.0,
-        "written" : 6850.0,
+        "enqueued" : 6814.0,
+        "written" : 6810.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
-        "queueSize" : 0.0
+        "queueSize" : 1.0
       }
     },
     {
       "scenario" : "conversion-mimicking",
-      "seconds" : 59.9738685,
+      "seconds" : 59.986713167,
       "arrivals" : 1200,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 1200,
           "errors" : 0,
-          "p50Ms" : 6.119,
-          "p99Ms" : 10.135,
-          "maxMs" : 16.815
+          "p50Ms" : 5.091,
+          "p99Ms" : 10.735,
+          "maxMs" : 29.103
         },
         "otp-verify" : {
-          "count" : 369,
+          "count" : 373,
           "errors" : 0,
-          "p50Ms" : 15.967,
-          "p99Ms" : 22.495,
-          "maxMs" : 24.927
+          "p50Ms" : 14.551,
+          "p99Ms" : 36.063,
+          "maxMs" : 75.903
         }
       },
       "otp" : {
@@ -282,7 +319,7 @@
         "sent" : 1200,
         "refused" : 0,
         "other" : 0,
-        "verified" : 369,
+        "verified" : 373,
         "rejected" : 0,
         "failed" : 0,
         "notEntered" : 0
@@ -292,8 +329,8 @@
       "smsRanges" : 1,
       "smsBusiestRange" : 1200,
       "auth" : {
-        "enqueued" : 1564.0,
-        "written" : 1583.0,
+        "enqueued" : 1576.0,
+        "written" : 1582.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
@@ -302,16 +339,16 @@
     },
     {
       "scenario" : "targeted-phone",
-      "seconds" : 59.826383333,
+      "seconds" : 59.83407425,
       "arrivals" : 300,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 300,
           "errors" : 0,
-          "p50Ms" : 6.555,
-          "p99Ms" : 8.663,
-          "maxMs" : 13.831
+          "p50Ms" : 6.235,
+          "p99Ms" : 13.687,
+          "maxMs" : 18.927
         }
       },
       "otp" : {
@@ -329,8 +366,8 @@
       "smsRanges" : 1,
       "smsBusiestRange" : 300,
       "auth" : {
-        "enqueued" : 305.0,
-        "written" : 306.0,
+        "enqueued" : 300.0,
+        "written" : 307.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,
@@ -339,23 +376,23 @@
     },
     {
       "scenario" : "verify-guessing",
-      "seconds" : 59.933101583,
+      "seconds" : 59.922852166,
       "arrivals" : 600,
       "waited" : 0,
       "latencies" : {
         "otp-request" : {
           "count" : 600,
           "errors" : 0,
-          "p50Ms" : 6.359,
-          "p99Ms" : 10.359,
-          "maxMs" : 19.263
+          "p50Ms" : 4.935,
+          "p99Ms" : 18.703,
+          "maxMs" : 34.911
         },
         "otp-verify" : {
           "count" : 3000,
           "errors" : 0,
-          "p50Ms" : 2.689,
-          "p99Ms" : 5.403,
-          "maxMs" : 12.927
+          "p50Ms" : 1.923,
+          "p99Ms" : 8.423,
+          "maxMs" : 21.471
         }
       },
       "otp" : {
@@ -371,10 +408,10 @@
       "failures" : {},
       "smsSent" : 600,
       "smsRanges" : 110,
-      "smsBusiestRange" : 15,
+      "smsBusiestRange" : 16,
       "auth" : {
-        "enqueued" : 3594.0,
-        "written" : 3558.0,
+        "enqueued" : 3576.0,
+        "written" : 3547.0,
         "dropped" : {},
         "smsRefused" : 0.0,
         "smsBudgetFull" : 0.0,

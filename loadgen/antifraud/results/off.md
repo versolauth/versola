@@ -9,43 +9,45 @@ within +-5.0 ms (noise) on refresh, token.
 
 | scenario | call | n | errors | p50 ms | p99 ms | baseline p99 ms | added p99 ms | verdict |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| normal | otp-request | 2400 | 0 | 3.6 | 7.1 | - | - | NoBaseline |
-| normal | otp-verify | 2058 | 0 | 9.6 | 18.0 | - | - | NoBaseline |
-| normal | refresh | 15456 | 0 | 3.1 | 6.0 | - | - | NoBaseline |
-| normal | token | 2058 | 0 | 3.5 | 6.9 | - | - | NoBaseline |
-| token-control | refresh | 3000 | 0 | 10.4 | 16.8 | - | - | NoBaseline |
-| token-control | token | 1000 | 0 | 5.2 | 8.7 | - | - | NoBaseline |
-| prefix-attack | otp-request | 2400 | 0 | 6.8 | 13.3 | - | - | NoBaseline |
-| device-attack | otp-request | 2400 | 0 | 7.1 | 13.3 | - | - | NoBaseline |
-| mixed-attack | otp-request | 4800 | 0 | 3.5 | 7.4 | - | - | NoBaseline |
-| mixed-attack | otp-verify | 2027 | 0 | 9.7 | 18.7 | - | - | NoBaseline |
-| mixed-attack | refresh | 15054 | 0 | 3.1 | 6.5 | - | - | NoBaseline |
-| mixed-attack | token | 2022 | 0 | 3.8 | 7.4 | - | - | NoBaseline |
-| conversion-mimicking | otp-request | 1200 | 0 | 6.2 | 13.9 | - | - | NoBaseline |
-| conversion-mimicking | otp-verify | 335 | 0 | 16.7 | 27.1 | - | - | NoBaseline |
-| targeted-phone | otp-request | 300 | 0 | 8.4 | 15.0 | - | - | NoBaseline |
-| verify-guessing | otp-request | 600 | 0 | 7.1 | 12.9 | - | - | NoBaseline |
-| verify-guessing | otp-verify | 3000 | 0 | 2.8 | 6.7 | - | - | NoBaseline |
+| normal | otp-request | 2400 | 0 | 3.6 | 9.2 | - | - | NoBaseline |
+| normal | otp-verify | 2019 | 0 | 9.4 | 19.4 | - | - | NoBaseline |
+| normal | refresh | 14948 | 0 | 2.9 | 7.5 | - | - | NoBaseline |
+| normal | token | 2019 | 0 | 3.4 | 9.6 | - | - | NoBaseline |
+| token-control | refresh | 3000 | 0 | 6.9 | 13.5 | - | - | NoBaseline |
+| token-control | token | 1000 | 0 | 5.0 | 8.0 | - | - | NoBaseline |
+| prefix-attack | otp-request | 2400 | 0 | 6.0 | 12.5 | - | - | NoBaseline |
+| device-attack | otp-request | 2400 | 0 | 6.0 | 12.4 | - | - | NoBaseline |
+| distributed-attack | otp-request | 2400 | 0 | 5.8 | 10.4 | - | - | NoBaseline |
+| mixed-attack | otp-request | 4800 | 0 | 3.1 | 6.3 | - | - | NoBaseline |
+| mixed-attack | otp-verify | 2027 | 0 | 8.5 | 16.4 | - | - | NoBaseline |
+| mixed-attack | refresh | 15191 | 0 | 3.0 | 5.9 | - | - | NoBaseline |
+| mixed-attack | token | 2022 | 0 | 3.4 | 7.0 | - | - | NoBaseline |
+| conversion-mimicking | otp-request | 1200 | 0 | 5.4 | 9.5 | - | - | NoBaseline |
+| conversion-mimicking | otp-verify | 362 | 0 | 15.3 | 22.4 | - | - | NoBaseline |
+| targeted-phone | otp-request | 300 | 0 | 6.7 | 10.5 | - | - | NoBaseline |
+| verify-guessing | otp-request | 600 | 0 | 6.3 | 10.4 | - | - | NoBaseline |
+| verify-guessing | otp-verify | 3000 | 0 | 2.5 | 5.5 | - | - | NoBaseline |
 
 ### Outcomes and SMS
 
 | scenario | arrivals | waited | requested | sent | refused | other | verified | rejected | not entered | failed | SMS sent | ranges | busiest range |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| normal | 2400 | 0 | 2400 | 2400 | 0 | 0 | 2058 | 0 | 342 | 0 | 2400 | 110 | 33 |
+| normal | 2400 | 0 | 2400 | 2400 | 0 | 0 | 2019 | 0 | 381 | 0 | 2400 | 110 | 36 |
 | token-control | 3000 | 0 | 1000 | 1000 | 0 | 0 | 1000 | 0 | 0 | 0 | 1000 | 110 | 16 |
 | prefix-attack | 2400 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 2400 | 1 | 2400 |
-| device-attack | 2400 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 2400 | 110 | 36 |
-| mixed-attack | 4800 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 4800 | 110 | 2667 |
-| conversion-mimicking | 1200 | 0 | 1200 | 1200 | 0 | 0 | 335 | 0 | 0 | 0 | 1200 | 1 | 1200 |
+| device-attack | 2400 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 2400 | 110 | 38 |
+| distributed-attack | 2400 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 2400 | 1 | 2400 |
+| mixed-attack | 4800 | 0 | 2400 | 2400 | 0 | 0 | 0 | 0 | 0 | 0 | 4800 | 110 | 2671 |
+| conversion-mimicking | 1200 | 0 | 1200 | 1200 | 0 | 0 | 362 | 0 | 0 | 0 | 1200 | 1 | 1200 |
 | targeted-phone | 300 | 0 | 300 | 300 | 0 | 0 | 0 | 0 | 0 | 0 | 300 | 1 | 300 |
 | verify-guessing | 600 | 0 | 600 | 600 | 0 | 0 | 0 | 3000 | 0 | 0 | 600 | 110 | 11 |
 
-#### Legitimate users during an attack
+### Legitimate users during an attack
 
 | scenario | users | requested | sent | refused | verified |
 |---|---|---:|---:|---:|---:|
-| mixed-attack | in the attacked range | 241 | 241 | 0 | 192 |
-| mixed-attack | elsewhere | 2159 | 2159 | 0 | 1830 |
+| mixed-attack | in the attacked range | 249 | 249 | 0 | 210 |
+| mixed-attack | elsewhere | 2151 | 2151 | 0 | 1812 |
 
 ### Effectiveness and false positives
 
@@ -57,6 +59,7 @@ guessing when a guess is taken, legitimate users when more than their ceiling of
 | normal | legitimate: share refused | 0.000 | 0.010 | Pass |
 | prefix-attack | attack: share of codes sent | 1.000 | 0.100 | Fail |
 | device-attack | attack: share of codes sent | 1.000 | 0.100 | Fail |
+| distributed-attack | attack: share of codes sent | 1.000 | 0.100 | Fail |
 | mixed-attack | legitimate in the attacked range: share refused | 0.000 | 0.010 | Pass |
 | mixed-attack | legitimate elsewhere: share refused | 0.000 | 0.010 | Pass |
 | conversion-mimicking | attack: share of codes sent | 1.000 | 0.100 | Fail |
@@ -67,11 +70,12 @@ guessing when a guess is taken, legitimate users when more than their ceiling of
 
 | scenario | enqueued | written | dropped | refused by budget | budget table full | queue peak |
 |---|---:|---:|---:|---:|---:|---:|
-| normal | 4614 | 4641 | 0 | 0 | 0 | 0 |
-| token-control | 2000 | 2013 | 0 | 0 | 0 | 0 |
-| prefix-attack | 2390 | 2371 | 0 | 0 | 0 | 0 |
-| device-attack | 2400 | 2399 | 0 | 0 | 0 | 1 |
-| mixed-attack | 6827 | 6831 | 0 | 0 | 0 | 0 |
-| conversion-mimicking | 1533 | 1514 | 0 | 0 | 0 | 0 |
-| targeted-phone | 299 | 323 | 0 | 0 | 0 | 0 |
-| verify-guessing | 3603 | 3586 | 0 | 0 | 0 | 0 |
+| normal | 4535 | 4534 | 0 | 0 | 0 | 1 |
+| token-control | 2000 | 2009 | 0 | 0 | 0 | 0 |
+| prefix-attack | 2393 | 2383 | 0 | 0 | 0 | 0 |
+| device-attack | 2407 | 2411 | 0 | 0 | 0 | 0 |
+| distributed-attack | 2394 | 2392 | 0 | 0 | 0 | 1 |
+| mixed-attack | 6833 | 6811 | 0 | 0 | 0 | 0 |
+| conversion-mimicking | 1552 | 1577 | 0 | 0 | 0 | 0 |
+| targeted-phone | 310 | 312 | 0 | 0 | 0 | 0 |
+| verify-guessing | 3588 | 3532 | 0 | 0 | 0 | 1 |

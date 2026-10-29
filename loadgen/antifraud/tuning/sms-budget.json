@@ -1,0 +1,16 @@
+{
+  "challengeAt": 0,
+  "blockAt": 0,
+  "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
+  "thresholds": {
+    "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 0, "perDay": 0, "weight": 50},
+    "ip":     {"perMinute": 0, "perTenMinutes": 0, "perHour": 0, "perDay": 0, "weight": 20},
+    "device": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0, "perDay": 0, "weight": 60},
+    "asn":    {"perMinute": 0, "perTenMinutes": 0, "perHour": 0, "perDay": 0, "weight": 20},
+    "prefix": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0, "perDay": 0, "weight": 30},
+    "trustedDiscount": 40
+  },
+  "smsLimits": {"default": {"sentPerHour": 200, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
+  "ruleWeights": {},
+  "shadowRules": []
+}

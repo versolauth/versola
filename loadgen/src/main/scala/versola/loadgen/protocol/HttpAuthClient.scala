@@ -93,8 +93,18 @@ final class HttpAuthClient(
     endpoints: AuthEndpoints,
     clients: ClientRegistry,
     nonce: Ref[Option[String]],
+    extra: Headers = Headers.empty,
 ) extends AuthClient:
   import HttpAuthClient.*
+
+  /** The same client, every request of which carries `headers` too: a source address for a session
+    * (`X-Forwarded-For`, where the stack trusts it from this process), as the antifraud scenarios need to
+    * tell their sessions apart. Shares the pool, the endpoints and the nonce; costs an object.
+    */
+  def withHeaders(headers: Headers): HttpAuthClient = HttpAuthClient(exchange, endpoints, clients, nonce, extra ++ headers)
+
+  private def send(request: Request): IO[ProtocolError, Received] =
+    exchange.send(if extra.isEmpty then request else request.addHeaders(extra))
 
   /** RFC 9449 §4.3 step 9 compares the proof's `htu` against the endpoint's own URI, and auth
     * derives that from its configured issuer rather than from the inbound request, so that a
@@ -155,7 +165,7 @@ final class HttpAuthClient(
   ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
     val request = Request.get(endpoints.authorize.addQueryParams(params))
     val withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
-    exchange.send(withSession).flatMap: received =>
+    send(withSession).flatMap: received =>
       HttpExchange.setCookie(received.response, conversationCookie) match
         case Some(cookie) => ZIO.succeed(Left(ConversationCookie(cookie.content)))
         case None =>
@@ -272,7 +282,7 @@ final class HttpAuthClient(
       url <- ZIO
         .fromEither(URL.decode(location))
         .mapError(error => ProtocolError.MalformedResponse(logoutEndpoint, error.getMessage))
-      received <- exchange.send(Request.get(url).addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value)))
+      received <- send(Request.get(url).addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value)))
       confirmation <-
         if received.status != Status.Ok then ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, logoutEndpoint))
         else
@@ -299,7 +309,7 @@ final class HttpAuthClient(
       .post(confirmation.url, HttpExchange.formBody(fields))
       .addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value))
       .addHeader(HttpExchange.formContentType)
-    exchange.send(request).flatMap: received =>
+    send(request).flatMap: received =>
       // The signed-out page, or a redirect to the post-logout URI when one was posted back.
       if received.status == Status.Ok || HttpExchange.isRedirect(received.status) then ZIO.unit
       // A 403 is the confirmation not matching -- the session is still live, so this is the one
@@ -318,7 +328,7 @@ final class HttpAuthClient(
       .post(url, HttpExchange.formBody(fields))
       .addHeader(HttpExchange.cookieHeader(conversationCookie, conversation.value))
       .addHeader(HttpExchange.formContentType)
-    exchange.send(request).flatMap { received =>
+    send(request).flatMap { received =>
       if HttpExchange.isRedirect(received.status) then
         HttpExchange
           .required(received.location, endpoint, "redirect without a Location header")
@@ -358,12 +368,12 @@ final class HttpAuthClient(
       key: Option[DpopKey],
   ): IO[ProtocolError, Received] =
     key match
-      case None => exchange.send(tokenRequest(fields, client, None))
+      case None => send(tokenRequest(fields, client, None))
       case Some(signing) =>
         for
           held <- nonce.get
           proof <- signing.proof(Method.POST, tokenHtu, None, held)
-          first <- exchange.send(tokenRequest(fields, client, Some(proof)))
+          first <- send(tokenRequest(fields, client, Some(proof)))
           received <- nonceChallenge(first) match
             case None => adoptNonce(first).as(first)
             case Some(issued) =>
@@ -371,7 +381,7 @@ final class HttpAuthClient(
                 _ <- nonce.set(Some(issued))
                 _ <- LoadgenMetrics.dpopNonceRetried
                 retried <- signing.proof(Method.POST, tokenHtu, None, Some(issued))
-                second <- exchange.send(tokenRequest(fields, client, Some(retried)))
+                second <- send(tokenRequest(fields, client, Some(retried)))
                 _ <- adoptNonce(second)
               yield second
         yield received
