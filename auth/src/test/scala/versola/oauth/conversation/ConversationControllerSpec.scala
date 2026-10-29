@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import org.scalamock.stubs.Stub
+import versola.antifraud.Challenge
 import versola.auth.TestEnvConfig
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AuthorizationResponseService
@@ -16,6 +17,7 @@ import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.internal.stacktracer.SourceLocation
+import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
@@ -111,6 +113,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission: (AuthId, Submission, Option[String], Option[String]),
       ipHeader: String = "X-Real-IP",
       expectedLocation: String = "/challenge",
+      scripted: Boolean = false,
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -151,10 +154,57 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(request)
 
         submitCalls = router.submit.calls
+        body <- response.body.asString
+      yield
+        // A script gets the redirect as data, a plain form the redirect itself.
+        (if scripted then
+           assertTrue(response.status == Status.Ok, body.fromJson[InlineStep] == Right(InlineStep(Some(expectedLocation), None, otp = true)))
+         else assertTrue(response.status == Status.SeeOther, response.header(Header.Location).map(_.url.encode).contains(expectedLocation))) &&
+          assertTrue(submitCalls == List(submission))
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** A submit a page's script sent (`proof_inline`): the redirect comes back as data, or the challenge to answer. */
+  def scriptSubmitTestCase(description: String, result: ConversationResult.Render, expected: InlineStep, proofFields: (String, String)*)(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        formService <- ConversationRenderService.live
+          .build
+          .provideSome[zio.Scope](
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
+            AuthorizationResponseService.live,
+          )
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes
+              .provideEnvironment(
+                ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ formService ++ tracing,
+              ),
+          ),
+        )
+        _ <- configuration.getPhoneRegions.succeedsWith(List.empty)
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.succeedsWith((result, record))
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "phone",
+            body = Body.fromURLEncodedForm(Form.fromStrings(Seq("phone" -> phone, "csrf" -> "") ++ proofFields*)),
+          ).addHeader(conversationCookie),
+        )
+        body <- response.body.asString
       yield assertTrue(
-        response.status == Status.SeeOther,
-        response.header(Header.Location).map(_.url.encode).contains(expectedLocation),
-      ) && assertTrue(submitCalls == List(submission))
+        response.status == Status.Ok,
+        response.header(Header.Location).isEmpty,
+        body.fromJson[InlineStep] == Right(expected),
+      )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   def rejectedSubmitTestCase(
@@ -205,6 +255,62 @@ object ConversationControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("ConversationController")(
+    scriptSubmitTestCase(
+      description = "a script's submit gets the redirect as data instead of a 303, and is told that a code was sent",
+      result = conversationResult,
+      expected = InlineStep(next = Some("/challenge"), challenge = None, otp = true),
+      ProofInput.InlineField -> "1",
+    ),
+    scriptSubmitTestCase(
+      description = "a script's submit that left the code step pending is not told that a code was sent",
+      result = ConversationResult.RenderStep(
+        ConversationStep.Otp(
+          real = None,
+          timesRequested = 0,
+          timesSubmitted = 0,
+          factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
+        ),
+      ),
+      expected = InlineStep(next = Some("/challenge"), challenge = None, otp = false),
+      ProofInput.InlineField -> "1",
+    ),
+    scriptSubmitTestCase(
+      description = "a script's submit that was asked for a proof gets the challenge to answer, and nothing else",
+      result = ConversationResult.Challenged(Challenge("pow", "tok.en", 16, Map("seed" -> "abc", "difficulty" -> "16"))),
+      expected = InlineStep(next = None, challenge = Some(InlineChallenge("pow", "tok.en", Map("seed" -> "abc", "difficulty" -> "16"))), otp = false),
+      ProofInput.InlineField -> "1",
+    ),
+    successfulSubmitTestCase(
+      description = "a plain submit is redirected as ever, and carries no proof",
+      request = Request.post(
+        url = URL.empty / "challenge" / "phone",
+        body = Body.fromURLEncodedForm(Form.fromStrings("phone" -> phone, "csrf" -> "")),
+      ).addHeader(conversationCookie),
+      submission = (authId, PhoneSubmission(phone, ProofInput.NoScript, ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "a submit sent from script says so",
+      request = Request.post(
+        url = URL.empty / "challenge" / "phone",
+        body = Body.fromURLEncodedForm(Form.fromStrings("phone" -> phone, "csrf" -> "", ProofInput.InlineField -> "1")),
+      ).addHeader(conversationCookie),
+      submission = (authId, PhoneSubmission(phone, ProofInput.Asked, ""), None, None),
+      scripted = true,
+    ),
+    successfulSubmitTestCase(
+      description = "a submit made again with the token and its solution carries both, for a resend as for a phone",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp" / "resend",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("csrf" -> "", ProofInput.InlineField -> "1", ProofInput.TokenField -> "payload.mac", ProofInput.SolutionField -> "4711"),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, OtpResendSubmission(ProofInput.Answered("payload.mac", "4711"), ""), None, None),
+      scripted = true,
+    ),
     successfulSubmitTestCase(
       description = "submit email",
       request = Request.post(
@@ -213,7 +319,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form(FormField.Text("email", email, MediaType.text.plain), FormField.Text("csrf", "", MediaType.text.plain)),
         ),
       ).addHeader(conversationCookie),
-      submission = (authId, EmailSubmission(email, ""), None, None),
+      submission = (authId, EmailSubmission(email, ProofInput.NoScript, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit phone",
@@ -223,7 +329,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("phone" -> phone, "csrf" -> ""),
         ),
       ).addHeader(conversationCookie),
-      submission = (authId, PhoneSubmission(phone, ""), None, None),
+      submission = (authId, PhoneSubmission(phone, ProofInput.NoScript, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp",
@@ -243,7 +349,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("csrf" -> ""),
         ),
       ).addHeader(conversationCookie),
-      submission = (authId, OtpResendSubmission(""), None, None),
+      submission = (authId, OtpResendSubmission(ProofInput.NoScript, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit forwards ui_locale from query param, and the redirect to the next step carries it",

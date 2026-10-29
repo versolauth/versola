@@ -131,6 +131,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       userService,
       consentService,
       versola.antifraud.AntifraudEvents.noop,
+      versola.antifraud.ChallengeVerifier.off,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -175,14 +176,15 @@ object ConversationServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val consentingClient = registrationClient.copy(
-    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
+    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
   )
 
   private val partialConsentingClient = consentingClient.copy(
-    consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+    consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
   )
 
   private val requestedScope = conversationRecord.scope
@@ -243,6 +245,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.userService),
             ZLayer.succeed(env.consentService),
             ZLayer.succeed[versola.antifraud.AntifraudEvents](versola.antifraud.AntifraudEvents.noop),
+            ZLayer.succeed[versola.antifraud.ChallengeVerifier](versola.antifraud.ChallengeVerifier.off),
             ConversationService.live,
           )
           _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))
@@ -283,6 +286,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ),
             Left(email),
             0,
+            versola.oauth.conversation.ProofInput.NoScript,
           )
         yield assertTrue(result == ConversationResult.RenderStep(otpStep))
       },
@@ -291,7 +295,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0)
+          result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0, versola.oauth.conversation.ProofInput.NoScript)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),

@@ -11,7 +11,7 @@ import java.util.UUID
 object AntifraudListsSpec extends UnitSpecBase:
 
   private val tenant = TenantId("tenant-a")
-  private val operator = ListActor("op", None)
+  private val operator = "op"
 
   /** The repository, in memory. */
   private class FakeRepository(var entries: List[AntifraudListEntry] = Nil) extends AntifraudListRepository:
@@ -66,10 +66,11 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
-  private val settings = AntifraudLists.Settings.default.copy(enabled = true)
+  private val settings = AntifraudTestSettings.lists.copy(enabled = true)
 
-  // delayAt 1 so that a watch (20) is visible; challenge 50, block 100
-  private val engine = Antifraud.Settings(enabled = true, delayAt = 1, challengeAt = 50, blockAt = 100)
+  // challenge 50, block 100: a watch (20) is only visible in the score
+  private val engine = AntifraudTestSettings.decision.copy(enabled = true)
+  private val thresholds = AntifraudTestSettings.tuning.copy(challengeAt = 50, blockAt = 100)
 
   private def ctx(
       ip: Option[String] = None,
@@ -92,7 +93,7 @@ object AntifraudListsSpec extends UnitSpecBase:
 
   private def make(repository: FakeRepository, config: AntifraudLists.Settings = settings) =
     val cache = AntifraudLists.ListCache()
-    (AntifraudLists.Impl(repository, config, cache), cache)
+    (AntifraudLists.Impl(repository, config, AntifraudTestSettings.listsPolicy, cache), cache)
 
   private def add(
       lists: AntifraudLists,
@@ -124,13 +125,13 @@ object AntifraudListsSpec extends UnitSpecBase:
     def rules = ZIO.succeed(List(AntifraudRule("range_closed", 0, Some(DecisionAction.Block), _ => true)))
 
   private def decide(lists: AntifraudLists, others: Antifraud.RuleSet*)(c: AntifraudContext) =
-    Antifraud.Impl(engine, lists.ruleSet :: others.toList).evaluate(c)
+    AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList, thresholds).evaluate(c)
 
   def spec = suite("AntifraudLists")(
     test("contributes no rule while off, whatever the table holds") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
-      val (off, _) = make(repository, AntifraudLists.Settings.default)
+      val (off, _) = make(repository, AntifraudTestSettings.lists)
       for
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
         offRules <- off.ruleSet.rules
@@ -150,7 +151,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(
         blocked == Decision(DecisionAction.Block, 0, List("deny_list:device_id")),
         faked == Decision(DecisionAction.Fake, 0, List("fake_list:prefix")),
-        watched == Decision(DecisionAction.Delay, 20, List("watch_list:cidr")),
+        watched == Decision(DecisionAction.Allow, 20, List("watch_list:cidr")),
         clean == Decision.allow,
       )
     },
@@ -273,7 +274,7 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- TestClock.adjust(settings.refreshInterval) *> ZIO.yieldNow.repeatN(20)
           after <- decide(lists)(ctx(deviceId = Some("d")))
           _ <- decide(lists)(ctx(deviceId = Some("d")))
-          _ <- TestClock.adjust(settings.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
+          _ <- TestClock.adjust(AntifraudTestSettings.listsPolicy.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
           written <- ZIO.succeed(repository.written)
         yield assertTrue(before == Decision.allow, after.action == DecisionAction.Block, written.map(_.count) == List(2L))
     },
@@ -424,38 +425,17 @@ object AntifraudListsSpec extends UnitSpecBase:
         previewed == ListPreview(matched = None, total = 1000),
       )
     },
-    test("only an operator changes a global entry or another tenant's; a tenant's admin lists their own") {
-      val repository = FakeRepository()
-      val (lists, _) = make(repository)
-      val admin = ListActor("ta", Some(tenant))
-      def create(actor: ListActor, tenantId: Option[TenantId], value: String) =
-        lists.create(
-          NewListEntry(
-            listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.device_id,
-            value = value,
-            tenantId = tenantId,
-            expiresAt = None,
-            reason = None,
-            source = "manual",
-            shadow = false,
-          ),
-          actor,
-        )
+    test("a page outside 1 to 500 entries, or before the first, is refused") {
+      val (lists, _) = make(FakeRepository())
       for
-        own <- create(admin, Some(tenant), "own")
-        global <- create(admin, None, "global").either
-        foreign <- create(admin, Some(TenantId("tenant-b")), "foreign").either
-        operatorGlobal <- create(operator, None, "global")
-        deleteGlobal <- lists.delete(operatorGlobal.id, admin).either
-        deleteOwn <- lists.delete(own.id, admin)
-        audit <- lists.audit(None, admin, 10).either
+        ok <- lists.list(AntifraudListFilter.all, 500, 0).either
+        zero <- lists.list(AntifraudListFilter.all, 0, 0).either
+        huge <- lists.list(AntifraudListFilter.all, 501, 0).either
+        negative <- lists.list(AntifraudListFilter.all, 10, -1).either
+        auditHuge <- lists.audit(None, 501).either
       yield assertTrue(
-        global.left.exists(_.isInstanceOf[ListForbidden]),
-        foreign.left.exists(_.isInstanceOf[ListForbidden]),
-        deleteGlobal.left.exists(_.isInstanceOf[ListForbidden]),
-        deleteOwn,
-        audit.left.exists(_.isInstanceOf[ListForbidden]),
+        ok.isRight,
+        List(zero, huge, negative, auditHuge).forall(_.left.exists(_.isInstanceOf[InvalidListEntry])),
       )
     },
     test("a first load that fails is retried every second, not at the steady interval, and the lists apply once it works") {

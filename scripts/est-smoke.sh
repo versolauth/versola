@@ -90,7 +90,8 @@ python3 - "$CLIENT_ID" "$TENANT" "$SCOPE" > "$work/register.json" <<'PY'
 import json, sys
 print(json.dumps({
     "tenantId": sys.argv[2], "id": sys.argv[1], "clientName": {"en": "EST smoke test"},
-    "allowedScopes": [sys.argv[3]], "accessTokenTtl": 300, "authMethod": "tls_client_auth",
+    "allowedScopes": [sys.argv[3]], "permissions": [], "accessTokenTtl": 300,
+    "dpopBoundAccessTokens": False, "dpopSigningAlgs": [], "authMethod": "tls_client_auth",
     "certificateBoundAccessTokens": True, "estEnrollment": True,
 }))
 PY

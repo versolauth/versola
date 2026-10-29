@@ -109,7 +109,7 @@ object BootstrapService:
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
       requirePushedAuthorizationRequests: Boolean,
-      issueEdgeClientCertificate: Boolean = false,
+      issueEdgeClientCertificate: Boolean,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
 
@@ -118,7 +118,13 @@ object BootstrapService:
   ): Either[String, CentralAdminCredential] =
     seed match
       case None =>
-        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
+        Right(CentralAdminCredential(
+          AuthMethod.client_secret,
+          None,
+          None,
+          requirePushedAuthorizationRequests = false,
+          issueEdgeClientCertificate = false,
+        ))
       case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, _, _)) =>
         Right(CentralAdminCredential(
           authMethod = AuthMethod.tls_client_auth,
@@ -137,6 +143,7 @@ object BootstrapService:
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
           edgeClientCertificate = Some(certificate),
           requirePushedAuthorizationRequests = true,
+          issueEdgeClientCertificate = false,
         )
 
   /** `central-admin` and `utils` are registered with the method bootstrap's configuration calls
@@ -310,7 +317,7 @@ object BootstrapService:
   /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
     * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
     * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
-    * operator turns on for it. */
+    * operator turns on for it. The same goes for an endpoint's `rateLimit`, which only an operator sets. */
   private[versola] def mergeAccountEndpoints(
       desired: List[ResourceEndpointRecord],
       existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
@@ -321,6 +328,7 @@ object BootstrapService:
           stepUpCondition = current.stepUpCondition,
           stepUpAcr = current.stepUpAcr,
           maxAge = current.maxAge,
+          rateLimit = current.rateLimit,
         )
 
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
@@ -337,7 +345,7 @@ object BootstrapService:
       maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
     )
 
-  private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
+  private[versola] val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
     (
       Permission("oauth:read"),
       localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"),
@@ -454,6 +462,26 @@ object BootstrapService:
       ),
     ),
     (
+      Permission("antifraud:read"),
+      localized("View antifraud lists and settings", "Просмотр списков и настроек антифрода"),
+      Set(
+        endpointId("GET", "/antifraud/lists"),
+        endpointId("GET", "/antifraud/lists/audit"),
+        endpointId("GET", "/antifraud/settings"),
+      ),
+    ),
+    (
+      Permission("antifraud:manage"),
+      localized("Manage antifraud lists and settings", "Управление списками и настройками антифрода"),
+      Set(
+        endpointId("POST", "/antifraud/lists"),
+        endpointId("POST", "/antifraud/lists/preview"),
+        endpointId("DELETE", "/antifraud/lists"),
+        endpointId("PUT", "/antifraud/settings"),
+        endpointId("DELETE", "/antifraud/settings"),
+      ),
+    ),
+    (
       Permission("resources:read"),
       localized("View protected resources", "Просмотр защищенных ресурсов"),
       Set(
@@ -519,6 +547,8 @@ object BootstrapService:
       localized("View edges", "Просмотр эджей"),
       Set(
         endpointId("GET", "/configuration/edges"),
+        endpointId("GET", "/configuration/edges/policies"),
+        endpointId("GET", "/configuration/edges/rate-limits/recommended"),
       ),
     ),
     (
@@ -529,6 +559,7 @@ object BootstrapService:
         endpointId("DELETE", "/configuration/edges"),
         endpointId("POST", "/configuration/edges/rotate-key"),
         endpointId("DELETE", "/configuration/edges/old-key"),
+        endpointId("PATCH", "/configuration/edges/policies"),
       ),
     ),
     (
@@ -580,6 +611,8 @@ object BootstrapService:
           "access:read",
           "security:read",
           "resources:read",
+          "antifraud:read",
+          "antifraud:manage",
         ).map(Permission(_)) :+ accountPermission,
       ),
       (
@@ -600,7 +633,7 @@ object BootstrapService:
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(_ != "users:read") :+ accountPermission,
+        readOnly.filter(p => p != "users:read" && p != "antifraud:read") :+ accountPermission,
       ),
     )
 
@@ -902,6 +935,9 @@ object BootstrapService:
     "DELETE" -> "/configuration/edges",
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
+    "GET" -> "/configuration/edges/policies",
+    "PATCH" -> "/configuration/edges/policies",
+    "GET" -> "/configuration/edges/rate-limits/recommended",
     "GET" -> "/configuration/forms",
     "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
@@ -963,7 +999,24 @@ object BootstrapService:
     "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
+    "GET" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists",
+    "DELETE" -> "/antifraud/lists",
+    "POST" -> "/antifraud/lists/preview",
+    "GET" -> "/antifraud/lists/audit",
+    "GET" -> "/antifraud/settings",
+    "PUT" -> "/antifraud/settings",
+    "DELETE" -> "/antifraud/settings",
   )
+
+  /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
+    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
+    * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
+  private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
+    // Reading the settings needs no one to name: nothing records who read them.
+    if path.startsWith("/antifraud/") && !(method == "GET" && path == "/antifraud/settings") then
+      Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
+    else Vector.empty
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
@@ -1567,7 +1620,7 @@ object BootstrapService:
             method = method,
             fetchUserInfo = false,
             allowExpression = None,
-            inject = Vector.empty,
+            inject = centralInjects(method, path),
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,

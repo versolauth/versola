@@ -1,15 +1,16 @@
 package versola.central.users
 
 import versola.central.CentralConfig
+import versola.central.antifraud.*
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, Patch, Phone}
-import zio.http.{Body, Client, Header, MediaType, Method, Request, Response, Status, URL}
+import versola.util.{Email, PageLimit, Patch, Phone}
+import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
+import zio.{IO, Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -85,6 +86,29 @@ trait AuthClient:
 
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
+
+  /** The antifraud lists live in auth, which validates the entries: its refusals are [[AntifraudListError]]s, not
+    * failures of the call. `userId` is the admin who asked, recorded by auth as who made the change. */
+  def createAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, ListEntryResponse]
+
+  def previewAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse]
+
+  def listAntifraudListEntries(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
+
+  def deleteAntifraudListEntry(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit]
+
+  def antifraudListAudit(
+      entryId: Option[UUID],
+      limit: Option[PageLimit],
+      userId: UserId,
+  ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
+
+  /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. */
+  def getAntifraudSettings: IO[AntifraudListError | Throwable, AntifraudSettings]
+
+  def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings]
+
+  def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest): IO[AntifraudListError | Throwable, Unit]
 
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
@@ -204,6 +228,8 @@ object AuthClient:
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
+    private val antifraudListsUrl: URL = config.auth.url / "antifraud" / "lists"
+    private val antifraudSettingsUrl: URL = config.auth.url / "antifraud" / "settings"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
 
     override def upsertUser(
@@ -371,6 +397,69 @@ object AuthClient:
           body = Body.from(SetPasswordPayload(userId, password)),
         ),
       )
+
+    override def createAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, ListEntryResponse] =
+      antifraud[ListEntryResponse](Request(method = Method.POST, url = antifraudListsUrl, body = Body.from(request)))
+
+    override def previewAntifraudListEntry(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse] =
+      antifraud[PreviewResponse](Request(method = Method.POST, url = antifraudListsUrl / "preview", body = Body.from(request)))
+
+    override def listAntifraudListEntries(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
+      val params = List(
+        query.listType.map("listType" -> _.toString),
+        query.valueType.map("valueType" -> _.toString),
+        query.tenantId.map("tenantId" -> _.toString),
+        query.global.map("global" -> _.toString),
+        query.limit.map("limit" -> _.toString),
+        query.offset.map("offset" -> _.toString),
+      ).flatten
+      antifraud[List[ListEntryResponse]](Request.get(antifraudListsUrl.addQueryParams(params :+ ("userId" -> userId.toString))))
+
+    override def deleteAntifraudListEntry(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit] =
+      antifraudUnit(
+        Request(
+          method = Method.DELETE,
+          url = antifraudListsUrl.addQueryParams(List("id" -> request.id.toString, "userId" -> request.userId.toString)),
+          body = Body.empty,
+        ),
+      )
+
+    override def antifraudListAudit(
+        entryId: Option[UUID],
+        limit: Option[PageLimit],
+        userId: UserId,
+    ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
+      val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
+      antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params :+ ("userId" -> userId.toString))))
+
+    override def getAntifraudSettings: IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request.get(antifraudSettingsUrl))
+
+    override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
+
+    override def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest): IO[AntifraudListError | Throwable, Unit] =
+      antifraudUnit(
+        Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty),
+      )
+
+    private def antifraud[A: JsonDecoder](request: Request): IO[AntifraudListError | Throwable, A] =
+      antifraudAnswer(request): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[A]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    private def antifraudUnit(request: Request): IO[AntifraudListError | Throwable, Unit] =
+      antifraudAnswer(request)(_ => ZIO.unit)
+
+    /** Auth's 400 and 404 are its answers to an entry it will not take, not failures of the call. */
+    private def antifraudAnswer[A](request: Request)(success: Response => Task[A]): IO[AntifraudListError | Throwable, A] =
+      execute(request): response =>
+        response.status match
+          case status if status.isSuccess => success(response).map(Right(_))
+          case Status.BadRequest => response.body.asString.map(message => Left(AntifraudListError.Invalid(message)))
+          case Status.NotFound => ZIO.succeed(Left(AntifraudListError.NotFound))
+          case _ => failResponse(response)
+      .flatMap(ZIO.fromEither(_))
 
     override def deleteUser(userId: UserId): Task[Unit] =
       send(

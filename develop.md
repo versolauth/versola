@@ -481,6 +481,7 @@ central is #463.
 4. [Moving a deployment that already has secrets](#moving-a-deployment-that-already-has-secrets)
 5. [Running OpenBao yourself](#running-openbao-yourself---setup-openbao)
 6. [The secret schema (adding a secret)](#the-secret-schema-adding-a-secret)
+7. [How the CLI applies the schema](#how-the-cli-applies-the-schema)
 
 ### How it works
 
@@ -697,6 +698,55 @@ renaming a secret is not expressed by `since`.
 `gen-env` stops when the keys it writes differ from the schema; `sbt tools/test` covers the schema itself
 (including that every `since` is within `1..Revision`) and `.github/scripts/check-secret-schema.sh` runs
 the generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
+
+### How the CLI applies the schema
+
+Before writing anything, `configure` (so also `bootstrap`, and `rollout` for the version it moves to)
+builds a plan from three facts: the schema, what OpenBao holds, and the schema `revision` this machine
+last deployed (recorded in `~/.versola/active/state.json`). A problem in the plan stops the run with
+nothing written. A stored value always wins; the plan only decides what to do about a missing one. A
+`generate` secret is generated whenever it is missing and an `external` one is reported missing; only
+`generate-on-first-install-only` secrets depend on the state:
+
+- **first install** (no record here, OpenBao empty): everything is generated.
+- **upgrade** (record here, OpenBao not empty): a missing secret is generated only if it is new, i.e.
+  its `since` is above the recorded revision; otherwise it is "lost" and the run stops — a fresh value
+  would make stored data unreadable.
+- **alarm** (record here, OpenBao empty) and **unknown** (no record here, OpenBao not empty): a missing
+  one stops the run. `unknown` is also what a reinstall sees when OpenBao's volume outlived `uninstall`.
+- **installing** (an earlier first install here did not finish): continues it; a half-written key
+  group is generated again as a whole.
+- **local**: throwaway, anything missing is generated.
+
+A secret listed for several services is one value: stored copies that differ stop the run, a copy
+missing where others are stored is filled from them. A group is taken whole or not at all; a group
+stored only in part stops the run, unless it was left half-written by an unfinished first install or
+is new since the deployed revision (then it is generated again whole). The `utils` key pair is outside
+the plan (it has its own path and flow, see [How it works](#how-it-works)).
+
+`versola secrets plan <target> <version>` prints the plan without applying it (read-only, non-zero exit
+on problems, `--json` for scripts, never a value). **Run it before upgrading a production
+deployment.** Escape hatches, on `configure`, `bootstrap` and `rollout`: `--generate-missing NAME,...`
+(also on `secrets plan`, to preview it) lets the named secrets be generated although the plan would stop
+(a key group only if every member is named), and `--allow-legacy-secrets` settles a release without
+`secrets.schema.json` by the old rule — anything missing is generated — which is unsafe once OpenBao
+holds secrets.
+
+Versola's secret values are never printed by the CLI, only names and decisions. Two things are, by
+design: OpenBao's own AppRole `role-id`/`secret-id`, on every `configure` and on every `rollout` /
+`rollout --abort` step that prepares a version (not with `--setup-openbao`), and, on the first vps
+`configure` against a new OpenBao, the Postgres role's password in the `CREATE ROLE`/`ALTER ROLE`
+statements. For k8s a way to print values may be added behind an explicit flag; it is not implemented.
+
+The state file is in layout 4 since `versola-cli` 0.2.10 (2 added the revision, 3 the Postgres host and
+what a rolling upgrade records, 4 `--postgres-db`/`--postgres-ca`). An older CLI cannot read it and
+stops with a "newer schema" error — copy `state.json` before the first run of a newer CLI if you may go
+back. Details and examples: `versola-cli`'s README, "Secrets".
+
+Not covered yet: the record and the "installing" mark live per machine (a second machine running
+`configure` for the same OpenBao sees `unknown`); a soft-deleted KV v2 secret counts as missing; after
+an interrupted first install followed by `uninstall` on vps, half-written key groups stop `configure`
+and OpenBao has to be cleaned by hand (`uninstall` leaves its volume, `versola-openbao-file-vps`).
 
 ---
 

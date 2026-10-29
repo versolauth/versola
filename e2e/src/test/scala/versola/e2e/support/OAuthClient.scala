@@ -588,6 +588,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * `"query.jwt"`, `"fragment.jwt"`.
         */
       responseMode: Option[String] = None,
+      /** The address the tenant's IP header (`X-Forwarded-For`) carries, which the antifraud rules key on. */
+      ip: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -619,7 +621,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "request_uri" -> Some(uri),
         ),
       ).collect { case (k, Some(v)) => k -> v }
-      req = Request.get(base.addQueryParams(params))
+      req = ip.fold(Request.get(base.addQueryParams(params)))(address =>
+        Request.get(base.addQueryParams(params)).addHeader(Header.Custom("X-Forwarded-For", address)),
+      )
       reqWithSession = sessionCookie.fold(req)(sc =>
         req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc)))),
       )
@@ -693,9 +697,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/email", Map("email" -> email, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
-  /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
-  def submitPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+  /** POST /challenge/phone — submits a phone credential to start the OTP flow. `ip` is sent in the header the
+    * suite's tenant reads the client's address from (`X-Forwarded-For`, see [[upsertChallengeSettings]]), which the
+    * antifraud rules key on. */
+  def submitPhone(cookie: String, phone: String, csrf: String, ip: Option[String] = None): Task[SubmitResult] =
+    submitPhoneWith(cookie, phone, csrf, ip, Map.empty)
+
+  /** [[submitPhone]] with more form fields: what a page that can answer a challenge adds (`proof_inline`, `proof_token`, `proof_solution`). */
+  def submitPhoneWith(cookie: String, phone: String, csrf: String, ip: Option[String], extra: Map[String, String]): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf) ++ extra, cookie, ip.map("X-Forwarded-For" -> _).toList)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/otp/resend, with the fields of [[submitPhoneWith]]. */
+  def submitOtpResendWith(cookie: String, csrf: String, ip: Option[String], extra: Map[String, String]): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/otp/resend", Map("csrf" -> csrf) ++ extra, cookie, ip.map("X-Forwarded-For" -> _).toList)
       .map(SubmitResult(_))
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
@@ -1247,6 +1262,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
+      estEnrollment = false,
     ).toJson
     val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
@@ -1322,6 +1338,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "audience" -> Json.Arr(Chunk.fromIterable(audience.map(Json.Str(_)))),
         "endpoints" -> Json.Arr(),
         "internal" -> Json.Bool(internal),
+        "audienceRateLimits" -> Json.Arr(),
       ).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/configuration/resources", body)
@@ -1476,6 +1493,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * these two. Central takes both or neither. */
       logoLight: Option[String] = None,
       logoDark: Option[String] = None,
+      /** The tenant's limits on codes asked for one credential, as a JSON array of `{"maxAttempts", "windowSeconds"}`.
+        * None (the default) is no limit, and then nothing is recorded; a limit too high to be reached is what a spec that
+        * counts the steps of it wants. */
+      otpRequestLimits: String = "[]",
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1489,7 +1510,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "phoneRegions": $phoneRegions,
          |  "emailRegistration": $emailRegistration,
          |  "defaultRoles": $defaultRoles,
-         |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
+         |  "submissionLimits": {"otpRequest":$otpRequestLimits,"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
          |  "passkeySettings": {"rpId":"localhost","rpName":"Versola","origins":["http://localhost:3000"],"userVerification":"preferred"},
@@ -1865,10 +1886,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private def formPost(url: String, fields: Map[String, String], cookie: String): Task[Response] =
-    val req = Request.post(url, formBody(fields))
-      .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
-      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+  private def formPost(url: String, fields: Map[String, String], cookie: String, headers: List[(String, String)] = Nil): Task[Response] =
+    val req = headers.foldLeft(
+      Request.post(url, formBody(fields))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+    ) { case (request, (name, value)) => request.addHeader(Header.Custom(name, value)) }
     Client.batched(req).provide(ZLayer.succeed(client))
 
   private def formBody(fields: Map[String, String]): Body =
@@ -1962,4 +1985,5 @@ object OAuthClient:
       applicationType: Option[String] = None,
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+      estEnrollment: Boolean,
   ) derives JsonEncoder

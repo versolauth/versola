@@ -4,7 +4,6 @@ import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
 import java.util.concurrent.ThreadLocalRandom
-import scala.util.Try
 
 /** How much of the per-request `receive-http` line is written. Rendering and writing that line is the largest single
   * logging cost of a service (about 17% of an edge's CPU and 12% of auth's in a JFR profile under load), and nearly all
@@ -52,7 +51,9 @@ final case class AccessLogSettings(
   def logReceive(status: Int, failed: Boolean, elapsedMillis: Long, traceId: String): Boolean =
     mode match
       case AccessLogMode.Full => true
-      case _ if failed || status >= 400 => true
+      // A `429` is a refusal by a rate limit, counted by its own metric: logged like a success, so a flood of refused calls
+      // cannot become a flood of log lines. Any other 4xx, and every unhandled error, is always logged.
+      case _ if failed || (status >= 400 && status != 429) => true
       case _ if elapsedMillis >= slowMillis => true
       case AccessLogMode.Off => false
       case AccessLogMode.Sampled => AccessLogSettings.sampled(traceId, successSampleRate)
@@ -61,27 +62,13 @@ final case class AccessLogSettings(
   def isSlow(elapsedMillis: Long): Boolean = elapsedMillis >= slowMillis
 
 object AccessLogSettings:
-  val defaultMode: AccessLogMode = AccessLogMode.Full
   val defaultSlowMillis = 500L
   val defaultSuccessSampleRate = 0.05
 
-  val default: AccessLogSettings = AccessLogSettings(defaultMode, defaultSlowMillis, defaultSuccessSampleRate)
-
-  /** From raw values (`None` when unset). An invalid value falls back to its default, so a typo cannot take the service
-    * down (nor, here, silence its logs). */
-  def parse(mode: Option[String], slowMillis: Option[String], sampleRate: Option[String]): AccessLogSettings =
-    AccessLogSettings(
-      mode = mode.flatMap(AccessLogMode.parse).getOrElse(defaultMode),
-      slowMillis = slowMillis.flatMap(_.trim.toLongOption).filter(_ >= 0).getOrElse(defaultSlowMillis),
-      successSampleRate = sampleRate
-        .flatMap(v => Try(v.trim.toDouble).toOption)
-        .filter(r => r >= 0 && r <= 1)
-        .getOrElse(defaultSuccessSampleRate),
-    )
-
-  def fromEnv: AccessLogSettings =
-    def env(n: String) = Option(java.lang.System.getenv(n))
-    parse(env("HTTP_ACCESS_LOG"), env("HTTP_ACCESS_LOG_SLOW_MS"), env("HTTP_ACCESS_LOG_SAMPLE_RATE"))
+  /** What a service logs unless it says otherwise: every request. auth and central stay here for good; the edge starts from
+    * its own defaults (see `PostgresEdgeApp`) and an operator's [[AccessLogPolicy]] is applied over them. There is no
+    * environment variable for any of it. */
+  val default: AccessLogSettings = AccessLogSettings(AccessLogMode.Full, defaultSlowMillis, defaultSuccessSampleRate)
 
   /** A uniform position in `[0, 1)` derived from the trace id alone, so the same trace lands on the same side of every
     * rate in every process. Trace ids are random already; the mixing only keeps a prefix-heavy or non-hex id from
@@ -104,8 +91,9 @@ object AccessLogSettings:
     else bucket(traceId) < rate
 
 /** What an operator sets, per edge, for the access log: the wire form for central to hold and send to the edge, shaped like
-  * [[OverloadPolicy]]. Every field is optional and means "what the process itself starts with" (`HTTP_ACCESS_LOG*`
-  * environment, or the defaults) when absent, so a policy is a patch over the deployment.
+  * [[OverloadPolicy]]. Every field is optional and means "the edge's built-in default" (see `PostgresEdgeApp`) when absent,
+  * so a policy is a patch over those defaults. Unlike the overload policy it has no environment base: the access log
+  * protects nothing before the first sync, so there is one source of truth, central.
   *
   * Applied to [[AccessLogSettings]] with [[applyTo]]; checked with [[validate]], which central would run before storing and
   * the edge before applying.
@@ -114,9 +102,9 @@ object AccessLogSettings:
   *   `full`, `sampled` or `off`
   */
 final case class AccessLogPolicy(
-    mode: Option[String] = None,
-    slowMillis: Option[Long] = None,
-    successSampleRate: Option[Double] = None,
+    mode: Option[String],
+    slowMillis: Option[Long],
+    successSampleRate: Option[Double],
 ) derives JsonCodec, Schema:
 
   def validate: Either[String, AccessLogPolicy] =
@@ -134,4 +122,4 @@ final case class AccessLogPolicy(
     )
 
 object AccessLogPolicy:
-  val empty: AccessLogPolicy = AccessLogPolicy()
+  val empty: AccessLogPolicy = AccessLogPolicy(mode = None, slowMillis = None, successSampleRate = None)

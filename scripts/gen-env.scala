@@ -1871,6 +1871,42 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
   // ── Build config files ────────────────────────────────────────────────────────
 
+  // #745: limits on auth's channel that is not mutual TLS. Absent, auth applies its defaults: failed client authentication
+  // (`/token`, `/par`, `/introspect`, `/revoke`) 20 a minute per address, enforced; `/authorize` counted in shadow. A local setup (and
+  // the e2e suite, whose negative tests fail client authentication from one address on purpose) starts in shadow.
+  val authLimitsBlock =
+    if isLocal then
+      """# Limits on the channel that is not mutual TLS (#745). Local and e2e: shadow, counted and never refused, because the e2e suite
+        |# fails client authentication on purpose, from one address. Remove this block for auth's defaults (failed client authentication
+        |# enforced, 20 a minute per address). `client-ip = "forwarded"` reads the address from `ip-header`, for an auth reachable
+        |# only through the proxy that sets it.
+        |limits {
+        |  failed-mode = "shadow"
+        |  entry-mode = "shadow"
+        |  # failed-per-minute = 20
+        |  # failed-burst = 10
+        |  # entry-per-minute = 600
+        |  # entry-burst = 100
+        |  # client-ip = "socket"
+        |  # ip-header = "X-Real-IP"
+        |}
+        |""".stripMargin
+    else
+      """# Limits on the channel that is not mutual TLS (#745). The defaults need no block: failed client authentication (`/token`, `/par`,
+        |# `/introspect`, `/revoke`) is limited to 20 a minute per address and enforced, `/authorize` is counted in shadow. Uncomment to
+        |# change. Set `client-ip = "forwarded"` only when auth is reachable solely through the proxy that sets `ip-header`.
+        |# limits {
+        |#   failed-mode = "enforce"       # off | shadow | enforce
+        |#   failed-per-minute = 20
+        |#   failed-burst = 10
+        |#   entry-mode = "shadow"
+        |#   entry-per-minute = 600
+        |#   entry-burst = 100
+        |#   client-ip = "socket"          # socket | forwarded
+        |#   ip-header = "X-Real-IP"
+        |# }
+        |""".stripMargin
+
   val authConf =
     s"""env = $env
        |
@@ -1902,6 +1938,46 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |par {
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
+       |}
+       |
+       |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
+       |# kept, and the intervals. All keys are required. Everything is off: thresholds, weights and limits are not here,
+       |# they are tuned through central's admin API (`/antifraud/settings`) without a restart.
+       |antifraud {
+       |  retention          = "14 days"   # the event log
+       |  stats-interval     = "1 minute"
+       |  stats-retention    = "30 days"
+       |  sms-budget {
+       |    prefix-length = 4          # digits of a number (country code included) that make a range; changing it starts the counts over
+       |  }
+       |  decision {
+       |    enabled        = false
+       |    timeout        = "20 milliseconds"
+       |    failure-action = "allow"       # allow, challenge, fake or block: what a request gets when the evaluation fails or is too slow
+       |  }
+       |  velocity {
+       |    enabled        = false
+       |    flush-interval = "10 seconds"
+       |    load-interval  = "20 seconds"
+       |  }
+       |  tuning {
+       |    refresh-interval = "5 seconds"
+       |  }
+       |  lists {
+       |    enabled         = false
+       |    refresh-interval = "5 seconds"
+       |    audit-retention = "365 days"
+       |  }
+       |  detectors {
+       |    enabled   = false
+       |    interval  = "1 minute"
+       |    retention = "90 days"
+       |  }
+       |  challenge {
+       |    enabled      = true
+       |    ttl          = "2 minutes"
+       |    max-attempts = 5
+       |  }
        |}
        |$authMutualTlsBlock$authEstBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
@@ -1996,7 +2072,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    }
        |  ]
        |}
-       |""".stripMargin
+       |$authLimitsBlock""".stripMargin
 
   // #440: central issues and renews edge-fronted clients' certificates through a CA it holds no
   // key of. docker-local/vps: step-ca, through the provisioner key and root `mtls-init` copies
@@ -2252,6 +2328,20 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
+       |
+       |# Where the rate limits (R1) read a caller's address from. `socket` is the peer of the
+       |# connection: right when callers reach the edge directly (this local setup). Behind a
+       |# reverse proxy or load balancer set `forwarded` -- the address is then read from the
+       |# header below, which nginx / ingress-nginx set from the client chain -- but ONLY if the
+       |# edge is reachable solely through that proxy, or any caller could choose its own bucket
+       |# (deploy.md, Rate limits).
+       |client-ip = "socket"
+       |# client-ip-header = "X-Real-IP"
+       |# The number of edge pods a limit is divided by. With a headless Service the pods are
+       |# counted from DNS (the chart's headless Service, whose name it puts in the environment
+       |# variable VERSOLA_EDGE_HEADLESS_SERVICE); without it the `replicas` of the policy set in
+       |# central is used (deploy.md, Rate limits).
+       |# replicas-from = "dns:"$${VERSOLA_EDGE_HEADLESS_SERVICE}
        |$edgeNativeBlock$edgeMutualTlsBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

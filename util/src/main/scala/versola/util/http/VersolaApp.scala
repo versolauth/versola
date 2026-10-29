@@ -79,11 +79,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   protected def overloadPolicy: Option[URIO[Dependencies, Option[OverloadPolicy]]] = None
 
-  /** Whether `HTTP_ACCESS_LOG*` (and later a policy from central) may thin out this service's `receive-http` lines.
-    * `false`: every request is logged whatever the setting; auth does this, its lines are few and it is where an
-    * investigation of a login ends up.
+  /** The access-log settings this service uses when no policy is set (see [[accessLogPolicy]]). Every request by default:
+    * auth and central have nothing else; their lines are few and are where an investigation of a login or an admin change
+    * ends up. The edge, whose successful request lines are most of its log volume and say little a metric does not, starts
+    * at `off` (failures and slow requests only). Not read from the environment.
     */
-  protected def accessLogConfigurable: Boolean = true
+  protected def accessLogDefaults: AccessLogSettings = AccessLogSettings.default
+
+  /** Where the access-log policy an operator set for this service comes from (only the edge has one: central serves it),
+    * applied over [[accessLogDefaults]] as it changes, a policy removed returning to them. A source that yields `None` or
+    * a policy that does not validate leaves the defaults (or the last valid policy). */
+  protected def accessLogPolicy: Option[URIO[Dependencies, Option[AccessLogPolicy]]] = None
 
   /** The peers (`host:port`) of this deployment's own services, whose successful `send-http` lines are DEBUG (see
     * [[Observability.internalPeers]]). Every other peer, a message provider above all, is external and logged at INFO.
@@ -219,7 +225,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
-      _ <- ZIO.unless(accessLogConfigurable)(Observability.updateAccessLog(AccessLogSettings.default))
+      _ <- Observability.setAccessLogBase(accessLogDefaults)
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
@@ -271,6 +277,10 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       _ <- guardExemptPeers.provideEnvironment(appDependencies).flatMap(guard.arm)
       _ <- internalPeers.provideEnvironment(appDependencies).flatMap(Observability.setInternalPeers)
       baseOutbound <- guard.current
+
+      _ <- ZIO.foreachDiscard(accessLogPolicy)(source =>
+        AccessLogPolicyApplier.run(source.provideEnvironment(appDependencies), Observability.accessLogBase).forkIn(scope),
+      )
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
         for

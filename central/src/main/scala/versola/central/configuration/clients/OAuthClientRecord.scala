@@ -116,7 +116,7 @@ case class OAuthClientRecord(
     createdAt: Instant,
     /** OIDC Registration §2 `application_type`. Last and defaulted so that a record built
       * without naming it is the `web` client every row before the column was. */
-    applicationType: ApplicationType = ApplicationType.web,
+    applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages (a partner app that
       * brings its own brand colour). `None`, never an empty value, when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],

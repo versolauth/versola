@@ -71,6 +71,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     credential = ClientCredential.ClientSecret(Secret("s3cret".getBytes("UTF-8").nn)),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   /** Stands in for the directory the real one writes to. What a certificate is written to is
@@ -261,6 +262,73 @@ object SSOClientSpec extends ZIOSpecDefault:
         form.get("client_id").flatMap(_.stringValue) == Some(certificateClient.id.toString),
         certificates.size == 1,
         queryParam(url, "request_uri") == Some(Chunk("urn:ietf:params:oauth:request_uri:tls")),
+      )
+    },
+    test("warms the connection with a GET to /userinfo that carries the certificate and nothing else") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.status(Status.Unauthorized))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
+        _ <- sso.warmUp(certificateClient)
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        body <- request.body.asString
+        certificates <- presented.get
+      yield assertTrue(
+        request.method == Method.GET,
+        request.url.path.segments.lastOption == Some("userinfo"),
+        request.header(Header.Authorization).isEmpty,
+        body.isEmpty,
+        certificates.size == 1,
+      )
+    },
+    test("makes no call for a client that authenticates in the request") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented), noIdentity)
+        _ <- sso.warmUp(secretClient)
+        request <- seen.get
+        certificates <- presented.get
+      yield assertTrue(request.isEmpty, certificates.isEmpty)
+    },
+    test("refuses to warm a connection to a server it has no anchors to authenticate") {
+      // Without trust anchors the only option zio-http offers accepts every server certificate, so
+      // the certificate would be handed to whatever answered; same refusal as for any other call.
+      val untrusted = config.copy(versolaInternalTrustedCertificates = Set.empty)
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes)
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, untrusted, certificateFiles, noIdentity)
+        error <- sso.warmUp(certificateClient).flip
+        request <- seen.get
+      yield assertTrue(
+        error == SSOClient.CredentialNeedsTrustedServer(certificateClient.id, untrusted.internalUrl / "userinfo"),
+        request.isEmpty,
+      )
+    },
+    test("refuses a plaintext endpoint instead of warming it with no credential at all") {
+      val plaintext = config.copy(
+        versolaInternalUrl = Some(URL.decode("http://auth.internal:9003").toOption.get),
+      )
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.ok)).toRoutes)
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, plaintext, certificateFiles, noIdentity)
+        error <- sso.warmUp(certificateClient).flip
+        request <- seen.get
+      yield assertTrue(
+        error == SSOClient.CredentialNeedsTls(certificateClient.id, plaintext.internalUrl / "userinfo"),
+        request.isEmpty,
       )
     },
     test("refuses a plaintext endpoint instead of calling it with no credential at all") {

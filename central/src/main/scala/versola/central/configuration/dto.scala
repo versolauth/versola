@@ -16,11 +16,12 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
-import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
+import versola.central.configuration.resources.{AudienceRateLimit, ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.CertificateSubject
+import versola.util.http.DeclaredRateLimit
 import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
@@ -145,6 +146,8 @@ case class ResourceResponse(
     endpoints: Vector[ResourceEndpointResponse],
     internal: Boolean,
     secretRotation: Boolean,
+    /** The limits the resource sets for its audience clients; empty when there are none. */
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -157,6 +160,7 @@ case class ResourceEndpointResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class GetAllResourcesResponse(
@@ -184,6 +188,8 @@ case class CreateResourceRequest(
     audience: List[ClientId],
     endpoints: Vector[CreateResourceEndpointRequest],
     internal: Boolean,
+    /** The limits the resource sets for clients of `audience`: at most one per client. */
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
@@ -192,6 +198,9 @@ case class UpdateResourceRequest(
     audience: PatchAudience,
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
+    /** Replaces the limits set for audience clients, as a whole: absent leaves them (those of clients removed from the audience in
+      * this request are dropped), an empty list removes them all. */
+    audienceRateLimits: Option[List[AudienceRateLimit]],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(
@@ -213,6 +222,7 @@ case class CreateResourceEndpointRequest(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class CreateRoleRequest(
@@ -411,14 +421,14 @@ case class OAuthClientResponse(
     /** What this client changes in the theme it uses; absent when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
     /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
-    est: Option[ClientEstService.State] = None,
+    est: Option[ClientEstService.State],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
     allowPartial: Boolean,
     rememberDuration: Option[Long],
-    requiredScopes: Set[ScopeToken] = Set.empty,
-    offlineAccessOptional: Boolean = false,
+    requiredScopes: Set[ScopeToken],
+    offlineAccessOptional: Boolean,
 ) derives Schema, JsonCodec:
   def toDomain: ConsentFlow =
     ConsentFlow(
@@ -662,6 +672,7 @@ case class ResourceEndpointSyncResponse(
     stepUpCondition: Option[String],
     stepUpAcr: Option[String],
     maxAge: Option[Int],
+    rateLimit: Option[DeclaredRateLimit],
 ) derives Schema, JsonCodec
 
 case class ResourceSyncResponse(
@@ -670,6 +681,8 @@ case class ResourceSyncResponse(
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointSyncResponse],
     secret: Option[String],
+    /** The limits the resource sets for its audience clients, enforced by the edge at R3. */
+    audienceRateLimits: List[AudienceRateLimit] = Nil,
 ) derives Schema, JsonCodec
 
 case class GetResourcesSyncResponse(

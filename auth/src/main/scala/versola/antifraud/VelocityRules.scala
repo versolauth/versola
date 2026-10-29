@@ -1,6 +1,7 @@
 package versola.antifraud
 
 import zio.*
+import zio.json.JsonCodec
 
 import java.net.{Inet4Address, Inet6Address, InetAddress}
 import java.time.Instant
@@ -36,12 +37,12 @@ object VelocityRules:
   /** The most requests a key may have in each window; 0 means no limit. A count above the limit fires the rule.
     * @param weight what a fired rule of this key adds to the score */
   case class Limit(
-      perMinute: Int = 0,
-      perTenMinutes: Int = 0,
-      perHour: Int = 0,
-      perDay: Int = 0,
-      weight: Int = 50,
-  ):
+      perMinute: Int,
+      perTenMinutes: Int,
+      perHour: Int,
+      perDay: Int,
+      weight: Int,
+  ) derives JsonCodec:
     def of(window: VelocityWindow): Int = window match
       case VelocityWindow.OneMinute => perMinute
       case VelocityWindow.TenMinutes => perTenMinutes
@@ -52,13 +53,13 @@ object VelocityRules:
     *                        of its own, `velocity_known_user`); 0 for none
     */
   case class Thresholds(
-      phone: Limit = Limit(weight = 50),
-      ip: Limit = Limit(weight = 20),
-      device: Limit = Limit(weight = 60),
-      asn: Limit = Limit(weight = 20),
-      prefix: Limit = Limit(weight = 30),
-      trustedDiscount: Int = 40,
-  ):
+      phone: Limit,
+      ip: Limit,
+      device: Limit,
+      asn: Limit,
+      prefix: Limit,
+      trustedDiscount: Int,
+  ) derives JsonCodec:
     def of(keyType: VelocityKey): Limit = keyType match
       case VelocityKey.phone => phone
       case VelocityKey.ip => ip
@@ -109,7 +110,7 @@ object VelocityRules:
     * the context's `signals`. */
   def withSignals(
       counters: VelocityCounters,
-      settings: VelocityCounters.Settings,
+      thresholds: Thresholds,
       ctx: AntifraudContext,
       keys: List[(VelocityKey, String)],
       at: Instant,
@@ -117,16 +118,16 @@ object VelocityRules:
   ): AntifraudContext =
     val counts = keys.flatMap: (keyType, key) =>
       VelocityWindow.values.toList.collect:
-        case window if settings.thresholds.of(keyType).of(window) > 0 =>
+        case window if thresholds.of(keyType).of(window) > 0 =>
           signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra).toString
     ctx.copy(signals = ctx.signals ++ counts)
 
   /** The rules of the configured limits. Carry no state: the counts are in the context. */
-  def rules(settings: VelocityCounters.Settings): List[AntifraudRule] =
+  def rules(thresholds: Thresholds): List[AntifraudRule] =
     val limits =
       for
         keyType <- VelocityKey.values.toList
-        limit = settings.thresholds.of(keyType)
+        limit = thresholds.of(keyType)
         window <- VelocityWindow.values.toList
         max = limit.of(window)
         if max > 0
@@ -142,16 +143,19 @@ object VelocityRules:
       )
     val known = AntifraudRule(
       name = "velocity_known_user",
-      weight = -settings.thresholds.trustedDiscount,
+      weight = -thresholds.trustedDiscount,
       forces = None,
       test = ctx =>
         trustedSignals.exists(ctx.signals.get(_).contains("true")) &&
           limits.exists((name, max, _) => ctx.signals.get(name).flatMap(_.toIntOption).exists(_ > max)),
     )
-    limits.map(_._3) ++ Option.when(settings.thresholds.trustedDiscount > 0 && limits.nonEmpty)(known)
+    limits.map(_._3) ++ Option.when(thresholds.trustedDiscount > 0 && limits.nonEmpty)(known)
 
-  /** The rule set for [[Antifraud.Impl]]; empty while the counters are off. */
-  def ruleSet(settings: VelocityCounters.Settings): Antifraud.RuleSet =
-    val all = if settings.enabled then rules(settings) else Nil
+  /** The rule set for [[Antifraud.Impl]], from the limits of the request's tenant (see [[AntifraudTuning]]); empty while the
+    * counters are off. */
+  def ruleSet(settings: VelocityCounters.Settings, tuning: AntifraudTuning): Antifraud.RuleSet =
     new Antifraud.RuleSet:
-      override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(all)
+      override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)
+
+      override def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] =
+        ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)
