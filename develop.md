@@ -158,7 +158,7 @@ The script first asks for the environment **Name** (default `local`):
   auth/central/edge run with `network_mode: host` there, and Postgres is a native
   install on the server rather than a container this manages, so real network calls
   point at `127.0.0.1` (Postgres at `POSTGRES_HOST`) instead of a Compose service name,
-  and the public URL is the actual domain (`AUTH_URL`, e.g. `https://id.versola.kz`)
+  and the public URL is the actual domain (`AUTH_URL`, e.g. `https://id.versola.io`)
   instead of a local port. The reverse proxy in front of them is not configured here:
   `versola-cli` generates and runs it. Files are written to `.local/env/vps/`.
 
