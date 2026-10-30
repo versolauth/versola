@@ -1,6 +1,6 @@
 # Deployment
 
-How Versola is deployed to production (`id.versola.kz`). For local development see
+How Versola is deployed to production (`id.versola.io`). For local development see
 [`develop.md`](develop.md); for Kubernetes see [`k8s/README.md`](k8s/README.md) (it shares the
 configuration *format* with this path and nothing else).
 
@@ -131,7 +131,7 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 ```bash
 versola doctor --target vps
 versola configure vps <version> \
-  --auth-url https://id.versola.kz \
+  --auth-url https://id.versola.io \
   --postgres-host c-<cluster-id>.rw.mdb.yandexcloud.kz:6432 \
   --postgres-db auth \
   --postgres-ca ~/yandex-root.crt
@@ -275,20 +275,20 @@ one go; on a first run it stops before `migrate` so you can run the SQL above, t
 `versola migrate` and `versola up`.
 
 ```bash
-curl -s -o /dev/null -w "%{http_code} %{ssl_verify_result}\n" https://id.versola.kz/.well-known/openid-configuration   # 200 0
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/central/admin/                                          # 200
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/central/permissions/me                                  # 401
+curl -s -o /dev/null -w "%{http_code} %{ssl_verify_result}\n" https://id.versola.io/.well-known/openid-configuration   # 200 0
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/central/admin/                                          # 200
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/central/permissions/me                                  # 401
 ```
 
 ### Behind an existing web server
 
 With `--proxy external` `versola-proxy` listens on `127.0.0.1:2821` and the host's web server
 terminates TLS (for the same checks as above, curl `http://127.0.0.1:2821/…` with
-`-H Host:id.versola.kz -H X-Forwarded-Proto:https`). For nginx the server block is TLS plus one forward:
+`-H Host:id.versola.io -H X-Forwarded-Proto:https`). For nginx the server block is TLS plus one forward:
 
 ```nginx
 server {
-    server_name id.versola.kz;
+    server_name id.versola.io;
     client_max_body_size 8m;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
@@ -354,7 +354,7 @@ nothing.
 6. **Configure, migrate, start** with the same flags as the first time (`--auth-url`, and
    `--proxy external` if used, are always required; the Postgres flags are remembered):
    ```bash
-   versola configure vps <version> --auth-url https://id.versola.kz
+   versola configure vps <version> --auth-url https://id.versola.io
    versola migrate
    versola up
    ```
@@ -418,7 +418,7 @@ versola down                                               # nothing may write w
 psql -c "DROP SCHEMA auth CASCADE; DROP SCHEMA central CASCADE; DROP SCHEMA edge CASCADE;"
 psql -c "CREATE SCHEMA auth AUTHORIZATION versola_app; CREATE SCHEMA central AUTHORIZATION versola_app; CREATE SCHEMA edge AUTHORIZATION versola_app;"
 psql < ~/auth-backup-before-<version>-<timestamp>.sql
-versola configure vps <previous> --auth-url https://id.versola.kz
+versola configure vps <previous> --auth-url https://id.versola.io
 versola migrate                                            # no-op: the dump has the previous schema
 versola up
 ````
@@ -983,11 +983,11 @@ hashes, refresh tokens, client secrets, sessions); the others can simply be rota
 
 `central-ui` is a static SPA shipped in the release's `versola-tools` image; `configure` copies it
 into the bundle and `versola-proxy` serves it at `/central/admin/`, so deploying a release deploys
-its console. It shares the `id.versola.kz` origin with its edge API (no CORS handling), and the
+its console. It shares the `id.versola.io` origin with its edge API (no CORS handling), and the
 `EDGE_SESSION` cookie is scoped `Path=/central`, so every URL the console touches lives under that
 prefix; the proxy strips it before forwarding:
 
-| Path on `id.versola.kz` | Routed to |
+| Path on `id.versola.io` | Routed to |
 |---|---|
 | `/central/admin/` | static `central-ui/` from the bundle (`Cache-Control: no-cache`) |
 | `/central/permissions/me` | `edge`, rewritten to `/permissions/me` |
@@ -1000,7 +1000,7 @@ The login preset `central-admin` is seeded from `central.conf` (`bootstrap.prese
 `redirect-uri = <auth-url>/complete`, `post-login-redirect-uri = <auth-url>/central/admin/`,
 `cookie-path = /central`) once, on `central`'s first bootstrap against an empty database — changing
 the seed later has no effect; change the preset in the console or by SQL. The client's
-`redirect-uris` must contain only `https://id.versola.kz/complete` in prod. If you change the cookie
+`redirect-uris` must contain only `https://id.versola.io/complete` in prod. If you change the cookie
 path, clear cookies once: an `EDGE_SESSION` at the old path is a different cookie that logout at the
 new path does not clear.
 
@@ -1695,13 +1695,13 @@ without it `auth` and `central` fail with `Classpath resource versola/forms/comm
 log anything (a JVM `OutOfMemoryError`, by contrast, is logged). See the `mem_limit` gap in
 [5](#5-known-gaps).
 
-### 6.4 502 or 504 from `id.versola.kz`
+### 6.4 502 or 504 from `id.versola.io`
 
 Work inwards:
 
 ```bash
 docker ps --format '{{.Names}}  {{.Status}}' | grep versola
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/.well-known/openid-configuration
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/.well-known/openid-configuration
 curl -sf http://127.0.0.1:28091/readiness && echo central ok
 curl -sf http://127.0.0.1:8081/readiness && echo auth ok
 curl -sf http://127.0.0.1:8096/readiness && echo edge ok
@@ -1709,7 +1709,7 @@ curl -sf http://127.0.0.1:8096/readiness && echo edge ok
 
 Connection refused on 443 (`--proxy external`: nothing on `2821`) → `versola-proxy` is down
 (`docker logs versola-proxy`; `versola up` starts it). 502 → the service behind it is down; check
-`central` first. A bare `curl -sI https://id.versola.kz/` returning **404** is expected.
+`central` first. A bare `curl -sI https://id.versola.io/` returning **404** is expected.
 
 ### 6.5 `auth`/`edge` never become ready
 
@@ -1773,7 +1773,7 @@ The database's certificate is signed by a CA the JVM does not trust and the serv
 ### 6.12 `versola up` fails getting the certificate
 
 Let's Encrypt must reach the host on port 80 through the `--auth-url` name. Check in order: DNS points
-at this host (`dig +short id.versola.kz`); behind Cloudflare the record is *DNS only* (a proxied one
+at this host (`dig +short id.versola.io`); behind Cloudflare the record is *DNS only* (a proxied one
 answers with Cloudflare's addresses); the security group lets `80` and `443` in; nothing else listens
 on them. Repeated failures hit Let's Encrypt's rate limits: rehearse with `--acme-staging`.
 
