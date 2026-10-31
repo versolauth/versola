@@ -120,22 +120,17 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- service.create.succeedsWith(entry)
         _ <- runAs(post(base, entryBody.dropRight(1) + s""","userId":"$attacker"}"""), service)
-        _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
-        _ <- runAs(Request.get(base.addQueryParam("userId", attacker.toString)), service)
-      yield assertTrue(service.create.calls.head.userId == admin, service.list.calls.head._2 == admin)
+      yield assertTrue(service.create.calls.head.userId == admin)
     },
-    test("a request without a userId, or with one that is not a UUID, is 400 and reaches nothing") {
+    test("a change without a userId, or with one that is not a UUID, is 400 and reaches nothing") {
       val service = stub[AntifraudListService]
       for
         noUser <- run(post(base), service)
         badUser <- run(post(base, entryBody.dropRight(1) + ""","userId":"nope"}"""), service)
-        listNoUser <- run(Request.get(base), service)
-        listBadUser <- run(Request.get(base.addQueryParam("userId", "nope")), service)
-        auditNoUser <- run(Request.get(base / "audit"), service)
         deleteNoUser <- run(delete("""{"id":"00000000-0000-0000-0000-0000000000e1"}"""), service)
         previewNoUser <- run(post(base / "preview"), service)
       yield assertTrue(
-        List(noUser, badUser, listNoUser, listBadUser, auditNoUser, deleteNoUser, previewNoUser).forall(_.status == Status.BadRequest),
+        List(noUser, badUser, deleteNoUser, previewNoUser).forall(_.status == Status.BadRequest),
         service.create.calls.isEmpty,
         service.list.calls.isEmpty,
         service.audit.calls.isEmpty,
@@ -184,9 +179,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- service.list.succeedsWith(ListEntriesResponse(List(entry)))
-        response <- runAs(Request.get(url), service)
+        response <- run(Request.get(url), service)
         body <- response.body.asString
-        (query, userId) = service.list.calls.head
+        query = service.list.calls.head
       yield assertTrue(
         response.status == Status.Ok,
         body.fromJson[ListEntriesResponse] == Right(ListEntriesResponse(List(entry))),
@@ -198,15 +193,14 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           limit = Some(PageLimit(10)),
           offset = Some(PageOffset(20)),
         ),
-        userId == admin,
       )
     },
     test("list with nothing asked passes nothing on; an unknown value, a non-number or a page out of range is 400") {
       val service = stub[AntifraudListService]
-      def get(first: (String, String)) = runAs(Request.get(base.addQueryParams(QueryParams(first))), service)
+      def get(first: (String, String)) = run(Request.get(base.addQueryParams(QueryParams(first))), service)
       for
         _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
-        none <- runAs(Request.get(base), service)
+        none <- run(Request.get(base), service)
         badType <- get("listType" -> "nope")
         badLimit <- get("limit" -> "many")
         badTenant <- get("tenantId" -> "Not A Tenant")
@@ -215,7 +209,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         negative <- get("offset" -> "-1")
       yield assertTrue(
         none.status == Status.Ok,
-        service.list.calls.head._1 == ListEntriesQuery(
+        service.list.calls.head == ListEntriesQuery(
           listType = None,
           valueType = None,
           tenantId = None,
@@ -258,13 +252,13 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- service.audit.succeedsWith(AuditResponse(List(record)))
-        ok <- runAs(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> entryId.toString, "limit" -> "5"))), service)
+        ok <- run(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> entryId.toString, "limit" -> "5"))), service)
         body <- ok.body.asString
-        badId <- runAs(Request.get((base / "audit").addQueryParam("entryId", "nope")), service)
+        badId <- run(Request.get((base / "audit").addQueryParam("entryId", "nope")), service)
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[AuditResponse] == Right(AuditResponse(List(record))),
-        service.audit.calls.head == (Some(entryId), Some(PageLimit(5)), admin),
+        service.audit.calls.head == (Some(entryId), Some(PageLimit(5))),
         badId.status == Status.BadRequest,
       )
     },

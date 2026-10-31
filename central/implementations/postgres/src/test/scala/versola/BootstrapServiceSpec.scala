@@ -294,16 +294,23 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         nonProd.size == prod.size + 2,
       )
     },
-    test("central's antifraud endpoints are registered in production, and told who the admin is from the verified token") {
+    test(
+      "central's antifraud endpoints are registered in production, and the ones that change something are told who the admin is from the verified token",
+    ) {
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)
       val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
       assertTrue(
         antifraud.size == 8,
-        antifraud.filterNot(_ == ("GET" -> "/antifraud/settings")).forall((method, path) =>
-          injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        antifraud.filterNot((method, path) => method == "GET" && (path.startsWith("/antifraud/lists") || path == "/antifraud/settings")).forall(
+          (method, path) =>
+            injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
         ),
+        injected("GET", "/antifraud/lists").isEmpty,
+        injected("GET", "/antifraud/lists/audit").isEmpty,
         injected("GET", "/antifraud/settings").isEmpty,
+        injected("POST", "/antifraud/lists").nonEmpty,
+        injected("PUT", "/antifraud/settings").nonEmpty,
         injected("GET", "/users").isEmpty,
       )
     },
