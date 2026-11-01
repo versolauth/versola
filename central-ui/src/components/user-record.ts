@@ -421,7 +421,8 @@ export class VersolaUserRecord extends LitElement {
       }
 
       .device-clients {
-        --device-grid: minmax(0, 1fr) 9rem 10.5rem 14.5rem;
+        /* Every table shares these tracks, so the client column keeps a floor and wraps its ID first. */
+        --device-grid: minmax(9rem, 1fr) 9rem 10.5rem 10rem;
         grid-area: clients;
         border: 1px solid var(--border-subtle);
         border-radius: var(--radius-md);
