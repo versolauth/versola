@@ -9,11 +9,20 @@ import java.util.concurrent.atomic.AtomicReference
 /** A change that is not valid: a negative limit, a limit above what can be meant, a prefix that is not digits. */
 final class InvalidTuning(message: String) extends RuntimeException(message)
 
+/** The change was made on a row that is no longer at the version the caller read: someone else changed it first. `current` is
+  * the version of the row now (0 where there is none). */
+final class VersionMismatch(val current: Long) extends RuntimeException(s"the settings are at version $current")
+
+/** What an instance knows of its tuning, for the status endpoint: whether it has one, the version of the row it holds (the
+  * ETag of `GET /antifraud/settings`), when it last confirmed it against the database and what the last failed refresh said. */
+case class TuningStatus(available: Boolean, version: Option[Long], checkedAt: Option[Instant], lastError: Option[String])
+
 /** The tuning as stored, and the internal API that changes it.
   *
   * ==The row==
   * `af_settings` has one row with every key, written with everything off by auth's bootstrap if there is none. A change
-  * replaces it as a whole and bumps `af_settings_version`; [[reset]] puts everything off again. A deployment with no row
+  * replaces it as a whole and bumps `af_settings_version` and the version of the row (the ETag the admin API hands out, so that
+  * a change made on a stale read is refused, see [[VersionMismatch]]); [[reset]] puts everything off again. A deployment with no row
   * (bootstrap has not run yet, or the row was deleted by hand) is taken to have everything off ([[Tuning.off]]). Nothing in
   * the configuration says what a threshold is: the store is the single source.
   *
@@ -25,14 +34,18 @@ final class InvalidTuning(message: String) extends RuntimeException(message)
   * instance applies on it at once and on the others within the interval.
   */
 trait AntifraudTuningStore extends AntifraudTuning:
-  /** The row as stored. */
-  def stored: Task[Option[Tuning]]
+  /** The row as stored, with its version; [[Tuning.off]] at version 0 where there is no row. */
+  def stored: Task[StoredTuning]
 
-  /** Replaces the row. Fails with [[InvalidTuning]]. */
-  def put(tuning: Tuning, actor: String): Task[Unit]
+  /** Replaces the row and returns its new version. Fails with [[InvalidTuning]], and with [[VersionMismatch]] when
+    * `expectedVersion` is given and the row is at another one (nothing is written). */
+  def put(tuning: Tuning, actor: String, expectedVersion: Option[Long]): Task[Long]
 
-  /** Puts everything off ([[Tuning.off]]). */
-  def reset(actor: String): Task[Unit]
+  /** Puts everything off ([[Tuning.off]]), as [[put]] does: it moves the version too. */
+  def reset(actor: String, expectedVersion: Option[Long]): Task[Long]
+
+  /** What this instance holds, read from memory. */
+  def status: UIO[TuningStatus]
 
 object AntifraudTuningStore:
 
@@ -94,18 +107,30 @@ object AntifraudTuningStore:
     private val loaded = AtomicReference(Option.empty[Tuning])
     private val loadedVersion = AtomicReference(-1L)
     private val loadedAt = AtomicReference(Instant.MIN)
+    private val loadedRowVersion = AtomicReference(Option.empty[Long])
+    private val checkedAt = AtomicReference(Option.empty[Instant])
+    private val lastError = AtomicReference(Option.empty[String])
 
     override def current: Tuning = loaded.get.getOrElse(Tuning.off)
 
     override def available: Boolean = loaded.get.isDefined
 
-    override def stored: Task[Option[Tuning]] = repository.find
+    override def stored: Task[StoredTuning] = repository.find.map(_.getOrElse(StoredTuning(Tuning.off, 0L)))
 
-    override def put(tuning: Tuning, actor: String): Task[Unit] =
-      ZIO.foreachDiscard(invalid(tuning))(message => ZIO.fail(InvalidTuning(message))) *>
-        Clock.instant.flatMap(repository.put(tuning, actor, _)) *> refresh
+    override def put(tuning: Tuning, actor: String, expectedVersion: Option[Long]): Task[Long] =
+      for
+        _ <- ZIO.foreachDiscard(invalid(tuning))(message => ZIO.fail(InvalidTuning(message)))
+        now <- Clock.instant
+        written <- repository.put(tuning, actor, now, expectedVersion)
+        version <- written match
+          case Some(version) => refresh.as(version)
+          case None => stored.flatMap(row => ZIO.fail(VersionMismatch(row.version)))
+      yield version
 
-    override def reset(actor: String): Task[Unit] = put(Tuning.off, actor)
+    override def reset(actor: String, expectedVersion: Option[Long]): Task[Long] = put(Tuning.off, actor, expectedVersion)
+
+    override def status: UIO[TuningStatus] =
+      ZIO.succeed(TuningStatus(available, loadedRowVersion.get, checkedAt.get, lastError.get))
 
     /** Reads the row when the version moved or a minute has passed; a failure keeps the tuning there is. */
     val refresh: UIO[Unit] =
@@ -115,7 +140,12 @@ object AntifraudTuningStore:
         stale = version != loadedVersion.get || now.isAfter(loadedAt.get.plusSeconds(FullReloadSeconds))
         _ <- ZIO.when(stale):
           repository.find.map: row =>
-            loaded.set(Some(row.getOrElse(Tuning.off)))
+            loaded.set(Some(row.fold(Tuning.off)(_.tuning)))
+            loadedRowVersion.set(Some(row.fold(0L)(_.version)))
             loadedVersion.set(version)
             loadedAt.set(now)
-      yield ()).catchAllCause(_ => AntifraudMetrics.tuningRefreshFailed)
+        _ = checkedAt.set(Some(now))
+        _ = lastError.set(None)
+      yield ()).catchAllCause: cause =>
+        lastError.set(Some(Option(cause.squash.getMessage).getOrElse(cause.squash.getClass.getSimpleName).take(300)))
+        AntifraudMetrics.tuningRefreshFailed

@@ -13,12 +13,18 @@ object AntifraudTuningSpec extends UnitSpecBase:
   private val at = Instant.parse("2026-10-26T10:00:00Z")
   private val base = Tuning.off
 
-  /** The repository in memory, with a version that moves with every change; `row` is the seeded one. */
-  private class InMemory(row: Ref[Option[Tuning]], counter: Ref[Long], failing: Ref[Boolean]) extends AntifraudSettingsRepository:
-    override def put(tuning: Tuning, actor: String, at: Instant) = row.set(Some(tuning)) *> counter.update(_ + 1)
+  /** The repository in memory, with a version that moves with every change and a version of the row, as the real one has;
+    * `row` is the seeded one. */
+  private class InMemory(row: Ref[Option[StoredTuning]], counter: Ref[Long], failing: Ref[Boolean]) extends AntifraudSettingsRepository:
+    override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) =
+      row.modify: current =>
+        val version = current.fold(0L)(_.version)
+        if expectedVersion.exists(_ != version) then (None, current)
+        else (Some(version + 1), Some(StoredTuning(tuning, version + 1)))
+      .tap(written => counter.update(_ + 1).when(written.isDefined))
 
     override def seed(tuning: Tuning, actor: String, at: Instant) =
-      row.modify(r => (r.isEmpty, r.orElse(Some(tuning)))).tap(wrote => counter.update(_ + 1).when(wrote))
+      row.modify(r => (r.isEmpty, r.orElse(Some(StoredTuning(tuning, 1))))).tap(wrote => counter.update(_ + 1).when(wrote))
 
     override def find = row.get
 
@@ -26,7 +32,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
 
   private def repository(seeded: Boolean, down: Boolean = false) =
     for
-      row <- Ref.make(Option.when(seeded)(Tuning.off))
+      row <- Ref.make(Option.when(seeded)(StoredTuning(Tuning.off, 1)))
       counter <- Ref.make(0L)
       failing <- Ref.make(down)
     yield (InMemory(row, counter, failing), failing)
@@ -75,7 +81,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (writer, _, repo) <- storeLayer
         reader = AntifraudTuningStore.Impl(repo)
-        _ <- writer.put(base.copy(blockAt = 70), "alice")
+        _ <- writer.put(base.copy(blockAt = 70), "alice", None)
         before = reader.current.blockAt
         _ <- reader.refresh
       yield assertTrue(writer.current.blockAt == 70, before == base.blockAt, reader.current.blockAt == 70)
@@ -83,7 +89,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("a refresh that fails keeps the tuning there is") {
       for
         (store, failing, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 70), "alice")
+        _ <- store.put(base.copy(blockAt = 70), "alice", None)
         _ <- failing.set(true)
         _ <- store.refresh
       yield assertTrue(store.current.blockAt == 70, store.available)
@@ -99,9 +105,53 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("reset puts the seeded values back") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 70, shadowRules = Set("a")), "alice")
-        _ <- store.reset("alice")
+        _ <- store.put(base.copy(blockAt = 70, shadowRules = Set("a")), "alice", None)
+        _ <- store.reset("alice", None)
       yield assertTrue(store.current == base)
+    },
+    test("a change made on the version that was read moves the version; one made on an older version is refused and writes nothing") {
+      for
+        (store, _, _) <- storeLayer
+        first <- store.stored
+        v2 <- store.put(base.copy(blockAt = 70), "alice", Some(first.version))
+        stale <- store.put(base.copy(blockAt = 80), "bob", Some(first.version)).either
+        after <- store.stored
+        v3 <- store.reset("carol", Some(v2))
+        resetStale <- store.reset("dave", Some(v2)).either
+      yield assertTrue(
+        first.version == 1L,
+        v2 == 2L,
+        stale.left.exists { case m: VersionMismatch => m.current == 2L; case _ => false },
+        after == StoredTuning(base.copy(blockAt = 70), 2),
+        store.current == base,
+        v3 == 3L,
+        resetStale.left.exists(_.isInstanceOf[VersionMismatch]),
+      )
+    },
+    test("there is no row at version 0, which is the version a first change may name") {
+      for
+        (repo, _) <- repository(seeded = false)
+        store = AntifraudTuningStore.Impl(repo)
+        none <- store.stored
+        wrong <- store.put(base.copy(blockAt = 5), "alice", Some(3)).either
+        first <- store.put(base.copy(blockAt = 5), "alice", Some(0))
+      yield assertTrue(none == StoredTuning(base, 0), wrong.left.exists(_.isInstanceOf[VersionMismatch]), first == 1L)
+    },
+    test("the status says what the instance holds, when it last checked, and what the last failed refresh said") {
+      for
+        (store, failing, _) <- storeLayer
+        ok <- store.status
+        _ <- failing.set(true)
+        _ <- store.refresh
+        failed <- store.status
+        _ <- failing.set(false)
+        _ <- store.refresh
+        recovered <- store.status
+      yield assertTrue(
+        ok.available, ok.version.contains(1L), ok.checkedAt.isDefined, ok.lastError.isEmpty,
+        failed.available, failed.version.contains(1L), failed.checkedAt == ok.checkedAt, failed.lastError.contains("down"),
+        recovered.lastError.isEmpty,
+      )
     },
     test("a row stored while there was a Delay step or a fake-send wait still reads: those keys are ignored") {
       val stored = base.toJson.dropRight(1) + ""","delayAt":3,"delayMillis":2000,"fakeSendDelayMillis":500}"""
@@ -126,23 +176,23 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("put does not store what is refused") {
       for
         (store, _, _) <- storeLayer
-        result <- store.put(base.copy(blockAt = -5), "alice").either
+        result <- store.put(base.copy(blockAt = -5), "alice", None).either
         stored <- store.stored
-      yield assertTrue(result.left.exists(_.isInstanceOf[InvalidTuning]), stored.contains(base))
+      yield assertTrue(result.left.exists(_.isInstanceOf[InvalidTuning]), stored == StoredTuning(base, 1))
     },
     test("the engine takes the thresholds that are stored") {
       for
         (store, _, _) <- storeLayer
         engine = Antifraud.Impl(enabled, List(rules(rule("a", 6))), store)
         before <- engine.evaluate(ctx)
-        _ <- store.put(base.copy(blockAt = 5), "alice")
+        _ <- store.put(base.copy(blockAt = 5), "alice", None)
         after <- engine.evaluate(ctx)
       yield assertTrue(before.action == DecisionAction.Allow, after.action == DecisionAction.Block)
     },
     test("a rule weight overrides the rule's, but not a rule that forces an action") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 10, ruleWeights = Map("a" -> 20, "deny" -> 1)), "alice")
+        _ <- store.put(base.copy(blockAt = 10, ruleWeights = Map("a" -> 20, "deny" -> 1)), "alice", None)
         heavy <- Antifraud.Impl(enabled, List(rules(rule("a", 1))), store).evaluate(ctx)
         forced <- Antifraud.Impl(enabled, List(rules(rule("deny", 0, Some(DecisionAction.Fake)))), store).evaluate(ctx)
       yield assertTrue(heavy.score == 20, heavy.action == DecisionAction.Block, forced.score == 0, forced.action == DecisionAction.Fake)
@@ -150,7 +200,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("a shadow rule is listed as such and adds nothing") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 5, shadowRules = Set("a", "deny")), "alice")
+        _ <- store.put(base.copy(blockAt = 5, shadowRules = Set("a", "deny")), "alice", None)
         decision <- Antifraud.Impl(enabled, List(rules(rule("a", 9), rule("b", 1), rule("deny", 0, Some(DecisionAction.Block)))), store).evaluate(ctx)
       yield assertTrue(decision.score == 1, decision.action == DecisionAction.Allow, decision.firedRules == List("b", "shadow:a", "shadow:deny"))
     },
@@ -159,7 +209,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       val tenant = Some(TenantId("a"))
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(smsLimits = limits), "alice")
+        _ <- store.put(base.copy(smsLimits = limits), "alice", None)
         budget = new SmsBudget(AntifraudTestSettings.smsBudget.copy(prefixLength = 6), AntifraudTestSettings.smsSizing, () => store.current.smsLimits)
         first = budget.decide(tenant, "491512", at, charge = true)
         second = budget.decide(tenant, "491512", at, charge = true)
@@ -179,7 +229,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
         (store, _, _) <- storeLayer
         ruleSet = VelocityRules.ruleSet(AntifraudTestSettings.velocity.copy(enabled = true), store)
         before <- ruleSet.rulesFor(ctx)
-        _ <- store.put(base.copy(thresholds = base.thresholds.copy(phone = limit)), "alice")
+        _ <- store.put(base.copy(thresholds = base.thresholds.copy(phone = limit)), "alice", None)
         after <- ruleSet.rulesFor(ctx)
       yield assertTrue(before.isEmpty, after.map(_.name).contains("velocity_phone_1h"))
     },
