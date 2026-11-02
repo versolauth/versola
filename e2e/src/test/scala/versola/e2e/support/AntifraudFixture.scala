@@ -251,6 +251,8 @@ object AntifraudFixture:
         row <- ZIO.fromEither(text.fromJson[Json.Obj]).mapError(RuntimeException(_))
         thresholds = row.get("thresholds").collect { case o: Json.Obj => o }.getOrElse(Json.Obj())
         tuned = row
+          // The specs assert what is done, not what would be: the stack's default is shadow.
+          .add("mode", Json.Str("enforce"))
           .add("challengeAt", Json.Num(15))
           .add("blockAt", Json.Num(50))
           .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
