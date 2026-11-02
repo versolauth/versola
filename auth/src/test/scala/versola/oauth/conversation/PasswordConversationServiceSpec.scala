@@ -93,6 +93,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       userService,
       consentService,
       versola.antifraud.AntifraudEvents.noop,
+      versola.antifraud.ChallengeVerifier.off,
     )
 
   val baseRecord = ConversationRecord(

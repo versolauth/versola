@@ -486,6 +486,72 @@ def outbound(b: Board) -> None:
          desc="Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.")
     b.ts("Calls to other services — failures / s", [(f'sum by (peer) (rate(http_client_requests_total{{{sel}, status_class=~"error|5xx"}}[$__rate_interval]))', "{{peer}}")], unit="reqps",
          desc="Calls that failed: connection errors or a 5xx from the other side. Empty is healthy.")
+    b.ts("Outbound guard — in flight against the limit", [
+        (f"max by (peer) (http_client_guard_in_flight{{{sel}}})", "{{peer}} in flight"),
+        (f"max by (peer) (http_client_guard_limit{{{sel}}})", "{{peer}} limit"),
+    ], unit="short", minimum=0,
+         desc="Calls the guard has let through per peer, and the most it allows at once. In flight pinned at the limit means the peer is where this service waits: read the queue and the refusals next. Empty until the outbound guard is on for this service.")
+    b.ts("Outbound guard — queued calls and wait ${tail:text}", [
+        (f"max by (peer) (http_client_guard_waiting{{{sel}}})", "{{peer}} queued"),
+        (f"histogram_quantile($tail, sum by (le, peer) (rate(http_client_guard_wait_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}} wait"),
+    ], unit="short", minimum=0,
+         desc="Calls waiting for a place to a peer, and how long they waited (seconds, at the selected quantile). A queue that keeps growing is a peer slower than the traffic sent to it; the wait is time added to every call behind it.")
+    b.ts("Outbound guard — refused / s", [(f"sum by (peer, reason, mode) (rate(http_client_guard_rejected_total{{{sel}}}[$__rate_interval]))", "{{peer}} {{reason}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Calls the guard refused: `queue_full`, `queue_timeout`, `circuit_open`, `request_timeout`. `mode` shadow means the call was still made and only counted: what enforcing would refuse. Read shadow for a week before switching a peer to enforce.")
+    b.ts("Outbound guard — circuit breaker", [(f"max by (peer) (http_client_guard_breaker_state{{{sel}}})", "{{peer}}")], minimum=0, maximum=2,
+         line=steps((None, GREEN), (1, YELLOW), (2, RED)),
+         desc="Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.")
+    b.ts("Outbound guard — retries denied / s", [(f"sum by (peer, mode) (rate(http_client_retry_budget_denied_total{{{sel}}}[$__rate_interval]))", "{{peer}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.")
+
+
+def overload(b: Board) -> None:
+    """Inbound admission (the overload policy): the limit, the load against it, who was refused, and the signals the adaptive limit follows."""
+    b.row(f"{b.component} — Overload protection", collapsed=True)
+    sel = b.sel
+    b.ts("Requests in flight against the limit", [
+        (f"max by (pod) (http_admission_in_flight{{{sel}}})", "{{pod}} in flight"),
+        (f"max by (pod) (http_admission_in_flight_peak{{{sel}}})", "{{pod}} peak"),
+        (f"max by (pod) (http_admission_limit{{{sel}}})", "{{pod}} limit"),
+    ], unit="short", minimum=0,
+         desc="Requests this pod is serving, the busiest second, and the most it admits at once (the adaptive limit when adaptive is on). Peak near the limit means the pod is close to refusing; a limit that falls while in flight does not is the pod slowing down. Empty while the overload policy is off.")
+    b.ts("Refused by overload protection / s", [(f"sum by (tier, mode) (rate(http_admission_refused_total{{{sel}}}[$__rate_interval]))", "{{tier}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Requests turned away because the pod was full. `mode` enforce answered 503 with Retry-After; shadow served the request and only counted it, so the number is what enforcing would have refused. Tiers: `start` (new sign-ins) go first, `continuation` next, `critical` last. Sustained shadow refusals: raise the limit or add pods before enforcing; any enforce refusals: the pod is saturated now.")
+    b.ts("Adaptive limit — share of its ceiling", [(f"min by (pod) (http_admission_adaptive_limit_ratio{{{sel}}})", "{{pod}}")], unit="percentunit", minimum=0, maximum=1,
+         line=steps((None, RED), (0.5, YELLOW), (0.8, GREEN)),
+         desc="How much of `maxLimit` the adaptive limit currently allows. Near 100% the pod keeps up; low means round-trip times grew and the limit backed off to protect it. Stays flat when adaptive is off.")
+    b.ts("Round trip by tier and event-loop lag", [
+        (f"max by (tier) (http_admission_rtt_seconds{{{sel}}})", "{{tier}} round trip"),
+        (f"max by (pod) (http_executor_lag_seconds{{{sel}}})", "{{pod}} executor lag"),
+    ], unit="s", minimum=0,
+         desc="What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.")
+
+
+def rate_limits(b: Board, prefix: str) -> None:
+    """Rate limit policies, in the order an operator asks: who was refused, who would be, is a policy too tight, is memory bounded."""
+    b.row(f"{b.component} — Rate limits")
+    sel = b.sel
+    d = f"{prefix}_rate_limit_decisions_total"
+    b.ts("Refused by a rate limit / s", [(f'sum by (policy) (rate({d}{{{sel}, result="limited"}}[$__rate_interval]))', "{{policy}}")], unit="reqps", minimum=0,
+         desc="Calls answered 429, by policy. Only `enforce` policies appear here. A policy that refuses a steady share of one client's traffic is working; one that refuses many clients at once is too tight (see the share below).")
+    b.ts("Would be refused / s (shadow)", [(f'sum by (policy) (rate({d}{{{sel}, result="would_limit"}}[$__rate_interval]))', "{{policy}}")], unit="reqps", minimum=0,
+         desc="What a `shadow` policy counted and did not refuse. This is the number to read before switching a policy to enforce: if it is zero over a normal week the limit is safe, if it is not, ask who it would have refused (the log line per policy, once a minute) before enforcing.")
+    b.ts("Share of calls a policy refuses", [(f'sum by (policy) (rate({d}{{{sel}, result=~"limited|would_limit"}}[$__rate_interval])) / clamp_min(sum by (policy) (rate({d}{{{sel}}}[$__rate_interval])), 0.001)', "{{policy}}")],
+         unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
+         desc="Refused (or would be) / all calls the policy decided, shadow included. Above 1% sustained, the policy is cutting into normal traffic: raise its limit or burst, or narrow what it is keyed on, before it enforces.")
+    b.ts("Keys tracked per policy", [(f"max by (policy) ({prefix}_rate_limit_tracked_keys{{{sel}}})", "{{policy}}")], unit="short", minimum=0,
+         line=steps((None, GREEN), (100000, RED)),
+         desc="Distinct callers (clients, users, addresses) a policy holds a bucket for, on the fullest pod. Dashed line: the 100,000 cap per policy, past which new keys share one overflow bucket.")
+    b.ts("Keys over the cap / s", [(f"sum by (policy) (rate({prefix}_rate_limit_overflow_hits_total{{{sel}}}[$__rate_interval]))", "{{policy}}")], unit="ops", minimum=0,
+         desc="Calls counted in the shared overflow bucket because the policy was at its key cap. Empty is healthy; non-zero is either far more callers than the cap or an attacker sending distinct keys, and those callers share one limit.")
+    if prefix == "edge":
+        b.ts("Pods the limit is divided by", [
+            (f"max by (source) (edge_rate_limit_replicas{{{sel}}})", "in force ({{source}})"),
+            (f"count(count by (pod) (http_server_requests_total{{{sel}}}))", "pods serving traffic"),
+        ], unit="short", minimum=0,
+             desc="`in force` is the number each pod divides a limit by, and where it came from: `dns` (replicas-from) or `policy` (the replicas of the policy set). `pods serving traffic` is how many pods answer. When they differ the limit is wrong by that factor: with more pods than in force the edge allows too much, with fewer it refuses too early.")
+        b.ts("Where the caller's address comes from", [(f"sum by (source) (rate(edge_client_address_total{{{sel}}}[$__rate_interval]))", "{{source}}")], unit="reqps", minimum=0,
+             desc="`forwarded`: read from the proxy's header. `socket`: the connection's peer, right when callers reach the edge directly; behind a proxy or load balancer it is the proxy's own address, the same for everyone, so address limits count everyone together. `forwarded_missing`: client-ip is forwarded but the header was absent or not an address: a misconfiguration, or a caller bypassing the proxy.")
 
 
 def snapshot(b: Board) -> None:
@@ -569,6 +635,8 @@ def add_auth(b: Board, phase: str) -> None:
     b.ts("Failed attempts by step", [(f'sum by (step) (rate(auth_conversation_step_total{{{s}, result="failed"}}[$__rate_interval])) / clamp_min(sum by (step) (rate(auth_conversation_step_total{{{s}}}[$__rate_interval])), 0.001)', "{{step}}")],
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
     argon2(b)
+    rate_limits(b, "auth")
+    overload(b)
     outbound(b)
     snapshot(b)
     saturation(b)
@@ -628,6 +696,8 @@ unit="s", line=steps((None, GREEN), (0.015, RED)),
         (f"sum(rate(dpop_shared_ring_fallbacks_total{{{s}}}[$__rate_interval]))", "fell back to shared check"),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
+    rate_limits(b, "edge")
+    overload(b)
     outbound(b)
     snapshot(b)
     saturation(b)
@@ -667,6 +737,7 @@ def add_central(b: Board, phase: str) -> None:
         (f"sum(rate(db_notification_listener_silent_total{{{s}}}[$__rate_interval]))", "silent windows"),
         (f"sum(rate(db_notification_listener_queue_overflow_total{{{s}}}[$__rate_interval]))", "queue overflows"),
     ], unit="ops", desc="Reconnects, long stretches without any message, and dropped notifications. Empty is healthy.")
+    overload(b)
     outbound(b)
     saturation(b)
     runtime(b)

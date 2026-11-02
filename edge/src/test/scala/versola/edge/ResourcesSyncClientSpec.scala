@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.{EdgeId, ResourceEndpointId, ResourceId}
 import versola.util.cel.CelEvaluator
+import versola.util.http.{DeclaredRateLimitBy, GuardMode}
 import versola.util.{Base64, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -68,7 +69,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(
               Response.json(
-                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(
+                s"""{"resources":[{"resourceId":"central","audienceRateLimits":[],"resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(
                     encryptedSecret,
                   )}"}]}""",
               ),
@@ -86,6 +87,54 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
         resources(ResourceId("central")).secret.exists(_.sameElements(decryptedSecret)),
       )
     },
+    test("reads the rate limit declared on an endpoint, and an endpoint without one has none") {
+      val limited = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000002"))
+      val plain = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000003"))
+      for
+        _ <- TestClient.addRoutes(
+          Handler.succeed(
+            Response.json(
+              s"""{"resources":[{"resourceId":"api","audienceRateLimits":[],"resource":"https://api.example","endpoints":[
+                 |{"id":"$limited","method":"GET","path":"/orders","fetchUserInfo":false,"allow":null,"inject":[],
+                 |"stepUpCondition":null,"stepUpAcr":null,"maxAge":null,
+                 |"rateLimit":{"limits":[{"limit":60,"windowSeconds":60}],"burst":10,"by":"subject","mode":"enforce"}},
+                 |{"id":"$plain","method":"GET","path":"/health","fetchUserInfo":false,"allow":null,"inject":[],
+                 |"stepUpCondition":null,"stepUpAcr":null,"maxAge":null}],"secret":null}]}""".stripMargin,
+            ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, celEvaluator)
+        resources <- service.getAll
+        endpoints = resources(ResourceId("api")).endpoints
+      yield assertTrue(
+        endpoints.find(_.id == limited).flatMap(_.rateLimit).map(r => (r.burst, r.by, r.mode)) ==
+          Some((10, DeclaredRateLimitBy.Subject, GuardMode.Enforce)),
+        endpoints.find(_.id == plain).exists(_.rateLimit.isEmpty),
+      )
+    },
+    test("reads the limits the resource sets for its audience clients, and a resource that sets none has none") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.succeed(
+            Response.json(
+              """{"resources":[
+                |{"resourceId":"api","resource":"https://api.example","endpoints":[],"secret":null,
+                | "audienceRateLimits":[{"clientId":"plan-a","rateLimit":{"limits":[{"limit":600,"windowSeconds":60}],"burst":50,"by":"subject","mode":"enforce"}}]},
+                |{"resourceId":"plain","audienceRateLimits":[],"resource":"https://plain.example","endpoints":[],"secret":null}]}""".stripMargin,
+            ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, celEvaluator)
+        resources <- service.getAll
+        limits = resources(ResourceId("api")).audienceRateLimits
+      yield assertTrue(
+        limits.map(l => (l.clientId.toString, l.rateLimit.burst, l.rateLimit.by, l.rateLimit.mode)) ==
+          List(("plan-a", 50, DeclaredRateLimitBy.Subject, GuardMode.Enforce)),
+        resources(ResourceId("plain")).audienceRateLimits.isEmpty,
+      )
+    },
     test("precompiles allow, step-up and inject expressions from every synced endpoint") {
       val endpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000001"))
       for
@@ -94,7 +143,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { _ =>
             ZIO.succeed(
               Response.json(
-                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[
+                s"""{"resources":[{"resourceId":"central","audienceRateLimits":[],"resource":"https://central.example","endpoints":[
                    |{"id":"$endpointId","method":"GET","path":"/orders","fetchUserInfo":false,
                    |"allow":"request.body.total <= 50000",
                    |"inject":[{"target":"header","name":"X-User","expression":"token.sub"}],

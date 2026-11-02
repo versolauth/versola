@@ -57,17 +57,30 @@ type ClientKindDto = 'web' | 'device' | 'service';
 export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
+export type DeclaredRateLimitDto = { limits: Array<{ limit: number; windowSeconds: number }>; burst?: number; by?: 'subject' | 'client' | 'none'; mode?: 'off' | 'shadow' | 'enforce' };
 type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
 type ResourceEndpointDto = {
   id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[];
-  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null;
+  stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto;
 };
-export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
+export type AudienceRateLimitDto = { clientId: string; rateLimit: DeclaredRateLimitDto };
+export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean; audienceRateLimits?: AudienceRateLimitDto[] };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+/** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
+const RECOMMENDED_RATE_LIMITS = {
+  policies: [
+    { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, cost: 1, mode: 'shadow' },
+    { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, cost: 1, mode: 'shadow' },
+    { name: 'per-user-endpoint', by: ['subject'], scope: 'endpoint', limits: [{ limit: 120, windowSeconds: 60 }], burst: 30, cost: 1, mode: 'shadow' },
+    { name: 'per-address', by: ['ip'], scope: 'edge-wide', limits: [{ limit: 600, windowSeconds: 60 }], burst: 100, cost: 1, mode: 'shadow' },
+    { name: 'per-certificate', by: ['certificate'], scope: 'edge-wide', limits: [{ limit: 60000, windowSeconds: 60 }], burst: 2000, cost: 1, mode: 'shadow' },
+  ],
+};
+
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -147,15 +160,16 @@ type CreateResourceRequest = {
   resourceId: string;
   resource: string;
   audience?: string[];
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto }>;
   internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
   resource?: string;
   audience?: { add: string[]; remove: string[] };
+  audienceRateLimits?: AudienceRateLimitDto[];
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[]; stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -382,10 +396,20 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
-  /** Makes `PUT /configuration/edges/overload` answer 400 with this message, as central does for a policy that fails validation. */
+  /** Makes `PATCH /configuration/edges/policies` answer 400 for the `overload` section with this message, as central does for a policy that fails validation. */
   overloadRejection?: string;
-  /** Holds `PUT /configuration/edges/overload` for this long, to look at the saving state. */
+  /** Holds a `PATCH /configuration/edges/policies` that names `overload` for this long, to look at the saving state. */
   overloadDelayMs?: number;
+  /** Makes a `PATCH /configuration/edges/policies` that names `accessLog` answer 400 with this message. */
+  accessLogRejection?: string;
+  /** Holds a patch that names `accessLog` for this long. */
+  accessLogDelayMs?: number;
+  /** Makes a patch that names `rateLimits` answer 400 with this message. */
+  rateLimitRejection?: string;
+  /** Holds a patch that names `rateLimits` for this long. */
+  rateLimitDelayMs?: number;
+  /** Makes a policies patch that names this section answer 409, as if someone else had changed it after the console read it. */
+  policyConflict?: 'overload' | 'accessLog' | 'rateLimits';
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
@@ -502,6 +526,11 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     edges: clone(overrides.edges ?? defaultState.edges),
     overloadRejection: overrides.overloadRejection,
     overloadDelayMs: overrides.overloadDelayMs,
+    accessLogRejection: overrides.accessLogRejection,
+    accessLogDelayMs: overrides.accessLogDelayMs,
+    rateLimitRejection: overrides.rateLimitRejection,
+    rateLimitDelayMs: overrides.rateLimitDelayMs,
+    policyConflict: overrides.policyConflict,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
@@ -559,7 +588,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
-    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides', 'estEnrollment',
   ],
   device: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
@@ -569,7 +598,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
   ],
   service: [
     'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
-    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks', 'estEnrollment',
   ],
 };
 
@@ -592,6 +621,40 @@ const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'dpopMinRsaKeySize', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks',
   ],
 };
+
+/**
+ * The members central's requests declare without a default (`TypedClientRequests`, `dto.scala`): a body that leaves one out is
+ * refused with 400 there, so it is here, and a console that forgets one fails its test and not a user.
+ */
+const REQUIRED_CREATE: Record<ClientKindDto, string[]> = {
+  web: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'theme', 'otpTemplateId',
+    'frontChannelLogoutSessionRequired', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'authMethod', 'certificateBoundAccessTokens',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+    'estEnrollment',
+  ],
+  device: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'theme', 'otpTemplateId',
+    'frontChannelLogoutSessionRequired', 'dpopSigningAlgs', 'authMethod', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+  ],
+  service: [
+    'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'authMethod', 'certificateBoundAccessTokens', 'estEnrollment',
+  ],
+};
+
+const REQUIRED_UPDATE: Record<ClientKindDto, string[]> = {
+  web: ['clientId', 'redirectUris', 'scope'],
+  device: ['clientId', 'redirectUris', 'scope'],
+  service: ['clientId', 'scope', 'permissions'],
+};
+
+const REQUIRED_RESOURCE_CREATE = ['tenantId', 'resourceId', 'resource', 'audience', 'endpoints', 'internal', 'audienceRateLimits'];
+
+function missingMembers(body: unknown, required: string[]): string[] {
+  const present = (body ?? {}) as Record<string, unknown>;
+  return required.filter(name => present[name] === undefined);
+}
 
 function unknownMembers(body: unknown, allowed: string[]): string[] {
   return Object.keys((body ?? {}) as Record<string, unknown>).filter(name => !allowed.includes(name));
@@ -727,6 +790,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const payload = body as CreateClientRequest;
         const tenantClients = state.clients[payload.tenantId] ?? [];
 
+        const missing = typedKind ? missingMembers(body, REQUIRED_CREATE[typedKind]) : [];
+        if (missing.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missing.map(name => `.${name}(missing)`).join(' ')}` });
+          return;
+        }
         const extra = typedKind ? unknownMembers(body, CREATE_MEMBERS[typedKind]) : [];
         if (extra.length > 0) {
           await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
@@ -785,6 +853,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         if (typedKind) {
+          const missing = missingMembers(body, REQUIRED_UPDATE[typedKind]);
+          if (missing.length > 0) {
+            await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missing.map(name => `.${name}(missing)`).join(' ')}` });
+            return;
+          }
           const extra = unknownMembers(body, UPDATE_MEMBERS[typedKind]);
           if (extra.length > 0) {
             await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
@@ -1064,6 +1137,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'POST') {
+        const missingResource = missingMembers(body, REQUIRED_RESOURCE_CREATE);
+        if (missingResource.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Failed to decode JSON: ${missingResource.map(name => `.${name}(missing)`).join(' ')}` });
+          return;
+        }
         const payload = body as CreateResourceRequest;
         let endpointId = nextEndpointId(state);
         const createdResource: ResourceDto = {
@@ -1080,6 +1158,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
             ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
             ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+            ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
           })),
           internal: payload.internal ?? false,
           secretRotation: false,
@@ -1106,6 +1185,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (payload.audience) {
           resource.audience = [...(resource.audience ?? []).filter(id => !payload.audience!.remove.includes(id)), ...payload.audience.add];
         }
+        // As central does: the new set replaces the old one, and a client that left the audience keeps no limit.
+        if (payload.audienceRateLimits !== undefined) resource.audienceRateLimits = payload.audienceRateLimits;
+        if (resource.audienceRateLimits) {
+          resource.audienceRateLimits = resource.audienceRateLimits.filter(limit => (resource.audience ?? []).includes(limit.clientId));
+        }
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -1122,6 +1206,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
             ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
             ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+            ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
           })));
 
         await route.fulfill({ status: 204, body: '' });
@@ -1276,22 +1361,65 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/configuration/edges/overload' && method === 'PUT') {
+    if (pathname === '/configuration/edges/policies' && (method === 'GET' || method === 'PATCH')) {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {
         await route.fulfill({ status: 404, body: '' });
         return;
       }
-      if (state.overloadDelayMs) await new Promise(resolve => setTimeout(resolve, state.overloadDelayMs));
-      if (state.overloadRejection) {
-        await route.fulfill(json({ error: state.overloadRejection }, 400));
+      const view = () => ({
+        edgeId: edge.id,
+        ...(edge.overloadPolicy ? { overload: edge.overloadPolicy } : {}),
+        ...(edge.accessLogPolicy ? { accessLog: edge.accessLogPolicy } : {}),
+        ...(edge.rateLimitPolicies ? { rateLimits: edge.rateLimitPolicies } : {}),
+        revisions: edge.policyRevisions ?? {},
+      });
+      if (method === 'GET') {
+        await route.fulfill(json(view()));
         return;
       }
-      const policy = body as Record<string, unknown>;
-      if (Object.keys(policy).length === 0) delete edge.overloadPolicy;
-      else edge.overloadPolicy = policy;
-      await route.fulfill({ status: 204, body: '' });
+      const patch = body as Record<string, unknown> & { expectedRevisions?: Record<string, number> };
+      const sections = (['overload', 'accessLog', 'rateLimits'] as const).filter(section => section in patch);
+      const delay = Math.max(0, ...sections.map(section => ({ overload: state.overloadDelayMs, accessLog: state.accessLogDelayMs, rateLimits: state.rateLimitDelayMs })[section] ?? 0));
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      for (const section of sections) {
+        const rejection = { overload: state.overloadRejection, accessLog: state.accessLogRejection, rateLimits: state.rateLimitRejection }[section];
+        if (rejection) {
+          await route.fulfill({ status: 400, body: '' }); // central gives no body: the reason is in its log
+          return;
+        }
+      }
+      const stale = Object.entries(patch.expectedRevisions ?? {}).find(([section, revision]) => (edge.policyRevisions?.[section] ?? 0) !== revision)?.[0]
+        ?? sections.find(section => section === state.policyConflict);
+      if (stale) {
+        await route.fulfill({ status: 409, body: '' }); // no body: the client reads the state again
+        return;
+      }
+      const dryRun = url.searchParams.get('dryRun') === 'true';
+      const stored = { overload: 'overloadPolicy', accessLog: 'accessLogPolicy', rateLimits: 'rateLimitPolicies' } as const;
+      const target = dryRun ? structuredClone(edge) : edge;
+      for (const section of sections) {
+        const value = patch[section] as Record<string, unknown> | null;
+        const field = stored[section];
+        const empty = value === null || Object.keys(value).length === 0 || (section === 'rateLimits' && (value as { policies?: unknown[] }).policies?.length === 0);
+        const before = JSON.stringify(target[field] ?? null);
+        if (empty) delete target[field];
+        else target[field] = value;
+        if (before !== JSON.stringify(target[field] ?? null)) target.policyRevisions = { ...(target.policyRevisions ?? {}), [section]: (target.policyRevisions?.[section] ?? 0) + 1 };
+      }
+      await route.fulfill(json({
+        edgeId: target.id,
+        ...(target.overloadPolicy ? { overload: target.overloadPolicy } : {}),
+        ...(target.accessLogPolicy ? { accessLog: target.accessLogPolicy } : {}),
+        ...(target.rateLimitPolicies ? { rateLimits: target.rateLimitPolicies } : {}),
+        revisions: target.policyRevisions ?? {},
+      }));
+      return;
+    }
+
+    if (pathname === '/configuration/edges/rate-limits/recommended' && method === 'GET') {
+      await route.fulfill(json(RECOMMENDED_RATE_LIMITS));
       return;
     }
 

@@ -1,6 +1,7 @@
 package versola.edge
 
 import org.scalamock.stubs.ZIOStubs
+import versola.edge.model.ApplicationType
 import versola.edge.model.{AuthorizationPreset, ClientCredential, ClientId, OAuthClient, PresetId}
 import versola.util.{RedirectUri, ReloadingCache, Secret}
 import zio.*
@@ -17,12 +18,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
   private val otherClient = OAuthClient(
     id = otherClientId,
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    applicationType = ApplicationType.web,
   )
 
   private val preset = AuthorizationPreset(

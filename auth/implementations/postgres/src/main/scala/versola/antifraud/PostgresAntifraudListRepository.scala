@@ -4,12 +4,13 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.TenantId
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZLayer}
+import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
 import java.util.UUID
 
-class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRepository, BasicCodecs:
+/** @param previewTimeout the longest a preview (a day of `af_event` read in full) may take before the creation fails */
+class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duration = 10.seconds) extends AntifraudListRepository, BasicCodecs:
   import PostgresAntifraudListRepository.*
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
@@ -58,7 +59,11 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       sql"SELECT $EntryColumns FROM af_list_entry WHERE id = $id".query[EntryRow].run().headOption.map(_.toEntry)
 
   override def preview(valueType: AntifraudValueType, value: String, since: Instant): Task[ListPreview] =
-    xa.connectMeasured("preview-antifraud-list-entry"):
+    xa.transactMeasured("preview-antifraud-list-entry"):
+      // A day of the log is read in full (the BRIN index on `at` bounds it to that day's blocks); on a log too large
+      // for that the creation fails here, on time, rather than hold the connection, and the entry can be added as a
+      // shadow one.
+      sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${previewTimeout.toMillis}ms'")}".update.run()
       // Only the columns the event log has can say what an entry would have matched.
       val counts = valueType match
         case AntifraudValueType.phone_hash =>

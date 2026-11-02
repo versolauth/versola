@@ -61,7 +61,7 @@ export async function translations(id: string): Promise<Translations> {
 /** What a form config needs besides its `step`; anything given overrides the defaults. */
 export type FormConfig = { step: Record<string, unknown> } & Record<string, unknown>;
 
-export async function renderForm(page: Page, id: string, config: FormConfig, options: { extraCss?: string } = {}) {
+export async function renderForm(page: Page, id: string, config: FormConfig, options: { extraCss?: string; beforeRender?: (page: Page) => Promise<void> } = {}) {
   const [all, commonCss, formCss, script] = await Promise.all([
     translations(id),
     read('../forms/common.css'),
@@ -88,6 +88,8 @@ export async function renderForm(page: Page, id: string, config: FormConfig, opt
     },
   );
 
+  // For a form that sends a request as it loads: its route has to be there before it does.
+  await options.beforeRender?.(page);
   await page.goto('/__form__');
   await page.setContent(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

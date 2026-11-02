@@ -1,6 +1,6 @@
 # Deployment
 
-How Versola is deployed to production (`id.versola.kz`). For local development see
+How Versola is deployed to production (`id.versola.io`). For local development see
 [`develop.md`](develop.md); for Kubernetes see [`k8s/README.md`](k8s/README.md) (it shares the
 configuration *format* with this path and nothing else).
 
@@ -31,7 +31,7 @@ Two ways to put Versola on 80/443, chosen with `--proxy` (it must be given on ev
 
 ```
 browser ──443──▶ versola-proxy (TLS, Let's Encrypt) ──▶ auth  127.0.0.1:8080
-                                                    └──▶ edge  127.0.0.1:8095 ──▶ central 127.0.0.1:8090
+                                                    └──▶ edge  127.0.0.1:8095 ──▶ versola-proxy 127.0.0.1:8090 ──▶ central 127.0.0.1:28090
 ```
 
 All routing — which path goes to `auth` and which to `edge`, the admin console, legacy redirects —
@@ -44,25 +44,34 @@ decide, and nothing else inbound.
 
 | Service | App (`PORT`) | Additional (`APORT`) | Diagnostics (`DPORT`) |
 |---|---|---|---|
-| `auth` | 8080 | 8082 (Account Settings, internal) | 8081 |
-| `central` | 8090 | — | 8091 |
+| `auth` | 8080 | 9082 (Account Settings, internal) | 8081 |
+| `central` | 28090 (8090 is `versola-proxy`'s front) | — | 28091 |
 | `edge` | 8095 | — | 8096 |
 | `versola-proxy` | 80/443 (`2821` with `--proxy external`) | — | — |
 | `step-ca` / OpenBao | 9000 / 8200 | — | — |
 
-`auth` also has a mutual-TLS listener (`MPORT`, 8083, loopback). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 8082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
+`auth` also has a mutual-TLS listener (`MPORT`, 9083, loopback; `versola-proxy` fronts it on 8083, and fronts `APORT` on 8082). `central` has one too (`MPORT`, 8093, loopback), the only place edges reach it, and an enrollment listener (central's `APORT`, 8094 -- not auth's `APORT`, 9082 -- loopback, `POST /edge/enroll` only). Nothing of this is public unless you ask for it with `versola configure vps --mtls-domain`, `--central-mtls-domain` or `--central-domain` -- see [Mutual TLS certificates](#mutual-tls-certificates). The generated `compose.yml` is the
 source of truth for ports; `EXPOSE` in the Dockerfiles is inert under `network_mode: host`.
+
+On `vps` the reverse proxy also fronts `central`: it listens on `127.0.0.1:8090`, the address `auth`,
+`edge` and the console call, and `central` itself listens 20000 higher, on `28090` (`PORT`) and
+`28091` (`DPORT`), so that `versola rollout` can move it through a temporary second replica
+(`28190`/`28191`) without an outage. Probe `central`'s `/readiness` on `28091`, not `8091`.
 
 **Startup order matters.** `auth` and `edge` block on their initial configuration sync from `central`
 (up to two minutes) and are not serving meanwhile. `versola up` starts `central`, waits for its
-`/readiness`, then `auth` and `edge`, and `versola-proxy` last.
+`/readiness`, then the `versola-proxy` front of `central` (`auth` and `edge` call `central` through it),
+then `auth` and `edge`, and waits for the whole proxy last.
 
 ### Where things live on the host
 
 | Path / object | What it is |
 |---|---|
 | `~/.versola/active/state.json` | the live deployment: version, bundle, `--auth-url`, proxy mode, `--postgres-host`, `--postgres-db` |
-| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt` |
+| `~/.versola/active/proxy-vps/` | the proxy's generated configuration, one `gen-NNNNNN` directory per change plus `current`; each is checked with `nginx -t` before the reload |
+| `~/.versola/active/bundle-*/` | one directory per `configure`: `compose.yml`, `proxy.yml`, `*.conf`, `*.secrets.env` (mode `600`), `overrides.yml` (the ports moved behind the proxy; written by `up`), `replicas.yml` (while a service has more than one replica), `openbao.hcl`, `central-ui/` (the admin console), `proxy/`, `postgres-ca/ca.crt`, `secrets.schema.json` |
+| `~/.versola/active/postgres-ca.crt` | the copy of `--postgres-ca` that later runs reuse |
+| `~/.versola/openbao/vps-postgres-role.sql` | the SQL that creates or updates the database role (mode `600`); you run it with `sudo -u postgres psql` |
 | `~/.versola/openbao/vps.json` | AppRole credentials `versola-cli` uses to read/write secrets |
 | `~/.versola/openbao/vps-admin.json` | OpenBao root token + unseal key. **Keep a copy off the host** — neither is recoverable if lost |
 | Volume `versola-openbao-file-vps` | OpenBao's data (all secrets). Survives `down` |
@@ -124,7 +133,7 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 ```bash
 versola doctor --target vps
 versola configure vps <version> \
-  --auth-url https://id.versola.kz \
+  --auth-url https://id.versola.io \
   --postgres-host c-<cluster-id>.rw.mdb.yandexcloud.kz:6432 \
   --postgres-db auth \
   --postgres-ca ~/yandex-root.crt
@@ -161,16 +170,20 @@ schema it points at, and two services sharing one abort with `FlywayValidateExce
 ([6.1](#61-flywayvalidateexception)).
 
 On the first `configure` against an empty OpenBao the Postgres password is generated then, so the
-role gets it only afterwards. `configure` prints the statements:
-```
-CREATE ROLE "versola_app" WITH LOGIN PASSWORD '…';   -- if the role doesn't exist yet
-ALTER ROLE "versola_app" WITH PASSWORD '…';          -- if it already exists
+role gets it only afterwards. `configure` never prints the password: it writes the SQL that gives the
+role that password to `~/.versola/openbao/vps-postgres-role.sql` (readable only by you; it creates the
+role if it doesn't exist, and sets the password and allows login if it does) and prints the command
+to run it:
+
+```bash
+sudo -u postgres psql < ~/.versola/openbao/vps-postgres-role.sql
 ```
 
 On the managed cluster the role and database come from the cloud (user `versola_app` owning `auth`;
 there is no superuser). Set the password as `versola_app` itself or with
 `yc managed-postgresql user update versola_app --cluster-name <name> --password …` (the pooler applies
-it a few seconds late), then create the schemas. These `PG*` variables are what every `psql`/`pg_dump`
+it a few seconds late); the password is `POSTGRES_PASSWORD` in the bundle's `auth.secrets.env`, the CLI
+does not print it. Then create the schemas. These `PG*` variables are what every `psql`/`pg_dump`
 in this document assumes:
 
 ```bash
@@ -180,7 +193,8 @@ export PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' ~/.versola/active/bundle-*/auth.s
 for s in auth central edge; do psql -c "CREATE SCHEMA IF NOT EXISTS $s AUTHORIZATION versola_app"; done
 ```
 
-The password is printed only on that first run; it also stays in the bundle's `auth.secrets.env`.
+The file is written only on that first run; the password itself is kept in OpenBao and in the bundle's
+`auth.secrets.env`.
 
 <a id="bundled-postgres"></a>
 **Bundled Postgres.** With `POSTGRES_MODE=bundled` (a `versola-tools` input; the default `external` is
@@ -221,6 +235,65 @@ the services and the `migrate` container and sets `postgres.ssl-root-cert`. A UR
 verify (`disable|allow|prefer|require`) logs a warning and, when `env = "prod"`, stops the service
 from starting; loopback hosts are exempt.
 
+<a id="postgres-own-ca"></a>
+**Postgres with your own CA.** If your Postgres is self-hosted and no public CA signed its
+certificate, make a CA and a server certificate yourself. Keep `ca.key` off the database host (it can
+sign a certificate for any name); only `ca.crt` goes to Versola.
+
+```bash
+# 1. The CA, valid 10 years
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -key ca.key -sha256 -days 3650 -subj "/CN=Postgres CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out ca.crt
+
+# 2. The server's key and a request. The SAN is what is checked: it must list every name and IP
+#    address that the CLI and the services connect to (the host in --postgres-host).
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -subj "/CN=db.example.com" \
+  -addext "subjectAltName=DNS:db.example.com,IP:10.0.0.5" -out server.csr
+
+# 3. Sign it with the CA
+printf 'subjectAltName=DNS:db.example.com,IP:10.0.0.5\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -sha256 \
+  -extfile server.ext -out server.crt
+openssl verify -CAfile ca.crt server.crt     # server.crt: OK
+```
+
+On the database host, put `server.crt` and `server.key` in a directory readable by `postgres` (the key
+must be owned by `postgres` with mode `0600`, or Postgres refuses to start), and set in
+`postgresql.conf`:
+
+```
+ssl = on
+ssl_cert_file = '<dir>/server.crt'
+ssl_key_file = '<dir>/server.key'
+listen_addresses = 'localhost,10.0.0.5'
+```
+
+In `pg_hba.conf`, a `hostssl` line for the role and no plain `host` line, so a connection without TLS
+is refused (the address is the client's, as Postgres sees it):
+
+```
+hostssl  all  versola_app  <address of the Versola host>/32  scram-sha-256
+```
+
+Restart Postgres, copy `ca.crt` to the machine that runs Versola, and check from there:
+
+```bash
+openssl s_client -starttls postgres -connect db.example.com:5432 -CAfile ca.crt \
+  -verify_hostname db.example.com -verify_return_error </dev/null 2>&1 | grep Verification   # Verification: OK
+psql "host=db.example.com user=versola_app dbname=auth sslmode=verify-full sslrootcert=ca.crt" \
+  -c "select ssl from pg_stat_ssl where pid = pg_backend_pid()"                               # t
+```
+
+Then `versola configure vps <version> … --postgres-host db.example.com:5432 --postgres-ca ~/ca.crt`.
+Use the name that is in the SAN: another name fails verification even when it resolves to the same
+machine, and only the literal `127.0.0.1`, `localhost` and `[::1]` are exempt. `ca.crt` must be the root
+certificate (a file with only an intermediate CA does not verify). If you use an intermediate CA, append
+it to `server.crt` after the server's certificate, so that the server sends the whole chain. Renew `server.crt` with the same CA
+before it expires; `--postgres-ca` does not change.
+
 ### Migrate, start, verify
 
 ```bash
@@ -235,20 +308,20 @@ one go; on a first run it stops before `migrate` so you can run the SQL above, t
 `versola migrate` and `versola up`.
 
 ```bash
-curl -s -o /dev/null -w "%{http_code} %{ssl_verify_result}\n" https://id.versola.kz/.well-known/openid-configuration   # 200 0
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/central/admin/                                          # 200
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/central/permissions/me                                  # 401
+curl -s -o /dev/null -w "%{http_code} %{ssl_verify_result}\n" https://id.versola.io/.well-known/openid-configuration   # 200 0
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/central/admin/                                          # 200
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/central/permissions/me                                  # 401
 ```
 
 ### Behind an existing web server
 
 With `--proxy external` `versola-proxy` listens on `127.0.0.1:2821` and the host's web server
 terminates TLS (for the same checks as above, curl `http://127.0.0.1:2821/…` with
-`-H Host:id.versola.kz -H X-Forwarded-Proto:https`). For nginx the server block is TLS plus one forward:
+`-H Host:id.versola.io -H X-Forwarded-Proto:https`). For nginx the server block is TLS plus one forward:
 
 ```nginx
 server {
-    server_name id.versola.kz;
+    server_name id.versola.io;
     client_max_body_size 8m;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
@@ -314,7 +387,7 @@ nothing.
 6. **Configure, migrate, start** with the same flags as the first time (`--auth-url`, and
    `--proxy external` if used, are always required; the Postgres flags are remembered):
    ```bash
-   versola configure vps <version> --auth-url https://id.versola.kz
+   versola configure vps <version> --auth-url https://id.versola.io
    versola migrate
    versola up
    ```
@@ -324,33 +397,51 @@ nothing.
    replica, `configure` refuses: use `versola rollout` (below) or remove the extra replicas first.
 7. **Verify** with the checks in [2](#migrate-start-verify) and `versola status`.
 
-#### Without stopping: `versola rollout`
-
-`versola-cli` 0.2.10 and later. For a release whose migrations are additive and whose previous
-version runs on the new schema (read the release notes — before 1.0 this is not promised), steps
-5–6 can be replaced by:
-
-````bash
-versola rollout <version> --dry-run              # plan, secrets plan, pending migrations; changes nothing
-versola rollout <version> --assume-compatible    # cut off? run the same command again
-````
-
-It prepares the new version next to the running one (including the secrets plan above), migrates,
-restarts `central` (the admin console is down until it is ready), then replaces each `auth` and
-`edge` replica behind a temporary extra one, so they keep serving. Before the extra replica starts
-it checks free memory (1156 MiB, about 1.13 GiB) and Postgres connections; `--no-surge` does
-without it. `versola rollout --abort` goes back to the previous version while the rollout is
-unfinished (migrations and secrets stay). Copy `~/.versola/active/state.json` and take the dump of
-step 4 first. `rollout` has so far been exercised with stand-in images only, not two real releases —
-details in `versola-cli`'s README.
-
 #### Tag naming
 
 The image tag is the git tag verbatim, with no `v` prefix (`0.7.1`), and that is the `<version>` `versola configure` takes.
 
+### Without stopping: `versola rollout`
+
+On `vps`, when the release only *adds* migrations and the running version keeps working on the new
+schema, `versola rollout` replaces the running version while it serves. Releases before 1.0 do not
+promise that compatibility, so read the release notes and say you did with `--assume-compatible`:
+
+```bash
+versola rollout <version> --dry-run          # the plan, the secrets plan, the pending migrations; changes nothing
+versola rollout <version> --assume-compatible
+```
+
+Take the dump of step 4 first: the migrations are applied before anything is replaced and cannot be
+rolled back. Then `central` moves through a temporary second replica, and `auth` and `edge` are
+replaced one replica at a time behind a temporary extra one, so no service has fewer replicas serving
+than before. If the run is cut off (an error, Ctrl-C, a dropped SSH session), the same command
+continues where it stopped.
+
+Before a temporary replica starts, `rollout` checks that the server has the memory for one more JVM
+(what a running replica uses now, never less than 900 MiB, plus 256 MiB: at least about 1.13 GiB free)
+and that Postgres has the connections for its pool plus 3 spare; `versola replica add` makes the same
+Postgres check. If either is short it refuses with the numbers before anything changes (the checks run
+again before each temporary replica): free the memory or raise `max_connections`, or use `--no-surge`,
+which replaces replicas with no extra one, so one fewer serves meanwhile (an `auth` or `edge` with a
+single replica then also needs `--allow-downtime`).
+
+`central` is replaced in place, and the admin console and self-registration are unavailable until it is
+ready, only with `--no-surge`, or on the first rollout of a deployment made before the proxy fronted
+`central`; `auth` and `edge` keep serving meanwhile. Connections to `auth`'s mutual-TLS port (8083) that
+the old proxy workers hold are closed 30 seconds after each proxy reload: idle ones are reopened by
+`edge`, a request in flight at that moment fails. The
+[`versola-cli` README](https://github.com/versolauth/versola-cli#rollout-version--rollout---abort-vps)
+has the details.
+
 ### Rollback
 
-If the release only *added* migrations and the previous version runs on the newer schema, going back
+While a `versola rollout` is unfinished, `versola rollout --abort` goes back to the version it came
+from (add `--no-surge` if the rollout needed it); the migrations and secrets stay. Replicas whose
+version did not change are not recreated, unless the previous bundle is gone: then the previous
+version is configured anew and every replica is recreated. For a release that predates the secrets
+schema, that path needs `--allow-legacy-secrets`. After a rollout has finished there is nothing to abort. Otherwise,
+if the release only *added* migrations and the previous version runs on the newer schema, going back
 is `versola configure vps <previous> …` + `versola up` (install the matching CLI if needed). If the
 migrations must be undone, restore the database **before** starting the previous version — never run
 it against a schema only the new release understands:
@@ -360,7 +451,7 @@ versola down                                               # nothing may write w
 psql -c "DROP SCHEMA auth CASCADE; DROP SCHEMA central CASCADE; DROP SCHEMA edge CASCADE;"
 psql -c "CREATE SCHEMA auth AUTHORIZATION versola_app; CREATE SCHEMA central AUTHORIZATION versola_app; CREATE SCHEMA edge AUTHORIZATION versola_app;"
 psql < ~/auth-backup-before-<version>-<timestamp>.sql
-versola configure vps <previous> --auth-url https://id.versola.kz
+versola configure vps <previous> --auth-url https://id.versola.io
 versola migrate                                            # no-op: the dump has the previous schema
 versola up
 ````
@@ -371,6 +462,20 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 (`versola replica remove auth|edge <n>`): `configure` refuses while a service has more than one. An
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
+
+#### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
+
+`HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
+in a compose file or a Helm `env` block is ignored. See [Access log](#access-log).
+
+- **auth and central** always log every request, and have no setting for it.
+- **The edge** starts at `off` (failures and slow requests only; 500 ms, 0.05 when sampled) and is configured per edge in
+  central: the admin console (an edge's page, "Access log") or `PATCH /configuration/edges/policies?edgeId=...` with an `accessLog` section. It reaches
+  the edge on its next configuration sync.
+- An edge that had `HTTP_ACCESS_LOG=full` or `sampled` returns to `off` until a policy is set for it. Set one after
+  upgrading if you want the lines back.
+- Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
+  `LOG_LEVEL` is unchanged.
 
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
@@ -545,9 +650,95 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **Antifraud configuration.** Each antifraud key has exactly one home.
+  1. **Tuned during an attack** (thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow
+     rules): the stored settings below, changed through central's admin API, with no restart.
+  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**, as
+     for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
+     before the block existed, makes `auth` refuse to start naming the missing key). The chart takes the config from the
+     Secret you give it, so there is nothing to set in the chart's values. The keys, with what the generator writes:
+
+     ```hocon
+     antifraud {
+       retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
+       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up
+       stats-retention  = "30 days"
+       sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
+       decision {
+         enabled        = false        # the rule engine; off, nothing is evaluated
+         timeout        = "20 milliseconds"
+         failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails or
+                                       # is too slow, or the stored settings have not been read yet
+       }
+       velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
+       tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
+       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days" }
+       detectors { enabled = false, interval = "1 minute", retention = "90 days" }
+       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5 }
+     }
+     ```
+  3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
+     queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
+     `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
+     the detectors' pace and analytics. Where the items below name one of them with its value, that is the constant.
+
+  **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
+  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
+  `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
+  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `blockAt`), the
+  proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
+  rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
+  `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
+  number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
+  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending.
+
+  There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
+  own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
+  weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
+  everything off. `PUT`
+  replaces it as a whole (every key), `GET` reads it and `DELETE` puts everything off again. Every instance holds it in
+  memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
+  full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
+  that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the
+  database unreadable has none yet, and decides every request as `decision.failure-action` says (rule
+  `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity counters count) until a read succeeds.
+
+  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
+  `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
+  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in (`PUT` replaces every key, so read the settings first):
+
+  ```json
+  PUT /antifraud/settings
+  {
+    "settings": {
+      "challengeAt": 0, "blockAt": 0,
+      "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
+      "thresholds": {
+        "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
+        "ip":     {"perMinute": 10, "perTenMinutes": 0, "perHour": 0, "perDay": 0,   "weight": 10},
+        "device": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 60},
+        "asn":    {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 20},
+        "prefix": {"perMinute": 0, "perTenMinutes": 60, "perHour": 200, "perDay": 0, "weight": 30},
+        "trustedDiscount": 40
+      },
+      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
+      "ruleWeights": {},
+      "shadowRules": []
+    }
+  }
+  ```
+
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `smsLimits` is the one setting of the profile that
+  acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
+  `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
+  rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
+  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. `DELETE` the settings to go
+  back; nothing it recorded needs undoing.
+
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
-  `antifraud.retention` (14 days). The migration creates the parent only, and a partition can be created or dropped
+  `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, so a row
+  can live up to one day longer than the retention). The migration creates the parent only, and a partition can be created or dropped
   only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
   read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
   different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
@@ -570,18 +761,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
   Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
   retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
-  optional `antifraud` block of `auth`'s config.
+  `antifraud` block of `auth`'s config.
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
-  recognise at once (a destination hash, a number prefix, an IP or network, an ASN, a device, a user-agent or JA4
-  hash, a mail domain): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
+  recognise at once (a destination hash, a number prefix, an IP or network, a user-agent hash, the mail domain of an
+  address a code is asked for; an ASN, a device or a JA4 hash is refused until a request carries one, P1-1 and P1-3,
+  since such an entry would match nothing): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
   outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
   are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
   turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
   change made through another instance shows within that time, and a refresh that fails keeps the previous lists
   (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
-  `antifraud.lists.hit-flush-interval` (30 seconds), expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
-  interval of counts. `antifraud.lists.watch-weight` (20) and `allow-weight` (1000) are the score a `watch` adds and
+  every 30 seconds, expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
+  interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
   an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
   `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
   `/antifraud/lists`; the console has no screen for them yet. Entries added by SQL skip the audit and the version bump (an
@@ -590,71 +782,78 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
   else changes for a deployment that is upgraded. Edge tells central who the admin is (an inject rule for `userId`, a query parameter of a `GET` and a body field of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). There is no per-tenant admin: whoever holds the permissions may change every entry, global ones included. A call to central with the resource secret but no `userId` is `400`. A `phone_hash` entry is made from a phone number (`phone`); the
   number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
-  Safety rules the service enforces: `allow` only for an exact subject (phone hash, device, address, /32 or /128);
+  Safety rules the service enforces: `allow` only for an exact subject (phone hash, address, /32 or /128; a network of
+  one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
-  `antifraud.lists.max-traffic-share` (5%, 0 disables) of the last 24 hours of events (judged over at least
-  `share-min-events`, 100) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  5% of the last 24 hours of events (judged over at least
+  100 events) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
   `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
-  `antifraud.lists.startup-timeout` (30 s) for the first successful load so that lists are enforced from the first
+  30 seconds for the first successful load so that lists are enforced from the first
   request; if it fails it starts without them, logs it and retries every second. **Rotating
   `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
 
 - **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
-  minute into `af_dest_stats` (per tenant, range of numbers — the first `antifraud.stats-prefix-length` digits, 4 by
+  minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, a constant of the service,
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
   (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
   ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
   instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
-  next run recomputes the last `stats-lookback` (2 minutes). A BRIN index on `af_event (at)` keeps that read to the
+  next run recomputes the last `stats-lookback` (2 minutes, or twice `stats-interval` when that is longer, so that
+  every minute is rolled up twice; an event the writer was later with than that is never counted, which under an
+  attack makes the statistics a lower estimate, as the log itself is). A BRIN index on `af_event (at)` keeps that read to the
   blocks of those minutes.
-  Separately, `antifraud.sms-budget` closes a range (tenant plus the first `prefix-length` digits) for the next hour:
-  `sent-per-hour` (that many codes may be sent to it, no more) and `min-volume` with `min-conversion` (a range with at
-  least that many codes sent of which fewer than that share were verified). Both are **off by default** (`0`).
+  Separately, the SMS budget closes a range (tenant plus the first `antifraud.sms-budget.prefix-length` digits) for the next hour:
+  `sentPerHour` (that many codes may be sent to it, no more) and `minVolume` with `minConversion` (a range with at
+  least that many codes sent of which fewer than that share were verified), the tuned setting `smsLimits`. Both are
+  **off by default** (`0`).
   **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
   range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
   for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
   exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
-  unverified, which closes it. For that reason the conversion breaker (`min-volume`) is never applied to a number
-  whose region allows registration (`phoneRegions[].registration`); `sent-per-hour` is, so keep it well above the
+  unverified, which closes it. For that reason the conversion breaker (`minVolume`) is never applied to a number
+  whose region allows registration (`phoneRegions[].registration`); `sentPerHour` is, so keep it well above the
   real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
   range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
   someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
   candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
   an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
-  matters more than the pumping it protects against, leave `sent-per-hour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
+  matters more than the pumping it protects against, leave `sentPerHour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
   and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  `max-ranges` (10000) ranges are tracked; beyond that new ones are let through untracked
+  10000 ranges are tracked; beyond that new ones are let through untracked
   (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
   the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
 
-- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per phone (the keyed hash), network of the IP
-  address, device, ASN and range of numbers over the last minute, 10 minutes, hour and day, for the antifraud rules. They
-  count *requests*, not distinct values: how many different phones one device, address or ASN asked for, or how many
+- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per network of the IP address, device, ASN
+  and range of numbers, and **codes sent** per phone (the keyed hash), over the last minute, 10 minutes, hour and day,
+  for the antifraud rules. The phone key is the one that counts sends and not requests: a request that is refused,
+  challenged or faked sends nothing, and were it counted, asking for codes to somebody else's number from anywhere
+  would raise the count held against that number's owner until the number is blocked. So the `phone` limits bound
+  the codes a number can be sent (SMS bombing), and cannot lock its owner out. They
+  count *requests* (or sends), not distinct values: how many different phones one device, address or ASN asked for, or how many
   ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
   by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
-  The keys of the optional `antifraud.velocity` block of `auth`'s config: `max-keys` (20000 per kind), `stripes` (8),
-  `flush-interval` (10 s), `load-interval` (20 s), `share-from` (3), `max-flush-rows` (20000, a strict cap, the busiest
-  keys first), `max-load-keys` (20000 per query, the busiest first) and
-  `thresholds.<phone|ip|device|asn|prefix>.<per-minute|per-ten-minutes|per-hour|per-day>` with `weight` (defaults: phone 50,
-  device 60, prefix 30, ip 20, asn 20) and `thresholds.trusted-discount` (40): the most requests a key may have in the
-  window, 0 for no limit; a rule fires above it and adds its `weight` to the score the `antifraud` thresholds turn into a
-  decision. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
+  The counters' sizes are constants of the service: `max-keys` (20000 per kind), `stripes` (8), `share-from` (3),
+  `max-flush-rows` (20000, a strict cap, the busiest keys first) and `max-load-keys` (20000 per query, the busiest first);
+  `flush-interval` and `load-interval` are keys of the block above. The limits are the tuned setting `thresholds`:
+  `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
+  prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
+  rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
   subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
   once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
-  context, filled by later tasks) that fired a velocity rule gets `trusted-discount` taken off its score.
+  context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
   *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
   JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
   minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
   active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
   stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
   about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
-  (tens of MB at the most extreme). Lower `max-keys` or `stripes` to spend less.
+  (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
   full table does not stop counting: a new key takes the place of the oldest key seen only once
   (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
   has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
@@ -687,13 +886,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
   never creates one. **Off by default** (`antifraud.detectors.enabled`, `false`), and each detector has its own
-  `enabled`. The block is read whole: set every key of it (and of `prefix-anomaly` and `fake-verify`), or none.
-  Defaults: `interval` 1 minute, `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
+  `enabled`. `interval`, `retention` and `enabled` are keys of the block above; the rest are constants of the service: `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
   10 s, `max-proposals` 20 per detector and run, `candidates` 200 (ranges looked at closely, busiest first), `open-for`
   12 hours (an undecided proposal then expires), `cooldown` 24 hours (a value approved or rejected is not proposed
   again for that long), `ttl` 24 hours (what an entry made from a proposal lives), `retention` 90 days, `batch-size`
   1000.
-  `prefix-anomaly` proposes a range (tenant plus the first `stats-prefix-length` digits) for `fake` when in the last
+  `prefix-anomaly` proposes a range (tenant plus the first 4 digits) for `fake` when in the last
   `window` (15 minutes) it was asked for at least `min-requests` (50) codes, `spike-factor` (5) times what the
   `baseline` (24 hours before the window) gives for a window of that length (at least `baseline-floor`, 5), at least
   `min-sent` (20) were sent and its conversion (verified over sent) is at most `max-conversion` (0.2) and, if the
@@ -704,12 +902,59 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (a shorter prefix covers a longer one). Sequential numbers are not detected: the log keeps a number as a keyed hash
   and its first six digits, which cannot tell consecutive numbers from others.
   One instance runs a detector at a time (an advisory lock; the others skip it), each statement under
-  `antifraud.detectors.statement-timeout` and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
+  the statement timeout (10 s) and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
   with `DEFAULT 0` (the previous release's rollup does not name it); it counts `fake_verify` events. Proposals are
   counted in `antifraud_proposals_created_total{kind}`; **alert on** `antifraud_detector_failed_total{kind}` and
   `antifraud_proposal_housekeeping_failed_total` increasing: a failing detector is only a warning in the log. There
   is no way yet to approve a proposal: that, and creating the entry (`AntifraudProposal.toNewListEntry`), is a
   follow-up.
+
+- **Challenges (a proof of work before a code is sent; no table, no new page).** A request for a code that the decision
+  engine scores at or above the tuned `challengeAt` (and below `blockAt`) is not sent until the client has done some work. The credential (email, phone) and
+  OTP-resend forms send their request from script (`proof_inline=1` among the fields) and auth answers
+  `{"challenge": {"kind", "token", "params"}}` instead of a redirect, leaving the conversation where it was. The page
+  finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
+  request again** with two more fields, `proof_token` and `proof_solution`; the code is sent only if they are right. The
+  person sees nothing but the submit they made. The request is judged again with its answer (a block, a fake and the
+  lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
+  nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
+  paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
+  charged again. The same holds on the pending step below (the post that leaves it pays; the page's own ask for the code and
+  its answer do not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is
+  refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
+  hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
+  phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
+  higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
+  `maxDifficulty` (18).
+  The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
+  names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
+  is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
+  the last one was sent): **sending a code spends every challenge made before it**, which is what makes a solution
+  single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
+  count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
+  hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
+  real bound is the per-credential OTP request limit, which a wrong answer is charged against, and the token's `ttl`; a guess
+  costs the server one SHA-256. The page's ask for a code from the pending step is the one request that is free and can be
+  repeated: while the decision is still `Challenge` it only gets a challenge (a MAC), and a right answer sends one code
+  and ends the step; once the decision has become `Allow` (the counters have cooled, a list entry expired) the ask itself
+  sends the code, once, as the request it stands for would have.
+  **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
+  form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
+  step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
+  it can answer like the credential form does and which is the same request (not counted or charged again). When the code is sent the page shows it in place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
+  cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
+  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
+  `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
+  times out to ask every request for a proof.
+  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes) and `max-attempts` (5): the
+  switch and what a challenge lives for. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
+  `maxDifficulty` 18, `scoreStep` 15, in zero bits of a hash), so that it can be raised during an attack; the score it
+  starts at is the tuned `challengeAt`. The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
+  column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
+  `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and `antifraud_challenges_total{kind,outcome}`
+  counts them. A script that does the work gets its code: the proof makes an attack cost CPU, it does not stop one, so keep
+  the lists, the velocity limits and the SMS budget. Only the proof of work is built; the `ChallengeVerifier` interface and
+  the `kind` and `params` of the answer are where a provider's check (Turnstile and the like, drawn by the same page) is added.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
@@ -771,11 +1016,11 @@ hashes, refresh tokens, client secrets, sessions); the others can simply be rota
 
 `central-ui` is a static SPA shipped in the release's `versola-tools` image; `configure` copies it
 into the bundle and `versola-proxy` serves it at `/central/admin/`, so deploying a release deploys
-its console. It shares the `id.versola.kz` origin with its edge API (no CORS handling), and the
+its console. It shares the `id.versola.io` origin with its edge API (no CORS handling), and the
 `EDGE_SESSION` cookie is scoped `Path=/central`, so every URL the console touches lives under that
 prefix; the proxy strips it before forwarding:
 
-| Path on `id.versola.kz` | Routed to |
+| Path on `id.versola.io` | Routed to |
 |---|---|
 | `/central/admin/` | static `central-ui/` from the bundle (`Cache-Control: no-cache`) |
 | `/central/permissions/me` | `edge`, rewritten to `/permissions/me` |
@@ -788,7 +1033,7 @@ The login preset `central-admin` is seeded from `central.conf` (`bootstrap.prese
 `redirect-uri = <auth-url>/complete`, `post-login-redirect-uri = <auth-url>/central/admin/`,
 `cookie-path = /central`) once, on `central`'s first bootstrap against an empty database — changing
 the seed later has no effect; change the preset in the console or by SQL. The client's
-`redirect-uris` must contain only `https://id.versola.kz/complete` in prod. If you change the cookie
+`redirect-uris` must contain only `https://id.versola.io/complete` in prod. If you change the cookie
 path, clear cookies once: an `EDGE_SESSION` at the old path is a different cookie that logout at the
 new path does not clear.
 
@@ -1069,6 +1314,39 @@ move together and `configure` is re-run)
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 
+### Request bodies state every field (breaking for API clients)
+
+`central`'s admin API no longer fills in values a caller leaves out. A field that has no meaning when missing used to
+decode to a default (`theme` to `"default"`, a missing boolean to `false`, a missing set to empty); it is now required, and a
+body that omits it is refused with `400`. A field typed as optional (`null` allowed) is still optional. The reason: a
+field left out by mistake used to become a security-relevant value (an unthrottled category, DPoP off, an empty scope patch)
+without anyone having chosen it.
+
+| Endpoint | Fields that must now be sent |
+|---|---|
+| `POST /configuration/clients/web` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `requireSignedRequestObject`, `requirePushedAuthorizationRequests`, `estEnrollment` (on top of the ones already required) |
+| `POST /configuration/clients/native` | `theme`, `otpTemplateId`, `frontChannelLogoutSessionRequired`, `dpopSigningAlgs` |
+| `POST /configuration/clients/service` | `permissions`, `dpopBoundAccessTokens`, `dpopSigningAlgs`, `certificateBoundAccessTokens`, `estEnrollment` |
+| `PUT /configuration/clients/web`, `/native` | `redirectUris` and `scope` patches (`{"add":[],"remove":[]}` for no change) |
+| `PUT /configuration/clients/service` | `scope` and `permissions` patches |
+| `consentFlow` in any client body | `requiredScopes` (`[]`) and `offlineAccessOptional` (`false`) next to `allowPartial` |
+| `PATCH /configuration/edges/policies`, section `rateLimits` | `replicas`; and for every policy `by`, `scope`, `burst`, `cost`, `mode` |
+| `POST /configuration/resources` | `audienceRateLimits` (`[]` for none) |
+| `rateLimit` of a resource endpoint, and of an audience client | `burst`, `by`, `mode` next to `limits` |
+
+**Migrating a client of the API.** Send the fields above; the values to send for "as before" are the old defaults:
+`theme` and `otpTemplateId` `"default"`, the booleans `false`, `dpopSigningAlgs` and `permissions` `[]`, an unchanged patch
+`{"add":[],"remove":[]}`, a rate limit's `burst` `1`, `cost` `1`, `by` `[]` (policy) or `"none"` (declared limit), `scope`
+`"edge-wide"`, `mode` `"shadow"`, `replicas` `1`. The console, `versola-cli`, the load generator, `scripts/est-smoke.sh` and
+`openid-conformance/run.py` send them; a script of your own that posts a minimal body will start getting `400` and the reason is in
+`central`'s log. Read the new `required` lists in `central/open-api/central.yaml`.
+
+**Stored data.** Migration `V1032` adds `requiredScopes` and `offlineAccessOptional` to every stored `consent_flow`
+that lacks them, so no stored client is unreadable. `auth` and `edge` read configuration from `central` in the same shape:
+upgrade `central` first, then `auth` and `edge` (the configuration snapshot an `auth` or `edge` keeps for a start while `central` is unreachable is the raw answer
+of the older release and is decoded like a live one, so a snapshot that lacks a field cannot be used; start `central` first so the services
+refresh it).
+
 ### Overload protection
 
 When a service is asked for more than it can do, it should refuse the surplus quickly rather than queue it
@@ -1154,34 +1432,217 @@ over `maxLimit`; near 1 means the edge has room, near `minLimit / maxLimit` mean
 | Clients retry in a tight loop after a refusal | raise `retryAfterSeconds` |
 | Calls to a slow backend pile up | lower outbound `maxConcurrent`, and set `requestTimeoutMillis` just above the backend's p99 |
 
+### Rate limits
+
+The edge limits how much each client, user, session or key may send through it. An operator sets the policies per edge in
+central; a policy in `shadow` only counts what it would refuse, a policy in `enforce` refuses. An edge with no policy runs with
+the limiter disabled, and a proxied request pays one volatile read. The design is in #744 (and #310 for the original ask).
+
+**Start from the recommended set.** `GET /configuration/edges/rate-limits/recommended` (and "Add recommended policies" in the
+console, on the edge page under *Rate limits*) gives five generous policies, all in `shadow`: `per-client` (120,000 a minute,
+bursts of 5,000), `per-user` (300 a minute and 5,000 an hour, bursts of 60), `per-user-endpoint` (120 a minute per user and
+endpoint, bursts of 30), `per-address` (600 a minute, bursts of 100; see R1) and `per-certificate` (60,000 a minute, bursts of
+2,000; mutual-TLS listener). They are meant to catch a runaway client, user, address or certificate, not a busy one. Add them, read
+`edge_rate_limit_decisions_total{result="would_limit"}` for a week, adjust the numbers to what well-behaved callers really do,
+then switch one policy at a time to `enforce`. Switching it back to `shadow` or `off` is the off switch.
+
+- **Policies per edge, in central: one endpoint for all the edge's policies.** `GET` and `PATCH /configuration/edges/policies?edgeId=`
+  (the overload, access-log and rate limit policies are its three sections, `overload`, `accessLog` and `rateLimits`):
+  - `PATCH` changes the sections the body names and leaves the others as they are. `null` removes a section, an object replaces it **as a
+    whole** (a section is never merged field by field); an empty section is the same as `null`. A key that is not a section is refused
+    (`400`), so a misspelled section is an error and not a silent no-op. `400` and `409` come with **no body** (a body would be a
+    contract callers parse; the reason of a `400` is in central's log as `invalid_policy`, and `dryRun` answers whether a body is valid); `404`
+    for an unknown edge. The answer is the new state with the new `revisions`.
+  - **Conditional change, without headers:** `expectedRevisions` in the body names, per section, the revision the client last read
+    (`GET` returns `revisions` and `updatedAt`; the edge listing returns `policyRevisions`). If any named section has moved on, nothing is
+    written and the answer is `409` with no body: read the state again. A section that is not named has no precondition, so a client
+    that only patches its own section needs none. A change that changes nothing does not move the revision. The console sends the revision
+    it read and, on `409`, reads the edges again and says so; on `400` (the console validates, so it should not happen) it says central did not accept the values.
+  - **`dryRun=true`** checks the body with the rules the edge applies (and the revisions) and answers the state the patch would make,
+    writing nothing: for CI and automation.
+  - Stored in `edges.rate_limit_policies` (migration `V1029`), `edges.overload_policy`, `edges.access_log_policy` and the revisions in
+    `edges.policy_meta` (`V1030`), all nullable JSONB and additive: the previous release's inserts do not name them and a rollback works on
+    the new schema. The edge listing shows `rateLimitPolicies`, `overloadPolicy`, `accessLogPolicy` and `policyRevisions`; the edge gets a
+    section in its own sync (`GET /edge/sync/rate-limits`, `/overload`, `/access-log`; the calling edge's own row only). The sections are
+    independent. The edge picks a change up on its
+  next configuration sync (the refresh interval, 5 minutes by default), keeps the last set while central is unreachable, and
+  treats `404` from an older central as "none set". A set that fails validation on the edge is not applied and the previous
+  one stays.
+- **Two checkpoints on the proxy path**, both fed by the verified token and the matched route, never by what the caller
+  sent: R2, after the JWT is verified and before the revocation check and the DPoP proof is recorded (client, subject,
+  session `sid`, key `jkt`); R3, after the endpoint and the caller's permissions are resolved and before the `/userinfo`
+  call and the upstream (resource and registered endpoint template, global and per subject). A request refused by
+  permissions is counted at R2 and not at R3. A refresh is not counted separately: the proxied call is. A call refused at R3
+  has already had its DPoP proof recorded (the proof is checked before the route is known, and reordering would let a caller
+  without a valid proof learn whether it is permitted); a call refused at R2 has not, and neither reaches `/userinfo` or the
+  resource.
+- **R1, before the token is read, keyed on what the connection shows** (policy `by: ["ip"]` or `["certificate"]`, scope
+  `edge-wide`, no other key):
+  - *Plain listener, the address.* Counts **failed and unauthenticated attempts only**: `/login`, `/complete` and the other entry
+    points count every call (nobody is signed in yet); a proxied call counts only when it is refused as unauthenticated (a
+    missing, invalid or expired token, a bad DPoP proof; not a nonce challenge, a step-up or a redirect to sign in again).
+    **Successful calls are never limited by address**, so a mobile carrier's shared address does not refuse its honest users.
+    An address whose bucket is empty is refused with `429` before anything else is done. IPv4 per address, IPv6 per `/64`.
+  - *Mutual-TLS listener, the certificate.* Keyed by the verified client certificate's SHA-256 thumbprint; every call counts (a
+    certificate is an identity); no address is needed, and none is reliably known behind an L4 proxy.
+  - *Which address:* the edge's own config file, `client-ip = "socket"` (default: the peer of the connection) or `"forwarded"` (the
+    header named by `client-ip-header`, default `X-Real-IP`). Set `forwarded` only when the edge is reachable **only** through the
+    proxy that sets the header (compose network, chart network policy): anything else could write the header and choose its own
+    bucket. nginx (`versola-proxy`) and ingress-nginx already resolve the client chain and set `X-Real-IP`. A header that is
+    missing or not an IP literal falls back to the peer. **Inside a Kubernetes cluster** a call through a Service (or an internal load balancer)
+    from a pod on another node reaches the backend with the caller's *node* address as its source (measured on the test cluster; only a
+    caller on the same node with `externalTrafficPolicy: Local` kept its own address). So behind kube-proxy, pods on one node share one
+    address, and `socket` cannot tell them apart: put a proxy that sets the header in front (ingress-nginx does) and use `forwarded`. The
+    address a real internet client has through a cloud load balancer was not measured (the cloud's address quota blocked creating one). Behind a proxy with `socket`, every caller is the proxy: the address limit
+    would count the whole world as one caller. Check `edge_client_address_total{source}` (`socket`, `forwarded`,
+    `forwarded_missing`) before enforcing an address policy; the edge logs a warning at start when `forwarded` is set. Whether a
+    cloud L4 load balancer delivers the client address to the pods (and an `externalTrafficPolicy` that keeps it) depends on the
+    platform and is to be verified on the first real load balancer.
+- **A refusal is `429 Too Many Requests`** with `Retry-After` in whole seconds, rounded up (the wait of the policy that makes the
+  caller wait longest) and **no body**: a body would be a contract; everything a caller can act on is in the headers, and the policy is named only by `RateLimit-Policy`, never the key. A caller
+  passing every policy is charged on all of them; one refused by any is charged on none. A refusal is counted
+  (`result="limited"`) and its `receive-http` line follows the success rules (written when slow or sampled, not for every
+  refusal), so a flood cannot become a flood of log lines. A `429` also carries `RateLimit-Policy: "<name>";q=<quota>;w=<window seconds>` (the
+  policy's tightest rate) and `RateLimit: "<name>";r=0;t=<wait>`, as in draft-ietf-httpapi-ratelimit-headers, which is still a draft and
+  has changed between versions: so they are sent on a refusal only, never on a successful response, and never name a key.
+- **The operator's view of refusals is the log, once a minute per policy.** Each edge and auth logs one line per policy that
+  refused something in the last minute (`... rate limit 'per-client' in the last 60 s: refused 12, would refuse (shadow) 0, ...`):
+  `WARN` when the policy enforced, `INFO` when it only counted in shadow, nothing when it did neither. It names no key, so it holds
+  nothing about a caller, and it is bounded by the number of policies however hard the edge is hit. A single refused request is not
+  logged by itself (a flood of them would be a flood of lines); its `429` names the policy in `RateLimit-Policy`, and a request
+  log line, when the access log is `full`, carries the error `rate_limited` with the same policy name.
+- **Rate limits and overload protection never share a counter**: a rate limit refuses a specific party with `429`; overload
+  protection refuses whoever is there, by priority, with `503`.
+- **The limit is per pod, divided by `replicas`.** Every pod counts on its own (no shared counter, no network hop on the request
+  path). Set `replicas` in the policy set (`{"replicas": 3, "policies": [...]}`, "Edge pods" in the console) to the number of pods
+  of the edge and each pod enforces `limit / replicas` of every window and `burst / replicas` (rounded up, never below `cost`), so the
+  edge as a whole allows about the limit written. It is as exact as the balancer is even; a limit meant to be exact across pods
+  (a billed daily quota) would need leased tokens from a shared store, which is a separate piece of work. Left at 1, the limit
+  applies to each pod and N pods allow N times it. Change it when the number of pods changes.
+  **Counting pods automatically:** set `replicas-from = "dns:<name>"` in the edge config to count the pods from DNS instead. The
+  chart ships a headless Service for this (`<fullname>-edge-headless`, ready pods only) and puts its name in the environment variable
+  `VERSOLA_EDGE_HEADLESS_SERVICE` of the edge pods, so the edge's `env.conf` can say `replicas-from = "dns:"${VERSOLA_EDGE_HEADLESS_SERVICE}` and nothing is
+  typed by hand; the edge resolves it every 10 seconds, keeps
+  the last good count if a lookup fails, and uses the policy's `replicas` until the first answer. The count in force and where it came
+  from are the gauge `edge_rate_limit_replicas{source="dns|policy"}`. Nothing detects Kubernetes at runtime: without the key the
+  policy's `replicas` is used.
+- **Memory is bounded**: at most 100,000 tracked keys per policy; past that, new keys share one overflow bucket (counted in
+  `edge_rate_limit_overflow_hits_total`), so a flood of distinct keys cannot grow memory.
+
+**Metrics** (a key is never a label; the policy name is a closed set, at most 64 names of `[a-z][a-z0-9_-]*`):
+`edge_rate_limit_decisions_total{policy,result}` with `result` in `allowed`, `limited` and `would_limit`;
+`edge_rate_limit_tracked_keys{policy}`; `edge_rate_limit_overflow_hits_total{policy}`. With no policy none of them is written.
+
+**Limits declared by the owner of an API** (levels 2 and 3 of #744 section 4). The resource owner sets limits where the API is
+declared, so a change travels with it and the owner of a client sets nothing about how much of an API it may take:
+
+- *A resource endpoint*: `rateLimit` in the endpoint of `POST` / `PUT /configuration/resources` (`createEndpoints` replaces an
+  endpoint by id, so send the whole endpoint), read back by `GET /configuration/resources`. Applied at R3 for that endpoint, one
+  bucket per key and registered endpoint template. Stored inside the endpoint's JSON in `resources.endpoints`: no migration, and an
+  endpoint stored before this has none.
+- *A client of the resource's audience*: `audienceRateLimits` on the resource, a list of `{"clientId": ..., "rateLimit": ...}`, in
+  `POST` / `PUT /configuration/resources` (on `PUT` it replaces the whole list; absent leaves it; removing a client from the
+  audience drops its limit), read back by `GET /configuration/resources`. Applied at R3 to that client's calls to this resource,
+  whichever endpoint; one entry per client, only for a client in the audience. Stored in `resources.audience_rate_limits` (JSONB,
+  migration `V1030`: `NOT NULL DEFAULT '[]'`, because the previous release's inserts do not name it and an existing row has none).
+- *The shape*: `{"limits": [{"limit": 600, "windowSeconds": 60}], "burst": 50, "by": "subject", "mode": "shadow"}`. `by` is `subject`
+  (one bucket per user), `client` (per client; endpoints only) or `none` (one bucket for the endpoint, or for that client on the
+  resource); `burst` defaults to 1, `by` to `none`, `mode` to `shadow`. The rules are those of a policy (`400` names the first
+  problem; `InvalidRateLimit` for an endpoint, `InvalidAudienceRateLimit` for an audience client), and `cost` is always 1.
+- *They add to the edge's policies, they do not replace them*: a request must pass every limit that applies to it, so the
+  effective limit is the smallest. Declared limits are divided by `replicas` like the edge's own. A bootstrap start keeps a
+  `rateLimit` an operator put on one of the account endpoints.
+- *Metrics*: the policy is named `resource-endpoint` or `resource-client` (reserved: an edge policy cannot take either name), never the
+  endpoint, resource or client, so the label set stays closed; the key counts of every declaration add up under that name. A `429` names
+  the same policy. Up to 10,000 tracked keys per declaration (the edge's own policies keep 100,000), so many declarations cannot
+  grow memory.
+- *Order of work and rollback*: an edge that predates this ignores the fields, and a central that predates them sends none, so either
+  can be upgraded first. The previous release keeps serving on the new schema, and `audience_rate_limits` can stay when rolling back.
+
+Not there yet: partner edges tightening any of these locally.
+
+### Limits on auth's channel that is not mutual TLS
+
+The edge's rate limits stand in front of the resources. `auth` reached without the edge, that is not over mutual TLS, is exposed
+directly, so it has limits of its own (#745), from the `limits` block of auth's config file (every key optional; the block may be
+absent):
+
+| Limit | Applies to | Counts | Default |
+|---|---|---|---|
+| failed client authentication | `POST /token`, `/par`, `/introspect`, `/revoke` | an address's **failures only** (`401`, or `invalid_client`) | `enforce`, 20 a minute, burst 10 |
+| entry | `/authorize` | every call by address | `shadow`, 600 a minute, burst 100 |
+
+An address over its failed-authentication limit is refused with `429`, `Retry-After` (whole seconds), the `RateLimit` fields and no body
+before its next request is read, however good the credential in it. A client that authenticates is never limited, so a shared
+address is not refused for another's failures. Guessing a client's secret at `/token` was the classic unthrottled path; the
+secret's own entropy protects it, and this makes the guesses slow as well. The mutual-TLS listener is not limited this way (a
+certificate is not a guessable secret).
+
+```hocon
+limits {
+  failed-mode = "enforce"     # off | shadow | enforce
+  failed-per-minute = 20
+  failed-burst = 10
+  entry-mode = "shadow"
+  entry-per-minute = 600
+  entry-burst = 100
+  client-ip = "socket"        # socket | forwarded
+  ip-header = "X-Real-IP"
+}
+```
+
+`client-ip` is read as the edge's is (see *Rate limits*, R1): `socket` is the peer of the connection, `forwarded` the last value of
+`ip-header`, to be used **only** when auth is reachable solely through the proxy that sets it. Behind a proxy with `socket` every
+caller is the proxy, so the limit would count the world as one address. A value outside its range stops the start. State is per
+pod (N pods allow N times a limit) and bounded (a flood of addresses shares an overflow bucket).
+`gen-env.scala` writes `failed-mode = "shadow"` into the **local** config, because the e2e suite fails client authentication from one
+address on purpose; a generated deployment has no block, so the defaults apply. A load campaign whose drivers share addresses
+should set `failed-mode` and `entry-mode` to `shadow` for the run.
+
+Metrics: `auth_rate_limit_decisions_total{policy,result}` (`allowed`, `limited`, `would_limit`; policies
+`failed-client-auth-per-address` and `authorize-per-address`), `auth_rate_limit_tracked_keys{policy}`,
+`auth_rate_limit_overflow_hits_total{policy}`.
+
 ### Access log
 
 Every service writes one `receive-http` line per inbound request and one `send-http` line per outbound call. They are
 the largest part of the log volume, and rendering them cost about 17% of an edge's CPU and 12% of auth's in a JFR
 profile under load, almost all of it for successful requests.
 
-- `HTTP_ACCESS_LOG=full` (default of auth and central): every request, as before.
-- `HTTP_ACCESS_LOG=sampled`: a request is always logged when its status is 400 or above, when an error was recorded
-  against it, or when it took `HTTP_ACCESS_LOG_SLOW_MS` (500) or longer. Other requests are logged for
-  `HTTP_ACCESS_LOG_SAMPLE_RATE` (0.05, one in 20) of traces. The choice is a hash of the trace id, so every hop of a trace
-  (edge, auth, central) keeps or drops its lines together, and a sampled trace is complete. A request that has no
-  trace id is sampled at random.
-- `HTTP_ACCESS_LOG=off`: only requests that failed (400 and above, or an error) and slow ones.
-- The default when `HTTP_ACCESS_LOG` is unset depends on the service: the **edge starts at `off`** (its successful request lines are most of its log and the `http_server_*` metrics have them; failures and slow requests are still logged), auth and central at `full`. Set `HTTP_ACCESS_LOG=full` or `sampled` on an edge to log more.
-- auth ignores `HTTP_ACCESS_LOG*` and always logs every request (`accessLogConfigurable = false`); edge and central follow the setting.
+- **auth and central have no access-log setting.** They always log every request (`full`), and there is no environment
+  variable or console field to change that: their lines are few, and they are where an investigation of a login or an
+  admin change ends up. A successful outbound call is `DEBUG` below 500 ms, as described further down.
+- **The edge** is the only service whose access log is set, and it is set **in central, per edge**: in the admin console
+  (an edge's page, section "Access log") or with `PATCH /configuration/edges/policies?edgeId=...` and an `accessLog` section (the body is described
+  in `central/open-api/central.yaml`; `null` removes the policy). There is no environment variable for it, and no value in
+  the edge's own configuration. A fresh edge, or one that has never reached central, uses the built-in defaults:
+  `mode` `off`, `slowMillis` 500, `successSampleRate` 0.05. A policy field that is absent means that default.
+- `mode` `full`: every request.
+- `mode` `sampled`: a request is always logged when its status is 400 or above, when an error was recorded against it,
+  or when it took `slowMillis` or longer. Other requests are logged for `successSampleRate` (one in 20 by default) of
+  traces. The choice is a hash of the trace id, so every hop of a trace (edge, auth, central) keeps or drops its lines
+  together, and a sampled trace is complete. A request that has no trace id is sampled at random.
+- `mode` `off` (the edge's default, because its successful request lines are most of its log and the `http_server_*`
+  metrics have them): only requests that failed (400 and above, or an error) and slow ones.
+- The policy reaches a running edge on its next configuration sync (at most the refresh interval, 5 minutes by default).
+  The edge keeps the last policy it received while central is unreachable. Central refuses an invalid policy with `400`;
+  an edge ignores one it cannot validate (a central newer or older than the edge) and keeps what it had. Removing the
+  policy returns the edge to the defaults above. It is independent of the overload policy, which is stored and served
+  the same way but keeps an environment base because the outbound guard has to protect the process before the first sync.
+- `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value
+  left in a compose file or a Helm `env` block is ignored, and an edge that relied on one is back to `off` until a policy
+  is set for it. `LOG_LEVEL` is separate and stays an environment setting.
 - A request that is not logged is built nowhere: no header or cookie collection, no record, no JSON.
 
 `http_server_requests_total` and `http_server_request_duration_seconds` count every request in every mode, so rates,
 error ratios and latency do not change; only a search for one successful request in the log can come up empty.
 
 `send-http` lines for a successful call to one of the deployment's own services (central, auth, and edge's proxied
-upstreams) are `DEBUG` when the call was faster than `HTTP_ACCESS_LOG_SLOW_MS`, so they are not written at the default
+upstreams) are `DEBUG` when the call was faster than the slow threshold (`slowMillis`, 500 ms unless an edge's policy sets it), so they are not written at the default
 `LOG_LEVEL`; a slow call and a 4xx are `INFO`, a 5xx or a transport failure `ERROR`, as before. Raise `LOG_LEVEL` to
 `debug` to see all of them again. A call to any other peer (an OTP, SMS or e-mail provider, any third-party integration)
-is external: its success is `INFO` whatever `HTTP_ACCESS_LOG` says, because that line is the record that a message was
+is external: its success is `INFO` whatever the access-log mode is, because that line is the record that a message was
 handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
-
-Invalid values fall back to the defaults.
 
 ### Configuration reference
 
@@ -1192,11 +1653,10 @@ Invalid values fall back to the defaults.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
-| `HTTP_ACCESS_LOG` | `off` on edge, `full` on central (auth always logs everything) | `receive-http` lines: `full` (every request), `sampled`, `off`; see [Access log](#access-log) |
-| `HTTP_ACCESS_LOG_SLOW_MS` | `500` | `sampled`: a request at least this slow is always logged |
-| `HTTP_ACCESS_LOG_SAMPLE_RATE` | `0.05` | `sampled`: share of traces whose successful requests are logged (0.05 = 1 in 20) |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
+
+The access log has no variables: auth and central always log every request, and an edge's is set in central (see [Access log](#access-log)).
 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
 OpenBao, not in environment variables.
@@ -1223,16 +1683,18 @@ notification and refuses to start, naming this setting, if it cannot.
   available memory first, which lowers the risk but doesn't remove it.
 - **No supported way to change configuration on `vps`** (OTP provider, SMTP, …), so **SMTP and SMS are
   not configured in prod**: password resets and additional admin accounts can't deliver a temporary
-  password.
-- **Single instance per service**: fixed `container_name`s and ports, so every `versola up` of a new
-  version is a short outage. Replicas and rolling upgrades are planned in `versola-cli`.
+  password. Being closed by versolauth/versola#832: central already stores the delivery settings
+  (`PUT /configuration/delivery-settings`; migration `V1033`, one new table, additive, no action), but
+  auth does not read them yet, so until that part lands a saved record changes nothing.
+- **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
+  `versola rollout` moves all three without an outage when the release is compatible (see
+  [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short
+  outage of `versola up`.
 - **The VM's security group is the network's default** (all inbound allowed); narrow it to the rules
   in [1](#1-overview).
 - **Single zone, and the VM is a single point of failure.** `kz1-a` is the region's only zone; the
   VM's Docker volumes (OpenBao's data, the CA's keys) are backed up by nothing but your own copies of
   `vps-admin.json` and the dumps above.
-- `configure` prints the OpenBao AppRole `role-id` and `secret-id` on every run, so they reach
-  terminal scrollback; OpenBao listens on `127.0.0.1` only.
 
 ---
 
@@ -1252,10 +1714,6 @@ Two services share one schema and therefore one `flyway_schema_history`. Check t
 migration version …`) means a release edited a migration production had already applied; there is no
 clean fix except [recreating that schema](#recreating-the-database) — check for it before migrating.
 
-`versola migrate --dry-run` currently reports *pending* migrations as a validation failure too
-(`Detected resolved migration not applied to database`); that is a known bug in the dry run, not a
-problem with the database, and plain `versola migrate` applies them fine.
-
 ### 6.2 `central` crashes with `FileNotFoundException: forms/common.css`
 
 The login forms under `central/src/main/resources/forms/` are *generated* by `central-ui`
@@ -1270,21 +1728,21 @@ without it `auth` and `central` fail with `Classpath resource versola/forms/comm
 log anything (a JVM `OutOfMemoryError`, by contrast, is logged). See the `mem_limit` gap in
 [5](#5-known-gaps).
 
-### 6.4 502 or 504 from `id.versola.kz`
+### 6.4 502 or 504 from `id.versola.io`
 
 Work inwards:
 
 ```bash
 docker ps --format '{{.Names}}  {{.Status}}' | grep versola
-curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.kz/.well-known/openid-configuration
-curl -sf http://127.0.0.1:8091/readiness && echo central ok
+curl -s -o /dev/null -w "%{http_code}\n" https://id.versola.io/.well-known/openid-configuration
+curl -sf http://127.0.0.1:28091/readiness && echo central ok
 curl -sf http://127.0.0.1:8081/readiness && echo auth ok
 curl -sf http://127.0.0.1:8096/readiness && echo edge ok
 ```
 
 Connection refused on 443 (`--proxy external`: nothing on `2821`) → `versola-proxy` is down
 (`docker logs versola-proxy`; `versola up` starts it). 502 → the service behind it is down; check
-`central` first. A bare `curl -sI https://id.versola.kz/` returning **404** is expected.
+`central` first. A bare `curl -sI https://id.versola.io/` returning **404** is expected.
 
 ### 6.5 `auth`/`edge` never become ready
 
@@ -1316,8 +1774,9 @@ DELETE FROM central.user_outbox_dead WHERE id = '<event-id>';
 
 OpenBao comes back **sealed** after every restart and mounts `openbao.hcl` from a bundle directory;
 if that bundle was removed it can't start. Neither affects running services (their secrets are in
-`*.secrets.env`); both only block the next `configure`, which recreates the container and unseals it
-from `vps-admin.json`. Without that file (or with `--setup-openbao`):
+`*.secrets.env`). Before it logs in, `versola configure`, `rollout` and `secrets plan|test|login` unseal
+OpenBao themselves with the key in `vps-admin.json`, and `configure` also recreates a container whose
+bundle was removed. Without that file (or with `--setup-openbao`):
 `docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-vps bao operator unseal`.
 
 ### 6.9 "container name already in use"
@@ -1339,14 +1798,15 @@ Failed to initialize pool: SSL error: (certificate_unknown) PKIX path building f
 ```
 
 The database's certificate is signed by a CA the JVM does not trust and the services verify it. Give
-`configure` the CA with `--postgres-ca <file>`, then `versola up`; do not edit the bundle. Check with
+`configure` the CA with `--postgres-ca <file>`, then `versola up`; do not edit the bundle (to make a CA for a self-hosted Postgres, see
+[Postgres with your own CA](#postgres-own-ca)). Check with
 `ls ~/.versola/active/bundle-*/postgres-ca/` (`ca.crt`) and
 `grep ssl-root-cert ~/.versola/active/bundle-*/*.conf` (three hits).
 
 ### 6.12 `versola up` fails getting the certificate
 
 Let's Encrypt must reach the host on port 80 through the `--auth-url` name. Check in order: DNS points
-at this host (`dig +short id.versola.kz`); behind Cloudflare the record is *DNS only* (a proxied one
+at this host (`dig +short id.versola.io`); behind Cloudflare the record is *DNS only* (a proxied one
 answers with Cloudflare's addresses); the security group lets `80` and `443` in; nothing else listens
 on them. Repeated failures hit Let's Encrypt's rate limits: rehearse with `--acme-staging`.
 

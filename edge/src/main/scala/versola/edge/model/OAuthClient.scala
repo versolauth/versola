@@ -16,7 +16,7 @@ case class OAuthClient(
       * redirects the browser to a `request_uri` rather than to the request itself. */
     requirePushedAuthorizationRequests: Boolean = false,
     /** OIDC Registration §2 `application_type`. */
-    applicationType: ApplicationType = ApplicationType.web,
+    applicationType: ApplicationType,
     /** The redirect URIs the client registered, which a native start may choose among. */
     redirectUris: Set[String] = Set.empty,
 ):

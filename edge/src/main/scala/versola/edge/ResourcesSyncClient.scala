@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.Resource.given
-import versola.edge.model.{Resource, ResourceEndpoint, ResourceId}
+import versola.edge.model.{AudienceRateLimit, Resource, ResourceEndpoint, ResourceId}
 import versola.util.cel.CelEvaluator
 import versola.util.{Base64, CacheSource, Secret, SecurityService}
 import zio.http.{Client, Header, Request}
@@ -32,7 +32,7 @@ object ResourcesSyncClient:
         response <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetResourcesSyncResponse]))
         resources <- ZIO.foreach(response.resources) { resource =>
           ZIO.foreach(resource.secret)(decryptSecret).map { secret =>
-            Resource(resource.resourceId, resource.resource, resource.endpoints, secret)
+            Resource(resource.resourceId, resource.resource, resource.endpoints, secret, resource.audienceRateLimits)
           }
         }
         _ <- precompileRules(resources)
@@ -62,6 +62,7 @@ object ResourcesSyncClient:
         resource: zio.http.URL,
         endpoints: Vector[ResourceEndpoint],
         secret: Option[String],
+        audienceRateLimits: List[AudienceRateLimit],
     ) derives JsonCodec
 
     private case class GetResourcesSyncResponse(

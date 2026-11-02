@@ -14,11 +14,11 @@ import versola.central.configuration.{
   UpdateResourceRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
-import zio.{RIO, Task, ZIO}
+import zio.{RIO, Task, UIO, ZIO}
 
 object ResourceController extends Controller:
   type Env = Tracing & ResourceService & CentralConfig & EdgeService & SecurityService
@@ -45,17 +45,23 @@ object ResourceController extends Controller:
       yield Response.json(GetAllResourcesResponse(resources).toJson)
     }
 
+  /** The reason a resource was refused goes to the request log; the answer is `400` with no body. */
+  private def refused(result: Either[ResourceValidationError, ?]): UIO[Unit] =
+    result match
+      case Left(error) => Observability.setError("invalid_resource", Some(error.toString.take(500)))
+      case Right(_) => ZIO.unit
+
   val createResourceRoute =
     Method.POST / "configuration" / "resources" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- request.bodyAs[CreateResourceRequest]
-        result <- service.createResource(body)
+        result <- service.createResource(body).tap(refused)
       yield result match
         case Right((resourceId, secret)) =>
           Response.json(CreateResourceResponse(resourceId, secret.map(Base64Url.encode)).toJson).status(Status.Created)
-        case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
+        case Left(error) => Response.status(Status.BadRequest)
     }
 
   val updateResourceRoute =
@@ -64,10 +70,10 @@ object ResourceController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- request.bodyAs[UpdateResourceRequest]
-        result <- service.updateResource(body)
+        result <- service.updateResource(body).tap(refused)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
-        case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
+        case Left(error) => Response.status(Status.BadRequest)
     }
 
   val rotateSecretEndpoint =
@@ -153,10 +159,12 @@ object ResourceController extends Controller:
           stepUpCondition = endpoint.stepUpCondition,
           stepUpAcr = endpoint.stepUpAcr,
           maxAge = endpoint.maxAge,
+          rateLimit = endpoint.rateLimit,
         )
       },
       internal = record.isInternal,
       secretRotation = record.previousSecret.nonEmpty,
+      audienceRateLimits = record.audienceRateLimits,
     )
 
   private def toResourceRegistryEntry(record: ResourceRecord): ResourceRegistryEntry =

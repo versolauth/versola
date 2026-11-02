@@ -2,11 +2,13 @@ package versola.central.configuration.resources
 
 import dev.cel.common.types.{CelType, SimpleType}
 import versola.central.CentralConfig
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
 import versola.util.cel.CelEvaluator
+import versola.util.http.DeclaredOwner
 import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
 
@@ -124,7 +126,9 @@ object ResourceService:
         validateEndpoints(request.endpoints).flatMap:
           case Some(error) => ZIO.left(error)
           case None =>
-            findAmbiguousEndpoint(request.endpoints.map(EndpointRef.from)) match
+            findAmbiguousEndpoint(request.endpoints.map(EndpointRef.from)).orElse(
+              validateAudienceRateLimits(request.audience, request.audienceRateLimits),
+            ) match
               case Some(error) => ZIO.left(error)
               case None =>
                 for
@@ -138,6 +142,9 @@ object ResourceService:
                     endpoints = request.endpoints.map(asRecord),
                     secret = encryptedSecret,
                   )
+                  _ <- ZIO.when(request.audienceRateLimits.nonEmpty)(
+                    resourceRepository.updateAudienceRateLimits(request.resourceId, request.audienceRateLimits),
+                  )
                 yield Right((request.resourceId, secret))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
@@ -145,7 +152,12 @@ object ResourceService:
         case Some(error) => ZIO.left(error)
         case None =>
           resourceRepository.findResource(request.resourceId).flatMap: existing =>
-            findAmbiguousEndpoint(finalEndpointRefs(existing, request)) match
+            val finalAudience = request.audience.patch(existing.fold(List.empty[ClientId])(_.audience))
+            val storedLimits = existing.fold(List.empty[AudienceRateLimit])(_.audienceRateLimits)
+            // what the resource will set for its audience: the new set, or the stored one without the clients this request removes
+            val finalLimits = request.audienceRateLimits.getOrElse(storedLimits).filter(limit => finalAudience.contains(limit.clientId))
+            val limitsProblem = request.audienceRateLimits.flatMap(validateAudienceRateLimits(finalAudience, _))
+            findAmbiguousEndpoint(finalEndpointRefs(existing, request)).orElse(limitsProblem) match
               case Some(error) => ZIO.left(error)
               case None =>
                 resourceRepository.updateResource(
@@ -154,7 +166,9 @@ object ResourceService:
                   audiencePatch = request.audience,
                   deleteEndpoints = request.deleteEndpoints,
                   addEndpoints = request.createEndpoints.map(asRecord),
-                ).map(Right(_))
+                ) *> ZIO.when(existing.nonEmpty && finalLimits != storedLimits)(
+                  resourceRepository.updateAudienceRateLimits(request.resourceId, finalLimits),
+                ).as(Right(()))
 
     /** The endpoint set the resource will have once `request` is applied: retained
       * existing endpoints (neither deleted nor replaced) plus the submitted ones,
@@ -257,6 +271,10 @@ object ResourceService:
       val trimmedPath = endpoint.path.trim
       if !isValidEndpointPath(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
+      // the rules are those of a rate limit policy, so a declaration the edge would refuse is refused here
+      val rateLimitProblem = endpoint.rateLimit.flatMap(_.validate(DeclaredOwner.Endpoint).left.toOption)
+      if rateLimitProblem.nonEmpty then
+        return ZIO.some(ResourceValidationError.InvalidRateLimit(endpoint.id, rateLimitProblem.getOrElse("")))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
         case Some(expression) =>
@@ -287,6 +305,19 @@ object ResourceService:
                     .catchAll: err =>
                       ZIO.some(ResourceValidationError.InvalidStepUpConditionExpression(endpoint.id, err.expression, err.message))
 
+    /** Each limit is held to the rules of a rate limit policy, names a client that is in the audience, and appears once per client. */
+    private def validateAudienceRateLimits(
+        audience: List[ClientId],
+        limits: List[AudienceRateLimit],
+    ): Option[ResourceValidationError] =
+      limits.zipWithIndex.collectFirst:
+        case (limit, index) if !audience.contains(limit.clientId) =>
+          ResourceValidationError.InvalidAudienceRateLimit(limit.clientId, "the client is not in the audience of this resource")
+        case (limit, index) if limits.take(index).exists(_.clientId == limit.clientId) =>
+          ResourceValidationError.InvalidAudienceRateLimit(limit.clientId, "the client has two limits")
+        case (limit, _) if limit.rateLimit.validate(DeclaredOwner.Audience).isLeft =>
+          ResourceValidationError.InvalidAudienceRateLimit(limit.clientId, limit.rateLimit.validate(DeclaredOwner.Audience).left.getOrElse(""))
+
     private def asRecord(request: CreateResourceEndpointRequest) =
       ResourceEndpointRecord(
         id = request.id,
@@ -298,4 +329,5 @@ object ResourceService:
         stepUpCondition = request.stepUpCondition,
         stepUpAcr = request.stepUpAcr,
         maxAge = request.maxAge,
+        rateLimit = request.rateLimit,
       )

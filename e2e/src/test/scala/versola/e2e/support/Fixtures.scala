@@ -110,6 +110,7 @@ object Fixtures:
         // their own certificate or none, never one central issues.
         "issueEdgeClientCertificate" -> Json.Bool(false),
         "enrollEdgeClientCertificate" -> Json.Bool(false),
+        "estEnrollment" -> Json.Bool(false),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
@@ -361,6 +362,7 @@ object Fixtures:
       stepUpCondition: Option[String] = None,
       stepUpAcr: Option[String] = None,
       maxAge: Option[Int] = None,
+      rateLimit: Option[Json] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -375,6 +377,7 @@ object Fixtures:
           stepUpCondition.map(value => "stepUpCondition" -> Json.Str(value)),
           stepUpAcr.map(value => "stepUpAcr" -> Json.Str(value)),
           maxAge.map(value => "maxAge" -> Json.Num(value)),
+          rateLimit.map(value => "rateLimit" -> value),
         ).flatten,
       ),
     )
@@ -401,6 +404,7 @@ object Fixtures:
       "audience" -> strings(audience),
       "endpoints" -> Json.Arr(Chunk.fromIterable(endpoints)),
       "internal" -> Json.Bool(internal),
+      "audienceRateLimits" -> Json.Arr(),
     )
 
   /** The audience is a patch, not a replacement: `addAudience`/`removeAudience` name the two
@@ -414,6 +418,8 @@ object Fixtures:
       removeAudience: Set[String] = Set.empty,
       deleteEndpoints: Set[String] = Set.empty,
       createEndpoints: List[Json] = Nil,
+      /** Replaces the limits the resource sets for its audience clients; absent leaves them. */
+      audienceRateLimits: Option[List[Json]] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -421,7 +427,8 @@ object Fixtures:
         "audience" -> Json.Obj("add" -> strings(addAudience), "remove" -> strings(removeAudience)),
         "deleteEndpoints" -> strings(deleteEndpoints),
         "createEndpoints" -> Json.Arr(Chunk.fromIterable(createEndpoints)),
-      ) ++ Chunk.fromIterable(resource.map(value => "resource" -> Json.Str(value)).toList),
+      ) ++ Chunk.fromIterable(resource.map(value => "resource" -> Json.Str(value)).toList) ++
+        Chunk.fromIterable(audienceRateLimits.map(limits => "audienceRateLimits" -> Json.Arr(Chunk.fromIterable(limits))).toList),
     )
 
   def claim(id: String, description: String = "e2e claim"): Json.Obj =

@@ -6,7 +6,18 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.util.http.{InboundPolicy, Observability, OverloadPolicy}
+import versola.util.http.RateLimitScope
+import versola.util.http.{
+  AccessLogPolicy,
+  GuardMode,
+  InboundPolicy,
+  Observability,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitWindow,
+}
 import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
@@ -149,9 +160,69 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     RSAKey.Builder(testKeyPair.publicKey).keyID(testKeyPair.keyId).build()
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
-  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
+  private val edgeRecord = EdgeRecord(
+    edgeId,
+    publicJwk,
+    oldPublicKey = None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+  )
 
-  private val overloadPolicy = OverloadPolicy(inbound = Some(InboundPolicy(mode = Some("enforce"), maxInFlight = Some(100))))
+  private val rateLimits = RateLimitPolicies(
+    List(RateLimitPolicy(
+      name = "per-client",
+      by = List(RateLimitDimension.Client),
+      limits = List(RateLimitWindow(limit = 100, windowSeconds = 60)),
+      burst = 5,
+      scope = RateLimitScope.EdgeWide,
+      cost = 1,
+      mode = GuardMode.Shadow,
+    )),
+    replicas = 1,
+  )
+
+  // lazy: it reads vals declared below it, which an object initialises in order
+  private lazy val storedRecord = edgeRecord.copy(
+    overloadPolicy = Some(overloadPolicy),
+    rateLimitPolicies = Some(rateLimits),
+    policyMeta = Some(Map(
+      "overload" -> PolicySectionMeta(2, java.time.Instant.parse("2026-10-27T10:00:00Z")),
+      "rateLimits" -> PolicySectionMeta(1, java.time.Instant.parse("2026-10-27T11:00:00Z")),
+    )),
+  )
+
+  // the answer is read with zio-json, the codec the server writes it with (a schema codec reads a Map as an array of pairs)
+  private def decoded[A: JsonDecoder](response: Response): Task[A] =
+    response.body.asString.flatMap(body => ZIO.fromEither(body.fromJson[A]).mapError(error => RuntimeException(s"$error: $body")))
+
+  private def patchFor(edge: String, body: String, params: (String, String)*): Request =
+    Request(
+      method = Method.PATCH,
+      url =
+        params.foldLeft((URL.root / "configuration" / "edges" / "policies").addQueryParam("edgeId", edge))((url, p) => url.addQueryParam(p._1, p._2)),
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
+
+  private def patch(body: String, params: (String, String)*): Request = patchFor(edgeId.toString, body, params*)
+
+  private val accessLogPolicy = AccessLogPolicy(mode = Some("sampled"), successSampleRate = Some(0.1), slowMillis = None)
+
+  private val overloadPolicy = OverloadPolicy(
+    inbound = Some(InboundPolicy(
+      mode = Some("enforce"),
+      maxInFlight = Some(100),
+      continuationShare = None,
+      startShare = None,
+      retryAfterSeconds = None,
+      adaptive = None,
+    )),
+    outbound = None,
+  )
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -167,16 +238,54 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service =>
         service.getAllEdges.succeedsWith(
           Vector(
-            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None, requireDpopNonce = true),
-            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj()), requireDpopNonce = false),
+            EdgeRecord(
+              edgeId,
+              Json.Obj(),
+              oldPublicKey = None,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
+            EdgeRecord(
+              EdgeId("edge-2"),
+              Json.Obj(),
+              oldPublicKey = Some(Json.Obj()),
+              requireDpopNonce = false,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
           ),
         ),
       verify = (response, _) =>
         for body <- response.body.asJson[GetAllEdgesResponse]
         yield assertTrue(
           body.edges == List(
-            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true),
-            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false),
+            EdgeResponse(
+              edgeId,
+              hasOldKey = false,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              groupId = EdgeGroup.DefaultId,
+            ),
+            EdgeResponse(
+              EdgeId("edge-2"),
+              hasOldKey = true,
+              requireDpopNonce = false,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              groupId = EdgeGroup.DefaultId,
+            ),
           ),
         ),
     ),
@@ -195,7 +304,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.root / "configuration" / "edges",
-        body = Body.fromString(RegisterEdgeRequest(edgeId).toJson),
+        body = Body.fromString(RegisterEdgeRequest(edgeId, groupId = None).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service => service.registerEdge.succeedsWith(testKeyPair),
@@ -240,7 +349,18 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getAllEdges.succeedsWith(
           Vector(
             edgeRecord,
-            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
+            EdgeRecord(
+              EdgeId("edge-2"),
+              publicJwk,
+              oldPublicKey = Some(publicJwk),
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroup.DefaultId,
+              groupKind = EdgeGroupKind.FirstParty,
+            ),
           ),
         ),
       tenants = Vector(
@@ -298,41 +418,103 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "setting a valid overload policy returns 204 and records it for the named edge",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
-        body = Body.fromString(overloadPolicy.toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.succeedsWith(()),
-      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls == List((edgeId, overloadPolicy)))),
+      description = "GET policies serves the edge's sections from the database, with their revisions",
+      request = Request(method = Method.GET, url = (URL.root / "configuration" / "edges" / "policies").addQueryParam("edgeId", edgeId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service => service.findFresh.succeedsWith(Some(storedRecord)),
+      verify = (response, _) =>
+        for body <- decoded[EdgePoliciesResponse](response)
+        yield assertTrue(
+          body.edgeId == edgeId,
+          body.overload.contains(overloadPolicy),
+          body.accessLog.isEmpty,
+          body.rateLimits.contains(rateLimits),
+          body.revisions == Map("overload" -> 2, "rateLimits" -> 1),
+          body.updatedAt.keySet == Set("overload", "rateLimits"),
+        ),
     ),
     controllerTestCase(
-      description = "an overload policy the service refuses is answered 400 with what is wrong, not 204",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", edgeId.toString),
-        body = Body.fromString(overloadPolicy.toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
+      description = "GET policies of an unregistered edge returns 404",
+      request = Request(method = Method.GET, url = (URL.root / "configuration" / "edges" / "policies").addQueryParam("edgeId", "edge-missing")),
+      expectedStatus = Status.NotFound,
+      setup = service => service.findFresh.succeedsWith(None),
+    ),
+    controllerTestCase(
+      description = "PATCH policies: absent sections are kept, null removes, an object replaces; the answer is the new state",
+      request = patch(s"""{"overload":null,"rateLimits":${rateLimits.toJson}}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.patchPolicies.succeedsWith(Some(Right(storedRecord.copy(overloadPolicy = None)))),
+      verify = (response, service) =>
+        for body <- decoded[EdgePoliciesResponse](response)
+        yield assertTrue(
+          service.patchPolicies.calls == List((edgeId, EdgePoliciesPatch(overload = Change.Remove, rateLimits = Change.Replace(rateLimits)), false)),
+          body.overload.isEmpty,
+          body.rateLimits.contains(rateLimits),
+        ),
+    ),
+    controllerTestCase(
+      description = "PATCH policies with expectedRevisions passes them on, and dryRun=true says so",
+      request = patch("""{"accessLog":{"mode":"full"},"expectedRevisions":{"accessLog":0}}""", "dryRun" -> "true"),
+      expectedStatus = Status.Ok,
+      setup = service => service.patchPolicies.succeedsWith(Some(Right(storedRecord))),
+      verify = (_, service) =>
+        ZIO.succeed(
+          assertTrue(
+            service.patchPolicies.calls == List(
+              (
+                edgeId,
+                EdgePoliciesPatch(
+                  accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)),
+                  expectedRevisions = Map(PolicySection.AccessLog -> 0),
+                ),
+                true,
+              ),
+            ),
+          ),
+        ),
+    ),
+    controllerTestCase(
+      description = "a section that does not validate is answered 400 with no body",
+      request = patch(s"""{"rateLimits":${rateLimits.toJson}}"""),
       expectedStatus = Status.BadRequest,
       setup = service =>
-        service.find.succeedsWith(Some(edgeRecord)) *> service.setOverloadPolicy.failsWith(
-          InvalidOverloadPolicy("inbound.maxInFlight must be between 1 and 100000"),
-        ),
-      verify = (response, _) =>
-        for body <- response.body.asJson[OverloadPolicyError]
-        yield assertTrue(body.error.contains("inbound.maxInFlight")),
+        service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Invalid(
+          PolicySection.RateLimits,
+          "policy per-client: burst must not exceed the smallest limit",
+        )))),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
-      description = "setting the overload policy of an unregistered edge returns 404 and writes nothing",
-      request = Request(
-        method = Method.PUT,
-        url = (URL.root / "configuration" / "edges" / "overload").addQueryParam("edgeId", "edge-missing"),
-        body = Body.fromString(overloadPolicy.toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
+      description = "a misspelled section is refused with 400 and no body before the service is called",
+      request = patch("""{"overlod":{}}"""),
+      expectedStatus = Status.BadRequest,
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a rate limit set with an unknown dimension is refused as malformed with 400 and no body",
+      request = patch("""{"rateLimits":{"policies":[{"name":"x","by":["ip-address"],"limits":[{"limit":1,"windowSeconds":1}]}]}}"""),
+      expectedStatus = Status.BadRequest,
+      verify = (response, service) => response.body.asString.map(body => assertTrue(body.isEmpty, service.patchPolicies.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a revision that has moved on is answered 409 with no body (the client reads the state again)",
+      request = patch("""{"overload":{},"expectedRevisions":{"overload":1}}"""),
+      expectedStatus = Status.Conflict,
+      setup = service => service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Conflict(PolicySection.Overload, storedRecord)))),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PATCH policies of an unregistered edge returns 404",
+      request = patchFor("edge-missing", """{"overload":{}}"""),
       expectedStatus = Status.NotFound,
-      setup = service => service.find.succeedsWith(None) *> service.setOverloadPolicy.succeedsWith(()),
-      verify = (_, service) => ZIO.succeed(assertTrue(service.setOverloadPolicy.calls.isEmpty)),
+      setup = service => service.patchPolicies.succeedsWith(None),
+    ),
+    controllerTestCase(
+      description = "the recommended rate limit policies are served, all in shadow, and are a set the PATCH accepts",
+      request = Request(method = Method.GET, url = URL.root / "configuration" / "edges" / "rate-limits" / "recommended"),
+      expectedStatus = Status.Ok,
+      verify = (response, _) =>
+        for body <- response.body.asJson[RateLimitPolicies]
+        yield assertTrue(body == RateLimitPolicies.recommended, body.validate.isRight, body.policies.forall(_.mode == GuardMode.Shadow)),
     ),
   )

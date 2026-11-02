@@ -5,6 +5,7 @@ import { methodBadgeStyles, tagStyles } from '../styles/components';
 import { celHighlightStyles } from '../styles/cel-highlight';
 import type { InjectRule, ResourceEndpoint, ResourceEndpointId } from '../types';
 import { renderHighlightedCel } from '../utils/cel-highlight';
+import { declaredSummary } from '../utils/declared-rate-limit';
 import { formatDurationShort } from '../utils/duration';
 import { breakPath } from './break-text';
 
@@ -329,7 +330,10 @@ export class VersolaResourceEndpointsTable extends LitElement {
             <tr role="row" data-endpoint=${`${endpoint.method} ${endpoint.path}`}>
               <td role="cell">
                 <div class="ep-main">${methodBadge(endpoint.method)}<span class="path">${breakPath(endpoint.path)}</span></div>
-                ${endpoint.fetchUserInfo ? html`<div class="ep-flags"><span class="tag quiet" title="Edge calls /userinfo for each request and gives the claims to this endpoint's rules as user">userinfo</span></div>` : nothing}
+                ${endpoint.fetchUserInfo || endpoint.rateLimit ? html`<div class="ep-flags">
+                  ${endpoint.fetchUserInfo ? html`<span class="tag quiet" title="Edge calls /userinfo for each request and gives the claims to this endpoint's rules as user">userinfo</span>` : nothing}
+                  ${endpoint.rateLimit ? html`<span class="tag quiet" title="Rate limit declared on this endpoint">limit: ${declaredSummary(endpoint.rateLimit, 'endpoint')}</span>` : nothing}
+                </div>` : nothing}
               </td>
               <td role="cell" data-label="Who may call">${this.permissionsCell(endpoint)}</td>
               ${stepUp ? html`<td role="cell" data-label="Step-up">${this.stepUpCell(endpoint)}</td>` : nothing}

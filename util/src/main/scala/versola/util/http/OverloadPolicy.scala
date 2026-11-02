@@ -17,8 +17,8 @@ import zio.schema.{Schema, derived}
   * applied, and the edge keeps what it had.
   */
 final case class OverloadPolicy(
-    inbound: Option[InboundPolicy] = None,
-    outbound: Option[OutboundPolicy] = None,
+    inbound: Option[InboundPolicy],
+    outbound: Option[OutboundPolicy],
 ) derives JsonCodec, Schema:
 
   /** The first thing wrong with the policy, if anything. */
@@ -35,7 +35,7 @@ final case class OverloadPolicy(
     outbound.fold(base)(_.applyTo(base))
 
 object OverloadPolicy:
-  val empty: OverloadPolicy = OverloadPolicy()
+  val empty: OverloadPolicy = OverloadPolicy(inbound = None, outbound = None)
 
   private[http] def check(ok: Boolean, message: => String): Either[String, Unit] = if ok then Right(()) else Left(message)
 
@@ -50,12 +50,12 @@ object OverloadPolicy:
 
 /** @param mode `off`, `shadow` or `enforce` */
 final case class InboundPolicy(
-    mode: Option[String] = None,
-    maxInFlight: Option[Int] = None,
-    continuationShare: Option[Double] = None,
-    startShare: Option[Double] = None,
-    retryAfterSeconds: Option[Int] = None,
-    adaptive: Option[AdaptivePolicy] = None,
+    mode: Option[String],
+    maxInFlight: Option[Int],
+    continuationShare: Option[Double],
+    startShare: Option[Double],
+    retryAfterSeconds: Option[Int],
+    adaptive: Option[AdaptivePolicy],
 ) derives JsonCodec, Schema:
   import OverloadPolicy.*
 
@@ -91,11 +91,11 @@ final case class InboundPolicy(
   * A leftover `enabled` field from an earlier draft of the wire form is ignored (unknown fields are).
   */
 final case class AdaptivePolicy(
-    minLimit: Option[Int] = None,
-    maxLimit: Option[Int] = None,
-    tolerance: Option[Double] = None,
-    smoothing: Option[Double] = None,
-    lagTargetMillis: Option[Int] = None,
+    minLimit: Option[Int],
+    maxLimit: Option[Int],
+    tolerance: Option[Double],
+    smoothing: Option[Double],
+    lagTargetMillis: Option[Int],
 ) derives JsonCodec, Schema:
   import OverloadPolicy.*
 
@@ -126,13 +126,13 @@ final case class AdaptivePolicy(
 
 /** @param mode `off`, `shadow` or `enforce` */
 final case class OutboundPolicy(
-    mode: Option[String] = None,
-    maxConcurrent: Option[Int] = None,
-    maxQueue: Option[Int] = None,
-    queueTimeoutMillis: Option[Int] = None,
-    requestTimeoutMillis: Option[Int] = None,
-    breaker: Option[BreakerPolicy] = None,
-    retryBudget: Option[RetryBudgetPolicy] = None,
+    mode: Option[String],
+    maxConcurrent: Option[Int],
+    maxQueue: Option[Int],
+    queueTimeoutMillis: Option[Int],
+    requestTimeoutMillis: Option[Int],
+    breaker: Option[BreakerPolicy],
+    retryBudget: Option[RetryBudgetPolicy],
 ) derives JsonCodec, Schema:
   import OverloadPolicy.*
 
@@ -159,12 +159,12 @@ final case class OutboundPolicy(
     )
 
 final case class BreakerPolicy(
-    enabled: Option[Boolean] = None,
-    failureRatio: Option[Double] = None,
-    minCalls: Option[Int] = None,
-    windowSeconds: Option[Int] = None,
-    openSeconds: Option[Int] = None,
-    probeCalls: Option[Int] = None,
+    enabled: Option[Boolean],
+    failureRatio: Option[Double],
+    minCalls: Option[Int],
+    windowSeconds: Option[Int],
+    openSeconds: Option[Int],
+    probeCalls: Option[Int],
 ) derives JsonCodec, Schema:
   import OverloadPolicy.*
 
@@ -188,8 +188,8 @@ final case class BreakerPolicy(
     )
 
 final case class RetryBudgetPolicy(
-    ratio: Option[Double] = None,
-    minPerSecond: Option[Double] = None,
+    ratio: Option[Double],
+    minPerSecond: Option[Double],
 ) derives JsonCodec, Schema:
   import OverloadPolicy.*
 

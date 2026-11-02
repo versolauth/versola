@@ -24,6 +24,10 @@ enum GuardMode:
   case Off, Shadow, Enforce
 
 object GuardMode:
+  /** In a config file as `off`, `shadow` or `enforce`; anything else fails the start rather than reading as some default. */
+  given zio.config.magnolia.DeriveConfig[GuardMode] = zio.config.magnolia.DeriveConfig[String].mapOrFail: value =>
+    parse(value).toRight(zio.Config.Error.InvalidData(message = s"mode must be off, shadow or enforce, not '$value'"))
+
   def parse(value: String): Option[GuardMode] =
     value.trim.toLowerCase match
       case "off" => Some(Off)

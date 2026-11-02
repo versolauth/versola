@@ -1,7 +1,7 @@
 # Copied from versola-cli/manual-test/nginx/versola.local.conf, where it
 # was verified against the real auth/central/edge images (proxying
 # confirmed to behave identically to hitting auth directly, port for
-# port). Adapted from nginx/envs/dev/versola.conf (the id.versola.kz
+# port). Adapted from nginx/envs/dev/versola.conf (the id.versola.io
 # server block only -- the marketing/blog/docs sites don't apply locally).
 #
 # Two changes from the prod config, everything else is the same routing

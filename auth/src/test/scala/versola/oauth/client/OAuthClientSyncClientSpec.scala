@@ -38,8 +38,12 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       tosUri: Option[String],
       consentFlow: Option[ConsentFlow],
       dpopBoundAccessTokens: Boolean,
+      dpopSigningAlgs: Set[String],
       authMethod: AuthMethod,
       certificateBoundAccessTokens: Boolean,
+      requireSignedRequestObject: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      applicationType: String,
       themeOverrides: Option[ThemeOverrides],
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
@@ -64,8 +68,12 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     None,
     None,
     false,
+    Set.empty,
     AuthMethod.client_secret,
     false,
+    false,
+    false,
+    "web",
     themeOverrides = None,
   )
 
@@ -125,10 +133,19 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Some("https://example.com/logo.png"),
                       Some("https://example.com/privacy"),
                       Some("https://example.com/terms"),
-                      Some(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days), requiredScopes = Set(ScopeToken("profile")))),
+                      Some(ConsentFlow(
+                        allowPartial = true,
+                        rememberDuration = Some(30.days),
+                        requiredScopes = Set(ScopeToken("profile")),
+                        offlineAccessOptional = false,
+                      )),
                       true,
+                      Set.empty,
                       AuthMethod.client_secret,
                       false,
+                      false,
+                      false,
+                      "web",
                       themeOverrides =
                         Some(ThemeOverrides(
                           brand = BrandColor.parse("#112233").toOption,
@@ -179,7 +196,12 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.logoUri.contains("https://example.com/logo.png"),
         client.policyUri.contains("https://example.com/privacy"),
         client.tosUri.contains("https://example.com/terms"),
-        client.consentFlow.contains(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days), requiredScopes = Set(ScopeToken("profile")))),
+        client.consentFlow.contains(ConsentFlow(
+          allowPartial = true,
+          rememberDuration = Some(30.days),
+          requiredScopes = Set(ScopeToken("profile")),
+          offlineAccessOptional = false,
+        )),
         client.dpopBoundAccessTokens,
         client.mtlsAuth.isEmpty,
         !client.bindsAccessTokens,

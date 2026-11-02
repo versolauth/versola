@@ -64,7 +64,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       requirePushedAuthorizationRequests: Boolean = false,
       edgeSigningKey: Option[String] = None,
       edgeClientCertificate: Option[String] = None,
-      applicationType: Option[String] = None,
+      applicationType: String = "web",
       redirectUris: Set[String] = Set.empty,
       edgeCertificateSubject: Option[versola.util.CertificateSubject] = None,
   ) derives JsonCodec
@@ -226,7 +226,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       )
     },
     // #420: what decides whether the native endpoints serve a client, and where they may send it.
-    test("carries a native client's application type and redirect URIs, and reads their absence as web") {
+    test("carries a native client's application type and redirect URIs, and reads an application type of web as not native") {
       val certificateCiphertext = Base64.urlEncode(Array.fill(32)(54.toByte))
       val body = SyncResponseMirror(
         Vector(
@@ -235,7 +235,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             None,
             15.minutes,
             edgeClientCertificate = Some(certificateCiphertext),
-            applicationType = Some("native"),
+            applicationType = "native",
             redirectUris = Set("https://app.example/cb"),
           ),
           SyncClientRecordMirror(ClientId("legacy"), None, 15.minutes, edgeClientCertificate = Some(certificateCiphertext)),

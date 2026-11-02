@@ -65,6 +65,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   /** Applies a patch to the nullable fields, leaving every other field of the client alone. */
@@ -213,9 +214,15 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       },
       test("create, find and update a client whose consent flow carries required scopes") {
         val consenting = client.copy(
-          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))),
+          consentFlow =
+            Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")), offlineAccessOptional = false)),
         )
-        val widened = ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone"), ScopeToken("email")))
+        val widened = ConsentFlow(
+          allowPartial = true,
+          rememberDuration = None,
+          requiredScopes = Set(ScopeToken("phone"), ScopeToken("email")),
+          offlineAccessOptional = false,
+        )
 
         for
           _ <- env.repository.createClient(consenting)

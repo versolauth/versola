@@ -16,7 +16,7 @@ Files next to this one:
 ## Principles
 
 1. **One brand.** The console, the login forms (`forms/common.css`, the `default` theme) and
-   the website (`versola.kz/design`, `public/css/tokens.css`) share one set of tokens: warm
+   the website (`versola.io/design`, `public/css/tokens.css`) share one set of tokens: warm
    neutrals (near-white page, white sheet, soft filled fields, ink text), the petrol brand colour
    (`#155e75`) and the system UI face with JetBrains Mono for code. **Ink primary, brand accent:**
    the primary button is ink (inverse in dark), the brand colour is the accent for links, IDs,
@@ -56,7 +56,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--surface` | `#ffffff` | `#1e2324` | Cards, tables, the side panel (the sheet). Dark: brand 7% on `#1f1f20` |
 | `--surface-inset` | `#f5f3ee` | `#292f31` | A panel inside a card (claims, permissions, nested rows), hovered table row, disabled button; the site's `--surface-alt` |
 | `--surface-raised` | `#ffffff` | `#262c2e` | Popovers, dropdowns, menus (with `--shadow-card`) |
-| `--sidebar-bg` | `#e2e6e4` | `#0c1416` | The sidebar: the site's `--page` tint (brand 9% on `#f6f4ef` in oklab, the header behind versola.kz) |
+| `--sidebar-bg` | `#e2e6e4` | `#0c1416` | The sidebar: the site's `--page` tint (brand 9% on `#f6f4ef` in oklab, the header behind versola.io) |
 | `--sidebar-hover-bg` | `#d6d9d6` | `#1b2426` | A hovered nav item (the same tint one step deeper). The active item is `--accent-subtle` / `--accent-text` with a 3px `--accent` bar on its left edge |
 | `--field` | `#f5f3ee` | `#292f31` | The fill of an input, select, textarea, the tenant selector, a code editor: the forms' soft filled field. Focus lifts the field to `--surface` with an ink border |
 | `--field-hover` | `#edeae3` | `#30383b` | A hovered field |
@@ -231,6 +231,21 @@ deployment, so every field is optional, empty means "inherit", and the built-in 
 environment variable are written under the field; rare fields sit under a native `<details>` "Advanced";
 a mode is a segmented control (`segmentedStyles`) with one line on the chosen value; the footer's
 `Reset to deployment defaults` (left) sends `{}` after a confirmation.
+Edges' *Access log* (`access-log-policy-editor.ts`, `utils/access-log-policy.ts`) is the same pattern with no environment
+base: empty means the edge's built-in default, written under the field, and the footer's `Reset to defaults` sends `{}`.
+Edges' *Rate limits* (`rate-limit-policies-editor.ts`, `utils/rate-limit-policies.ts`) is a *list* editor in the same panel: one
+`editor-box` per policy (name, mode segmented control, count-by checkboxes, scope select, window rows, burst and cost under
+`Advanced`), `Add policy` at the end, nothing saved until `Save rate limits`; an empty required field stays quiet until the first
+submit; `Enforce` is not offered while the edge only counts, and shows only on a policy that already has it. The footer's
+`Remove all policies` sends `{"policies": []}` after a confirmation.
+A limit declared by the owner of an API (`declared-rate-limit-editor.ts`, `utils/declared-rate-limit.ts`) is the single-limit form of the
+same editor, used inside an existing page and **folded by default**, because it is rarely changed: the *Rate limit* `editor-box` of an
+endpoint in Edit endpoints, and the *Rate limits* box of Edit audience, which folds again per client. A fold is a `details.fold` (`editorStyles`):
+the title with what is set beside it (`No limit`, or `Shadow · 600 / 60 s · each user · burst 50`), opened by itself when a field is wrong
+after a save was tried. Nothing set (`Set a limit`) is the default and sends nothing; a limit starts in `Shadow`; `Remove limit` leaves the
+member out of the written endpoint and the client out of the list of audience limits. Count-by is a select whose options depend on the owner
+(an audience client cannot be counted by client). The record shows the endpoint's limit as a tag in the table and the audience limits as
+one line per client under the audience tags.
 
 **Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
 kind chip, status chips, created) → a status banner when the page can say something about the

@@ -53,6 +53,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(

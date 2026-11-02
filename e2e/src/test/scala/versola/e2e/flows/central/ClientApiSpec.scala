@@ -405,7 +405,13 @@ object ClientApiSpec extends CentralApiSpec:
         outcome <- withClient(central, Fixtures.client(id)) { clientId =>
           central.put(
             s"$path/web",
-            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("private_key_jwt"), "accessTokenTtl" -> Json.Num(60)),
+            Fixtures.clientUpdate(
+              clientId,
+              "redirectUris" -> Fixtures.patch(),
+              "scope" -> Fixtures.patch(),
+              "authMethod" -> Json.Str("private_key_jwt"),
+              "accessTokenTtl" -> Json.Num(60),
+            ),
           ).zip(read(central, id))
         }
         (rejected, record) = outcome
@@ -535,7 +541,11 @@ object ClientApiSpec extends CentralApiSpec:
             "allowedScopes" -> Json.Arr(),
             "permissions" -> Json.Arr(Json.Str("Not A Permission")),
             "accessTokenTtl" -> Json.Num(3600),
+            "dpopBoundAccessTokens" -> Json.Bool(false),
+            "dpopSigningAlgs" -> Json.Arr(),
             "authMethod" -> Json.Str("client_secret"),
+            "certificateBoundAccessTokens" -> Json.Bool(false),
+            "estEnrollment" -> Json.Bool(false),
           ),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
@@ -550,7 +560,11 @@ object ClientApiSpec extends CentralApiSpec:
           "allowedScopes" -> Json.Arr(),
           "permissions" -> permissions,
           "accessTokenTtl" -> Json.Num(3600),
+          "dpopBoundAccessTokens" -> Json.Bool(false),
+          "dpopSigningAlgs" -> Json.Arr(),
           "authMethod" -> Json.Str("client_secret"),
+          "certificateBoundAccessTokens" -> Json.Bool(false),
+          "estEnrollment" -> Json.Bool(false),
         )
       for
         central <- api
@@ -787,12 +801,15 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.exists(!_.strings("redirectUris").contains("versola://callback")))
           .label("validation that only runs on the create path is validation an update can bypass")
     },
-    test("an update that names only the client changes nothing, and is accepted") {
+    test("an update that states only empty patches changes nothing, and is accepted") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         outcome <- withClient(central, Fixtures.client(id, name = "Untouched")) { clientId =>
-          central.put(s"$path/web", Json.Obj("clientId" -> Json.Str(clientId))).zip(read(central, id))
+          central.put(
+            s"$path/web",
+            Json.Obj("clientId" -> Json.Str(clientId), "redirectUris" -> Fixtures.patch(), "scope" -> Fixtures.patch()),
+          ).zip(read(central, id))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&

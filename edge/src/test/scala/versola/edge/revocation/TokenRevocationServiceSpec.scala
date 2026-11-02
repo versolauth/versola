@@ -1,6 +1,7 @@
 package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
+import versola.edge.model.ApplicationType
 import versola.edge.model.{
   AccessTokenId,
   AuthorizationPreset,
@@ -57,7 +58,13 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
     Revocation(sub, revokedAt.plusSeconds(600), issuedBefore = Some(revokedAt))
 
   private def client(id: String, accessTokenTtl: Duration): OAuthClient =
-    OAuthClient(ClientId(id), ClientCredential.ClientSecret(Secret(Array.emptyByteArray)), Set.empty, accessTokenTtl)
+    OAuthClient(
+      ClientId(id),
+      ClientCredential.ClientSecret(Secret(Array.emptyByteArray)),
+      Set.empty,
+      accessTokenTtl,
+      applicationType = ApplicationType.web,
+    )
 
   /** Only [[EdgeConfig.revocation]] matters here; the rest is what the case class demands. */
   private lazy val edgeConfig = EdgeConfig(

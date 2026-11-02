@@ -32,6 +32,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
     subjectHash = "h",
     destPrefix = None,
     userAgent = None,
+    score = None,
+    rules = Nil,
   )
 
   private case class Env(repository: Stub[AntifraudEventRepository], configService: Stub[OAuthConfigurationService])
@@ -43,19 +45,22 @@ object AntifraudEventsSpec extends UnitSpecBase:
       settings: AntifraudEvents.Settings,
       config: versola.util.CoreConfig = TestEnvConfig.coreConfig,
       antifraud: Antifraud = Antifraud.off,
-      velocity: VelocityCounters = VelocityCounters.off,
+      velocity: VelocityCounters = AntifraudTestSettings.velocityOff,
+      tuning: Tuning = Tuning.off,
+      sizing: AntifraudEvents.Sizing = smallSizing,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
       _ <- e.repository.rollupStats.succeedsWith(true)
       _ <- e.repository.pruneStats.succeedsWith(())
-      events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents])
+      events <- AntifraudEvents.liveWith(sizing).build.map(_.get[AntifraudEvents])
     yield events).provideSome[Scope](
       ZLayer.succeed[AntifraudEventRepository](e.repository),
       ZLayer.succeed(settings),
       ZLayer.succeed(config),
       ZLayer.succeed[OAuthConfigurationService](e.configService),
       ZLayer.succeed[Antifraud](antifraud),
+      ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed[VelocityCounters](velocity),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
@@ -63,7 +68,10 @@ object AntifraudEventsSpec extends UnitSpecBase:
 
   private val t0 = Instant.parse("2026-10-21T10:00:30Z")
 
-  private val small = AntifraudEvents.Settings(queueCapacity = 3, batchSize = 10, flushInterval = 1.second, retention = 14.days, partitionsAhead = 3)
+  private val small = AntifraudTestSettings.events
+
+  /** A queue that fills up and batches that fill. */
+  private val smallSizing = AntifraudTestSettings.sizing.copy(queueCapacity = 3, batchSize = 10, flushInterval = 1.second, partitionsAhead = 3)
 
   def spec = suite("AntifraudEvents")(
     suite("the writer")(
@@ -152,7 +160,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.returnsZIO:
               case List(_) => started.succeed(()) *> release.await
               case _ => ZIO.unit
-            events <- build(e, small.copy(queueCapacity = 10, batchSize = 2))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10, batchSize = 2))
             _ <- events.record(event())
             _ <- started.await
             _ <- ZIO.foreachDiscard(List.fill(4)(event()))(events.record)
@@ -166,7 +174,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.repository.insertBatch.failsWith(RuntimeException("database is down"))
-            events <- build(e, small.copy(queueCapacity = 100, batchSize = 2))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 100, batchSize = 2))
             _ <- ZIO.foreachDiscard(List.fill(50)(event()))(events.record)
             _ <- TestClock.adjust(1.second)
             calls <- ZIO.succeed(e.repository.insertBatch.calls.size)
@@ -198,13 +206,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
           _ <- e.repository.insertBatch.succeedsWith(())
           _ <- e.repository.rollupStats.succeedsWith(true)
           _ <- e.repository.pruneStats.succeedsWith(())
-          events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
+          events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
             ZLayer.succeed[AntifraudEventRepository](e.repository),
             ZLayer.succeed(small),
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed[OAuthConfigurationService](e.configService),
             ZLayer.succeed[Antifraud](Antifraud.off),
-            ZLayer.succeed[VelocityCounters](VelocityCounters.off),
+            ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
+            ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -254,13 +263,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.pruneStats.succeedsWith(())
-            _ <- AntifraudEvents.live.build.provideSome[Scope](
+            _ <- AntifraudEvents.liveWith(smallSizing).build.provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
-              ZLayer.succeed[VelocityCounters](VelocityCounters.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
+              ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -280,13 +290,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.pruneStats.succeedsWith(())
-            events <- AntifraudEvents.live.build.map(_.get[AntifraudEvents]).provideSome[Scope](
+            events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
               ZLayer.succeed(small),
               ZLayer.succeed(TestEnvConfig.coreConfig),
               ZLayer.succeed[OAuthConfigurationService](e.configService),
               ZLayer.succeed[Antifraud](Antifraud.off),
-              ZLayer.succeed[VelocityCounters](VelocityCounters.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
+              ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -298,13 +309,15 @@ object AntifraudEventsSpec extends UnitSpecBase:
     suite("the SMS budget")(
       test("charged sends close the range, a check that charges nothing does not count, and another range is still allowed") {
         val e = env
-        val limited = small.copy(smsBudget = SmsBudget.Settings(sentPerHour = 2))
+        val limited = AntifraudTestSettings.tuning.copy(smsLimits =
+          SmsLimits(default = SmsLimit(sentPerHour = 2, minVolume = 0, minConversion = 0.1), byPrefix = Map.empty),
+        )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, limited)
+            events <- build(e, small, tuning = limited)
             _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = false))
             first <- events.allowSms(clientId, phone, t0, charge = true)
             second <- events.allowSms(clientId, Phone("+4915100000000"), t0, charge = true)
@@ -318,22 +331,22 @@ object AntifraudEventsSpec extends UnitSpecBase:
       test("the conversion is only looked at where registration is closed for the number; the hourly limit applies everywhere") {
         val germany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = true)
         val closedGermany = germany.copy(registration = false)
-        def run(regions: List[PhoneRegion], settings: SmsBudget.Settings) =
+        def run(regions: List[PhoneRegion], limit: SmsLimit) =
           val e = env
           ZIO.scoped:
             for
               _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
               _ <- e.configService.getPhoneRegions.succeedsWith(regions)
               _ <- e.repository.insertBatch.succeedsWith(())
-              events <- build(e, small.copy(smsBudget = settings))
+              events <- build(e, small, tuning = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = limit, byPrefix = Map.empty)))
               _ <- ZIO.foreachDiscard(1 to 5)(_ => events.allowSms(clientId, phone, t0, charge = true))
               allowed <- events.allowSms(clientId, phone, t0, charge = false)
             yield allowed
-        val breaker = SmsBudget.Settings(minVolume = 5, minConversion = 0.5)
+        val breaker = SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.5)
         for
           open <- run(List(germany), breaker)
           closed <- run(List(closedGermany), breaker)
-          limitOpen <- run(List(germany), SmsBudget.Settings(sentPerHour = 5))
+          limitOpen <- run(List(germany), SmsLimit(sentPerHour = 5, minVolume = 0, minConversion = 0.1))
         yield assertTrue(open, !closed, !limitOpen)
       },
       test("with no budget configured nothing is looked up") {
@@ -360,6 +373,16 @@ object AntifraudEventsSpec extends UnitSpecBase:
             pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
           )
       },
+      test("recomputes twice the interval when that is longer than the lookback, so every minute is rolled up twice") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
+            _ <- build(e, small.copy(statsInterval = 5.minutes))
+            _ <- TestClock.adjust(5.minutes)
+            rolled = e.repository.rollupStats.calls
+          yield assertTrue(rolled == List((Instant.parse("2026-10-21T09:55:00Z"), Instant.parse("2026-10-21T10:05:00Z"), 4)))
+      },
     ),
     suite("the request's log")(
       test("a decision, the rules that fired and the outcome are put on the request's own log context, with its IP") {
@@ -372,16 +395,16 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true)), antifraud = engine)
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
-            decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone))
+            decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone), repeated = false)
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.blocked, Some(decision))
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             seen.get.flatMap(_.ip) == Some("203.0.113.7"),
             seen.get.flatMap(_.destPrefix) == Some("491512"),
             details == Some(
-              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked")),
+              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked"), None, None),
             ),
           )
       },
@@ -392,40 +415,200 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small)
-            decision <- events.decideOtpRequest(clientId, None, Right(phone))
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             decision == Decision.allow,
-            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"))),
+            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"), None, None)),
+          )
+      },
+      test("a challenge step puts the decision, the kind and the level of the challenge on the log context, and its outcome in the event log") {
+        val e = env
+        val challenging = Decision(DecisionAction.Challenge, 61, List("phone_velocity"))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small)
+            _ <- events.challengeStep(authId, clientId, None, Right(phone), AntifraudOutcome.challenged, challenging, "pow", Some(17))
+            details <- logContext.get.map(_.get(Observability.antifraud))
+            _ <- TestClock.adjust(0.seconds)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            details == Some(Observability.AntifraudDetails(
+              "otp_request",
+              "Challenge",
+              61,
+              List("phone_velocity"),
+              Some("491512"),
+              Some("challenged"),
+              Some("pow"),
+              Some(17),
+            )),
+            written.map(_.outcome) == List(AntifraudOutcome.challenged),
+            written.map(_.action) == List(AntifraudAction.otp_request),
+            written.flatMap(_.decision) == List("Challenge"),
           )
       },
     ),
     suite("velocity in the decision")(
-      test("an allowed request is counted, and the limit fires on the one over it") {
+      test("a sent code is counted against the number, and the limit fires on the request over it") {
         val e = env
-        val thresholds = VelocityRules.Thresholds(phone = VelocityRules.Limit(perMinute = 2, weight = 60))
-        val vsettings = VelocityCounters.Settings(enabled = true, thresholds = thresholds)
-        val velocity = VelocityCounters(vsettings)
-        val engine = Antifraud.Impl(
-          Antifraud.Settings(enabled = true, blockAt = 50, delayAt = 0, challengeAt = 0, reviewAt = 0, delay = 1.second, timeout = 1.second, failureAction = DecisionAction.Challenge),
-          List(VelocityRules.ruleSet(vsettings)),
+        val tuned = AntifraudTestSettings.tuning.copy(
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
         )
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(decision = Antifraud.Settings(enabled = true), velocity = vsettings), antifraud = engine, velocity = velocity)
-            first <- events.decideOtpRequest(clientId, None, Right(phone))
-            second <- events.decideOtpRequest(clientId, None, Right(phone))
-            third <- events.decideOtpRequest(clientId, None, Right(phone))
-            fourth <- events.decideOtpRequest(clientId, None, Right(phone))
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(first))
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(second))
+            third <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            fourth <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
           yield assertTrue(
             first.action == DecisionAction.Allow,
             second.action == DecisionAction.Allow,
             third.action == DecisionAction.Block,
             third.firedRules == List("velocity_phone_1m"),
             fourth.action == DecisionAction.Block,
+          )
+      },
+      test("a request that is challenged, faked or refused is not counted against the number; its source is, and a sent code is") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(
+          thresholds = AntifraudTestSettings.thresholds.copy(
+            phone = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60),
+            prefix = AntifraudTestSettings.limit.copy(perMinute = 100, weight = 10),
+          ),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        // Whatever the counts say, the request is challenged: the number must not pay for that.
+        val challenging = new Antifraud.RuleSet:
+          override def rules: UIO[List[AntifraudRule]] =
+            ZIO.succeed(List(AntifraudRule(name = "always", weight = 0, forces = Some(DecisionAction.Challenge), test = _ => true)))
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(challenging, AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        val client = TestEnvConfig.mtlsClient(clientId)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(client))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            decisions <- ZIO.foreach(1 to 5)(_ => events.decideOtpRequest(clientId, None, Right(phone), repeated = false))
+            hash <- events.subjectHash(Right(phone))
+            now <- Clock.instant
+            afterChallenges = velocity.count(VelocityKey.phone, hash, VelocityWindow.OneMinute, now)
+            range = velocity.count(VelocityKey.prefix, s"${identity[String](client.tenantId)}/491512", VelocityWindow.OneMinute, now)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.faked, decisions.headOption)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.blocked, decisions.headOption)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.throttled, decisions.headOption)
+            afterOthers = velocity.count(VelocityKey.phone, hash, VelocityWindow.OneMinute, now)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, decisions.headOption)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, decisions.headOption)
+            afterSends = velocity.count(VelocityKey.phone, hash, VelocityWindow.OneMinute, now)
+          yield assertTrue(
+            decisions.forall(_.action == DecisionAction.Challenge),
+            afterChallenges == 0,
+            range == 5,
+            afterOthers == 0,
+            afterSends == 2,
+          )
+      },
+      test("the mail domain of an address is in the signals, so an email_domain entry can match") {
+        val e = env
+        val byDomain = new Antifraud.RuleSet:
+          override def rules: UIO[List[AntifraudRule]] =
+            ZIO.succeed(
+              List(
+                AntifraudRule(
+                  name = "deny_list:email_domain",
+                  weight = 0,
+                  forces = Some(DecisionAction.Block),
+                  test = _.signals.get(AntifraudLists.EmailDomainSignal).contains("example.com"),
+                ),
+              ),
+            )
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(byDomain),
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            listed <- events.decideOtpRequest(clientId, None, Left(Email("User@Example.COM")), repeated = false)
+            other <- events.decideOtpRequest(clientId, None, Left(Email("user@example.org")), repeated = false)
+            sms <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            listed.action == DecisionAction.Block,
+            other.action == DecisionAction.Allow,
+            sms.action == DecisionAction.Allow,
+          )
+      },
+      test("a request made again with its answer is judged but not counted a second time") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            _ <- Observability.setIp("203.0.113.7")
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            again <- ZIO.foreach(1 to 3)(_ => events.decideOtpRequest(clientId, None, Right(phone), repeated = true))
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            third <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            again.forall(_.action == DecisionAction.Allow),
+            second.action == DecisionAction.Allow,
+            third.action == DecisionAction.Block,
+            third.firedRules == List("velocity_ip_1m"),
           )
       },
     ),
@@ -459,7 +642,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.configService.find.succeedsWith(None)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(queueCapacity = 10))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
             _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
             _ <- events.otpRequested(authId, clientId, None, Right(Phone("+4915123456780")), AntifraudOutcome.sent)
@@ -500,7 +683,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- e.configService.find.succeedsWith(None)
             _ <- e.repository.insertBatch.succeedsWith(())
-            events <- build(e, small.copy(queueCapacity = 10))
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
             long = "x" * 1000
             _ <- events.otpRequested(authId, clientId, Some(long), Left(Email("User@Example.com")), AntifraudOutcome.suppressed)
             _ <- events.otpRequested(authId, clientId, None, Left(Email("user@example.com")), AntifraudOutcome.suppressed)

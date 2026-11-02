@@ -1,5 +1,6 @@
 package versola.oauth.client
 
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.EmailRegistration
 import versola.oauth.client.model.{
   Acr,
@@ -79,6 +80,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -110,6 +112,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -141,6 +144,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -431,7 +435,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       },
     ),
     test("getSubmissionLimits returns limits from challenge settings") {
-      val limits = SubmissionLimits(otpRequest = List(RateLimit(5, 60)))
+      val limits =
+        SubmissionLimits(otpRequest = List(RateLimit(5, 60)), otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil, banDurationSeconds = 0)
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,

@@ -82,7 +82,7 @@ case class OAuthClientRecord(
     requirePushedAuthorizationRequests: Boolean,
     /** OIDC Registration §2 `application_type`. Defaulted: `web` is what every client was
       * before central sent the field. */
-    applicationType: ApplicationType = ApplicationType.web,
+    applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
 ) derives CanEqual, Equal:

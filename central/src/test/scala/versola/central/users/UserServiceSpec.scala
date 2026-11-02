@@ -1,5 +1,6 @@
 package versola.central.users
 
+import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
@@ -106,6 +107,7 @@ object UserServiceSpec extends UnitSpecBase:
         template = None,
         createdAt = Instant.EPOCH,
         themeOverrides = None,
+        applicationType = ApplicationType.web,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",
@@ -264,6 +266,7 @@ object UserServiceSpec extends UnitSpecBase:
         template = None,
         createdAt = Instant.EPOCH,
         themeOverrides = None,
+        applicationType = ApplicationType.web,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",

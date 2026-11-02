@@ -4,14 +4,20 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZIO, ZLayer}
+import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 
 import java.util.UUID
 
-class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, BasicCodecs:
+/** @param statementTimeout the longest one statement may take: the flusher runs a save, a load and a prune in turn,
+  *                         and a statement that hangs would stop the counts of the other instances from being read
+  */
+class PostgresVelocityRepository(xa: TransactorZIO, statementTimeout: Duration = 10.seconds) extends VelocityRepository, BasicCodecs:
   import PgCodec.SeqCodec
   import PostgresVelocityRepository.*
   import SqlArrayCodec.{IntSqlArrayCodec, LongSqlArrayCodec, StringSqlArrayCodec}
+
+  private def timed()(using DbCon): Unit =
+    sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
 
   private case class Row(keyType: String, key: String, minute: Long, instanceId: UUID, count: Int) derives DbCodec
 
@@ -19,6 +25,7 @@ class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, 
     if buckets.isEmpty then ZIO.unit
     else
       xa.transactMeasured("save-antifraud-velocity"):
+        timed()
         // One statement per chunk instead of a round trip per bucket. The rows of an instance are its own, so
         // instances writing at once never touch the same row.
         buckets.grouped(SaveChunk).foreach: chunk =>
@@ -35,7 +42,8 @@ class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, 
       .unit
 
   override def loadOthers(instance: UUID, fromMinute: Long, toMinute: Long, maxKeys: Int): Task[List[SharedBucket]] =
-    xa.connectMeasured("load-antifraud-velocity"):
+    xa.transactMeasured("load-antifraud-velocity"):
+      timed()
       // Keys are ranked first and their rows read after, so the limit cuts keys and never the minutes of a key.
       sql"""
         WITH ranged AS (
@@ -56,6 +64,7 @@ class PostgresVelocityRepository(xa: TransactorZIO) extends VelocityRepository, 
 
   override def prune(minute: Long, batch: Int): Task[Int] =
     xa.transactMeasured("prune-antifraud-velocity"):
+      timed()
       // One instance at a time; the others have nothing to do, the rows are going anyway.
       val locked = sql"SELECT pg_try_advisory_xact_lock($PruneLock)".query[Boolean].run().head
       if !locked then 0

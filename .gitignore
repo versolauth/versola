@@ -37,3 +37,6 @@ develop.txt
 # Claude Code: local state (settings.json, hooks/ and rules/ are shared)
 .claude/worktrees/
 .claude/settings.local.json
+
+# Reports of the antifraud loadgen runs: the recorded ones live in versolauth/loadgen-runbook
+loadgen/antifraud/results/

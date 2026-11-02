@@ -32,10 +32,11 @@ object RateLimiterBench:
       RateLimitPolicy(
         name = s"bench$i",
         by = dims(i),
-        // 1/hour with a burst of 1: the first request passes, the rest are refused; the other is never exhausted
         limits = if refuse then List(RateLimitWindow(1, 3600)) else List(RateLimitWindow(1_000_000, 1), RateLimitWindow(1_000_000, 60)),
         burst = if refuse then 1 else 1_000_000,
         mode = GuardMode.Enforce,
+        scope = RateLimitScope.EdgeWide,
+        cost = 1,
       )
 
   private val keySets: Array[RateLimitKeys] = Array.tabulate(4096): i =>

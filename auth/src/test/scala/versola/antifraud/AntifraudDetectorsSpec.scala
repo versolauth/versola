@@ -11,10 +11,16 @@ import java.util.UUID
 
 object AntifraudDetectorsSpec extends UnitSpecBase:
 
-  private val on = AntifraudDetectors.Settings.default.copy(enabled = true)
+  private val on = AntifraudTestSettings.detectors.copy(enabled = true)
 
-  private def build(repository: Stub[AntifraudProposalRepository], settings: AntifraudDetectors.Settings): ZIO[Scope, Nothing, AntifraudDetectors] =
-    AntifraudDetectors.live.build.map(_.get[AntifraudDetectors]).provideSome[Scope](
+  private val analytics = AntifraudTestSettings.analytics
+
+  private def build(
+      repository: Stub[AntifraudProposalRepository],
+      settings: AntifraudDetectors.Settings,
+      analytics: AntifraudDetectors.Analytics = analytics,
+  ): ZIO[Scope, Nothing, AntifraudDetectors] =
+    AntifraudDetectors.liveWith(analytics).build.map(_.get[AntifraudDetectors]).provideSome[Scope](
       ZLayer.succeed[AntifraudProposalRepository](repository),
       ZLayer.succeed(settings),
     )
@@ -48,7 +54,7 @@ object AntifraudDetectorsSpec extends UnitSpecBase:
         val repository = stub[AntifraudProposalRepository]
         ZIO.scoped:
           for
-            _ <- build(repository, AntifraudDetectors.Settings.default)
+            _ <- build(repository, AntifraudTestSettings.detectors)
             _ <- TestClock.adjust(1.hour)
           yield assertTrue(
             repository.detectPrefixAnomalies.calls.isEmpty,
@@ -67,8 +73,8 @@ object AntifraudDetectorsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(1.minute)
           yield assertTrue(
             before == 0,
-            repository.detectPrefixAnomalies.calls.map(_._2) == List(on.prefixAnomaly, on.prefixAnomaly),
-            repository.detectFakeVerifies.calls.map(_._2) == List(on.fakeVerify, on.fakeVerify),
+            repository.detectPrefixAnomalies.calls.map(_._2) == List(analytics.prefixAnomaly, analytics.prefixAnomaly),
+            repository.detectFakeVerifies.calls.map(_._2) == List(analytics.fakeVerify, analytics.fakeVerify),
             repository.expireOpen.calls.size == 2,
             repository.prune.calls.size == 2,
           )
@@ -78,7 +84,7 @@ object AntifraudDetectorsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- quiet(repository)
-            _ <- build(repository, on.copy(fakeVerify = on.fakeVerify.copy(enabled = false)))
+            _ <- build(repository, on, analytics.copy(fakeVerify = analytics.fakeVerify.copy(enabled = false)))
             _ <- TestClock.adjust(1.minute)
           yield assertTrue(repository.detectPrefixAnomalies.calls.size == 1, repository.detectFakeVerifies.calls.isEmpty)
       },
@@ -106,15 +112,15 @@ object AntifraudDetectorsSpec extends UnitSpecBase:
             expired = repository.expireOpen.calls.head
           yield assertTrue(
             run == AntifraudDetectors.Run(
-              settle = on.settle,
-              statementTimeout = on.statementTimeout,
-              maxProposals = on.maxProposals,
-              candidates = on.candidates,
-              cooldown = on.cooldown,
-              ttl = on.ttl,
+              settle = analytics.settle,
+              statementTimeout = analytics.statementTimeout,
+              maxProposals = analytics.maxProposals,
+              candidates = analytics.candidates,
+              cooldown = analytics.cooldown,
+              ttl = analytics.ttl,
             ),
-            expired._1 == Instant.parse("2026-10-21T12:01:00Z").minusSeconds(on.openFor.getSeconds),
-            expired._2 == on.batchSize,
+            expired._1 == Instant.parse("2026-10-21T12:01:00Z").minusSeconds(analytics.openFor.getSeconds),
+            expired._2 == analytics.batchSize,
           )
       },
     ),

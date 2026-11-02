@@ -81,30 +81,29 @@ object Flows:
   )
 
   /** Consent policy that prompts on the first authorization and remembers the grant. */
-  val rememberedConsentFlow: Json = Json.Obj(
-    "allowPartial" -> Json.Bool(false),
-    "rememberDuration" -> Json.Null,
-  )
+  private def consentFlow(
+      allowPartial: Boolean,
+      requiredScopes: List[String] = Nil,
+      offlineAccessOptional: Boolean = false,
+  ): Json =
+    Json.Obj(
+      "allowPartial" -> Json.Bool(allowPartial),
+      "rememberDuration" -> Json.Null,
+      "requiredScopes" -> Json.Arr(requiredScopes.map(Json.Str(_))*),
+      "offlineAccessOptional" -> Json.Bool(offlineAccessOptional),
+    )
+
+  /** Consent policy that prompts on the first authorization and remembers the grant. */
+  val rememberedConsentFlow: Json = consentFlow(allowPartial = false)
 
   /** Consent policy that permits deselecting optional scopes. */
-  val partialConsentFlow: Json = Json.Obj(
-    "allowPartial" -> Json.Bool(true),
-    "rememberDuration" -> Json.Null,
-  )
+  val partialConsentFlow: Json = consentFlow(allowPartial = true)
 
   /** Partial grants allowed, but `email` cannot be deselected. */
-  val requiredScopeConsentFlow: Json = Json.Obj(
-    "allowPartial" -> Json.Bool(true),
-    "rememberDuration" -> Json.Null,
-    "requiredScopes" -> Json.Arr(Json.Str("email")),
-  )
+  val requiredScopeConsentFlow: Json = consentFlow(allowPartial = true, requiredScopes = List("email"))
 
   /** Partial grants allowed, and the user may turn `offline_access` off. */
-  val optionalOfflineAccessConsentFlow: Json = Json.Obj(
-    "allowPartial" -> Json.Bool(true),
-    "rememberDuration" -> Json.Null,
-    "offlineAccessOptional" -> Json.Bool(true),
-  )
+  val optionalOfflineAccessConsentFlow: Json = consentFlow(allowPartial = true, offlineAccessOptional = true)
 
   // ── Setup result ────────────────────────────────────────────────────────
 

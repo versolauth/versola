@@ -488,6 +488,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         postLoginRedirectUri = RedirectUri("https://app.example/home"),
         cookieDomain = Some("app.example"),
         cookiePath = Some("/"),
+        returnTo = None,
       )
       for
         (response, _, _) <- run(

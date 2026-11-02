@@ -21,7 +21,6 @@ final class RecordingAntifraudEvents(
     smsAllowed: Boolean = true,
     afterRequested: UIO[Unit] = zio.ZIO.unit,
     decision: Decision = Decision.allow,
-    fakeDelay: zio.Duration = zio.Duration.Zero,
 ) extends AntifraudEvents:
   import RecordingAntifraudEvents.Step
 
@@ -47,19 +46,13 @@ final class RecordingAntifraudEvents(
 
   override def releaseSms(clientId: ClientId, phone: Phone, at: java.time.Instant): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
 
-  private val held = new java.util.concurrent.atomic.AtomicInteger(0)
+  private val decided = scala.collection.mutable.ListBuffer.empty[Boolean]
 
-  /** How many times a decision asked to hold a request back. */
-  def holds: Int = held.get
+  /** The `repeated` flag of each [[decideOtpRequest]] call, in order. */
+  def decisions: List[Boolean] = synchronized(decided.toList)
 
-  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone]): UIO[Decision] =
-    zio.ZIO.succeed(decision)
-
-  override def hold(decision: Decision): UIO[Unit] = zio.ZIO.succeed(held.incrementAndGet()).unit
-
-  override def sendTook(took: zio.Duration): UIO[Unit] = zio.ZIO.unit
-
-  override def fakeSendDelay: UIO[zio.Duration] = zio.ZIO.succeed(fakeDelay)
+  override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
+    zio.ZIO.succeed(synchronized(decided += repeated)) *> zio.ZIO.succeed(decision)
 
   override def otpRequested(
       authId: AuthId,
@@ -78,6 +71,18 @@ final class RecordingAntifraudEvents(
       outcome,
       decision,
     ))) *> afterRequested
+
+  override def challengeStep(
+      authId: AuthId,
+      clientId: ClientId,
+      userAgent: Option[String],
+      credential: Either[Email, Phone],
+      outcome: AntifraudOutcome,
+      decision: Decision,
+      kind: String,
+      level: Option[Int],
+  ): UIO[Unit] =
+    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, Some(decision)))).unit
 
   override def otpChecked(
       authId: AuthId,

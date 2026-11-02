@@ -1,6 +1,7 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, RateLimit, ScopeToken, SubmissionLimits, TenantId}
 import versola.util.UnitSpecBase
 import zio.*
@@ -45,6 +46,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.
@@ -54,6 +56,9 @@ object SubmissionLimiterSpec extends UnitSpecBase:
       RateLimit(maxAttempts = 9, windowSeconds = 3600),
     ),
     banDurationSeconds = 600,
+    otpRequest = Nil,
+    passwordSubmit = Nil,
+    passkeyAssertion = Nil,
   )
 
   // A distinct window per challenge type, so a test can tell which field was actually read.

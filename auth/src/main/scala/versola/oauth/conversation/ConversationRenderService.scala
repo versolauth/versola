@@ -113,7 +113,9 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean, resendInterval: Int)
+      extends StepView
+
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
 
@@ -420,7 +422,7 @@ object ConversationRenderService:
     ): Task[Response] =
       val challenge = Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), uiLocale))
       result match
-        case ConversationResult.RenderStep(step) =>
+        case ConversationResult.RenderStep(_) | ConversationResult.Challenged(_) =>
           ZIO.succeed(challenge)
 
         case ConversationResult.ServiceUnavailable =>
@@ -755,6 +757,10 @@ object ConversationRenderService:
             lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
             // Masked here so the unmasked credential never reaches window.__VERSOLA_FORM__.
             destination = credential.map(_.fold(Email.mask, Phone.mask)),
+            // No code was sent yet: the page asks for it by itself.
+            pending = s.pending,
+            // The wait between two codes, which the page starts again when it shows a code that was just sent in place.
+            resendInterval = otp.resendAfter,
           )
 
         case s: ConversationStep.PasskeyEnroll =>

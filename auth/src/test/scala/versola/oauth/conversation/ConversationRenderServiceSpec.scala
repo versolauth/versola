@@ -60,6 +60,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId), tokens = None)
@@ -388,7 +389,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         test("a partner's app is announced with its name and logo") {
           val partner = clientRecord.copy(
             logoUri = Some("https://acme.test/app.svg"),
-            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
           )
           page(conversationRecord, client = Some(partner)).map: body =>
             assertTrue(
@@ -710,6 +711,24 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(body.contains("\"resendAfter\":30"))
       },
+      test("renders a step left with no code sent as pending, and one with a code sent as not") {
+        def render(step: ConversationStep.Otp) =
+          val env = Env()
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+            _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
+            _ <- env.configuration.getLocales.succeedsWith(locales)
+            _ <- env.configuration.getTenantLogo.succeedsWith(None)
+            _ <- env.configuration.getOtpSettings.succeedsWith(OtpSettings(6, 60))
+            response <- env.service.renderStep(conversationRecord.copy(step = step), None)
+            body <- response.body.asString
+          yield body
+        for
+          pending <- render(ConversationStep.Otp(None, 0, 0, 0, false, 0, None))
+          sent <- render(ConversationStep.Otp(None, 1, 0, 0, false, 0, None))
+        yield assertTrue(pending.contains("\"pending\":true"), sent.contains("\"pending\":false"))
+      },
       test("renders a masked destination for the OTP recipient") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
@@ -843,7 +862,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val tokens = List("openid", "offline_access", "phone", "email").map(ScopeToken(_))
         val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
         val client = clientRecord.copy(
-          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))),
+          consentFlow =
+            Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")), offlineAccessOptional = false)),
         )
         val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
         // `deselectable` follows `scope` within each serialized row.
@@ -875,7 +895,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val tokens = List("openid", "offline_access").map(ScopeToken(_))
         val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
         val client = clientRecord.copy(
-          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, offlineAccessOptional = true)),
+          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, offlineAccessOptional = true, requiredScopes = Set.empty)),
         )
         val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
         def deselectable(body: String, scope: String): Boolean =

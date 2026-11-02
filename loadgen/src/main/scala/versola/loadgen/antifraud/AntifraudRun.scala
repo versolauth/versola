@@ -3,7 +3,7 @@ package versola.loadgen.antifraud
 import versola.loadgen.config.LoadgenConfig
 import versola.loadgen.protocol.{ClientCreds, ClientRegistration, ClientRegistry, HttpAuthClient, LoadgenHttpClient}
 import zio.*
-import zio.http.{Client, Request}
+import zio.http.{Client, Header, Headers, Request}
 import zio.json.*
 
 import java.nio.file.{Files, Path}
@@ -38,6 +38,7 @@ object AntifraudRun:
       scenarios = Scenarios(
         client = client,
         auth = auth,
+        sourced = address => auth.withHeaders(Headers(Header.Custom(settings.sources.header, address))),
         config = settings,
         stub = stub,
         numbers = PhoneNumbers(settings.numbers, random),
@@ -92,10 +93,20 @@ object AntifraudRun:
       )("mixed.legit-in-range-share is not between 0 and 1"),
       Option.when(settings.mimicking.verifyShare < 0.0 || settings.mimicking.verifyShare > 1.0)("mimicking.verify-share is not between 0 and 1"),
       Option.when(settings.maxInFlight <= 0)("max-in-flight must be positive"),
-      Option.when(List(settings.normal.rate, settings.prefixAttack.rate, settings.deviceAttack.rate, settings.tokenControl.rate).exists(rate =>
-        !(rate > 0.0),
-      ))(
+      Option.when(
+        List(
+          settings.normal.rate,
+          settings.prefixAttack.rate,
+          settings.deviceAttack.rate,
+          settings.distributedAttack.rate,
+          settings.tokenControl.rate,
+        )
+          .exists(rate => !(rate > 0.0)),
+      )(
         "every rate must be positive",
+      ),
+      Option.when(settings.sources.enabled && (settings.sources.legit <= 0 || settings.sources.distributed <= 0))(
+        "sources.legit and sources.distributed must be positive when a source header is sent",
       ),
     ).flatten
     ZIO.fail(InvalidAntifraudConfig(problems.mkString("; "))).when(problems.nonEmpty).unit

@@ -19,6 +19,8 @@ case class CoreConfig(
     argon2: Option[Argon2Config],
     mutualTls: Option[CoreConfig.MutualTlsConfig],
     est: Option[CoreConfig.EstConfig] = None,
+    // Limits on the channel that is not mutual TLS (#745); absent, the defaults of [[ClientAuthThrottle.Settings]] apply.
+    limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 

@@ -7,6 +7,9 @@ import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 trait ResourceService:
   def findByResourceId(resourceId: ResourceId): UIO[Option[Resource]]
 
+  /** Every resource this edge knows about, for what derives something from all of them (the rate limits declared on endpoints). */
+  def all: UIO[Vector[Resource]]
+
   /** Reloads the cache from central now, instead of waiting for `configurationCacheRefreshInterval`.
     * Backs the non-prod `/service/configuration/sync` endpoint; nothing in request handling
     * calls this. */
@@ -29,6 +32,8 @@ object ResourceService:
   ) extends ResourceService:
     override def findByResourceId(resourceId: ResourceId): UIO[Option[Resource]] =
       cache.get.map(_.get(resourceId))
+
+    override def all: UIO[Vector[Resource]] = cache.get.map(_.values.toVector)
 
     override def refreshNow: Task[Unit] =
       source.getAll.flatMap(cache.set)

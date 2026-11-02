@@ -115,21 +115,15 @@ object OAuthClientSyncClient:
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
         dpopBoundAccessTokens: Boolean,
-        /** Defaulted for the same reason as the flags below: an auth node may be reading a
-          * central that predates the field. */
-        dpopSigningAlgs: Set[Dpop.Algorithm] = Set.empty,
-        dpopMinRsaKeySize: Option[Int] = None,
+        dpopSigningAlgs: Set[Dpop.Algorithm],
+        dpopMinRsaKeySize: Option[Int],
         authMethod: AuthMethod,
         mtlsAuth: Option[MutualTlsAuth],
         certificateBoundAccessTokens: Boolean,
         jwks: Option[JsonWebKeySet],
-        /** Defaulted so that an auth node reading a central that predates the field keeps the
-          * behaviour it already had, rather than failing to decode the sync response. */
-        requireSignedRequestObject: Boolean = false,
-        requirePushedAuthorizationRequests: Boolean = false,
-        /** Defaulted on the same terms: a central that predates the field only has `web`
-          * clients. */
-        applicationType: ApplicationType = ApplicationType.web,
+        requireSignedRequestObject: Boolean,
+        requirePushedAuthorizationRequests: Boolean,
+        applicationType: ApplicationType,
         themeOverrides: Option[ThemeOverrides],
     ) derives JsonCodec
 

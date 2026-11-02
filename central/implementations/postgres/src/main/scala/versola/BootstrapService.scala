@@ -109,7 +109,7 @@ object BootstrapService:
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
       requirePushedAuthorizationRequests: Boolean,
-      issueEdgeClientCertificate: Boolean = false,
+      issueEdgeClientCertificate: Boolean,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
 
@@ -118,7 +118,13 @@ object BootstrapService:
   ): Either[String, CentralAdminCredential] =
     seed match
       case None =>
-        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
+        Right(CentralAdminCredential(
+          AuthMethod.client_secret,
+          None,
+          None,
+          requirePushedAuthorizationRequests = false,
+          issueEdgeClientCertificate = false,
+        ))
       case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, _, _)) =>
         Right(CentralAdminCredential(
           authMethod = AuthMethod.tls_client_auth,
@@ -137,6 +143,7 @@ object BootstrapService:
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
           edgeClientCertificate = Some(certificate),
           requirePushedAuthorizationRequests = true,
+          issueEdgeClientCertificate = false,
         )
 
   /** `central-admin` and `utils` are registered with the method bootstrap's configuration calls
@@ -310,7 +317,7 @@ object BootstrapService:
   /** The catalog, its injects and its access rules belong to bootstrap and converge on every start; step-up
     * policy is operator-tuned and is kept as found. So the step-up seeded above reaches a resource only when
     * it is created, or an endpoint is new to it: a deployment that already runs keeps what it has, which an
-    * operator turns on for it. */
+    * operator turns on for it. The same goes for an endpoint's `rateLimit`, which only an operator sets. */
   private[versola] def mergeAccountEndpoints(
       desired: List[ResourceEndpointRecord],
       existingById: Map[ResourceEndpointId, ResourceEndpointRecord],
@@ -321,6 +328,7 @@ object BootstrapService:
           stepUpCondition = current.stepUpCondition,
           stepUpAcr = current.stepUpAcr,
           maxAge = current.maxAge,
+          rateLimit = current.rateLimit,
         )
 
   private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
@@ -337,7 +345,7 @@ object BootstrapService:
       maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
     )
 
-  private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
+  private[versola] val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
     (
       Permission("oauth:read"),
       localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"),
@@ -404,6 +412,7 @@ object BootstrapService:
         endpointId("GET", "/configuration/jwks"),
         endpointId("GET", "/configuration/jwks/keys"),
         endpointId("GET", "/configuration/system-settings"),
+        endpointId("GET", "/configuration/delivery-settings"),
       ),
     ),
     (
@@ -421,6 +430,8 @@ object BootstrapService:
         endpointId("PUT", "/configuration/jwks"),
         endpointId("DELETE", "/configuration/jwks"),
         endpointId("PUT", "/configuration/system-settings"),
+        endpointId("PUT", "/configuration/delivery-settings"),
+        endpointId("DELETE", "/configuration/delivery-settings"),
       ),
     ),
     (
@@ -455,19 +466,22 @@ object BootstrapService:
     ),
     (
       Permission("antifraud:read"),
-      localized("View antifraud lists", "Просмотр списков антифрода"),
+      localized("View antifraud lists and settings", "Просмотр списков и настроек антифрода"),
       Set(
         endpointId("GET", "/antifraud/lists"),
         endpointId("GET", "/antifraud/lists/audit"),
+        endpointId("GET", "/antifraud/settings"),
       ),
     ),
     (
       Permission("antifraud:manage"),
-      localized("Manage antifraud lists", "Управление списками антифрода"),
+      localized("Manage antifraud lists and settings", "Управление списками и настройками антифрода"),
       Set(
         endpointId("POST", "/antifraud/lists"),
         endpointId("POST", "/antifraud/lists/preview"),
         endpointId("DELETE", "/antifraud/lists"),
+        endpointId("PUT", "/antifraud/settings"),
+        endpointId("DELETE", "/antifraud/settings"),
       ),
     ),
     (
@@ -536,6 +550,8 @@ object BootstrapService:
       localized("View edges", "Просмотр эджей"),
       Set(
         endpointId("GET", "/configuration/edges"),
+        endpointId("GET", "/configuration/edges/policies"),
+        endpointId("GET", "/configuration/edges/rate-limits/recommended"),
       ),
     ),
     (
@@ -546,6 +562,7 @@ object BootstrapService:
         endpointId("DELETE", "/configuration/edges"),
         endpointId("POST", "/configuration/edges/rotate-key"),
         endpointId("DELETE", "/configuration/edges/old-key"),
+        endpointId("PATCH", "/configuration/edges/policies"),
       ),
     ),
     (
@@ -834,7 +851,9 @@ object BootstrapService:
       userAgentTtlSeconds = 15552000,
       ipHeader = "X-Real-IP",
       acrVocabulary = Some(DefaultAcrVocabulary),
-      postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
+      // Empty on purpose: the allow-list gets the console's post-logout address from `bootstrap.presets`
+      // (`registerPostLogoutRedirectUri`, derived from the deployment's AUTH_URL), not from a hostname baked in here.
+      postLogoutRedirectUris = Nil,
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
       mtlsCertificateEncoding = None,
@@ -898,6 +917,9 @@ object BootstrapService:
     "PUT" -> "/configuration/challenges/challenge-settings",
     "GET" -> "/configuration/system-settings",
     "PUT" -> "/configuration/system-settings",
+    "GET" -> "/configuration/delivery-settings",
+    "PUT" -> "/configuration/delivery-settings",
+    "DELETE" -> "/configuration/delivery-settings",
     "GET" -> "/configuration/challenges/otp-templates",
     "PUT" -> "/configuration/challenges/otp-templates",
     "DELETE" -> "/configuration/challenges/otp-templates",
@@ -921,6 +943,9 @@ object BootstrapService:
     "DELETE" -> "/configuration/edges",
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
+    "GET" -> "/configuration/edges/policies",
+    "PATCH" -> "/configuration/edges/policies",
+    "GET" -> "/configuration/edges/rate-limits/recommended",
     "GET" -> "/configuration/forms",
     "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
@@ -987,13 +1012,17 @@ object BootstrapService:
     "DELETE" -> "/antifraud/lists",
     "POST" -> "/antifraud/lists/preview",
     "GET" -> "/antifraud/lists/audit",
+    "GET" -> "/antifraud/settings",
+    "PUT" -> "/antifraud/settings",
+    "DELETE" -> "/antifraud/settings",
   )
 
   /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
     * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists. As for
     * the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
-    if path.startsWith("/antifraud/") then
+    // Reading the settings needs no one to name: nothing records who read them.
+    if path.startsWith("/antifraud/") && !(method == "GET" && path == "/antifraud/settings") then
       Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
     else Vector.empty
 

@@ -1,5 +1,6 @@
 import { clientKindOf, type ClientKind } from './client-presets';
 import type { ThemeVariableCatalog } from './theme-variables';
+import type { AudienceRateLimit, DeclaredRateLimit } from './declared-rate-limit';
 import type {
   AuthFlow,
   AuthMethod,
@@ -8,6 +9,8 @@ import type {
   BackendProperty,
   Edge,
   OverloadPolicy,
+  AccessLogPolicy,
+  RateLimitPolicies,
   Locale,
   FormPreview,
   FormRecord,
@@ -78,11 +81,13 @@ type AuthorizationPresetResponse = {
 };
 type CreateResourceResponse = { resourceId: string; secret: string | null };
 type RotateResourceSecretResponse = { secret: string };
-export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+export type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge' | 'rateLimit'> & {
   allow: string | null;
   stepUpCondition: string | null;
   stepUpAcr: string | null;
   maxAge: number | null;
+  /** Left out when there is no limit: the endpoint is written whole, so absent removes it. */
+  rateLimit?: DeclaredRateLimit;
 };
 export type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 export type ResourceEndpointWriteDto = {
@@ -95,6 +100,7 @@ export type ResourceEndpointWriteDto = {
   stepUpCondition?: string | null;
   stepUpAcr?: string | null;
   maxAge?: number | null;
+  rateLimit?: DeclaredRateLimit;
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
@@ -106,10 +112,11 @@ type ResourceEndpointDto = {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  rateLimit?: DeclaredRateLimit | null;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
+type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean; audienceRateLimits?: AudienceRateLimit[] };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number> };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -633,6 +640,7 @@ function serializeResourceEndpoint(
     stepUpCondition: endpoint.stepUpCondition ?? null,
     stepUpAcr: endpoint.stepUpAcr ?? null,
     maxAge: endpoint.maxAge ?? null,
+    ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
   };
 }
 
@@ -659,9 +667,11 @@ function mapResource(resource: ResourceResponseDto): Resource {
       ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
       ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
+      ...(endpoint.rateLimit ? { rateLimit: endpoint.rateLimit } : {}),
     })),
     hasSecret: resource.internal,
     hasPreviousSecret: resource.secretRotation,
+    ...(resource.audienceRateLimits?.length ? { audienceRateLimits: resource.audienceRateLimits.map(limit => ({ clientId: limit.clientId, rateLimit: limit.rateLimit })) } : {}),
   };
 }
 
@@ -894,7 +904,7 @@ export async function createResource(
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
   const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, resourceId, resource, audience, endpoints: serializedEndpoints, internal },
+    body: { tenantId, resourceId, resource, audience, endpoints: serializedEndpoints, internal, audienceRateLimits: [] },
   });
   resourcesStore.clear();
   return { resourceId: response.resourceId, endpoints: serializedEndpoints, secret: response.secret };
@@ -929,6 +939,8 @@ export async function updateResource(
   patch: {
     resource?: string;
     audience?: { existing: string[]; next: string[] };
+    /** Replaces what the resource sets for its audience clients, as a whole; absent leaves it. */
+    audienceRateLimits?: AudienceRateLimit[];
     deleteEndpoints?: ResourceEndpointId[];
     createEndpoints?: SaveResourceEndpointPayload[];
   },
@@ -941,6 +953,7 @@ export async function updateResource(
       resourceId,
       ...(patch.resource !== undefined ? { resource: patch.resource } : {}),
       audience: patch.audience ? patchSet(patch.audience.existing, patch.audience.next) : { add: [], remove: [] },
+      ...(patch.audienceRateLimits !== undefined ? { audienceRateLimits: patch.audienceRateLimits } : {}),
       deleteEndpoints: patch.deleteEndpoints ?? [],
       createEndpoints,
     },
@@ -1154,11 +1167,11 @@ const SIGN_IN_FIELDS = [
 const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
   web: [
     ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
-    'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'estEnrollment',
   ],
   device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
   // Permissions are what a token issued to the client itself may call: only a service client has any.
-  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks', 'estEnrollment'],
 };
 
 const COMMON_UPDATE_FIELDS = [
@@ -1198,17 +1211,17 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
-      otpTemplateId: client.otpTemplateId ?? undefined,
+      otpTemplateId: client.otpTemplateId ?? 'default',
       authFlow: authFlowToBackend(client.authFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
-      frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+      frontChannelLogoutSessionRequired: !!client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
       refreshTokenTtl: client.refreshTokenTtl,
       logoUri: client.logoUri ?? null,
       policyUri: client.policyUri ?? null,
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
-      dpopBoundAccessTokens: client.dpopBoundAccessTokens,
+      dpopBoundAccessTokens: !!client.dpopBoundAccessTokens,
       dpopSigningAlgs: client.dpopSigningAlgs ?? [],
       dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
       authMethod: client.authMethod,
@@ -1220,6 +1233,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       themeOverrides: nonEmptyOverrides(client.themeOverrides) ?? undefined,
       issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
       enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
+      estEnrollment: false,
     }, CREATE_FIELDS[kind]),
   });
 
@@ -1386,6 +1400,9 @@ export async function fetchEdges(): Promise<Edge[]> {
     // edge did before the setting existed.
     requireDpopNonce: edge.requireDpopNonce ?? true,
     ...(edge.overloadPolicy ? { overloadPolicy: edge.overloadPolicy } : {}),
+    ...(edge.accessLogPolicy ? { accessLogPolicy: edge.accessLogPolicy } : {}),
+    ...(edge.rateLimitPolicies ? { rateLimitPolicies: edge.rateLimitPolicies } : {}),
+    ...(edge.policyRevisions && Object.keys(edge.policyRevisions).length > 0 ? { policyRevisions: edge.policyRevisions } : {}),
   })));
 }
 
@@ -1397,13 +1414,44 @@ export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean
   });
 }
 
-/** Replaces the edge's overload policy as a whole; `{}` removes it. Central answers 400 with the first thing wrong. */
-export async function setEdgeOverloadPolicy(edgeId: string, policy: OverloadPolicy): Promise<void> {
-  await requestVoid('/configuration/edges/overload', {
-    method: 'PUT',
-    query: { edgeId },
-    body: policy,
+export type EdgePolicySection = 'overload' | 'accessLog' | 'rateLimits';
+
+/** What `PATCH /configuration/edges/policies` takes: a section that is absent is kept, `null` removes it, an object replaces it as a whole.
+ *  `expectedRevisions` makes a section's change conditional on the revision the console read (`409` if it has moved on). */
+export interface EdgePoliciesPatch {
+  overload?: OverloadPolicy | null;
+  accessLog?: AccessLogPolicy | null;
+  rateLimits?: RateLimitPolicies | null;
+  expectedRevisions?: Partial<Record<EdgePolicySection, number>>;
+}
+
+export interface EdgePolicies {
+  edgeId: string;
+  overload?: OverloadPolicy;
+  accessLog?: AccessLogPolicy;
+  rateLimits?: RateLimitPolicies;
+  revisions?: Record<string, number>;
+  updatedAt?: Record<string, string>;
+}
+
+/** Changes the named policy sections of an edge and answers the new state, with the new revisions. Central answers 400 with the section
+ *  and the first thing wrong, and 409 when a section has changed since it was read. */
+export async function patchEdgePolicies(edgeId: string, patch: EdgePoliciesPatch, options: { dryRun?: boolean } = {}): Promise<EdgePolicies> {
+  return request<EdgePolicies>('/configuration/edges/policies', {
+    method: 'PATCH',
+    query: { edgeId, ...(options.dryRun ? { dryRun: 'true' } : {}) },
+    body: patch,
   });
+}
+
+/** Whether a failed save lost to another change of the same section. */
+export function isPolicyConflict(error: unknown): boolean {
+  return (error as ApiError | undefined)?.status === 409;
+}
+
+/** The recommended starting set of rate limit policies (all in `shadow`), the same for every edge. */
+export async function fetchRecommendedRateLimitPolicies(): Promise<RateLimitPolicies> {
+  return request<RateLimitPolicies>('/configuration/edges/rate-limits/recommended');
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {

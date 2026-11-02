@@ -55,6 +55,7 @@ object PostgresClientEstRepositorySpec extends PostgresSpec:
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val setup =

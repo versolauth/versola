@@ -22,6 +22,6 @@ import zio.schema.*
 case class ConsentFlow(
     allowPartial: Boolean,
     rememberDuration: Option[Duration],
-    requiredScopes: Set[ScopeToken] = Set.empty,
-    offlineAccessOptional: Boolean = false,
+    requiredScopes: Set[ScopeToken],
+    offlineAccessOptional: Boolean,
 ) derives Schema, JsonCodec, Equal

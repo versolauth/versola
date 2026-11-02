@@ -68,6 +68,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(

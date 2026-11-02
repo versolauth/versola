@@ -141,7 +141,7 @@ Commercial licensing inquiries:
 Individual Entrepreneur "Versola"
 Republic of Kazakhstan
 
-Email: [georgii.kovalev@versola.kz](mailto:georgii.kovalev@versola.kz)
+Email: [georgii.kovalev@versola.io](mailto:georgii.kovalev@versola.io)
 
-Website: https://versola.kz
+Website: https://versola.io
 

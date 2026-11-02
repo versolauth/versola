@@ -2,6 +2,7 @@ package versola.oauth.userinfo
 
 import org.scalamock.stubs.ZIOStubs
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, Claim, ClaimRecord, ClientId, ConsentFlow, OAuthClientRecord, ScopeRecord, ScopeToken, TenantId}
 import versola.oauth.model.Nonce
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims, UserInfoError}
@@ -67,10 +68,13 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   /** The same client, but one that shows the user a consent screen. */
-  val promptingClient = firstPartyClient.copy(consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)))
+  val promptingClient = firstPartyClient.copy(consentFlow =
+    Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+  )
 
   final class Env:
     val userRepo = stub[UserRepository]

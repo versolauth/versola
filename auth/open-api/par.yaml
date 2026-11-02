@@ -104,6 +104,14 @@ paths:
           $ref: '#/components/responses/PushError'
         '401':
           $ref: '#/components/responses/InvalidClient'
+        '429':
+          description: |
+            This address has failed client authentication too many times (20 a minute by default, burst 10; `limits` in auth's
+            config file). Only failures are counted, so a client that authenticates is never refused for another's failures.
+            The request is not read. No body: `Retry-After` is the wait in whole seconds, and `RateLimit-Policy` and `RateLimit` carry the rest.
+          headers:
+            Retry-After:
+              schema: {type: integer, minimum: 1}
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
         '413':

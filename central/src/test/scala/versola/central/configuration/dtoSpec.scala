@@ -90,11 +90,16 @@ object dtoSpec extends ZIOSpecDefault:
       },
       test("a finite consent duration is decoded from seconds") {
         val decoded = decodeUpdate(
-          ""","consentFlow":{"allowPartial":true,"rememberDuration":1209600}""",
+          ""","consentFlow":{"allowPartial":true,"rememberDuration":1209600,"requiredScopes":[],"offlineAccessOptional":false}""",
         )
         assertTrue(
           decoded.map(_.consentFlow) == Right(
-            Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = Some(1209600L)))),
+            Some(Patch.Modified(ConsentFlowDto(
+              allowPartial = true,
+              rememberDuration = Some(1209600L),
+              requiredScopes = Set.empty,
+              offlineAccessOptional = false,
+            ))),
           ),
         )
       },
@@ -110,22 +115,22 @@ object dtoSpec extends ZIOSpecDefault:
       },
     ),
     test("ConsentFlowDto encodes a finite duration as seconds") {
-      val json = ConsentFlowDto(allowPartial = false, rememberDuration = Some(1209600L)).toJson
+      val json =
+        ConsentFlowDto(allowPartial = false, rememberDuration = Some(1209600L), requiredScopes = Set.empty, offlineAccessOptional = false).toJson
       assertTrue(
         json.contains("\"rememberDuration\":1209600"),
         !json.contains("PT"),
       )
     },
-    test("ConsentFlowDto carries required scopes and reads a record stored without them as empty") {
-      val dto = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))
+    test("ConsentFlowDto carries required scopes and refuses a record that does not state them") {
+      val dto = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")), offlineAccessOptional = false)
       val legacy = """{"allowPartial":true,"rememberDuration":1209600}"""
       assertTrue(
         dto.toJson.contains("\"requiredScopes\":[\"phone\"]"),
         dto.toJson.fromJson[ConsentFlowDto] == Right(dto),
-        legacy.fromJson[ConsentFlowDto].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
-        legacy.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(false),
+        legacy.fromJson[ConsentFlowDto].isLeft,
         dto.copy(offlineAccessOptional = true).toJson.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(true),
-        """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
+        """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow].isLeft,
       )
     },
     test("PatchDescription encodes and decodes correctly") {

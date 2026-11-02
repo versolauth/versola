@@ -7,6 +7,7 @@ import com.nimbusds.jwt.SignedJWT
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   AuthMethod,
   AuthMethodRef,
@@ -158,6 +159,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   case class Services(

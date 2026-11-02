@@ -6,6 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   Acr,
   AuthFactor,
@@ -24,6 +25,7 @@ import versola.oauth.client.model.{
   TenantId,
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
+import versola.oauth.conversation.ProofInput
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
@@ -91,6 +93,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -210,6 +213,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     consentFlow = Some(versola.oauth.client.model.ConsentFlow(
       allowPartial = false,
       rememberDuration = None,
+      requiredScopes = Set.empty,
+      offlineAccessOptional = false,
     )),
   )
 
@@ -527,7 +532,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint, "testcsrf1"),
+        submitCalls.head._2 == EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
@@ -545,7 +550,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == PhoneSubmission(phoneHint, "testcsrf1"),
+        submitCalls.head._2 == PhoneSubmission(phoneHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("force re-authentication when max_age exceeded") {
