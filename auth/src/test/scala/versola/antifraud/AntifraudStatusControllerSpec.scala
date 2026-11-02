@@ -71,7 +71,9 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         response <- call(lists, tuning, Request.get(rules))
         body <- response.body.asString
-        names = body.fromJson[Json.Obj].toOption.flatMap(_.get("rules")).collect { case Json.Arr(items) => items.collect { case Json.Str(s) => s } }.getOrElse(Chunk.empty)
+        names = body.fromJson[Json.Obj].toOption.flatMap(_.get("rules")).collect { case Json.Arr(items) =>
+          items.collect { case Json.Str(s) => s }
+        }.getOrElse(Chunk.empty)
       yield assertTrue(
         response.status == Status.Ok,
         names.toList == AntifraudRuleCatalogue.names,

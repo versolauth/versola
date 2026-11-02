@@ -28,7 +28,11 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       signature = JWT.Signature.Symmetric(key),
     )
 
-  private def call(tuning: AntifraudTuningStore, request: Request, key: SecretKey = config.central.secretKey): ZIO[Client & TestClient & Scope, Throwable, Response] =
+  private def call(
+      tuning: AntifraudTuningStore,
+      request: Request,
+      key: SecretKey = config.central.secretKey,
+  ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
@@ -42,6 +46,8 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     yield response
 
   private def withUser(params: (String, String)*) = base.addQueryParams(QueryParams(("userId" -> userId), params*))
+
+  private def patchBody(patch: Json.Obj) = Body.fromString(s"""{"patch":${patch.toJson},"userId":"$userId"}""")
 
   private def body(settings: String) = Body.fromString(s"""{"settings":$settings,"userId":"$userId"}""")
 
@@ -113,11 +119,18 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tuning.put.calls.map(_._3) == List(Some(7L), Some(7L)),
       )
     },
-    test("PUT that names no version is 428 and writes nothing") {
+    test("PUT that names no version replaces the settings unconditionally and answers the new version") {
       val tuning = stub[AntifraudTuningStore]
       for
+        _ <- tuning.put.succeedsWith(9L)
         response <- call(tuning, Request.put(base, body(settings.toJson)))
-      yield assertTrue(response.status == Status.PreconditionRequired, tuning.put.calls.isEmpty)
+        text <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(9))),
+        response.headers.get("ETag").contains("\"9\""),
+        tuning.put.calls == List((settings, userId, None)),
+      )
     },
     test("PUT on a version the settings have left is 412 with the version they are at as the ETag") {
       val tuning = stub[AntifraudTuningStore]
@@ -133,6 +146,56 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response <- call(tuning, Request.put(base, body(settings.toJson)).addHeader(Header.Custom("If-Match", "\"1\"")))
         text <- response.body.asString
       yield assertTrue(response.status == Status.BadRequest, text == "blockAt must be between 0 and 100000")
+    },
+    test("PATCH hands the merge patch to the store as the user central names, on the version in If-Match, and answers all the settings") {
+      val tuning = stub[AntifraudTuningStore]
+      val patch = Json.Obj("blockAt" -> Json.Num(70))
+      for
+        _ <- tuning.patch.succeedsWith(StoredTuning(settings.copy(blockAt = 70), 4))
+        response <- call(tuning, Request.patch(base, patchBody(patch)).addHeader(Header.Custom("If-Match", "\"3\"")))
+        text <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        text.fromJson[Tuning] == Right(settings.copy(blockAt = 70)),
+        text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(4))),
+        response.headers.get("ETag").contains("\"4\""),
+        tuning.patch.calls == List((patch, userId, Some(3L))),
+      )
+    },
+    test("PATCH needs no version; one in the body is taken, and one that differs from If-Match is 400") {
+      val tuning = stub[AntifraudTuningStore]
+      val patch = Json.Obj("blockAt" -> Json.Num(70))
+      def withVersion(version: Long) = Body.fromString(s"""{"patch":${patch.toJson},"userId":"$userId","version":$version}""")
+      for
+        _ <- tuning.patch.succeedsWith(StoredTuning(settings, 4))
+        plain <- call(tuning, Request.patch(base, patchBody(patch)))
+        fromBody <- call(tuning, Request.patch(base, withVersion(3)))
+        differ <- call(tuning, Request.patch(base, withVersion(3)).addHeader(Header.Custom("If-Match", "\"2\"")))
+      yield assertTrue(
+        plain.status == Status.Ok,
+        fromBody.status == Status.Ok,
+        differ.status == Status.BadRequest,
+        tuning.patch.calls.map(_._3) == List(None, Some(3L)),
+      )
+    },
+    test("PATCH on a version the settings have left is 412 with the version they are at, and a result that is not valid is 400") {
+      val tuning = stub[AntifraudTuningStore]
+      val patch = Json.Obj("blockAt" -> Json.Num(-1))
+      for
+        _ <- tuning.patch.failsWith(VersionMismatch(6))
+        stale <- call(tuning, Request.patch(base, patchBody(patch)).addHeader(Header.Custom("If-Match", "\"3\"")))
+        _ <- tuning.patch.failsWith(InvalidTuning("blockAt must be between 0 and 100000"))
+        invalid <- call(tuning, Request.patch(base, patchBody(patch)))
+        reason <- invalid.body.asString
+        notAnObject <- call(tuning, Request.patch(base, Body.fromString(s"""{"patch":[1],"userId":"$userId"}""")))
+      yield assertTrue(
+        stale.status == Status.PreconditionFailed,
+        stale.headers.get("ETag").contains("\"6\""),
+        invalid.status == Status.BadRequest,
+        reason == "blockAt must be between 0 and 100000",
+        notAnObject.status == Status.BadRequest,
+        tuning.patch.calls.size == 2,
+      )
     },
     test("DELETE puts the seeded values back, and does not have to name a version; one it names is checked") {
       val tuning = stub[AntifraudTuningStore]

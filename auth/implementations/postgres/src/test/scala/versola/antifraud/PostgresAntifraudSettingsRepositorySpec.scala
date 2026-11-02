@@ -49,7 +49,9 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
         row <- repository.find
         version <- repository.version
       yield assertTrue(
-        first, !second, !third,
+        first,
+        !second,
+        !third,
         seeded.contains(StoredTuning(Tuning.off, 1)),
         saved.contains(2L),
         row.contains(StoredTuning(tuned, 2)),
@@ -60,7 +62,9 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
       for
         repository <- clean
         xa <- ZIO.service[TransactorZIO]
-        _ <- xa.connect(sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run())
+        _ <- xa.connect(
+          sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run(),
+        )
         failure <- repository.find.flip
         raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
       yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))

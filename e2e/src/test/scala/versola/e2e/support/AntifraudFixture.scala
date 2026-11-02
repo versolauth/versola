@@ -305,7 +305,9 @@ object AntifraudFixture:
         ) ++ entry.expiresAt.map(at => "expiresAt" -> Json.Str(at.toString)),
       )
       operator.post("/antifraud/global/lists", body).flatMap: created =>
-        ZIO.fail(RuntimeException(s"central refused the list entry $entry: ${created.status} ${created.body}")).unless(created.status == zio.http.Status.Created)
+        ZIO.fail(
+          RuntimeException(s"central refused the list entry $entry: ${created.status} ${created.body}"),
+        ).unless(created.status == zio.http.Status.Created)
 
   /** The user id edge would add for the operator who makes the entries. */
   private val OperatorId = "00000000-0000-0000-0000-0000000e2e03"

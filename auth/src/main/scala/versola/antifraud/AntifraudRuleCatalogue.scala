@@ -14,12 +14,14 @@ package versola.antifraud
 object AntifraudRuleCatalogue:
 
   val names: List[String] =
-    val velocity = for
-      key <- VelocityKey.values.toList
-      window <- VelocityWindow.values.toList
-    yield VelocityRules.ruleName(key, window)
-    val lists = for
-      valueType <- AntifraudValueType.values.toList
-      prefix <- List("deny", "fake", "allow", "watch", "shadow")
-    yield s"${prefix}_list:$valueType"
+    val velocity =
+      for
+        key <- VelocityKey.values.toList
+        window <- VelocityWindow.values.toList
+      yield VelocityRules.ruleName(key, window)
+    val lists =
+      for
+        valueType <- AntifraudValueType.values.toList
+        prefix <- List("deny", "fake", "allow", "watch", "shadow")
+      yield s"${prefix}_list:$valueType"
     (velocity :+ "velocity_known_user") ++ lists

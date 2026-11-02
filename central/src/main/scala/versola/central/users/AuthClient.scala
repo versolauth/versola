@@ -5,8 +5,8 @@ import versola.central.antifraud.*
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, PageLimit, Patch, Phone}
 import versola.util.http.EntityVersion
+import versola.util.{Email, PageLimit, Patch, Phone}
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
@@ -110,8 +110,11 @@ trait AuthClient:
     * made on a version the settings have left is [[AntifraudListError.StaleVersion]]. */
   def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
-  /** `request.version` is the version the change is made on (the caller has checked that it has one). */
+  /** `request.version` is the version the change is made on, when the caller named one; without it the settings are replaced. */
   def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
+
+  /** A merge patch of the settings (see [[PatchAntifraudSettingsRequest]]); auth merges, validates and answers all of them. */
+  def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
   /** Puts everything off; on `expectedVersion` if the caller named one. */
   def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest, expectedVersion: Option[Long]): IO[AntifraudListError | Throwable, Unit]
@@ -428,13 +431,22 @@ object AuthClient:
         case _ => Chunk.empty
       Body.fromString(Json.Obj(fields ++ scopeParams(caller).map((name, value) => name -> Json.Str(value))).toJson)
 
-    override def createAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, ListEntryResponse] =
+    override def createAntifraudListEntry(
+        request: NewListEntryRequest,
+        caller: AntifraudCaller,
+    ): IO[AntifraudListError | Throwable, ListEntryResponse] =
       antifraud[ListEntryResponse](Request(method = Method.POST, url = antifraudListsUrl, body = scopedBody(request, caller)))
 
-    override def previewAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, PreviewResponse] =
+    override def previewAntifraudListEntry(
+        request: NewListEntryRequest,
+        caller: AntifraudCaller,
+    ): IO[AntifraudListError | Throwable, PreviewResponse] =
       antifraud[PreviewResponse](Request(method = Method.POST, url = antifraudListsUrl / "preview", body = scopedBody(request, caller)))
 
-    override def listAntifraudListEntries(query: ListEntriesQuery, caller: AntifraudCaller): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
+    override def listAntifraudListEntries(
+        query: ListEntriesQuery,
+        caller: AntifraudCaller,
+    ): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
       val params = List(
         query.listType.map("listType" -> _.toString),
         query.valueType.map("valueType" -> _.toString),
@@ -468,8 +480,19 @@ object AuthClient:
     override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
       antifraud[VersionedAntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
 
-    override def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest, expectedVersion: Option[Long]): IO[AntifraudListError | Throwable, Unit] =
-      val delete = Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty)
+    override def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
+      val fields = Chunk("patch" -> request.patch, "userId" -> Json.Str(request.userId.toString)) ++
+        request.version.map(version => "version" -> Json.Num(version))
+      antifraud[VersionedAntifraudSettings](
+        Request(method = Method.PATCH, url = antifraudSettingsUrl, body = Body.fromString(Json.Obj(fields).toJson)),
+      )
+
+    override def deleteAntifraudSettings(
+        request: DeleteAntifraudSettingsRequest,
+        expectedVersion: Option[Long],
+    ): IO[AntifraudListError | Throwable, Unit] =
+      val delete =
+        Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty)
       antifraudUnit(expectedVersion.fold(delete)(version => delete.addHeader(Header.Custom("If-Match", EntityVersion.etag(version)))))
 
     override def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse] =

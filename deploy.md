@@ -662,13 +662,20 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
   own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
   weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
-  everything off. `PUT`
-  replaces it as a whole (every key), `GET` reads it and `DELETE` puts everything off again. **The row is versioned**
+  everything off. `GET` reads it, `DELETE` puts everything off again, and there are two ways to change it. `PUT` is the
+  **declarative replace** (every key): the mode for service-to-service clients and tooling that hold the desired state
+  themselves. `PATCH` is the **point tuning** (a JSON merge patch, RFC 7396, `application/merge-patch+json`): it changes what it
+  names and leaves the rest, which is what the console and a script want during an attack, and `null` removes a `byPrefix` or
+  `ruleWeights` entry. Auth merges the patch into the stored settings and validates the result as a whole, so the same rules
+  apply to both. **The row is versioned**
   (`af_settings.version`, migration `V0027`; 1 for a row that exists, so the first row is version 1 and "no row" is 0): `GET`
-  answers the settings with `version` next to them and the same number as the `ETag`; `PUT` is made on the version it was
-  read at, in `If-Match` (preferred) or as `version` in the body (both given must agree), and answers `412` (with the current
-  version as the `ETag`) when the row has moved on, `428` when it names none, so that two admins tuning during the same
-  attack cannot silently overwrite each other. `DELETE` may name a version and need not, and moves it like any change. A
+  answers the settings with `version` next to them and the same number as the `ETag`; `PUT` and `PATCH` may be made on the version they were
+  read at, in `If-Match` (preferred) or as `version` in the body (both given must agree), and then answer `412` (with the current
+  version as the `ETag`) when the row has moved on. **Naming the version is optional, and what it buys is that check**: with it, two
+  admins tuning during the same attack cannot silently overwrite each other; without it a `PUT` replaces whatever is there and
+  the caller takes responsibility for that, and a `PATCH` is applied to what is stored when it is written (once more, on what
+  a concurrent writer left, if it lost a race), so it never overwrites a key it does not name. `DELETE` may name a version
+  and need not. Every change moves the version. A
   change made by hand in SQL should bump `version` too (and `af_settings_version`, which is what makes the instances
   reload). Every method of the settings repository runs under a statement timeout (10 s), so a read the refresh fiber waits
   on cannot hang without `antifraud_tuning_refresh_failed_total` moving. Every instance holds it in
@@ -757,7 +764,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud:read` (the reads, the rule catalogue and the status), `antifraud:manage` (a tenant's lists) and
   `antifraud:operate` (the operator's routes, below): every start registers them on the `central` resource and gives them to
   `oauth-admin` (all permissions), `security` (`read` and `manage`), and the read-only roles (`antifraud:read`, except `viewer`,
-  which sees no PII). `antifraud:operate` is seeded into the default tenant's administrator role (`oauth-admin`) only. Edge tells central who the admin is (an inject rule for `userId` on the calls that change something: a body field, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). Reads of the settings, the rules, the status and the operator's lists need no caller and are told nothing. A change sent to central with the resource secret but no `userId` is `400`.
+  which sees no PII). `antifraud:operate` is seeded into the default tenant's administrator role (`oauth-admin`) only. Edge tells central who the admin is (an inject rule for `userId` on the calls that change something: a body field, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`; a request to such an endpoint whose body is not JSON (`application/json`, or `application/merge-patch+json`) is refused by edge with `415` rather than forwarded unrewritten, which would let a client choose the field edge overwrites), and auth records that user id as who made each change (`created_by`, the audit). Reads of the settings, the rules, the status and the operator's lists need no caller and are told nothing. A change sent to central with the resource secret but no `userId` is `400`.
 
   **Who may change what.** A tenant's admin (`antifraud:manage`) acts through `/antifraud/lists/...` in the scope of **the tenant
   of its access token**: edge adds it (`callerTenantId`, from the token's `tenant_id`, overwriting what a client sent; on the
@@ -766,7 +773,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   of its tenant only (an entry that names no tenant is the tenant's; naming another is `403`), removes its tenant's entries only
   (another tenant's or a global one is `403`, an entry that does not exist `404`), and reads the audit of the entries it can see.
   The operator (`antifraud:operate`) uses the twin routes `/antifraud/global/lists/...`: global entries and any tenant's, no
-  restriction, plus `PUT`/`DELETE /antifraud/settings` and `POST /antifraud/counters/reset`. Do not grant `antifraud:operate` to a role of any other tenant: it carries the deployment-wide routes, and a role is
+  restriction, plus `PUT`/`PATCH`/`DELETE /antifraud/settings` and `POST /antifraud/counters/reset`. Do not grant `antifraud:operate` to a role of any other tenant: it carries the deployment-wide routes, and a role is
   all that decides which tenant's admin may use them. Upgrade: an administrator who changed the settings or reset them with `antifraud:manage`
   now needs `antifraud:operate`.
 

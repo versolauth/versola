@@ -2,6 +2,7 @@ package versola.central.antifraud
 
 import versola.central.users.UserId
 import zio.json.JsonCodec
+import zio.json.ast.Json
 import zio.schema.{Schema, derived}
 
 /** The limits of one kind of velocity key, see auth's `VelocityRules.Limit`. 0 is no limit. */
@@ -41,17 +42,22 @@ case class AntifraudSettings(
   * as who made the change. `version` is the version the settings were read at, for a client that cannot send `If-Match`
   * (which is preferred); the same body goes to auth, with the version the request named in either. */
 case class PutAntifraudSettingsRequest(settings: AntifraudSettings, userId: UserId, version: Option[Long] = None)
-    derives JsonCodec, Schema
+  derives JsonCodec, Schema
 
 case class DeleteAntifraudSettingsRequest(userId: UserId) derives JsonCodec, Schema
+
+/** A JSON merge patch (RFC 7396) of the settings: what the admin sent, without the `userId` edge added and the `version` the
+  * request may carry. It is a partial document, so it is not a settings DTO and does not depend on their fields; auth merges
+  * it into the stored settings and validates the result. `version` is the version the patch is made on, when one was named. */
+case class PatchAntifraudSettingsRequest(patch: Json.Obj, userId: UserId, version: Option[Long] = None)
 
 /** The settings and the version of the row they are stored in (0 where there is none): what a read answers (the settings
   * flat, as ever, with `version` next to them, and the version as the `ETag`) and what a change is made on. */
 case class VersionedAntifraudSettings(settings: AntifraudSettings, version: Long)
 
 object VersionedAntifraudSettings:
-  import zio.json.{EncoderOps, JsonDecoder, JsonEncoder}
   import zio.json.ast.Json
+  import zio.json.{EncoderOps, JsonDecoder, JsonEncoder}
 
   given JsonEncoder[VersionedAntifraudSettings] = JsonEncoder[Json].contramap: versioned =>
     versioned.settings.toJsonAST.toOption

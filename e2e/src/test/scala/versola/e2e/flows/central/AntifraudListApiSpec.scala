@@ -178,11 +178,13 @@ object AntifraudListApiSpec extends CentralApiSpec:
         id = json.str("id").getOrElse("")
         seenByA <- adminA.get(tenantLists, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         seenByB <- adminB.get(tenantLists, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
-        seenByOperator <- operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        seenByOperator <-
+          operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         auditByB <- adminB.get(s"$tenantLists/audit", "entryId" -> id).flatMap(_.items("records"))
         auditByA <- adminA.get(s"$tenantLists/audit", "entryId" -> id).flatMap(_.items("records"))
         removedByB <- adminB.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(id)))
-        stillThere <- operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        stillThere <-
+          operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         removedByA <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(id)))
       yield assertTrue(
         created.status == Status.Created,
@@ -212,9 +214,19 @@ object AntifraudListApiSpec extends CentralApiSpec:
         global <- operator.post(lists, entry("ip", value))
         globalJson <- global.obj
         globalId = globalJson.str("id").getOrElse("")
-        readByA <- adminA.get(tenantLists, "global" -> "true", "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        readByA <- adminA.get(
+          tenantLists,
+          "global" -> "true",
+          "valueType" -> "ip",
+          "limit" -> "500",
+        ).flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         removedByA <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(globalId)))
-        stillThere <- operator.get(lists, "global" -> "true", "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        stillThere <- operator.get(
+          lists,
+          "global" -> "true",
+          "valueType" -> "ip",
+          "limit" -> "500",
+        ).flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
         missing <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(UUID.randomUUID().toString)))
         removed <- operator.deleteWithBody(lists, Json.Obj("id" -> Json.Str(globalId)))
       yield assertTrue(

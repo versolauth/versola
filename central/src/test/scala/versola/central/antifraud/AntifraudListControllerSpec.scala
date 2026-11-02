@@ -97,12 +97,19 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         statuses <- ZIO.foreach(
           List(
-            Request.get(base), post(base), delete("""{"id":"x"}"""), Request.get(base / "audit"), post(base / "preview"),
-            Request.get(global), post(global), delete("""{"id":"x"}""", global), Request.get(global / "audit"), post(global / "preview"),
+            Request.get(base),
+            post(base),
+            delete("""{"id":"x"}"""),
+            Request.get(base / "audit"),
+            post(base / "preview"),
+            Request.get(global),
+            post(global),
+            delete("""{"id":"x"}""", global),
+            Request.get(global / "audit"),
+            post(global / "preview"),
           ),
-        ):
-          r =>
-            asAdmin(r, admin).flatMap(run(_, service, authorized = false)).map(_.status)
+        ): r =>
+          asAdmin(r, admin).flatMap(run(_, service, authorized = false)).map(_.status)
       yield assertTrue(
         statuses.forall(_ == Status.Unauthorized),
         service.create.calls.isEmpty,
@@ -250,7 +257,10 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         gone.status == Status.NoContent,
         missing.status == Status.NotFound,
-        service.delete.calls.head == (DeleteListEntryRequest(id = entryId, userId = admin, callerTenantId = Some(tenant)), AntifraudCaller.Tenant(tenant)),
+        service.delete.calls.head == (
+          DeleteListEntryRequest(id = entryId, userId = admin, callerTenantId = Some(tenant)),
+          AntifraudCaller.Tenant(tenant),
+        ),
       )
     },
     test("audit reads the entry and the page from the query and answers the records") {
@@ -353,7 +363,12 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         create <- run(post(global), service)
         removed <- run(delete(s"""{"id":"$entryId"}""", global), service)
-      yield assertTrue(create.status == Status.BadRequest, removed.status == Status.BadRequest, service.create.calls.isEmpty, service.delete.calls.isEmpty)
+      yield assertTrue(
+        create.status == Status.BadRequest,
+        removed.status == Status.BadRequest,
+        service.create.calls.isEmpty,
+        service.delete.calls.isEmpty,
+      )
     },
     test("auth's 403 is 403 with its reason, on both families of routes") {
       val service = stub[AntifraudListService]

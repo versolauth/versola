@@ -367,9 +367,9 @@ object AntifraudLists:
           cause =>
             ZIO.succeed(cache.lastError.set(Some(Option(cause.squash.getMessage).getOrElse(cause.squash.getClass.getSimpleName).take(300)))) *>
               AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
-              "could not refresh the antifraud lists, keeping the previous ones",
-              cause,
-            ).as(false),
+                "could not refresh the antifraud lists, keeping the previous ones",
+                cause,
+              ).as(false),
           ZIO.succeed(_),
         )
 

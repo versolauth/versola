@@ -16,14 +16,16 @@ import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
   * ==Versions==
   * The row has a version. A read gives it as the `version` field next to the settings and as the `ETag`; a change (`PUT`, and
   * `DELETE` if it names one) is made on a version, as the `If-Match` header or, from a client that cannot set one, the
-  * `version` field of the body (the header is preferred; both given must agree). A `PUT` that names none is `428`, one on a
-  * version the row has left is `412` with the current version in its `ETag`. A reset is not required to name a version: it
-  * is the way back from a bad state, and it moves the version as any change does.
+  * `version` field of the body (the header is preferred; both given must agree). Naming one is optional for every change: a
+  * change that does, on a version the row has left, is `412` with the current version in its `ETag`; one that does not
+  * overwrites whatever is there (a `PUT` is the declared desired state of a caller that takes responsibility for that, a reset
+  * is the way back from a bad state, a `PATCH` is made again once on what a concurrent change wrote). Every change moves the
+  * version.
   */
 object AntifraudSettingsController extends Controller:
   type Env = Tracing & CoreConfig & AntifraudTuningStore
 
-  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, deleteEndpoint)
+  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, patchEndpoint, deleteEndpoint)
 
   /** The settings flat, as they always were, with `version` added. */
   private given JsonEncoder[StoredTuning] = JsonEncoder[Json].contramap: row =>
@@ -53,9 +55,20 @@ object AntifraudSettingsController extends Controller:
         tuning <- ZIO.service[AntifraudTuningStore]
         response <- guarded:
           withVersion(request, body.version): expected =>
-            expected match
-              case None => Observability.setError("antifraud_settings_version_required").as(missingVersion)
-              case some => tuning.put(body.settings, body.userId.toString, some).map(version => versioned(StoredTuning(body.settings, version)))
+            tuning.put(body.settings, body.userId.toString, expected).map(version => versioned(StoredTuning(body.settings, version)))
+      yield response
+    }
+
+  /** Changes the settings by the merge patch in the body (see [[AntifraudTuningStore.patch]]); answers them all. */
+  val patchEndpoint =
+    Method.PATCH / "antifraud" / "settings" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        body <- request.bodyAs[PatchPayload]
+        tuning <- ZIO.service[AntifraudTuningStore]
+        response <- guarded:
+          withVersion(request, body.version): expected =>
+            tuning.patch(body.patch, body.userId.toString, expected).map(versioned)
       yield response
     }
 
@@ -73,15 +86,13 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
-  private def missingVersion: Response =
-    Response.text("a change names the version it was made on: If-Match, or version in the body").status(Status.PreconditionRequired)
-
   /** The version the request names, or a 400 for one that does not parse. */
   private def withVersion(request: Request, field: Option[Long])(
       use: Option[Long] => Task[Response],
   ): Task[Response] =
     EntityVersion.expected(request.headers.get("If-Match"), field) match
-      case Left(message) => Observability.setError("invalid_antifraud_settings_version", Some(message)).as(Response.text(message).status(Status.BadRequest))
+      case Left(message) =>
+        Observability.setError("invalid_antifraud_settings_version", Some(message)).as(Response.text(message).status(Status.BadRequest))
       case Right(expected) => use(expected)
 
   private def guarded[R](effect: ZIO[R, Throwable, Response]): ZIO[R, Throwable, Response] =
@@ -95,3 +106,6 @@ object AntifraudSettingsController extends Controller:
 
   /** `version` is the version the settings were read at, for a client that does not send `If-Match`. */
   case class SettingsPayload(settings: Tuning, userId: UserId, version: Option[Long] = None) derives JsonCodec
+
+  /** `patch` is a JSON merge patch of the settings: central takes it from its own request body, without `userId` and `version`. */
+  case class PatchPayload(patch: Json.Obj, userId: UserId, version: Option[Long] = None) derives JsonCodec

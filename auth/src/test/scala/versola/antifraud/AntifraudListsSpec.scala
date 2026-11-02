@@ -262,9 +262,15 @@ object AntifraudListsSpec extends UnitSpecBase:
         off <- make(repository, settings.copy(enabled = false))._1.status
       yield assertTrue(
         cold == ListsStatus(enabled = true, loadedAt = None, size = 0, skipped = 0, lastError = None),
-        loaded.enabled, loaded.size == 1, loaded.loadedAt.isDefined, loaded.lastError.isEmpty,
-        failed.size == 1, failed.loadedAt == loaded.loadedAt, failed.lastError.contains("db down"),
-        recovered.lastError.isEmpty, recovered.loadedAt.exists(at => loaded.loadedAt.exists(at.isAfter)),
+        loaded.enabled,
+        loaded.size == 1,
+        loaded.loadedAt.isDefined,
+        loaded.lastError.isEmpty,
+        failed.size == 1,
+        failed.loadedAt == loaded.loadedAt,
+        failed.lastError.contains("db down"),
+        recovered.lastError.isEmpty,
+        recovered.loadedAt.exists(at => loaded.loadedAt.exists(at.isAfter)),
         !off.enabled,
       )
     },

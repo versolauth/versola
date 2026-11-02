@@ -376,12 +376,20 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         got <- client.getAntifraudSettings
         put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId, Some(3)))
+        patched <- client.patchAntifraudSettings(
+          PatchAntifraudSettingsRequest(patch = Json.Obj("blockAt" -> Json.Num(90)), userId = userId, version = Some(3)),
+        )
+        patchedWithoutVersion <- client.patchAntifraudSettings(
+          PatchAntifraudSettingsRequest(patch = Json.Obj("blockAt" -> Json.Num(90)), userId = userId),
+        )
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), None)
         _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), Some(3))
         requests <- seen.get
         sent <- requests(1).body.asString
         sentJson = sent.fromJson[Json.Obj].toOption
+        patchSent <- requests(2).body.asString.map(_.fromJson[Json.Obj].toOption)
+        patchSentWithoutVersion <- requests(3).body.asString.map(_.fromJson[Json.Obj].toOption)
         ifMatch = requests.map(_.headers.get("If-Match"))
       yield assertTrue(
         got == versioned,
@@ -391,10 +399,17 @@ object AuthClientSpec extends ZIOSpecDefault:
         requests(1).method == Method.PUT,
         sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
         sentJson.flatMap(_.get("version")).contains(Json.Num(3)),
-        requests(2).method == Method.DELETE,
-        requests(2).url.queryParams.queryParam("userId").contains(userId.toString),
-        ifMatch(2).isEmpty,
-        ifMatch(3).contains("\"3\""),
+        patched == versioned,
+        patchedWithoutVersion == versioned,
+        requests(2).method == Method.PATCH && requests(2).url.path.segments == Chunk("antifraud", "settings"),
+        patchSent.flatMap(_.get("patch")).contains(Json.Obj("blockAt" -> Json.Num(90))),
+        patchSent.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        patchSent.flatMap(_.get("version")).contains(Json.Num(3)),
+        patchSentWithoutVersion.exists(!_.fields.exists(_._1 == "version")),
+        requests(4).method == Method.DELETE,
+        requests(4).url.queryParams.queryParam("userId").contains(userId.toString),
+        ifMatch(4).isEmpty,
+        ifMatch(5).contains("\"3\""),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("the counters reset, the rule catalogue and the status go to auth's endpoints; a reset answers its generation") {
@@ -411,7 +426,9 @@ object AuthClientSpec extends ZIOSpecDefault:
         )
         client <- ZIO.service[AuthClient]
         generation <- client.resetAntifraudCounters(reset)
-        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("""{"rules":["velocity_phone_1m","deny_list:ip"]}"""))).toRoutes)
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r =>
+          seen.update(_ :+ r).as(Response.json("""{"rules":["velocity_phone_1m","deny_list:ip"]}""")),
+        ).toRoutes)
         rules <- client.antifraudRules
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(status.toJson))).toRoutes)
         got <- client.antifraudStatus
@@ -445,7 +462,9 @@ object AuthClientSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(answer(Status.Forbidden, "not your tenant"))
         forbidden <- client.deleteAntifraudListEntry(delete, caller).either
         _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("the settings are at version 5").status(Status.PreconditionFailed).addHeader(Header.Custom("ETag", "\"5\"")))).toRoutes,
+          Handler.fromFunctionZIO[Request](_ =>
+            ZIO.succeed(Response.text("the settings are at version 5").status(Status.PreconditionFailed).addHeader(Header.Custom("ETag", "\"5\""))),
+          ).toRoutes,
         )
         stale <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), Some(3)).either
         _ <- TestClient.addRoutes(answer(Status.InternalServerError, "boom"))

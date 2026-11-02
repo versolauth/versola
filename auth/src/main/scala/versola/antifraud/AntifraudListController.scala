@@ -35,7 +35,9 @@ object AntifraudListController extends Controller:
         body <- request.bodyAs[ListEntryPayload]
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
-          scoped(body).flatMap(newEntry(body, _)).flatMap(lists.create(_, body.userId.toString)).map(entry => Response.json(entry.toJson).status(Status.Created))
+          scoped(body).flatMap(newEntry(body, _)).flatMap(lists.create(_, body.userId.toString)).map(entry =>
+            Response.json(entry.toJson).status(Status.Created),
+          )
       yield response
     }
 
@@ -93,10 +95,12 @@ object AntifraudListController extends Controller:
             // Whose it is is read first: a tenant admin may not remove another tenant's entry, or a global one. A missing
             // entry is 404 for every scope.
             entry <- lists.find(id)
-            _ <- ZIO.foreachDiscard(entry)(e => ZIO.fail(ScopeDenied("a tenant admin removes its own tenant's entries only")).unless(scope.mayChange(e.tenantId)))
+            _ <- ZIO.foreachDiscard(entry)(e =>
+              ZIO.fail(ScopeDenied("a tenant admin removes its own tenant's entries only")).unless(scope.mayChange(e.tenantId)),
+            )
             removed <- if entry.isEmpty then ZIO.succeed(false) else lists.delete(id, userId.toString)
             response <- if removed then ZIO.succeed(Response.status(Status.NoContent))
-              else Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
+            else Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
           yield response
       yield response
     }

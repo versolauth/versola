@@ -101,7 +101,10 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
     val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
     for
       central <- ZIO.service[CentralApi]
-      _ <- AntifraudFixture.seedThroughApi(central, ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))) :: entries.toList)
+      _ <- AntifraudFixture.seedThroughApi(
+        central,
+        ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))) :: entries.toList,
+      )
       _ <- awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
         attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
       )
@@ -340,6 +343,60 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           now.obj("ruleWeights").flatMap(_.int("watch_list:cidr")).contains(100),
         )).ensuring(restore.ignore)
       yield result
+    },
+    test("a PATCH of one key leaves the others untouched and bumps the version; null removes the entry again") {
+      val operatorId = "00000000-0000-0000-0000-0000000e2e05"
+      for
+        central <- ZIO.service[CentralApi]
+        operator = central.asAdmin(operatorId)
+        before <- operator.get("/antifraud/settings").flatMap(_.obj)
+        patched <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Num(77))))
+        patchedJson <- patched.obj
+        removed <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Null)))
+        removedJson <- removed.obj
+        invalid <- operator.patch("/antifraud/settings", Json.Obj("blockAt" -> Json.Num(-1)))
+        after <- operator.get("/antifraud/settings").flatMap(_.obj)
+        others = (json: Json.Obj) => json.fields.filterNot(f => f._1 == "ruleWeights" || f._1 == "version").toMap
+        v = before.int("version").getOrElse(0)
+      yield assertTrue(
+        patched.status == Status.Ok,
+        patchedJson.int("version").contains(v + 1),
+        patchedJson.obj("ruleWeights").flatMap(_.int("watch_list:cidr")).contains(77),
+        others(patchedJson) == others(before),
+        removed.status == Status.Ok,
+        removedJson.int("version").contains(v + 2),
+        removedJson.obj("ruleWeights") == before.obj("ruleWeights"),
+        // a patch the settings would not survive is refused and writes nothing
+        invalid.status == Status.BadRequest,
+        after.int("version").contains(v + 2),
+        others(after) == others(before),
+      )
+    },
+    test("a PUT without If-Match succeeds after another writer changed the row, and replaces what that writer wrote") {
+      val operatorId = "00000000-0000-0000-0000-0000000e2e06"
+      for
+        central <- ZIO.service[CentralApi]
+        operator = central.asAdmin(operatorId)
+        read <- operator.get("/antifraud/settings")
+        etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
+        json <- read.obj
+        original = Json.Obj(json.fields.filterNot(_._1 == "version"))
+        // another writer changes the row, so the version read above is stale
+        other <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Num(5))))
+        stale <- operator.withHeader("If-Match", etag).put("/antifraud/settings", Json.Obj("settings" -> original))
+        // without a version the same desired state is written, and the other writer's key goes with what it replaced
+        replaced <- operator.put("/antifraud/settings", Json.Obj("settings" -> original))
+        replacedJson <- replaced.obj
+        after <- operator.get("/antifraud/settings").flatMap(_.obj)
+        v = json.int("version").getOrElse(0)
+      yield assertTrue(
+        other.status == Status.Ok,
+        stale.status == Status.PreconditionFailed,
+        replaced.status == Status.Ok,
+        replacedJson.int("version").contains(v + 2),
+        after.obj("ruleWeights") == json.obj("ruleWeights"),
+        after.int("version").contains(v + 2),
+      )
     },
   )
 

@@ -33,8 +33,16 @@ object AntifraudListController extends Controller:
 
   def routes: Routes[Env, Throwable] =
     Routes(
-      createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint,
-      createGlobalEndpoint, listGlobalEndpoint, deleteGlobalEndpoint, previewGlobalEndpoint, auditGlobalEndpoint,
+      createEndpoint,
+      listEndpoint,
+      deleteEndpoint,
+      previewEndpoint,
+      auditEndpoint,
+      createGlobalEndpoint,
+      listGlobalEndpoint,
+      deleteGlobalEndpoint,
+      previewGlobalEndpoint,
+      auditGlobalEndpoint,
     )
 
   /** Which scope a call is in, given the `callerTenantId` of the request. */
@@ -46,6 +54,7 @@ object AntifraudListController extends Controller:
   val createEndpoint = Method.POST / "antifraud" / "lists" -> handler((request: Request) => create(request, tenantCaller))
   val previewEndpoint = Method.POST / "antifraud" / "lists" / "preview" -> handler((request: Request) => preview(request, tenantCaller))
   val listEndpoint = Method.GET / "antifraud" / "lists" -> handler((request: Request) => list(request, tenantCaller))
+
   /** The entry is named in the body, where edge puts the caller of a request that is not a `GET`. */
   val deleteEndpoint = Method.DELETE / "antifraud" / "lists" -> handler((request: Request) => delete(request, tenantCaller))
   val auditEndpoint = Method.GET / "antifraud" / "lists" / "audit" -> handler((request: Request) => audit(request, tenantCaller))

@@ -2907,7 +2907,7 @@ paths:
       summary: The settings
       description: |
         What applies to the whole deployment, with the `version` of the row next to the settings and the same number as the
-        `ETag`: a change is made on it (see `PUT`). Auth's bootstrap seeds the row with everything off when the service starts
+        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Auth's bootstrap seeds the row with everything off when the service starts
         (the migration only creates the table), so there is one once a start has finished; before that a read gives
         everything off at version `0`. Nothing in auth's configuration sets these values. Needs `antifraud:read`.
       operationId: getAntifraudSettings
@@ -2927,11 +2927,18 @@ paths:
       tags: [Antifraud settings]
       summary: Replace the settings
       description: |
-        Replaces the settings with `settings`, every key of it, on the version they were read at: the `ETag` of the read,
-        sent as `If-Match` (preferred), or `version` in the body for a client that cannot set headers (when both are given
-        they must agree). Two admins who read the same version cannot both write: the second gets `412`, reads again, and
-        decides. A change that names no version is `428`. This instance of auth applies it at once, the others within
-        `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters. Needs `antifraud:operate`.
+        Replaces the settings with `settings`, every key of it: the declared desired state. Naming the version is optional.
+
+        - **With the version they were read at** (the `ETag` of the read, sent as `If-Match`, preferred; or `version` in the body for a
+          client that cannot set headers; when both are given they must agree) the replace is a compare-and-set: two admins who
+          read the same version cannot both write, the second gets `412`, reads again, and decides.
+        - **Without it** the settings are replaced whatever they hold, **and the caller takes responsibility for what it
+          overwrites**. This is the mode for service-to-service clients and tooling that hold the desired state themselves and
+          reapply it. A person tuning during an attack should use `PATCH`, or name the version.
+
+        The response has the new `version` and `ETag` either way, and the version moves on every change. This instance of auth
+        applies it at once, the others within `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+        Needs `antifraud:operate`.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
         `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
@@ -2940,7 +2947,7 @@ paths:
       parameters:
         - name: If-Match
           in: header
-          description: The version the settings were read at (the `ETag`, quoted or not). Preferred to `version` in the body.
+          description: The version the settings were read at (the `ETag`, quoted or not). Optional; without it the settings are replaced whatever they hold. Preferred to `version` in the body.
           schema: { type: string }
       requestBody:
         required: true
@@ -2954,7 +2961,7 @@ paths:
                 version:
                   type: integer
                   minimum: 0
-                  description: The version the settings were read at, for a client that cannot send `If-Match`.
+                  description: The version the settings were read at, for a client that cannot send `If-Match`. Optional.
               required: [settings, userId]
       responses:
         '200':
@@ -2971,12 +2978,71 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '412':
-          description: The settings are no longer at that version. The `ETag` has the version they are at.
+          description: A version was named and the settings are no longer at it. The `ETag` has the version they are at.
           headers:
             ETag:
               schema: { type: string }
-        '428':
-          description: The change names no version (`If-Match` or `version`).
+    patch:
+      tags: [Antifraud settings]
+      summary: Change some of the settings
+      description: |
+        A JSON merge patch (RFC 7396) of the settings: the body is a partial settings document. Members it names are changed,
+        objects merge recursively, a member that is `null` is removed (a `smsLimits.byPrefix` or `ruleWeights` entry; a member
+        every settings document has cannot be removed and is `400`), and a string, number or array replaces what is there
+        (`shadowRules` is replaced as a whole). Everything it does not name is left as it is. Auth applies the patch to the stored
+        settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
+        valid), and answers all the settings with their new version. The body is `application/merge-patch+json`;
+        `application/json` is taken too, and any other type is `415`.
+
+        Naming the version is optional, as for `PUT`: with `If-Match` (or `version` in the body) the patch is made on that
+        version and is `412` when the settings have moved on; without it, a change made by someone else between auth's read
+        and write makes auth apply the patch again, once, on what they wrote. This is the call for tuning during an attack, from
+        the console or a script: it changes the thresholds it names and cannot overwrite anyone's other change.
+        Needs `antifraud:operate`.
+
+        For example, to raise `blockAt` to 80 and drop the limit for numbers starting with `49`:
+
+        ```json
+        PATCH /antifraud/settings
+        Content-Type: application/merge-patch+json
+
+        { "blockAt": 80, "smsLimits": { "byPrefix": { "49": null } } }
+        ```
+      operationId: patchAntifraudSettings
+      parameters:
+        - name: If-Match
+          in: header
+          description: The version the patch is made on (the `ETag` of a read, quoted or not). Optional.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+            example: { blockAt: 80, smsLimits: { byPrefix: { '49': null } } }
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+      responses:
+        '200':
+          description: All the settings as stored, at their new version.
+          headers:
+            ETag:
+              description: The new version, quoted.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
+        '400':
+          description: The body is not a JSON object, `If-Match` is not a version or differs from `version`, or the settings with the patch applied are not valid (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '412':
+          description: A version was named and the settings are no longer at it, or the retry without one lost a second race. The `ETag` has the version they are at.
+          headers:
+            ETag:
+              schema: { type: string }
+        '415':
+          description: The body is neither `application/merge-patch+json` nor `application/json`.
     delete:
       tags: [Antifraud settings]
       summary: Reset the settings
@@ -7120,6 +7186,12 @@ components:
               minimum: 0
               description: Changes with every change of the settings. The same number is the `ETag`; a change is made on it.
           required: [version]
+    AntifraudSettingsPatch:
+      type: object
+      description: |
+        A partial settings document, a JSON merge patch (RFC 7396): any members of `AntifraudSettings`, nested objects with only
+        the members to change, `null` for a member to remove. `userId` is added by edge and is not part of the patch.
+      additionalProperties: true
     AntifraudCountersResetRequest:
       type: object
       properties:
