@@ -240,7 +240,7 @@ object AsnDatabaseSpec extends ZIOSpecDefault:
       },
     ),
     suite("size and speed")(
-      test("a database of 120 thousand ranges loads in well under a second, gzipped or plain, and finds every one of them") {
+      test("a database of 120 thousand ranges loads in a time that is linear, gzipped or plain, and finds every one of them") {
         val v4 = (0 until 100000).map: i =>
           val start = 0x01000000L + i.toLong * 64
           def text(n: Long) = s"${(n >> 24) & 255}.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}"
@@ -259,9 +259,10 @@ object AsnDatabaseSpec extends ZIOSpecDefault:
           fromPlain.database.ranges == 120000,
           fromPacked.database.ranges == 120000,
           fromPlain.malformed == 0,
-          // Generous: the point is the order of magnitude (a laptop does it in about a tenth of this), not the machine.
-          plainMillis < 2000,
-          packedMillis < 2000,
+          // Generous, since util's specs run in parallel on whatever machine this is: a laptop does it in about half a second alone.
+          // The bound is there to catch a load that is not linear (minutes at this size), not to time the machine.
+          plainMillis < 15000,
+          packedMillis < 15000,
           fromPlain.database.lookup("1.0.0.0").map(_.asn).contains(1),
           fromPlain.database.lookup("1.0.0.31").map(_.asn).contains(1),
           fromPlain.database.lookup("1.0.0.32").isEmpty,

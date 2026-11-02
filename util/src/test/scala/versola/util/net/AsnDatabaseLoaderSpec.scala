@@ -56,19 +56,17 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
 
   private def ok(data: Array[Byte]): Response = Response(status = Status.Ok, body = Body.fromArray(data))
 
-  /** Work that runs on the blocking pool or in a forked fiber finishes in real time, whatever the test clock says. */
+  /** Only for what the loop does on its own schedule: the other cases call `refreshNow` and `awaitInitial`, which complete when
+    * the work is done. Work on the blocking pool or in a forked fiber finishes in real time, whatever the test clock says, and
+    * on a loaded runner that can be slow, so the bound is generous. */
   private def until(condition: => Boolean): UIO[Unit] =
-    live(ZIO.sleep(5.millis).repeatUntil(_ => condition).timeoutFail(new AssertionError("timed out"))(10.seconds)).orDie
-
-  /** The download has failed (and been counted) more often than it had when `before` was read. */
-  private def failed(before: Double): UIO[Unit] =
-    live(
-      ZIO.sleep(5.millis).zipRight(failures).repeatUntil(_ > before).timeoutFail(new AssertionError("no failure was counted"))(10.seconds),
-    ).unit.orDie
+    live(ZIO.sleep(5.millis).repeatUntil(_ => condition).timeoutFail(new AssertionError("timed out"))(60.seconds)).orDie
 
   /** The loop has reached its sleep: advancing the clock now wakes it. */
   private val sleeping: UIO[Unit] =
-    live(ZIO.sleep(5.millis)).zipRight(TestClock.sleeps).repeatUntil(_.nonEmpty).unit
+    live(
+      ZIO.sleep(5.millis).zipRight(TestClock.sleeps).repeatUntil(_.nonEmpty).timeoutFail(new AssertionError("the loop never slept"))(60.seconds),
+    ).unit.orDie
 
   private def failures: UIO[Double] = Metric.counter("antifraud_asn_database_refresh_failed_total").value.map(_.count)
 
@@ -163,12 +161,12 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             file = dir.resolve("asn.tsv.gz")
             _ <- serving(ok(gzip(text(versionOne))))
             loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- until(loader.current.isDefined)
+            _ <- loader.awaitInitial
             listing = files(dir)
             size = Files.readAllBytes(file).length
           yield assertTrue(asnOf(loader, "5.45.64.1").contains(24940), listing == List("asn.tsv.gz"), size > 0)
       },
-      test("replaces the database every interval with what it fetched, and the one a reader holds is not changed under it") {
+      test("replaces the database with what it fetched, and the one a reader holds is not changed under it") {
         ZIO.scoped:
           for
             dir <- directory
@@ -177,9 +175,7 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             answer <- serving(ok(gzip(text(versionTwo))))
             loader <- AsnDatabaseLoader.start(settings(file))
             held = loader.current.get
-            _ <- sleeping
-            _ <- TestClock.adjust(interval)
-            _ <- until(asnOf(loader, "9.9.9.9").isDefined)
+            _ <- loader.refreshNow
             listing = files(dir)
             stored = AsnDatabase.read(file).database
           yield assertTrue(
@@ -191,6 +187,21 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             stored.lookup("9.9.9.9").map(_.asn).contains(19281),
           )
       },
+      test("fetches again every interval, and not before it") {
+        ZIO.scoped:
+          for
+            dir <- directory
+            file = dir.resolve("asn.tsv.gz")
+            _ <- ZIO.attemptBlocking(Files.write(file, text(versionOne)))
+            _ <- serving(ok(gzip(text(versionTwo))))
+            loader <- AsnDatabaseLoader.start(settings(file))
+            _ <- sleeping
+            _ <- TestClock.adjust(interval.minus(1.second))
+            early = asnOf(loader, "9.9.9.9")
+            _ <- TestClock.adjust(2.seconds)
+            _ <- until(asnOf(loader, "9.9.9.9").isDefined)
+          yield assertTrue(early.isEmpty, asnOf(loader, "9.9.9.9").contains(19281))
+      },
       test("a server that answers an error keeps the database and the file, and counts the failure") {
         ZIO.scoped:
           for
@@ -201,9 +212,7 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             _ <- serving(Response.status(Status.InternalServerError))
             before <- failures
             loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- sleeping
-            _ <- TestClock.adjust(interval)
-            _ <- failed(before)
+            _ <- loader.refreshNow
             after <- failures
             listing = files(dir)
             onDisk = Files.readAllBytes(file)
@@ -224,9 +233,7 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             _ <- serving(ok("<html>maintenance</html>\n".getBytes(StandardCharsets.UTF_8)))
             before <- failures
             loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- sleeping
-            _ <- TestClock.adjust(interval)
-            _ <- failed(before)
+            _ <- loader.refreshNow
             after <- failures
             listing = files(dir)
             onDisk = Files.readAllBytes(file)
@@ -248,9 +255,7 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             _ <- serving(ok(full.take(full.length - 10)))
             before <- failures
             loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- sleeping
-            _ <- TestClock.adjust(interval)
-            _ <- failed(before)
+            _ <- loader.refreshNow
             listing = files(dir)
             onDisk = Files.readAllBytes(file)
           yield assertTrue(asnOf(loader, "5.45.64.1").contains(24940), Arrays.equals(onDisk, original), listing == List("asn.tsv.gz"))
@@ -263,15 +268,17 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             _ <- ZIO.attemptBlocking(Files.write(file, text(versionOne)))
             _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](_ => ZIO.never).toRoutes)
             before <- failures
-            loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- sleeping
-            _ <- TestClock.adjust(interval)
-            // The download has started and waits; it is abandoned after its timeout.
-            _ <- live(ZIO.sleep(50.millis))
-            _ <- TestClock.adjust(AsnDatabaseLoader.DownloadTimeout.plus(1.second))
-            _ <- failed(before)
+            // An interval the clock does not reach, so that only the refresh of this test is in play.
+            loader <- AsnDatabaseLoader.start(settings(file, interval = 100000.days))
+            refreshing <- loader.refreshNow.fork
+            // The timeout has registered its sleep once the download has started; advancing the clock before that moves nothing, so
+            // it is advanced until the refresh is over.
+            _ <- (TestClock.adjust(AsnDatabaseLoader.DownloadTimeout.plus(1.second)) *> live(ZIO.sleep(5.millis)))
+              .repeatUntil(_ => false)
+              .race(refreshing.join)
+            after <- failures
             listing = files(dir)
-          yield assertTrue(asnOf(loader, "5.45.64.1").contains(24940), listing == List("asn.tsv.gz"))
+          yield assertTrue(after == before + 1, asnOf(loader, "5.45.64.1").contains(24940), listing == List("asn.tsv.gz"))
       },
       test("with no database yet a failed download is tried again after five minutes, not a day") {
         ZIO.scoped:
@@ -281,12 +288,13 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             answer <- serving(Response.status(Status.ServiceUnavailable))
             before <- failures
             loader <- AsnDatabaseLoader.start(settings(file))
-            _ <- failed(before)
+            _ <- loader.awaitInitial
+            failedOnce <- failures.map(_ == before + 1)
             _ <- answer.set(ok(gzip(text(versionOne))))
             _ <- sleeping
             _ <- TestClock.adjust(AsnDatabaseLoader.RetryWhileEmpty)
             _ <- until(loader.current.isDefined)
-          yield assertTrue(asnOf(loader, "5.45.64.1").contains(24940))
+          yield assertTrue(failedOnce, asnOf(loader, "5.45.64.1").contains(24940))
       },
       test("never logs the address it fetches from, which may carry a token") {
         ZIO.scoped:
@@ -294,9 +302,8 @@ object AsnDatabaseLoaderSpec extends ZIOSpecDefault:
             dir <- directory
             file = dir.resolve("asn.tsv.gz")
             _ <- serving(Response.status(Status.Forbidden))
-            before <- failures
-            _ <- AsnDatabaseLoader.start(settings(file, url = "https://mirror.example.com/asn.tsv.gz?token=s3cr3t-value"))
-            _ <- failed(before)
+            loader <- AsnDatabaseLoader.start(settings(file, url = "https://mirror.example.com/asn.tsv.gz?token=s3cr3t-value"))
+            _ <- loader.awaitInitial
             output <- ZTestLogger.logOutput
             text = output.map(e => e.message() + e.cause.prettyPrint).mkString("\n")
           yield assertTrue(text.contains("mirror.example.com"), !text.contains("s3cr3t-value"))

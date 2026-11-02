@@ -16,6 +16,14 @@ trait AsnDatabaseLoader:
   /** `None` while no database is loaded: the feature is off, or its file is not there yet. */
   def current: Option[AsnDatabase]
 
+  /** Completes once the first fetch is over, whatever it came to: at once when none is needed (the file was read, or there
+    * is no `url`). What a test or a readiness check waits for, instead of polling `current`. */
+  def awaitInitial: UIO[Unit] = ZIO.unit
+
+  /** Does now what the background loop does every interval (download the `url`, or read the file again if it changed),
+    * and completes when that is done. Never fails: a failure is the same warning and counter as in the loop. */
+  def refreshNow: UIO[Unit] = ZIO.unit
+
 object AsnDatabaseLoader:
 
   val off: AsnDatabaseLoader = new AsnDatabaseLoader:
@@ -43,12 +51,13 @@ object AsnDatabaseLoader:
     else
       for
         client <- ZIO.service[Client]
-        loader = Impl(settings, Paths.get(settings.file.trim), client)
+        initial <- Promise.make[Nothing, Unit]
+        loader = Impl(settings, Paths.get(settings.file.trim), client, initial)
         _ <- loader.loadFile
         _ <- loader.keepFresh.forkScoped
       yield loader
 
-  private class Impl(settings: AsnSettings, file: Path, client: Client) extends AsnDatabaseLoader:
+  private class Impl(settings: AsnSettings, file: Path, client: Client, initial: Promise[Nothing, Unit]) extends AsnDatabaseLoader:
     private val database = AtomicReference[Option[AsnDatabase]](None)
 
     /** The modification time of the file the database in use was read from, to tell a file that changed. */
@@ -57,6 +66,10 @@ object AsnDatabaseLoader:
     private val url: Option[URL] = Option(settings.url.trim).filter(_.nonEmpty).flatMap(URL.decode(_).toOption)
 
     override def current: Option[AsnDatabase] = database.get
+
+    override def awaitInitial: UIO[Unit] = initial.await
+
+    override def refreshNow: UIO[Unit] = refresh
 
     /** Reads `path` and, if it is a database, takes it into use as the contents of `file`. */
     private def read(path: Path): Task[Int] =
@@ -126,7 +139,7 @@ object AsnDatabaseLoader:
       yield ranges
 
     /** The download of the configured `url`; without one, the file again if it has changed (an operator replaces it). */
-    private val refresh: UIO[Unit] = url match
+    private def refresh: UIO[Unit] = url match
       case Some(from) =>
         // The address is not logged whole: an operator's mirror may carry a token in it.
         download(from).catchAllCause(failed(s"could not download the ASN database from ${from.host.getOrElse("")}"))
@@ -138,4 +151,4 @@ object AsnDatabaseLoader:
     val keepFresh: UIO[Nothing] =
       val pause = ZIO.suspendSucceed(ZIO.sleep(if database.get.isEmpty && settings.refreshInterval > RetryWhileEmpty then RetryWhileEmpty
       else settings.refreshInterval))
-      (ZIO.when(url.isDefined && database.get.isEmpty)(refresh) *> (pause *> refresh).forever)
+      (ZIO.when(url.isDefined && database.get.isEmpty)(refresh) *> initial.succeed(()) *> (pause *> refresh).forever)
