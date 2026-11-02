@@ -17,10 +17,21 @@ case class Quantiles(count: Long, errors: Long, p50Ms: Double, p99Ms: Double, ma
 object Quantiles:
   val none: Quantiles = Quantiles(0, 0, 0.0, 0.0, 0.0)
 
-/** The latencies one scenario recorded, by the name of the call (`otp-request`, `otp-verify`, `token`, `refresh`). */
+/** The latencies one scenario recorded, by the name of the call (`otp-request`, `otp-resend`, `otp-verify`, `token`,
+  * `refresh`), and what the challenges it was put cost the client (`challenge`). */
 final class Measurements:
   private val histograms = ConcurrentHashMap[String, ConcurrentHistogram]()
   private val errors = ConcurrentHashMap[String, LongAdder]()
+
+  val challenge: ChallengeStats = ChallengeStats()
+
+  /** The given percentiles of one call, in milliseconds, in the order asked; `None` when none was recorded. */
+  def percentiles(name: String, of: List[Double]): Option[List[Double]] =
+    Option(histograms.get(name)).filter(_.getTotalCount > 0).map(h => of.map(p => h.getValueAtPercentile(p) / 1000.0))
+
+  def count(name: String): Long = Option(histograms.get(name)).fold(0L)(_.getTotalCount)
+
+  def max(name: String): Double = Option(histograms.get(name)).fold(0.0)(_.getMaxValue / 1000.0)
 
   def record(name: String, micros: Long): Unit =
     histograms

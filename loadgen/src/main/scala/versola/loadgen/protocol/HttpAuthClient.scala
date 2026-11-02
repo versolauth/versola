@@ -40,6 +40,7 @@ private case class AuthEndpoints(
     challenge: URL,
     challengePhone: URL,
     challengeOtp: URL,
+    challengeOtpResend: URL,
     challengePassword: URL,
     challengeSetPassword: URL,
     challengeLoginPassword: URL,
@@ -59,6 +60,7 @@ private object AuthEndpoints:
       challenge <- at("/challenge")
       phone <- at("/challenge/phone")
       otp <- at("/challenge/otp")
+      resend <- at("/challenge/otp/resend")
       password <- at("/challenge/password")
       setPassword <- at("/challenge/set-password")
       loginPassword <- at("/challenge/login-password")
@@ -71,6 +73,7 @@ private object AuthEndpoints:
       challenge,
       phone,
       otp,
+      resend,
       password,
       setPassword,
       loginPassword,
@@ -194,6 +197,20 @@ final class HttpAuthClient(
 
   override def submitOtp(conversation: ConversationCookie, code: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
     submit(endpoints.challengeOtp, otpEndpoint, conversation, List("code" -> code, "csrf" -> csrf.value))
+
+  override def submitResend(conversation: ConversationCookie, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
+    submit(endpoints.challengeOtpResend, resendEndpoint, conversation, List("csrf" -> csrf.value))
+
+  override def submitPhoneInline(
+      conversation: ConversationCookie,
+      phone: String,
+      csrf: Csrf,
+      proof: Option[PowAnswer],
+  ): IO[ProtocolError, InlineOutcome] =
+    submitInline(endpoints.challengePhone, phoneEndpoint, conversation, List("phone" -> phone, "csrf" -> csrf.value), proof)
+
+  override def resendInline(conversation: ConversationCookie, csrf: Csrf, proof: Option[PowAnswer]): IO[ProtocolError, InlineOutcome] =
+    submitInline(endpoints.challengeOtpResend, resendEndpoint, conversation, List("csrf" -> csrf.value), proof)
 
   override def submitPassword(conversation: ConversationCookie, password: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
     submit(endpoints.challengePassword, passwordEndpoint, conversation, List("password" -> password, "csrf" -> csrf.value))
@@ -338,6 +355,38 @@ final class HttpAuthClient(
       else ZIO.fail(HttpExchange.unexpected(expectedSubmit, received.status, endpoint))
     }
 
+  /** What `central-ui/forms/shared/inline.ts` sends: the form's fields with `proof_inline=1`, and the answer to a challenge
+    * as `proof_token` and `proof_solution`. The answer is JSON (`InlineStep`) when `auth` could answer in that shape and a
+    * page otherwise; an error status is a failure as it is on a plain submit.
+    */
+  private def submitInline(
+      url: URL,
+      endpoint: String,
+      conversation: ConversationCookie,
+      fields: List[(String, String)],
+      proof: Option[PowAnswer],
+  ): IO[ProtocolError, InlineOutcome] =
+    val all = fields ++ List(proofInlineField -> "1") ++ proof.toList.flatMap(answer =>
+      List(proofTokenField -> answer.token, proofSolutionField -> answer.solution),
+    )
+    val request = Request
+      .post(url, HttpExchange.formBody(all))
+      .addHeader(HttpExchange.cookieHeader(conversationCookie, conversation.value))
+      .addHeader(HttpExchange.formContentType)
+    send(request).flatMap: received =>
+      if received.status != Status.Ok && !HttpExchange.isRedirect(received.status) then
+        ZIO.fail(HttpExchange.unexpected(expectedSubmit, received.status, endpoint))
+      else if received.response.rawHeader("content-type").exists(_.contains("application/json")) then
+        ZIO
+          .fromEither(received.body.fromJson[InlineStep])
+          .mapError(error => ProtocolError.MalformedResponse(endpoint, error.take(120)))
+          .map(InlineOutcome.Step.apply)
+      else if HttpExchange.isRedirect(received.status) then
+        HttpExchange
+          .required(received.location, endpoint, "redirect without a Location header")
+          .map(location => InlineOutcome.Step(InlineStep(next = Some(location), challenge = None, otp = false)))
+      else ZIO.succeed(InlineOutcome.Page(ChallengePage.parse(conversation, received.body)))
+
   /** A confidential client authenticates with HTTP Basic; a public one (the three `mobile-*`
     * clients of design doc §2.2 hold no secret) names itself in the body and proves itself with
     * PKCE instead.
@@ -452,6 +501,7 @@ object HttpAuthClient:
   private val challengeEndpoint = "/challenge"
   private val phoneEndpoint = "/challenge/phone"
   private val otpEndpoint = "/challenge/otp"
+  private val resendEndpoint = "/challenge/otp/resend"
   private val passwordEndpoint = "/challenge/password"
   private val setPasswordEndpoint = "/challenge/set-password"
   private val loginPasswordEndpoint = "/challenge/login-password"
@@ -477,6 +527,11 @@ object HttpAuthClient:
   private val csrfField = "csrf_token"
   private val postLogoutRedirectUriParam = "post_logout_redirect_uri"
   private val stateParam = "state"
+
+  // The fields of a request for a code from script (`ProofInput` in auth).
+  private val proofInlineField = "proof_inline"
+  private val proofTokenField = "proof_token"
+  private val proofSolutionField = "proof_solution"
 
   private val expectedOk: Set[Status] = Set(Status.Ok)
   private val expectedSubmit: Set[Status] = Set(Status.Ok, Status.SeeOther)
