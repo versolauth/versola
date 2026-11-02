@@ -258,8 +258,8 @@ object AntifraudFixture:
       yield ()
 
   /** What the specs seed the lists with, the way [[versola.antifraud.AntifraudListRepository.upsert]] stores an entry:
-    * the row, and the bump of `af_list_version` that tells the instances to reload. There is no endpoint that
-    * changes the lists yet, and a row written by hand is otherwise not seen until the instances' full reload (a minute).
+    * the row, and the bump of `af_list_version` that tells the instances to reload. A row written by hand is otherwise not
+    * seen until the instances' full reload (a minute). [[seedThroughApi]] makes them through central's admin API instead.
     */
   final case class ListEntry(
       listType: String,
@@ -287,6 +287,28 @@ object AntifraudFixture:
           rows.getInt(1)
         finally connection.close()
     yield steps
+
+  /** The same entries made through central's admin API, as an operator does (`POST /antifraud/global/lists`), which is what
+    * auth then enforces: the way an entry reaches the lists in a deployment. Auth validates them (a broad entry needs an
+    * expiry, an `allow` is for an exact subject), so a case that seeds something it refuses fails here, which seeding SQL does
+    * not. The entries are global, as the SQL ones are; a reload (one second in the specs) is awaited by the caller. */
+  def seedThroughApi(central: CentralApi, entries: List[ListEntry]): Task[Unit] =
+    val operator = central.asAdmin(OperatorId)
+    ZIO.foreachDiscard(entries): entry =>
+      val body = Json.Obj(
+        Chunk(
+          "listType" -> Json.Str(entry.listType),
+          "valueType" -> Json.Str(entry.valueType),
+          "value" -> Json.Str(entry.value),
+          "shadow" -> Json.Bool(entry.shadow),
+          "reason" -> Json.Str("e2e"),
+        ) ++ entry.expiresAt.map(at => "expiresAt" -> Json.Str(at.toString)),
+      )
+      operator.post("/antifraud/global/lists", body).flatMap: created =>
+        ZIO.fail(RuntimeException(s"central refused the list entry $entry: ${created.status} ${created.body}")).unless(created.status == zio.http.Status.Created)
+
+  /** The user id edge would add for the operator who makes the entries. */
+  private val OperatorId = "00000000-0000-0000-0000-0000000e2e03"
 
   def seed(entries: List[ListEntry]): Task[Unit] =
     for
