@@ -16,6 +16,11 @@ trait VelocityRepository:
     * day, so that the query reads an index range whose size does not grow with the table. */
   def loadOthers(instance: UUID, fromMinute: Long, toMinute: Long, maxKeys: Int): Task[List[SharedBucket]]
 
+  /** Deletes the rows of `target` (see [[VelocityTarget]]): of every instance, or only of `instance`. A reset deletes
+    * all of them once, and each instance its own again as it applies the reset, which catches what it flushed in between.
+    * `Range` digits are digits only (the caller checks), since they go into a `LIKE`. Says how many rows went. */
+  def forget(target: VelocityTarget, instance: Option[UUID]): Task[Int]
+
   /** Forgets at most `batch` rows of minutes before `minute`, and says how many it did; 0 for an instance that does not
     * get the lock, because another is at it. A caller repeats while it gets `batch`. */
   def prune(minute: Long, batch: Int): Task[Int]

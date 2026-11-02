@@ -41,6 +41,11 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   * ==Safety of an entry==
   *  - An entry that names many clients (anything but an exact subject, a network wider than /24 or /48) must have an
   *    `expiresAt`, and so must one whose `source` is not `manual` (an automated entry).
+  *  - A `cidr` entry is not wider than /8 (IPv4) or /32 (IPv6): `0.0.0.0/0` is every client, and a network a registry
+  *    hands to one provider is not narrower than that. A broad `cidr` (wider than /24 or /48), `email_domain` or `prefix` entry lives at most
+  *    `max-broad-ttl` (30 days by default): a block of many clients is made for an attack and is made again, not kept.
+  *  - `source` is the server's: `manual` for a request of the API, `detector:<kind>` for an approved proposal. A client
+  *    cannot name its own, so it cannot call an entry `manual` to be rid of the expiry an automated one must have.
   *  - `shadow` entries are matched and counted but enforce nothing (rule `shadow_list:<value type>`, no weight):
   *    a dry run to read in the fired rules before the entry is made real.
   *  - [[AntifraudLists.preview]] says how many events of the last 24 hours an entry would have matched (for the
@@ -66,7 +71,8 @@ trait AntifraudLists:
     * pick it up within the refresh interval. */
   def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry]
 
-  /** What the entry would have matched of the last 24 hours of events (see [[ListPreview]]). */
+  /** What the entry would have matched of the last 24 hours of events of its tenant, or of all for a global entry (see
+    * [[ListPreview]]). */
   def preview(entry: NewListEntry): Task[ListPreview]
 
   def delete(id: UUID, actor: String): Task[Boolean]
@@ -96,12 +102,17 @@ object AntifraudLists:
     * @param enabled          off by default: no entry is read and no rule is contributed
     * @param refreshInterval  how often the snapshot is rebuilt from the table, so how long a change takes to reach another instance
     * @param auditRetention   how long the audit records of changes are kept
+    * @param maxBroadTtl      the longest an entry of kind `cidr`, `email_domain` or `prefix` may be made to live
     */
   case class Settings(
       enabled: Boolean,
       refreshInterval: Duration,
       auditRetention: Duration,
+      maxBroadTtl: Duration = Settings.DefaultMaxBroadTtl,
   )
+
+  object Settings:
+    val DefaultMaxBroadTtl: Duration = 30.days
 
   /** What is not configuration.
     *
@@ -261,14 +272,23 @@ object AntifraudLists:
           .when(entry.listType == AntifraudListType.allow && !ListValues.allowable(entry.valueType, value))
         _ <- ZIO
           .fail(InvalidListEntry("an entry that names many clients, or an automated one, needs expiresAt"))
-          .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != "manual"))
+          .when(entry.expiresAt.isEmpty && (ListValues.broad(entry.valueType, value) || entry.source != ListEntrySource.Manual))
+        _ <- ZIO.foreachDiscard(ListValues.tooWide(entry.valueType, value))(message => ZIO.fail(InvalidListEntry(message)))
+        _ <- ZIO
+          .fail(InvalidListEntry(
+            s"expiresAt is more than ${settings.maxBroadTtl.toDays} days away: an entry of kind ${entry.valueType} lives that long at most",
+          ))
+          .when(ListValues.expiresAtMost(
+            entry.valueType,
+            value,
+          ) && entry.expiresAt.exists(_.isAfter(now.plusSeconds(settings.maxBroadTtl.toSeconds))))
       yield value
 
     override def preview(entry: NewListEntry): Task[ListPreview] =
       for
         now <- Clock.instant
         value <- validate(entry, now)
-        result <- repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600))
+        result <- repository.preview(entry.valueType, value, entry.tenantId, now.minusSeconds(24 * 3600))
       yield result
 
     override def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry] =
@@ -276,7 +296,7 @@ object AntifraudLists:
         now <- Clock.instant
         value <- validate(entry, now)
         _ <- ZIO.when(!entry.shadow && policy.maxTrafficShare > 0):
-          repository.preview(entry.valueType, value, now.minusSeconds(24 * 3600)).flatMap: p =>
+          repository.preview(entry.valueType, value, entry.tenantId, now.minusSeconds(24 * 3600)).flatMap: p =>
             ZIO
               .fail(
                 InvalidListEntry(s"it would have matched ${p.matched.get} of ${p.total} events of the last 24 hours: add it as a shadow entry first"),
@@ -345,7 +365,9 @@ object AntifraudLists:
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
-      ZIO.succeed(cache.drainKinds()).flatMap(kinds => ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, kind._3, n))) *>
+      ZIO.succeed(cache.drainKinds()).flatMap(kinds =>
+        ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, kind._3, n)),
+      ) *>
         ZIO.succeed(cache.drain()).flatMap: hits =>
           ZIO.when(hits.nonEmpty):
             repository.addHits(hits).foldCauseZIO(

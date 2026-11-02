@@ -24,9 +24,10 @@ object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
 
 enum AntifraudListAction derives JsonCodec:
-  case create, delete, expire
+  case create, update, delete, expire
 
-/** A request to add or preview an entry. Give `value`, or for a `phone_hash` entry `phone` instead (auth hashes it).
+/** A request to add or preview an entry. Give `value`, or for a `phone_hash` entry `phone` instead (auth hashes it). There is no
+  * `source`: auth says `manual` for every request of this API, so a client cannot name its own.
   * `userId` is the admin, which edge puts in from the verified token (see [[AntifraudListController]]); it is what auth
   * records as who added the entry. The same body goes to auth. */
 case class NewListEntryRequest(
@@ -37,7 +38,6 @@ case class NewListEntryRequest(
     tenantId: Option[TenantId],
     expiresAt: Option[Instant],
     reason: Option[String],
-    source: Option[String],
     shadow: Option[Boolean],
     userId: UserId,
 ) derives JsonCodec, Schema
@@ -75,6 +75,14 @@ case class ListEntriesResponse(entries: List[ListEntryResponse]) derives JsonCod
 /** `matched` is `None` for a kind of value the event log has no column for. */
 case class PreviewResponse(matched: Option[Long], total: Long) derives JsonCodec, Schema
 
+/** What an entry had before an update changed it. */
+case class PreviousListValuesResponse(
+    expiresAt: Option[Instant],
+    reason: Option[String],
+    source: String,
+    shadow: Boolean,
+) derives JsonCodec, Schema
+
 case class AuditRecordResponse(
     id: UUID,
     at: Instant,
@@ -87,6 +95,7 @@ case class AuditRecordResponse(
     tenantId: Option[TenantId],
     expiresAt: Option[Instant],
     reason: Option[String],
+    previous: Option[PreviousListValuesResponse],
 ) derives JsonCodec, Schema
 
 case class AuditResponse(records: List[AuditRecordResponse]) derives JsonCodec, Schema

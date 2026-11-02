@@ -113,6 +113,36 @@ object AntifraudListApiSpec extends CentralApiSpec:
         badId.status == Status.BadRequest,
       )
     },
+    test("a network wider than /8, and a broad entry that would live more than 30 days, are 400; a repeat is audited as an update") {
+      for
+        central <- api
+        admin_ = central.asAdmin(adminId)
+        now <- Clock.instant
+        soon = Json.Str(now.plusSeconds(3600).toString)
+        distant = Json.Str(now.plusSeconds(31L * 86400).toString)
+        everybody <- admin_.post(lists, entry("cidr", "0.0.0.0/0", extra = Map("expiresAt" -> soon)))
+        everybody6 <- admin_.post(lists, entry("cidr", "::/0", extra = Map("expiresAt" -> soon)))
+        tooLong <- admin_.post(lists, entry("prefix", "49", extra = Map("expiresAt" -> distant)))
+        value <- address
+        // `source` is not the client's to name: the body says it is detected, the entry is manual all the same.
+        first <- admin_.post(lists, entry("ip", value, extra = Map("reason" -> Json.Str("first"), "source" -> Json.Str("detector:prefix_anomaly"))))
+        firstJson <- first.obj
+        id = firstJson.str("id").getOrElse("")
+        second <- admin_.post(lists, entry("ip", value, extra = Map("reason" -> Json.Str("second"))))
+        records <- admin_.get(s"$lists/audit", "entryId" -> id).flatMap(_.items("records"))
+        _ <- admin_.deleteWithBody(lists, Json.Obj("id" -> Json.Str(id))).ignore
+        update = records.find(_.str("action").contains("update"))
+      yield assertTrue(
+        everybody.status == Status.BadRequest,
+        everybody6.status == Status.BadRequest,
+        tooLong.status == Status.BadRequest,
+        firstJson.str("source").contains("manual"),
+        second.status == Status.Created,
+        update.exists(_.str("reason").contains("second")),
+        update.flatMap(_.obj("previous")).exists(_.str("reason").contains("first")),
+        records.exists(_.str("action").contains("create")),
+      )
+    },
     test("a phone is stored as its keyed hash, never as the number, and adding it again refreshes the one entry") {
       for
         central <- api

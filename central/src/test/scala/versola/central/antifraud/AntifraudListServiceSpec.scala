@@ -21,7 +21,6 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
     tenantId = None,
     expiresAt = None,
     reason = None,
-    source = None,
     shadow = None,
     userId = admin,
   )

@@ -23,7 +23,9 @@ object AntifraudConfigSpec extends UnitSpecBase:
     lines.slice(from, to).map(_.trim.stripPrefix("|")).mkString("\n")
 
   private def load[A](envConfig: String, config: Config[A]): Task[A] =
-    ZIO.attempt(ConfigFactory.parseString(envConfig).resolve()).flatMap(cfg => ConfigProvider.fromTypesafeConfigZIO(cfg)).flatMap(_.kebabCase.load(config))
+    ZIO.attempt(
+      ConfigFactory.parseString(envConfig).resolve(),
+    ).flatMap(cfg => ConfigProvider.fromTypesafeConfigZIO(cfg)).flatMap(_.kebabCase.load(config))
 
   private def events(envConfig: String) = load(envConfig, Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]))
 
@@ -48,13 +50,34 @@ object AntifraudConfigSpec extends UnitSpecBase:
       events(without).either.map(result => assertTrue(result.isLeft))
     },
     test("failure-action accepts allow, challenge, fake and block, and neither delay nor review") {
-      def action(name: String) = events(generated.replace("failure-action = \"allow\"", s"failure-action = \"$name\"")).either.map(_.map(_.decision.failureAction))
+      def action(name: String) =
+        events(generated.replace("failure-action = \"allow\"", s"failure-action = \"$name\"")).either.map(_.map(_.decision.failureAction))
       for
         challenge <- action("challenge")
         fake <- action("FAKE")
         delay <- action("delay")
         review <- action("review")
       yield assertTrue(challenge == Right(DecisionAction.Challenge), fake == Right(DecisionAction.Fake), delay.isLeft, review.isLeft)
+    },
+    test("a config written before max-broad-ttl existed keeps working with 30 days, and the key sets it") {
+      val lists = Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]))
+      val without = generated.replace("max-broad-ttl    = \"30 days\"", "")
+      for
+        old <- load(without, lists)
+        set <- load(generated.replace("max-broad-ttl    = \"30 days\"", "max-broad-ttl = \"7 days\""), lists)
+      yield assertTrue(!without.contains("max-broad-ttl"), old.maxBroadTtl == 30.days, set.maxBroadTtl == 7.days, generated.contains("max-broad-ttl"))
+    },
+    test("a stats-interval of a fraction of a minute is refused, and a whole number of minutes is not") {
+      def interval(text: String) = events(generated.replace("stats-interval     = \"1 minute\"", s"stats-interval = \"$text\"")).map(_.statsInterval)
+      for
+        five <- interval("5 minutes")
+        seconds <- interval("90 seconds")
+      yield assertTrue(
+        five == 5.minutes,
+        // The configuration loads it; the application refuses it when it builds its settings (AntifraudEvents.statsIntervalError).
+        AntifraudEvents.statsIntervalError(five).isEmpty,
+        AntifraudEvents.statsIntervalError(seconds).isDefined,
+      )
     },
     test("what is tuned during an attack, and the sizes of the components, are not keys of the block") {
       val keys = ConfigFactory.parseString(generated).getConfig("antifraud")
