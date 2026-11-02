@@ -26,6 +26,7 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
     enabled = true,
     ttl = 2.minutes,
     maxAttempts = 4,
+    pause = 20.seconds,
   )
 
   private val difficulty = PowDifficulty(minDifficulty = 8, maxDifficulty = 12, scoreStep = 10)

@@ -503,6 +503,26 @@ object AntifraudEventsSpec extends UnitSpecBase:
         assertTrue(picks.forall(_.isDefined), (0 until 300).forall(i => latency.sample(i).isDefined))
       },
     ),
+    suite("the pause as a challenge")(
+      test("is counted as a challenge of the kind pause: challenged when the step is left, challenge_passed when the ask is honoured") {
+        val e = env
+        def count(outcome: String) =
+          Metric.counter("antifraud_challenges_total").tagged(Set(MetricLabel("kind", "pause"), MetricLabel("outcome", outcome))).value.map(_.count)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(None)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small)
+            challenged0 <- count("challenged")
+            passed0 <- count("challenge_passed")
+            d = Decision(DecisionAction.Challenge, 61, List("velocity_phone_1h"))
+            _ <- events.challengeStep(authId, clientId, None, Right(phone), AntifraudOutcome.challenged, d, "pause", None)
+            _ <- events.challengeStep(authId, clientId, None, Right(phone), AntifraudOutcome.challenge_passed, d, "pause", None)
+            challenged1 <- count("challenged")
+            passed1 <- count("challenge_passed")
+          yield assertTrue(challenged1 - challenged0 >= 1.0, passed1 - passed0 >= 1.0)
+      },
+    ),
     suite("retention")(
       test("deletes the rows past the retention, to the minute, every few minutes") {
         val e = env

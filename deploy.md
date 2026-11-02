@@ -642,11 +642,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
        tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
        lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days" }
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
-       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5 }
+       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
      }
      ```
-     `decision.fake-send-delay` is the newest key: an `env.conf` generated before it exists has to be given the line (or be
-     regenerated) before `auth` of this version starts, as for any other key.
+     `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
+     given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
   3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
      queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
      `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
@@ -955,10 +955,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
   nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
   paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
-  charged again. The same does **not** hold on the pending step below: the post that leaves it pays, and so does the page's own ask
-  for the code (it is a request like any other, charged and counted by the velocity counters; only its answer, if it has
-  to be challenged again, is free), or a client that answers no challenge could have codes sent outside the limit. A wrong or
-  forged answer proves nothing and is charged like any request, and a banned credential is refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
+  charged again. The same holds on the pending step below (the post that leaves it pays; the ask for the code, once honoured,
+  does not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
   hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
   phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
   higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
@@ -973,21 +971,29 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   holds. A right solution is **spent in the same step it is accepted**: the conversation moves its solved count on, once,
   for the one request that gets there first, so the same token (or one issued before it) cannot pass again, and the wrong
   solutions so far are forgotten; a replay of it is a wrong solution and is charged like one. Sending a code also spends
-  every challenge made before it. A guess costs the server one SHA-256 and a statement. The page's ask for a code from
-  the pending step is charged and counted like any request: while the decision is still `Challenge` it only gets a
-  challenge (a MAC), and a right answer sends one code and ends the step; once the decision has become `Allow` (the
-  counters have cooled, a list entry expired) the ask itself sends the code, once, having paid for it.
-  **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
-  form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
-  step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
-  it can answer like the credential form does (and which is charged and counted again: two steps of the OTP request limit
-  for such a client, not one). When the code is sent the page shows it in place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
-  cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
+  every challenge made before it. A guess costs the server one SHA-256 and a statement.
+  **For a client that runs no script, a `Challenge` is a pause, and then the code.** A plain form post (the password form
+  that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) cannot do the work, so it is
+  left on the code step with nothing sent (`challenged` in the log, once) and the step is stamped with the moment its pause
+  ends (`antifraud.challenge.pause`, 20 seconds after it was left; it travels in the conversation, no migration). The ask
+  for the code from that step, whether the page makes it from script or a plain post does, is **honoured only after the
+  pause**: sooner it is answered with the same page, no code and no error, and it is not charged, counted or recorded. The
+  page makes its own ask once the seconds still to wait (told in the step) have passed. An honoured ask is the request that
+  was left pending, made again: it is judged again (a block, a fake and the lists still apply; a decision that is still
+  `Challenge` no longer stops it) and sends the code, with **no further step of the OTP request limit and no further
+  velocity record: such a client pays one step of the limit per code**. An attacker without script therefore gets at most
+  one code per pause per conversation, besides the limits above. The pause is counted as a challenge of its own kind,
+  `antifraud_challenges_total{kind="pause",outcome="challenged"}` (a step left pending) and `outcome="challenge_passed"` (an
+  ask honoured), so the dashboard shows how many challenges are paid by waiting and how many by work (`kind="pow"`).
+  Keep `challenge.pause` at or under the time a person will wait on a page that says nothing (the page counts it down
+  by the resend timer); the page's own ask carries a margin of half a second. When the code is sent the page shows it in
+  place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
+  cannot answer a challenge at all (an unsolvable kind) stays on the page and gets no code. Only a verifier that is
   off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
   `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
   times out to ask every request for a proof.
-  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes) and `max-attempts` (5): the
-  switch and what a challenge lives for. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
+  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes), `max-attempts` (5) and `pause`
+  (20 seconds, above): the switch, what a challenge lives for and what a client that cannot do the work waits instead. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
   `maxDifficulty` 18, `scoreStep` 15, in zero bits of a hash), so that it can be raised during an attack; the score it
   starts at is the tuned `challengeAt`. The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
   column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the

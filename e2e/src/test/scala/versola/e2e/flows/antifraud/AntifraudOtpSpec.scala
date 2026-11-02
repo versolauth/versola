@@ -256,6 +256,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   /** What a page that can answer a challenge sends: `proof_inline`, and on the second turn the token and its solution. */
   private val Inline = Map("proof_inline" -> "1")
 
+  /** A little over the fixture's `challenge.pause` (2 seconds): from then on the ask of a step left pending is honoured. */
+  private val PausePassed = 2500.millis
+
   /** Finds the number the page would: SHA-256 of `seed:number` with `difficulty` leading zero bits. */
   private def solved(seed: String, difficulty: Int): String =
     def zeroBits(digest: Array[Byte]): Int =
@@ -333,23 +336,25 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         _ <- auth.submitPhone(cookie, s.phone.get, csrf, Some(ip))
         plainStep <- auth.getChallenge(cookie).map(_.step)
         plainLine <- line(f.a, ip, Path, 0)
-        // The page of that step asks for the code as a resend, from script.
+        // The page of that step asks for the code as a resend, from script: sooner than the pause it is answered with the
+        // same page and nothing is sent; after it the code goes out, as the ask of the request that was left pending.
+        early <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline).flatMap(inlineAnswer)
+        stepAfterEarly <- auth.getChallenge(cookie).map(_.step)
+        _ <- ZIO.sleep(PausePassed)
         asked <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline).flatMap(inlineAnswer)
-        answer <- answerOf(asked)
-        answered <- auth.submitOtpResendWith(cookie, csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
-        askedLine <- line(f.a, ip, "/challenge/otp/resend", 0)
-        sentLine <- line(f.a, ip, "/challenge/otp/resend", 1)
+        sentLine <- line(f.a, ip, "/challenge/otp/resend", 0)
       yield assertTrue(
         plainStep.contains(ConversationStep.Otp),
         plainLine.decision == "Challenge",
         plainLine.outcome.contains("challenged"),
-        asked.obj("challenge").isDefined,
-        askedLine.outcome.contains("challenged"),
-        answered.str("next").isDefined,
+        early.obj("challenge").isEmpty,
+        early.bool("otp").contains(false),
+        stepAfterEarly.contains(ConversationStep.Otp),
+        asked.bool("otp").contains(true),
         sentLine.outcome.contains("sent"),
       )
     },
-    test("login_hint is answered the same way: the request is left on the code step, and the code is sent on the resend's solution") {
+    test("login_hint is answered the same way: the request is left on the code step, and the code is sent on the resend after the pause") {
       for
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
@@ -360,15 +365,14 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         cookie = authorize.conversationCookie.get
         challenged <- auth.getChallenge(cookie)
         hintLine <- line(f.a, ip, "/authorize", 0)
-        asked <- auth.submitOtpResendWith(cookie, challenged.csrf, Some(ip), Inline).flatMap(inlineAnswer)
-        answer <- answerOf(asked)
-        answered <- auth.submitOtpResendWith(cookie, challenged.csrf, Some(ip), Inline ++ answer).flatMap(inlineAnswer)
-        sentLine <- line(f.a, ip, "/challenge/otp/resend", 1)
+        _ <- ZIO.sleep(PausePassed)
+        answered <- auth.submitOtpResendWith(cookie, challenged.csrf, Some(ip), Inline).flatMap(inlineAnswer)
+        sentLine <- line(f.a, ip, "/challenge/otp/resend", 0)
       yield assertTrue(
         challenged.step.contains(ConversationStep.Otp),
         hintLine.decision == "Challenge",
         hintLine.outcome.contains("challenged"),
-        answered.str("next").isDefined,
+        answered.bool("otp").contains(true),
         sentLine.outcome.contains("sent"),
       )
     },
@@ -394,15 +398,13 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           asked,
         ).flatMap(answer => auth.submitPhoneWith(cookie, direct.phone.get, csrf, Some(directIp), Inline ++ answer)).flatMap(inlineAnswer)
         directSteps <- AntifraudFixture.otpRequestSteps(direct.phone.get)
-        // The step a plain post leaves: the post, the page's own ask and its answer.
+        // The step a plain post leaves: the post, and the page's own ask once the pause is over (which pays nothing more).
         pendingStart <- auth.authorize(clientId = Some(viaPending.clientId), redirectUri = Some(viaPending.redirectUri)).assertChallengeRedirect
         pendingCookie = pendingStart.conversationCookie.get
         pendingCsrf <- auth.getChallenge(pendingCookie).map(_.csrf)
         _ <- auth.submitPhone(pendingCookie, viaPending.phone.get, pendingCsrf, Some(pendingIp))
-        pendingAsked <- auth.submitOtpResendWith(pendingCookie, pendingCsrf, Some(pendingIp), Inline).flatMap(inlineAnswer)
-        sent <- answerOf(pendingAsked).flatMap(answer =>
-          auth.submitOtpResendWith(pendingCookie, pendingCsrf, Some(pendingIp), Inline ++ answer),
-        ).flatMap(inlineAnswer)
+        _ <- ZIO.sleep(PausePassed)
+        sent <- auth.submitOtpResendWith(pendingCookie, pendingCsrf, Some(pendingIp), Inline).flatMap(inlineAnswer)
         pendingSteps <- AntifraudFixture.otpRequestSteps(viaPending.phone.get)
       yield assertTrue(
         before == (0, 0),

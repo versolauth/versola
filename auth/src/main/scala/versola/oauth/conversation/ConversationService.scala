@@ -409,6 +409,25 @@ object ConversationService:
         proof: ProofInput,
     ): Task[ConversationResult.Render] =
       val subject = credential.merge
+      // The page's ask for the code from the pending step, a plain post or a script's: the pause is what it pays instead of
+      // work, so it is honoured only once the pause is over. Sooner it is answered with the same page and nothing else: no
+      // code, no error, not counted.
+      val asking = pending(conversation) && (proof == ProofInput.Asked || proof == ProofInput.NoScript)
+      Clock.instant.flatMap: now =>
+        conversation.step match
+          case otp: ConversationStep.Otp if asking && otp.pauseRemaining(now) > 0 =>
+            ZIO.succeed(ConversationResult.RenderStep(otp): ConversationResult.Render)
+          case _ => requestCode(authId, conversation, credential, factorIndex, proof, subject, asking)
+
+    private def requestCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        factorIndex: Int,
+        proof: ProofInput,
+        subject: String,
+        waited: Boolean,
+    ): Task[ConversationResult.Render] =
       for
         // A ban earned by submitting wrong codes also blocks asking for new ones; the request limit
         // itself is enforced by the tryAcquire below, which checks and charges in one step.
@@ -426,9 +445,9 @@ object ConversationService:
           case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
             challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
           case _ => ZIO.none
-        // A request left pending, which asks for its code from the page, is a request like any other: it takes the step of
-        // the limit and is counted, or a client that answers no challenge could have codes sent outside both.
-        paid = verdict.contains(ChallengeResult.Passed)
+        // The ask of a request left pending, once its pause is over, is that request made again: it took its step and was
+        // counted when it was left, and one code is one step and one count.
+        paid = verdict.contains(ChallengeResult.Passed) || waited
         requestStatus <- submitStatus match
           // Claimed before anything is sent: were this left until after sendOtp, concurrent requests
           // for the same credential would all observe the pre-limit state and each send an OTP.
@@ -449,7 +468,7 @@ object ConversationService:
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
             otpRequested(authId, conversation, credential, AntifraudOutcome.throttled) *>
               accessDenied(authId, conversation)
-          case LimitStatus.Allowed => decideAndSend(authId, conversation, credential, factorIndex, proof, verdict, paid)
+          case LimitStatus.Allowed => decideAndSend(authId, conversation, credential, factorIndex, proof, verdict, paid, waited)
       yield result
 
     /** What the conversation makes of a verifier's answer: a wrong solution is counted (and the answer says how many the
@@ -476,6 +495,7 @@ object ConversationService:
         proof: ProofInput,
         verdict: Option[ChallengeResult],
         paid: Boolean,
+        waited: Boolean,
     ): Task[ConversationResult.Render] =
       val solved = verdict.contains(ChallengeResult.Passed)
       for
@@ -489,6 +509,10 @@ object ConversationService:
             sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else if solved then
             challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None) *>
+              sendInitialOtp(authId, conversation, credential, factorIndex, decision)
+          // A challenge paid by waiting: the code goes out, as the ask of a request that did the work would have sent it.
+          else if waited then
+            challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None, kind = ChallengeVerifier.PauseKind) *>
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
       yield result
@@ -508,22 +532,24 @@ object ConversationService:
         factorIndex: Int,
         decision: Decision,
     ): Task[ConversationResult.Render] =
-      val step = ConversationStep.Otp(
-        real = None,
-        timesRequested = 0,
-        timesSubmitted = 0,
-        factorIndex = factorIndex,
-        rateLimitExceeded = false,
-        lockedSeconds = 0,
-        lastSentAt = None,
-      )
       for
+        now <- Clock.instant
+        step = ConversationStep.Otp(
+          real = None,
+          timesRequested = 0,
+          timesSubmitted = 0,
+          factorIndex = factorIndex,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
+          pendingUntil = Some(now.plusMillis(challengeVerifier.pause.toMillis)),
+        )
         _ <- ZIO.foreachDiscard(conversation.userId)(uid => Observability.setUserId(uid.toString))
         written <- conversationRepository.overwrite(authId, conversation.copy(credential = Some(credential), step = step))
         result <-
           if written then
             // Asked for again by the page, it is the same request: recorded once.
-            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None))
+            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None, kind = ChallengeVerifier.PauseKind))
               .as(ConversationResult.RenderStep(step): ConversationResult.Render)
           else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result
@@ -552,6 +578,7 @@ object ConversationService:
         outcome: AntifraudOutcome,
         decision: Decision,
         level: Option[Int],
+        kind: String = PowChallengeVerifier.Kind,
     ): UIO[Unit] =
       antifraudEvents.challengeStep(
         authId,
@@ -560,7 +587,7 @@ object ConversationService:
         credential,
         outcome,
         decision,
-        PowChallengeVerifier.Kind,
+        kind,
         level,
       )
 

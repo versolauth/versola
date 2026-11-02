@@ -103,6 +103,8 @@ object AntifraudFixture:
        |antifraud {
        |  decision { enabled = true, timeout = "5 seconds" }
        |  tuning { refresh-interval = "1 second" }
+       |  # What a request that cannot answer a challenge waits before its ask for the code is honoured (the specs wait it out).
+       |  challenge { pause = "2 seconds" }
        |  velocity {
        |    enabled = true
        |    flush-interval = "${sync.toMillis} millis"

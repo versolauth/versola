@@ -27,6 +27,10 @@ final class RecordingAntifraudEvents(
   import RecordingAntifraudEvents.Step
 
   private val told = scala.collection.mutable.ListBuffer.empty[Step]
+  private val kindsTold = scala.collection.mutable.ListBuffer.empty[(String, AntifraudOutcome)]
+
+  /** The kind and outcome of each [[challengeStep]], in order. */
+  def kinds: List[(String, AntifraudOutcome)] = synchronized(kindsTold.toList)
 
   def steps: List[Step] = synchronized(told.toList)
 
@@ -96,7 +100,10 @@ final class RecordingAntifraudEvents(
       kind: String,
       level: Option[Int],
   ): UIO[Unit] =
-    zio.ZIO.succeed(synchronized(told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, Some(decision)))).unit
+    zio.ZIO.succeed(synchronized {
+      kindsTold += kind -> outcome
+      told += Step(AntifraudAction.otp_request, authId, clientId, userAgent, credential, outcome, Some(decision))
+    }).unit
 
   override def otpChecked(
       authId: AuthId,

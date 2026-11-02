@@ -61,6 +61,10 @@ trait ChallengeVerifier:
   /** How many wrong solutions a request may make before it is refused. */
   def maxAttempts: Int
 
+  /** How long a request that was left pending (it could not answer a challenge where it was made) waits before its ask for
+    * the code is honoured: the price of skipping the work. */
+  def pause: Duration
+
 object ChallengeVerifier:
   /** Issues nothing, so a `Challenge` decision stays a pause. */
   object off extends ChallengeVerifier:
@@ -68,3 +72,7 @@ object ChallengeVerifier:
     override def verify(subject: ChallengeSubject, token: String, solution: String): UIO[ChallengeResult] = ZIO.succeed(ChallengeResult.Failed(1))
     override def enabled: Boolean = false
     override def maxAttempts: Int = 0
+    override def pause: Duration = Duration.Zero
+
+  /** The `kind` of a challenge paid by waiting (see [[pause]]) in `antifraud_challenges_total`. */
+  val PauseKind = "pause"

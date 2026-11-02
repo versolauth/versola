@@ -5,7 +5,7 @@ import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
 import { canSubmitInline, submitInline, type InlineStep } from '../shared/inline';
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean; resendInterval?: number };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean; resendInterval?: number; pause?: number };
 
 interface FormConfig extends BaseFormConfig {
   step: OtpStep;
@@ -74,9 +74,15 @@ function OtpForm(props: { config: FormConfig }) {
 
   onMount(() => {
     if (!props.config.previewId && lockRemaining() <= 0) inputRef.focus();
-    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend,
-    // which can. If that cannot be done from script the person can ask for it with the button below.
-    if (props.config.step.pending && canSubmitInline(props.config)) requestCode().catch(() => { resending = false; });
+    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend, once
+    // the pause of the step is over (the server honours no ask before: this one, sent sooner, would only bring the page
+    // back). If that cannot be done from script the person can ask for it with the button below.
+    if (props.config.step.pending && canSubmitInline(props.config)) {
+      const pause = props.config.step.pause ?? 0;
+      const ask = () => requestCode().catch(() => { resending = false; });
+      // A margin on top of the seconds still to wait, for the time the page took to arrive and for rounding.
+      if (pause > 0) setTimeout(ask, pause * 1000 + 500); else ask();
+    }
   });
 
   return (

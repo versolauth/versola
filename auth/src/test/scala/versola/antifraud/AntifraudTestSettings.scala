@@ -20,7 +20,7 @@ object AntifraudTestSettings:
 
   val detectors: AntifraudDetectors.Settings = AntifraudDetectors.Settings(enabled = false, interval = 1.minute, retention = 90.days)
 
-  val challenge: PowChallengeVerifier.Settings = PowChallengeVerifier.Settings(enabled = true, ttl = 2.minutes, maxAttempts = 5)
+  val challenge: PowChallengeVerifier.Settings = PowChallengeVerifier.Settings(enabled = true, ttl = 2.minutes, maxAttempts = 5, pause = 20.seconds)
 
   val smsBudget: SmsBudget.Settings = events.smsBudget
   val decision: Antifraud.Settings = events.decision

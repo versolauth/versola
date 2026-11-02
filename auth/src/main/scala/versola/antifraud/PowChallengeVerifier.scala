@@ -29,11 +29,15 @@ object PowChallengeVerifier:
     * @param ttl           how long a challenge may be solved
     * @param maxAttempts   wrong solutions a conversation may make before the request is refused (counted in the conversation,
     *                      not in the token)
+    * @param pause         what a request that could not answer the challenge (a plain form post) pays instead: its ask for
+    *                      the code is honoured only this long after it was left pending. The code page's own timer waits
+    *                      as long, so a legitimate client is not turned away early
     */
   case class Settings(
       enabled: Boolean,
       ttl: Duration,
       maxAttempts: Int,
+      pause: Duration,
   )
 
   /** What the signature covers. */
@@ -96,6 +100,8 @@ object PowChallengeVerifier:
     override def enabled: Boolean = true
 
     override def maxAttempts: Int = settings.maxAttempts
+
+    override def pause: Duration = settings.pause
 
     override def issue(subject: ChallengeSubject, score: Int): UIO[Option[Challenge]] =
       (for

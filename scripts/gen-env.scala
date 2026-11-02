@@ -1978,6 +1978,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    enabled      = true
        |    ttl          = "2 minutes"
        |    max-attempts = 5
+       |    pause        = "20 seconds"   # what a request that cannot answer a challenge waits before its ask for the code is honoured
        |  }
        |}
        |$authMutualTlsBlock$authEstBlock
