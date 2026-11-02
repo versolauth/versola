@@ -58,12 +58,14 @@ object AntifraudListApiSpec extends CentralApiSpec:
     yield result
 
   def spec = suite("Central API: antifraud lists")(
-    test("a call that carries no user id is a bad request, and one without the central credentials is 401") {
+    test("a change that carries no user id is a bad request, a read needs none, and a call without the central credentials is 401") {
       for
         central <- api
-        anonymousAdmin <- central.get(lists, "global" -> "true")
+        value <- device("anon")
+        change <- central.post(lists, entry("device_id", value))
+        read <- central.get(lists, "global" -> "true", "limit" -> "1")
         noCredentials <- central.anonymous.asAdmin(adminId).get(lists)
-      yield assertTrue(anonymousAdmin.status == Status.BadRequest, noCredentials.status == Status.Unauthorized)
+      yield assertTrue(change.status == Status.BadRequest, read.status == Status.Ok, noCredentials.status == Status.Unauthorized)
     },
     test("an admin adds a global entry, lists it, finds it in the audit, and removes it") {
       for

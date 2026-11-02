@@ -76,8 +76,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val prefixEntry = """{"listType":"deny","valueType":"prefix","value":"4915","tenantId":"tenant-a","reason":"sms pumping"}"""
 
-  private def withUser(params: (String, String)*) =
-    base.addQueryParams(QueryParams(("userId" -> userId), params*))
+  private def withParams(first: (String, String), more: (String, String)*) =
+    base.addQueryParams(QueryParams(first, more*))
 
   def spec = suite("AntifraudListController")(
     test("a request without a token, or with one signed by another key, is 401 and reaches nothing") {
@@ -93,7 +93,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         anonymous <- client.batched(Request.get(base))
-        forged <- call(lists, Request.get(withUser()), wrongKey)
+        forged <- call(lists, Request.get(base), wrongKey)
       yield assertTrue(anonymous.status == Status.Unauthorized, forged.status == Status.Unauthorized, lists.list.calls.isEmpty)
     },
     test("POST creates the entry as the user central names and answers 201 with it") {
@@ -144,18 +144,16 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         reason <- invalid.body.asString
       yield assertTrue(invalid.status == Status.BadRequest, reason == "not an IP address")
     },
-    test("a malformed body, an unknown list type, and a missing or malformed userId are 400") {
+    test("a malformed body, an unknown list type, and a missing or malformed userId on a change are 400") {
       val lists = stub[AntifraudLists]
       for
         malformed <- call(lists, Request.post(base, Body.fromString("{")))
         unknown <- call(lists, Request.post(base, entryBody("""{"listType":"nope","valueType":"ip","value":"1.1.1.1"}""")))
         noUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry)))
         badUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry.dropRight(1) + ""","userId":"nope"}""")))
-        noUser <- call(lists, Request.get(base))
-        badUser <- call(lists, Request.get(base.addQueryParam("userId", "nope")))
         noUserOnDelete <- call(lists, Request.delete(base.addQueryParam("id", entryId.toString)))
       yield assertTrue(
-        List(malformed, unknown, noUserInBody, badUserInBody, noUser, badUser, noUserOnDelete).map(_.status) == List.fill(7)(Status.BadRequest),
+        List(malformed, unknown, noUserInBody, badUserInBody, noUserOnDelete).map(_.status) == List.fill(5)(Status.BadRequest),
         lists.create.calls.isEmpty,
         lists.list.calls.isEmpty,
         lists.delete.calls.isEmpty,
@@ -171,7 +169,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("GET lists with the filter and the page") {
       val lists = stub[AntifraudLists]
-      val url = withUser("listType" -> "deny", "valueType" -> "prefix", "tenantId" -> "tenant-a", "limit" -> "10", "offset" -> "20")
+      val url = withParams("listType" -> "deny", "valueType" -> "prefix", "tenantId" -> "tenant-a", "limit" -> "10", "offset" -> "20")
       for
         _ <- lists.list.succeedsWith(List(stored))
         response <- call(lists, Request.get(url))
@@ -193,7 +191,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       "GET lists: global=true asks for the global entries; with a tenant, an unknown value, a bad number or flag, or a page out of range it is 400",
     ) {
       val lists = stub[AntifraudLists]
-      def get(params: (String, String)*) = call(lists, Request.get(withUser(params*)))
+      def get(first: (String, String), more: (String, String)*) = call(lists, Request.get(withParams(first, more*)))
       for
         _ <- lists.list.succeedsWith(Nil)
         global <- get("global" -> "true")
@@ -219,7 +217,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("DELETE answers 204 as the named user, 404 for an entry that is not there, 400 for a bad id") {
       val lists = stub[AntifraudLists]
-      def delete(id: String) = call(lists, Request.delete(withUser("id" -> id)))
+      def delete(id: String) = call(lists, Request.delete(withParams("id" -> id, "userId" -> userId)))
       for
         _ <- lists.delete.succeedsWith(true)
         gone <- delete(entryId.toString)
@@ -252,9 +250,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- lists.audit.succeedsWith(List(record))
         ok <-
-          call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> entryId.toString, "limit" -> "5"))))
+          call(lists, Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> entryId.toString, "limit" -> "5"))))
         body <- ok.body.asString
-        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> "nope"))))
+        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> "nope"))))
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[List[AntifraudListAudit]] == Right(List(record)),

@@ -13,11 +13,11 @@ trait AntifraudListService:
 
   def preview(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse]
 
-  def list(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, ListEntriesResponse]
+  def list(query: ListEntriesQuery): IO[AntifraudListError | Throwable, ListEntriesResponse]
 
   def delete(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit]
 
-  def audit(entryId: Option[UUID], limit: Option[PageLimit], userId: UserId): IO[AntifraudListError | Throwable, AuditResponse]
+  def audit(entryId: Option[UUID], limit: Option[PageLimit]): IO[AntifraudListError | Throwable, AuditResponse]
 
 object AntifraudListService:
   val live: ZLayer[AuthClient, Nothing, AntifraudListService] =
@@ -30,11 +30,11 @@ object AntifraudListService:
     override def preview(request: NewListEntryRequest): IO[AntifraudListError | Throwable, PreviewResponse] =
       authClient.previewAntifraudListEntry(request)
 
-    override def list(query: ListEntriesQuery, userId: UserId): IO[AntifraudListError | Throwable, ListEntriesResponse] =
-      authClient.listAntifraudListEntries(query, userId).map(ListEntriesResponse(_))
+    override def list(query: ListEntriesQuery): IO[AntifraudListError | Throwable, ListEntriesResponse] =
+      authClient.listAntifraudListEntries(query).map(ListEntriesResponse(_))
 
     override def delete(request: DeleteListEntryRequest): IO[AntifraudListError | Throwable, Unit] =
       authClient.deleteAntifraudListEntry(request)
 
-    override def audit(entryId: Option[UUID], limit: Option[PageLimit], userId: UserId): IO[AntifraudListError | Throwable, AuditResponse] =
-      authClient.antifraudListAudit(entryId, limit, userId).map(AuditResponse(_))
+    override def audit(entryId: Option[UUID], limit: Option[PageLimit]): IO[AntifraudListError | Throwable, AuditResponse] =
+      authClient.antifraudListAudit(entryId, limit).map(AuditResponse(_))

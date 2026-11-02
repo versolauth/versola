@@ -57,9 +57,8 @@ object AntifraudListController extends Controller:
         global <- request.queryZIO[Option[Boolean]]("global")
         limit <- request.queryZIO[Option[PageLimit]]("limit")
         offset <- request.queryZIO[Option[PageOffset]]("offset")
-        userId <- request.queryZIO[UserId]("userId")
         query = ListEntriesQuery(listType = listType, valueType = valueType, tenantId = tenantId, global = global, limit = limit, offset = offset)
-        response <- guarded(service.list(query, userId).map(entries => Response.json(entries.toJson)))
+        response <- guarded(service.list(query).map(entries => Response.json(entries.toJson)))
       yield response
     }
 
@@ -81,8 +80,7 @@ object AntifraudListController extends Controller:
         service <- ZIO.service[AntifraudListService]
         entryId <- request.queryZIO[Option[UUID]]("entryId")
         limit <- request.queryZIO[Option[PageLimit]]("limit")
-        userId <- request.queryZIO[UserId]("userId")
-        response <- guarded(service.audit(entryId, limit, userId).map(records => Response.json(records.toJson)))
+        response <- guarded(service.audit(entryId, limit).map(records => Response.json(records.toJson)))
       yield response
     }
 

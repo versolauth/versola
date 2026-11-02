@@ -45,7 +45,7 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val noQuery = ListEntriesQuery(listType = None, valueType = None, tenantId = None, global = None, limit = None, offset = None)
 
   def spec = suite("AntifraudListService")(
-    test("every call goes to auth with the admin's userId, and the answers come back") {
+    test("every call goes to auth, the ones that change something with the admin's userId, and the answers come back") {
       val auth = stub[AuthClient]
       val service = AntifraudListService.Impl(auth)
       val delete = DeleteListEntryRequest(id = entryId, userId = admin)
@@ -57,9 +57,9 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- auth.antifraudListAudit.succeedsWith(Nil)
         created <- service.create(request)
         previewed <- service.preview(request)
-        listed <- service.list(noQuery, admin)
+        listed <- service.list(noQuery)
         _ <- service.delete(delete)
-        audited <- service.audit(Some(entryId), Some(PageLimit(3)), admin)
+        audited <- service.audit(Some(entryId), Some(PageLimit(3)))
       yield assertTrue(
         created == stored,
         previewed == PreviewResponse(matched = None, total = 0),
@@ -67,9 +67,9 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
         audited == AuditResponse(Nil),
         auth.createAntifraudListEntry.calls == List(request),
         auth.previewAntifraudListEntry.calls == List(request),
-        auth.listAntifraudListEntries.calls == List((noQuery, admin)),
+        auth.listAntifraudListEntries.calls == List(noQuery),
         auth.deleteAntifraudListEntry.calls == List(delete),
-        auth.antifraudListAudit.calls == List((Some(entryId), Some(PageLimit(3)), admin)),
+        auth.antifraudListAudit.calls == List((Some(entryId), Some(PageLimit(3)))),
       )
     },
     test("auth's refusals come through unchanged") {

@@ -310,9 +310,8 @@ object AuthClientSpec extends ZIOSpecDefault:
             limit = Some(PageLimit(5)),
             offset = None,
           ),
-          userId,
         )
-        _ <- client.antifraudListAudit(None, Some(PageLimit(3)), userId)
+        _ <- client.antifraudListAudit(None, Some(PageLimit(3)))
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudListEntry(DeleteListEntryRequest(id = entryId, userId = userId))
         _ <- TestClient.addRoutes(
@@ -329,9 +328,10 @@ object AuthClientSpec extends ZIOSpecDefault:
         requests(0).url.path.segments == Chunk("antifraud", "lists"),
         requests(0).url.queryParams.queryParam("listType").contains("deny"),
         requests(0).url.queryParams.queryParam("limit").contains("5"),
-        requests(0).url.queryParams.queryParam("userId").contains(userId.toString),
+        requests(0).url.queryParams.queryParam("userId").isEmpty,
         requests(1).url.path.segments == Chunk("antifraud", "lists", "audit"),
-        requests(1).url.queryParams.queryParam("userId").contains(userId.toString),
+        requests(1).url.queryParams.queryParam("limit").contains("3"),
+        requests(1).url.queryParams.queryParam("userId").isEmpty,
         requests(2).method == Method.DELETE,
         requests(2).url.queryParams.queryParam("id").contains(entryId.toString),
         requests(2).url.queryParams.queryParam("userId").contains(userId.toString),
@@ -378,7 +378,7 @@ object AuthClientSpec extends ZIOSpecDefault:
       for
         client <- ZIO.service[AuthClient]
         _ <- TestClient.addRoutes(answer(Status.BadRequest, "not an IP address"))
-        invalid <- client.listAntifraudListEntries(ListEntriesQuery(None, None, None, None, None, None), userId).either
+        invalid <- client.listAntifraudListEntries(ListEntriesQuery(None, None, None, None, None, None)).either
         _ <- TestClient.addRoutes(answer(Status.NotFound, ""))
         missing <- client.deleteAntifraudListEntry(delete).either
         _ <- TestClient.addRoutes(answer(Status.InternalServerError, "boom"))
