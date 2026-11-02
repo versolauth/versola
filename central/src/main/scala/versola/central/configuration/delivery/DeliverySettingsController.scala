@@ -95,9 +95,9 @@ object DeliverySettingsController extends Controller:
         hasOtpProviderPassword = record.exists(_.otpProviderPassword.isDefined),
       )
 
-  /** `stored` is false until the first save and again after a delete: while it is false auth
-    * reads the `smtp` and `otp-provider` blocks of its own `auth.conf`. A record that was saved
-    * with both blocks empty still counts as stored.
+  /** `stored` is false until the first save and again after a delete. Auth decides each channel on its own: a block
+    * saved here is used (or, switched off, sends nothing), and a block that is not saved here is read from its own
+    * `auth.conf`, whether or not the other one is. A record saved with both blocks empty still counts as stored.
     */
   case class SyncResponse(
       stored: Boolean,

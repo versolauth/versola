@@ -618,8 +618,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   under it have expired.
 
 - **Antifraud configuration.** Each antifraud key has exactly one home.
-  1. **Tuned during an attack** (thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow
-     rules): the stored settings below, changed through central's admin API, with no restart.
+  1. **Tuned during an attack** (the mode, thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty,
+     shadow rules): the stored settings below, changed through central's admin API, with no restart.
   2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**
      (but `lists.max-broad-ttl`, which has a default so that a config written before it existed keeps working), as
      for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
@@ -637,15 +637,18 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
          timeout        = "20 milliseconds"
          failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails or
                                        # is too slow, or the stored settings have not been read yet
+         fake-send-delay = "400 milliseconds"  # how long a fake send waits until a real send has been timed (see "A fake send")
        }
        velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
        tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
        lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days",
                   max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
-       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5 }
+       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
      }
      ```
+     `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
+     given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
   3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
      queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
      `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
@@ -654,12 +657,20 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
   through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
   `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
-  configuration has no key for any of them: they are the score thresholds (`challengeAt`, `blockAt`), the
+  configuration has no key for any of them: they are the `mode` (`shadow` or `enforce`, below), the score thresholds (`challengeAt`, `blockAt`), the
   proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
   rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
   `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
   number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
-  holds an honest user's request back, and a fake send answers as soon as a real one would, without sending.
+  holds an honest user's request back, and a fake send answers as late as a real one recently did, without sending (*A fake
+  send*, below).
+
+  **Every key has a default, and a stored row that lacks one is read with it** (nothing limited or weighed, and `mode`
+  `shadow`): the version that adds a key must not make the row of the version before it unreadable, which would start the
+  service in `failure-action`. A key that is there with a wrong value is still an error. A `PUT` is held to more than ranges
+  (`400`, with the reason as text): `challengeAt` may not be above `blockAt` when both are set, `blockAt` is at least 10 when
+  set, `pow.maxDifficulty` is at most 24, `sentPerHour` and `minVolume` are 0 or at least 20, and a name in `ruleWeights` or
+  `shadowRules` must be a rule of the catalogue below (a typo would match nothing and look like a rule that never fires).
 
   There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
   own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
@@ -672,15 +683,58 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   database unreadable has none yet, and decides every request as `decision.failure-action` says (rule
   `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity counters count) until a read succeeds.
 
-  *Recommended start against SMS pumping: shadow mode.* With `decision.enabled` and no threshold set (and
-  `failure-action: allow`) the engine counts and scores every OTP request and writes the score and the fired rules to the
-  event log (`af_event.score`, `af_event.rules`), but enforces nothing. Put the limits in (`PUT` replaces every key, so read the settings first):
+  **Shadow mode (`mode`, default `shadow`).** In `shadow` the engine computes the whole decision (the score and what it
+  comes to against `challengeAt` and `blockAt`, the actions the lists force (`deny`, `fake`), and the SMS budget) and
+  **acts on none of it**: every request is let through as `Allow`, a real code is sent, and what would have happened is
+  recorded. In `enforce` the decision is acted on. The mode is the only switch between them; the finer knobs stay inside
+  `enforce`: a list entry with `shadow` set, and `shadowRules`, only record whatever the mode is. It is the default of
+  every deployment (a `DELETE` of the settings, the first row bootstrap writes, and a row without the key all give
+  `shadow`), so turning `decision.enabled` on changes nothing for the traffic until someone `PUT`s `"mode": "enforce"`.
+
+  What shadow leaves to read:
+
+  - `af_event` (migration `V0025` adds `would_action`): `decision` is what was done and `would_action` what the engine
+    decided, with `score` and `rules`. A decision is written whenever either of the two is not `Allow`, or a rule fired.
+    `SELECT would_action, count(*) FROM af_event WHERE at > now() - interval '1 day' GROUP BY 1` is what enforcing would have
+    done to yesterday's traffic. The SMS budget has no score: a code to a range it would have closed is recorded as
+    `would_action = 'Block'` with the rule `sms_budget` (`sent` is its outcome, because it was). The `receive-http` log line
+    carries `antifraud.would_action` next to `decision`.
+  - Metrics, none of them with a tenant or a value as a label:
+
+    | metric | labels |
+    |---|---|
+    | `antifraud_decisions_total` | `action` (what was done), `would_action` (what was decided) |
+    | `antifraud_rules_fired_total` | `rule` (a name of the catalogue), `shadow` (`true` for a rule in `shadowRules`) |
+    | `antifraud_evaluation_failed_total` | `reason`: `timeout`, `error`, `tuning_unavailable` |
+    | `antifraud_lists_refreshed_timestamp_seconds`, `antifraud_tuning_refreshed_timestamp_seconds` | gauges: when the lists and the stored settings were last read (or found unchanged); alert on `time() - ...` growing, since a refresh that hangs moves no failure counter |
+    | `antifraud_sms_budget_refused_total` | `reason` (`cap`, `conversion`), `mode` (`shadow`, `enforce`) |
+    | `antifraud_list_hits_total` | `list_type`, `value_type`, `shadow` (a hit on an entry that only records) |
+
+    and the older ones: `antifraud_challenges_total{kind,outcome}`, `antifraud_events_*`, `antifraud_velocity_*`,
+    `antifraud_*_refresh_failed_total`.
+  - **A failed evaluation is a decision of its own.** A rule that throws or an evaluation past `decision.timeout` is
+    `failure-action` with the rule `antifraud_error`; the settings not read yet is `failure-action` with
+    `antifraud_tuning_unavailable`. In `shadow` the request is let through and `failure-action` is the would-be action;
+    where the settings have not been read the mode is not known either, so `failure-action` applies as it says. Each is
+    counted in `antifraud_evaluation_failed_total{reason}`: **alert on it increasing**, since a rollout that quietly
+    fails open measures nothing.
+
+  *The rule catalogue*, the names `ruleWeights` and `shadowRules` accept (`GET /antifraud/rules` lists them once it is
+  exposed; the code has them as `Antifraud.ruleNames`): `velocity_<key>_<window>` for the key `phone`, `ip`, `device`,
+  `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
+  and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
+  value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
+  `email_domain`; for example `deny_list:cidr`). The two stand-ins of a failed evaluation are not rules.
+
+  *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
+  (`PUT` replaces every key, so read the settings first):
 
   ```json
   PUT /antifraud/settings
   {
     "settings": {
-      "challengeAt": 0, "blockAt": 0,
+      "mode": "shadow",
+      "challengeAt": 20, "blockAt": 50,
       "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
       "thresholds": {
         "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
@@ -697,17 +751,28 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   }
   ```
 
-  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `smsLimits` is the one setting of the profile that
-  acts at once: it refuses the codes above the limit, so size it from the range statistics first, and add
-  `"shadowRules"` for the velocity rules you want to watch before they count.) Run it for at least a week, look at which
-  rules fire for traffic you know to be good (`af_event`, the proposals of the detectors), and only then turn on
-  enforcement with `challengeAt` and `blockAt` above the scores of the good traffic. `DELETE` the settings to go
-  back; nothing it recorded needs undoing.
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. Size `smsLimits` from the range statistics first.)
+  Run it for at least a week and read what it says it would do: `would_action` in `af_event` against traffic you know to be
+  good, `antifraud_decisions_total{action="Allow",would_action!="Allow"}`, `antifraud_rules_fired_total` for the rules
+  that carry it, `antifraud_sms_budget_refused_total{mode="shadow"}` for the ranges the budget would have closed, the proposals of the detectors. Raise a
+  threshold, or put a noisy rule in `shadowRules`, until what would be refused is what you would refuse; then `PUT` the same
+  settings with `"mode": "enforce"`. Going back is `"mode": "shadow"` (or a `DELETE`, which also puts the limits off); nothing
+  recorded needs undoing.
+
+  **A fake send.** A request the engine fakes (a `fake` list entry, or a number that is no user's, which is faked whatever
+  the engine says) is answered as a real send would be, and nothing is sent. Were the fake answered at once, a pumper who
+  times the POSTs would see that the fast ones are never delivered and drop those numbers, which would leave `fake` only the
+  false positives. So a fake send is as slow as one of the last 256 real provider sends took, picked at random (what is left
+  of it after the fake's own work, which a real send's time includes too; a ring
+  held in memory per instance, no lock); until one has been timed, after a start, it waits `decision.fake-send-delay`
+  (400 ms). While `decision.enabled` is `false` it does not wait. In `shadow` nothing is faked, so nothing waits.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and seven days ahead, at start-up and every six hours) and drops the ones older than
-  `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, so a row
-  can live up to one day longer than the retention). The migration creates the parent only, and a partition can be created or dropped
+  `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, and the rows of
+  the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 rows each under its own
+  statement timeout and at most 200 batches a run, so the log keeps the retention to the minute and no longer, and the
+  first run after an upgrade on a busy deployment makes progress instead of timing out on a day of rows). The migration creates the parent only, and a partition can be created or dropped
   only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
   read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
   different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
@@ -730,6 +795,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
   estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
   (`reason="throttled_shed"`), and what is still dropped is counted, so read statistics together with that counter.
+  The user agent is stored whole (a header is at most 8 KB), so that the hash an operator makes of it for a `ua_hash` entry
+  matches what a request carries and what `preview` counts, however long it is.
   Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
   (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
   the match between events before and after it, nothing else. A config written before the secret existed has no
@@ -779,9 +846,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   counted from the rolled-up requests of `af_dest_stats`, so a prefix longer than the 4 digits it keeps is counted as
   the range it falls in, and the guard is as old as the last rollup; an address, network, ASN or mail domain has no
   column in the log and is not counted) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
-  `shadow_list:<type>` in the fired rules). **`fake` is for confirmed fraud only:**
+  `shadow_list:<type>` in the fired rules; unrelated to the tuning's `mode`, which holds back the enforcing ones too). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
-  I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type}`. Starting waits up to
+  I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type,shadow}`. Starting waits up to
   30 seconds for the first successful load so that lists are enforced from the first
   request; if it fails it starts without them, logs it and retries every second. **Rotating
   `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
@@ -815,7 +882,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
   an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
   matters more than the pumping it protects against, leave `sentPerHour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
-  and `antifraud_sms_budget_refused_total` counts it. The counts are kept in memory per instance, over the last
+  and `antifraud_sms_budget_refused_total{reason,mode}` counts it (`reason` is `cap` or `conversion`). **In `shadow` mode
+  the code is sent**, counted as sent all the same, the metric says `mode="shadow"` and the event records the would-be refusal
+  (`would_action = 'Block'`, rule `sms_budget`); that is how a limit is sized before it closes anything. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
   10000 ranges are tracked. A full table makes room for a new range by evicting the one with the fewest codes sent in
@@ -943,41 +1012,54 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
   nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
   paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
-  charged again. The same holds on the pending step below (the post that leaves it pays; the page's own ask for the code and
-  its answer do not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is
-  refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
+  charged again. The same holds on the pending step below (the post that leaves it pays; the ask for the code, once honoured,
+  does not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
   hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
   phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
   higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
   `maxDifficulty` (18).
   The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
   names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
-  is made), the difficulty, the seed, the wrong solutions so far, and which code of the conversation it is for (the moment
-  the last one was sent): **sending a code spends every challenge made before it**, which is what makes a solution
-  single-use, with no state kept. A wrong solution is recorded (`challenge_failed`) and a new challenge made, with the
-  count of wrong ones in it; the `max-attempts`th (5) refuses the request (`blocked`). **That bounds only a client that
-  hands the new token back:** one that keeps using its first token, or sends a malformed one, is not counted. The
-  real bound is the per-credential OTP request limit, which a wrong answer is charged against, and the token's `ttl`; a guess
-  costs the server one SHA-256. The page's ask for a code from the pending step is the one request that is free and can be
-  repeated: while the decision is still `Challenge` it only gets a challenge (a MAC), and a right answer sends one code
-  and ends the step; once the decision has become `Allow` (the counters have cooled, a list entry expired) the ask itself
-  sends the code, once, as the request it stands for would have.
-  **A challenged request that cannot answer is never sent, and is no longer refused:** a plain form post (the password
-  form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) is left on the code
-  step with nothing sent (`challenged` in the log, once), and that page asks for the code by itself as a resend, which
-  it can answer like the credential form does and which is the same request (not counted or charged again). When the code is sent the page shows it in place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
-  cannot answer there either (no JavaScript, an unsolvable kind) stays on the page and gets no code. Only a verifier that is
+  is made), the difficulty, the seed, which code of the conversation it is for (the moment the last one was sent) and how
+  many challenges the conversation has solved so far. **The state is the conversation's** (`auth_conversations`,
+  `challenge_failed` and `challenge_solved`, migration `V0025`), kept by statements of their own, not in the token, which a
+  client can keep and send again: a wrong solution is counted there (`challenge_failed`, in the event log too) and a new
+  challenge made; the `max-attempts`th (5) of a conversation refuses the request (`blocked`), however many tokens it
+  holds. A right solution is **spent in the same step it is accepted**: the conversation moves its solved count on, once,
+  for the one request that gets there first, so the same token (or one issued before it) cannot pass again, and the wrong
+  solutions so far are forgotten; a replay of it is a wrong solution and is charged like one. Sending a code also spends
+  every challenge made before it. A guess costs the server one SHA-256 and a statement.
+  **A client with script that is challenged does work; one without waits `challenge.pause`.** A plain form post (the
+  password form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) cannot do the
+  work, so it is left on the code step with nothing sent (`challenged` in the log, once) and the step is stamped with the
+  moment its pause ends (`antifraud.challenge.pause`, 20 seconds after it was left; it travels in the conversation, no
+  migration). The code page then asks for the code from script, at once, and is given the proof of work like the credential
+  form: a person who came through the password form and has script pays with work and waits for nothing. An ask made as a
+  plain post, which carries no proof, is **honoured only after the pause**: sooner it is answered with the same page, no
+  code and no error, and it is not charged, counted or recorded. (A script's ask also waits the pause when the proof of
+  work is off, `challenge.enabled = false`, the only friction there is.) A solved answer, and an ask honoured after the
+  pause, are the request that was left pending, made again: judged again (a block, a fake and the lists still apply; for
+  the pause, a decision that is still `Challenge` no longer stops it) and send the code with **no further step of the OTP
+  request limit and no further velocity record: such a client pays one step of the limit per code**. An attacker without
+  script therefore gets at most one code per pause per conversation, besides the limits above; one with script, one proof
+  of work per code. The pause is counted as a challenge of its own kind, `antifraud_challenges_total{kind="pause"}`:
+  `outcome="challenged"` for a step left pending and `outcome="challenge_passed"` for an ask honoured after waiting, so the
+  dashboard shows how many challenges are paid by waiting and how many by work (`kind="pow"`, which a pending step that
+  ends in a proof of work is counted under). When the code is sent the page shows it in place (the wait for the next one
+  starts again and the code field is focused) instead of reloading. A client that
+  cannot answer a challenge at all (an unsolvable kind) stays on the page and gets no code. Only a verifier that is
   off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
   `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
   times out to ask every request for a proof.
-  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes) and `max-attempts` (5): the
-  switch and what a challenge lives for. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
+  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes), `max-attempts` (5) and `pause`
+  (20 seconds, above): the switch, what a challenge lives for and what a client that cannot do the work waits instead. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
   `maxDifficulty` 18, `scoreStep` 15, in zero bits of a hash), so that it can be raised during an attack; the score it
   starts at is the tuned `challengeAt`. The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
   column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
   `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and `antifraud_challenges_total{kind,outcome}`
   counts them. A script that does the work gets its code: the proof makes an attack cost CPU, it does not stop one, so keep
-  the lists, the velocity limits and the SMS budget. Only the proof of work is built; the `ChallengeVerifier` interface and
+  the lists, the velocity limits and the SMS budget. A challenge is a decision to act on and is only put in `enforce`; in `shadow`
+  the request is let through and `would_action` says `Challenge`. Only the proof of work is built; the `ChallengeVerifier` interface and
   the `kind` and `params` of the answer are where a provider's check (Turnstile and the like, drawn by the same page) is added.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
@@ -1705,11 +1787,27 @@ notification and refuses to start, naming this setting, if it cannot.
   shows how limits interact with the heap settings). With `network_mode: host`, each of three JVMs
   sizes its heap from the *host's* memory (`MaxRAMPercentage=75`); `doctor`/`configure` check
   available memory first, which lowers the risk but doesn't remove it.
-- **No supported way to change configuration on `vps`** (OTP provider, SMTP, …), so **SMTP and SMS are
-  not configured in prod**: password resets and additional admin accounts can't deliver a temporary
-  password. Being closed by versolauth/versola#832: central already stores the delivery settings
-  (`PUT /configuration/delivery-settings`; migration `V1033`, one new table, additive, no action), but
-  auth does not read them yet, so until that part lands a saved record changes nothing.
+- **No supported way to change the rest of `auth.conf` on `vps`**, so its `smtp` and `otp-provider`
+  blocks are not there. The delivery channels are the exception (versolauth/versola#832): the SMTP
+  server and the SMS provider are set in the admin console, on **Delivery** (`security:manage`), kept in
+  central (`/configuration/delivery-settings`, migration `V1033`, one new table, additive, no action) and
+  picked up by auth at its next configuration refresh (5 minutes on `vps`) without a restart. Until
+  one is saved, a `vps` deployment has no channel: password resets and additional admin accounts can't
+  deliver a temporary password. Each channel is decided on its own, so a block that is not saved in
+  central keeps using the matching block of `auth.conf`, if there is one. Upgrade in any order: an auth that
+  is older does not read the record, and an auth that is newer than its central treats the missing
+  endpoint as nothing saved.
+
+  **Behaviour changes to know before upgrading** (the timeouts apply to every deployment, also one that sends
+  through `auth.conf` only):
+  - SMTP connections now give up after 10 seconds without an answer (connect, read and write), and the
+    call to an SMS provider after 10 seconds in all. Neither had a limit; a server that was slower than
+    that and worked will now fail.
+  - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
+  - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
+    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
+    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short

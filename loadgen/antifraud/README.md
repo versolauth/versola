@@ -96,7 +96,8 @@ The limits are stored settings, not keys of the config: in a deployment they are
 `PUT /antifraud/settings` (deploy.md), and `auth` rereads them within `antifraud.tuning.refresh-interval` (5 s).
 The local stack is driven by the `utils` client, which has no antifraud permission, so the settings of each profile
 are written straight into `af_settings` by the `tune.sh` of the runbook (below), after `auth` has started with the
-profile and before the run.
+profile and before the run. A profile that measures what is refused or challenged needs `"mode": "enforce"` in them: the
+default mode is `shadow`, which decides, records the would-be action and lets everything through.
 
 **The scripts that drive a whole ladder of runs, the settings of each profile and the recorded runs are not here:**
 they are in [versolauth/loadgen-runbook](https://github.com/versolauth/loadgen-runbook), `scripts/antifraud-local/`

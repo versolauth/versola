@@ -171,16 +171,16 @@ object AntifraudLists:
     private def add(a: ListHit, b: ListHit): ListHit =
       ListHit(a.id, a.count + b.count, if a.lastAt.isAfter(b.lastAt) then a.lastAt else b.lastAt)
 
-    private val kinds = ConcurrentHashMap[(AntifraudListType, AntifraudValueType), java.lang.Long]()
+    private val kinds = ConcurrentHashMap[(AntifraudListType, AntifraudValueType, Boolean), java.lang.Long]()
 
     def hit(entry: ListedValue, at: Instant): Unit =
       hits.merge(entry.id, ListHit(entry.id, 1, at), add)
-      kinds.merge((entry.listType, entry.valueType), 1L, _ + _)
+      kinds.merge((entry.listType, entry.valueType, entry.shadow), 1L, _ + _)
       ()
 
-    /** Hits by list and kind of value since the last call, for the metric. */
-    def drainKinds(): List[((AntifraudListType, AntifraudValueType), Long)] =
-      val taken = List.newBuilder[((AntifraudListType, AntifraudValueType), Long)]
+    /** Hits by list, kind of value and whether the entry only records, since the last call, for the metric. */
+    def drainKinds(): List[((AntifraudListType, AntifraudValueType, Boolean), Long)] =
+      val taken = List.newBuilder[((AntifraudListType, AntifraudValueType, Boolean), Long)]
       kinds.keySet.forEach(k => Option(kinds.remove(k)).foreach(n => taken += k -> n.longValue))
       taken.result()
 
@@ -350,6 +350,8 @@ object AntifraudLists:
                 *> ZIO
                   .logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
                   .when(snapshot.skipped > 0)
+          // Read, or found unchanged: either way the lists are as new as the table.
+          _ <- AntifraudListMetrics.refreshed(now)
         yield true).foldCauseZIO(
           cause =>
             AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
@@ -360,7 +362,9 @@ object AntifraudLists:
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
-      ZIO.succeed(cache.drainKinds()).flatMap(kinds => ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, n))) *>
+      ZIO.succeed(cache.drainKinds()).flatMap(kinds =>
+        ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, kind._3, n)),
+      ) *>
         ZIO.succeed(cache.drain()).flatMap: hits =>
           ZIO.when(hits.nonEmpty):
             repository.addHits(hits).foldCauseZIO(
@@ -403,9 +407,16 @@ object AntifraudListMetrics:
   val refreshFailed: UIO[Unit] = refreshFailedTotal.increment
   val flushFailed: UIO[Unit] = flushFailedTotal.increment
 
-  /** By list and kind of value, never by value. */
-  def hits(listType: AntifraudListType, valueType: AntifraudValueType, n: Long): UIO[Unit] =
+  private val refreshedGauge = Metric.gauge("antifraud_lists_refreshed_timestamp_seconds")
+
+  /** The lists were read (or found unchanged) at `at`: a gauge of a time, so that a refresh that hangs, which moves no
+    * failure counter, shows as the age of the last success. */
+  def refreshed(at: Instant): UIO[Unit] = refreshedGauge.set(at.getEpochSecond.toDouble)
+
+  /** By list, kind of value and whether the entry is a `shadow` one (matched, enforcing nothing), never by value. */
+  def hits(listType: AntifraudListType, valueType: AntifraudValueType, shadow: Boolean, n: Long): UIO[Unit] =
     Metric.counter("antifraud_list_hits_total").tagged(Set(
       MetricLabel("list_type", listType.toString),
       MetricLabel("value_type", valueType.toString),
+      MetricLabel("shadow", shadow.toString),
     )).incrementBy(n)

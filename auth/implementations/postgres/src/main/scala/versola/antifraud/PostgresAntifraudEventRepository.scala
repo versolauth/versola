@@ -14,8 +14,12 @@ import java.time.{Instant, LocalDate, ZoneOffset}
   *                         that hangs (a partition being locked, a slow disk) would otherwise hold the single writer
   *                         fiber while the queue fills and drops
   */
-class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration = 5.seconds, statementTimeout: Duration = 30.seconds)
-  extends AntifraudEventRepository,
+class PostgresAntifraudEventRepository(
+    xa: TransactorZIO,
+    lockTimeout: Duration = 5.seconds,
+    statementTimeout: Duration = 30.seconds,
+    pruneBatch: Int = 5000,
+) extends AntifraudEventRepository,
     BasicCodecs:
   import PgCodec.SeqCodec
   import PostgresAntifraudEventRepository.*
@@ -34,15 +38,34 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
         batchUpdate(events): event =>
           sql"""
             INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
-                                  subject_hash, dest_prefix, user_agent, decision, score, rules)
+                                  subject_hash, dest_prefix, user_agent, decision, score, rules, would_action)
             VALUES (
               ${event.id}, ${event.at}, ${event.tenantId.map(identity[String])}, ${event.clientId: String},
               ${event.conversationId}, ${event.action.toString}, ${event.outcome.toString},
               ${event.channel.toString}, ${event.subjectHash}, ${event.destPrefix}, ${event.userAgent},
-              ${event.decision}, ${event.score}, ${event.rules}
+              ${event.decision}, ${event.score}, ${event.rules}, ${event.wouldAction}
             )
           """.update
       .unit
+
+  override def pruneEvents(before: Instant): Task[Unit] =
+    // The partition the limit falls in is the only one that can hold rows older than it (the ones before are dropped); the
+    // lower bound lets the planner leave every other partition alone. A day's rows are many on a busy deployment, and the first run
+    // after an upgrade would delete all of them in one statement and time out without progress, every time: so it goes in batches,
+    // each its own transaction under its own timeout, and a run stops after `MaxPruneBatches` (the next one goes on).
+    val dayStart = before.atOffset(ZoneOffset.UTC).toLocalDate.atStartOfDay().atOffset(ZoneOffset.UTC)
+    val limit = before.atOffset(ZoneOffset.UTC)
+    val batch =
+      xa.transactMeasured("prune-antifraud-events"):
+        timed()
+        sql"""
+          DELETE FROM af_event
+          WHERE at >= $dayStart AND at < $limit
+            AND id IN (SELECT id FROM af_event WHERE at >= $dayStart AND at < $limit LIMIT $pruneBatch)
+        """.update.run()
+    def loop(remaining: Int): Task[Unit] =
+      batch.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(remaining - 1) else ZIO.unit)
+    loop(MaxPruneBatches)
 
   override def rollupStats(from: Instant, to: Instant, prefixLength: Int, interval: Duration): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):
@@ -161,6 +184,9 @@ object PostgresAntifraudEventRepository:
   private val AdvisoryLock = 7430001L
 
   private val RollupLock = 7430002L
+
+  /** Batches of one prune run: with the 5-minute pace that is far more than the rows a day can hold, and it bounds the run. */
+  private val MaxPruneBatches = 200
 
   private val suffix = DateTimeFormatter.BASIC_ISO_DATE
 

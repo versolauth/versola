@@ -45,8 +45,21 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
     * range the budget has no room to track is let through ([[Decision.Untracked]]): the limit must not become the
     * thing an attacker fills up. */
   def decide(tenantId: Option[TenantId], prefix: String, at: Instant, charge: Boolean, conversionBreaker: Boolean = true): Decision =
+    assess(tenantId, prefix, at, charge, conversionBreaker, enforce = true).decision
+
+  /** [[decide]], and why a range is closed. Without `enforce` (the `shadow` mode of the tuning) a closed range is
+    * answered [[Decision.WouldRefuse]] and the code is counted all the same, since it is going to be sent: the window
+    * then holds what really went out, which is what the limit would have been applied to. */
+  def assess(
+      tenantId: Option[TenantId],
+      prefix: String,
+      at: Instant,
+      charge: Boolean,
+      conversionBreaker: Boolean,
+      enforce: Boolean,
+  ): Verdict =
     val limit = limits().of(prefix)
-    if !limit.enabled then Decision.Allowed
+    if !limit.enabled then Verdict(Decision.Allowed, None)
     else
       val k = key(tenantId, prefix)
       val existing = Option(windows.get(k))
@@ -54,9 +67,12 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
         if existing.isDefined || !charge then existing
         else admit(k, at)
       window match
-        case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker, limit)) then Decision.Allowed else Decision.Refused
-        case None if charge => Decision.Untracked
-        case None => Decision.Allowed
+        case Some(w) =>
+          w.admit(at, charge, closed(_, _, conversionBreaker, limit), enforce) match
+            case None => Verdict(Decision.Allowed, None)
+            case reason => Verdict(if enforce then Decision.Refused else Decision.WouldRefuse, reason)
+        case None if charge => Verdict(Decision.Untracked, None)
+        case None => Verdict(Decision.Allowed, None)
 
   private def admit(k: Key, at: Instant): Option[Window] =
     if windows.size >= sizing.maxRanges && !makeRoom(at) then None
@@ -91,9 +107,10 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
   def release(tenantId: Option[TenantId], prefix: String, at: Instant): Unit =
     Option(windows.get(key(tenantId, prefix))).foreach(_.giveBack(at))
 
-  private def closed(sent: Int, verified: Int, conversionBreaker: Boolean, limit: SmsLimit): Boolean =
-    (limit.sentPerHour > 0 && sent >= limit.sentPerHour) ||
-      (conversionBreaker && limit.minVolume > 0 && sent >= limit.minVolume && verified < sent * limit.minConversion)
+  private def closed(sent: Int, verified: Int, conversionBreaker: Boolean, limit: SmsLimit): Option[Reason] =
+    if limit.sentPerHour > 0 && sent >= limit.sentPerHour then Some(Reason.Cap)
+    else if conversionBreaker && limit.minVolume > 0 && sent >= limit.minVolume && verified < sent * limit.minConversion then Some(Reason.Conversion)
+    else None
 
   /** Forgets ranges that have been quiet for the whole hour. */
   def evict(at: Instant): Unit =
@@ -119,6 +136,16 @@ object SmsBudget:
 
   enum Decision:
     case Allowed, Refused, Untracked
+
+    /** The range is closed, but the budget is not being enforced (`shadow`): the code goes out. */
+    case WouldRefuse
+
+  /** Why a range is closed: `sentPerHour` codes went out already, or too few of what went out was verified. */
+  enum Reason(val label: String):
+    case Cap extends Reason("cap")
+    case Conversion extends Reason("conversion")
+
+  case class Verdict(decision: Decision, reason: Option[Reason])
 
   /** What a deployment sets (`antifraud.sms-budget` of the config); the limits themselves are tuned (see [[AntifraudTuning]]).
     *
@@ -169,11 +196,12 @@ object SmsBudget:
       if minuteOf(slot) == minute && sent(slot) > 0 then sent(slot) -= 1
 
     /** Checks and charges in one step. */
-    def admit(at: Instant, charge: Boolean, closed: (Int, Int) => Boolean): Boolean = synchronized:
+    def admit(at: Instant, charge: Boolean, closed: (Int, Int) => Option[Reason], enforce: Boolean): Option[Reason] = synchronized:
       val (sent, verified) = totals(at)
-      val open = !closed(sent, verified)
-      if open && charge then add(at, sent = 1, verified = 0)
-      open
+      val why = closed(sent, verified)
+      // A closed range that is not being enforced sends the code, so the code is counted.
+      if (why.isEmpty || !enforce) && charge then add(at, sent = 1, verified = 0)
+      why
 
     /** Codes sent in the last `minutes` minutes. */
     def sentSince(at: Instant, minutes: Int): Int = synchronized:

@@ -17,6 +17,12 @@ trait AntifraudEventRepository:
   /** How many days after `today` (UTC) have a partition: what the writer has left before it finds none. */
   def partitionDaysAhead(today: LocalDate): Task[Int]
 
+  /** Deletes the rows of events before `before` from the day's partition that `before` falls in. A partition is only dropped
+    * once it lies wholly before the retention limit, so this is what makes the log keep exactly `retention`, not up to a day
+    * more; the BRIN index on `at` makes it a read of the rows to delete and nothing else. Older partitions are
+    * [[maintainPartitions]]'s. */
+  def pruneEvents(before: Instant): Task[Unit]
+
   /** Recomputes `af_dest_stats` for the whole minutes in `[from, to)` from the event log, keeping the first
     * `prefixLength` digits of each number. Idempotent, so a late event is picked up by the next run over the same
     * minutes. Only one instance at a time does the work, and one that runs within half an `interval` of the last run (by any

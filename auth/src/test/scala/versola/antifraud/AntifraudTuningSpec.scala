@@ -11,7 +11,8 @@ import java.time.Instant
 object AntifraudTuningSpec extends UnitSpecBase:
 
   private val at = Instant.parse("2026-10-26T10:00:00Z")
-  private val base = Tuning.off
+  /** Enforcing, with everything else off: what the specs of the engine start from. */
+  private val base = AntifraudTestSettings.tuning
 
   /** The repository in memory, with a version that moves with every change; `row` is the seeded one. */
   private class InMemory(row: Ref[Option[Tuning]], counter: Ref[Long], failing: Ref[Boolean]) extends AntifraudSettingsRepository:
@@ -26,7 +27,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
 
   private def repository(seeded: Boolean, down: Boolean = false) =
     for
-      row <- Ref.make(Option.when(seeded)(Tuning.off))
+      row <- Ref.make(Option.when(seeded)(base))
       counter <- Ref.make(0L)
       failing <- Ref.make(down)
     yield (InMemory(row, counter, failing), failing)
@@ -80,6 +81,22 @@ object AntifraudTuningSpec extends UnitSpecBase:
         _ <- reader.refresh
       yield assertTrue(writer.current.blockAt == 70, before == base.blockAt, reader.current.blockAt == 70)
     },
+    test("a refresh that finds nothing new still says when it looked, and one that fails does not") {
+      val when = Instant.parse("2026-11-02T10:00:00Z")
+      // The gauge is the process's and other specs refresh on their own clocks: look again if one got in between.
+      def stamp(store: AntifraudTuningStore.Impl) =
+        (store.refresh *> zio.metrics.Metric.gauge("antifraud_tuning_refreshed_timestamp_seconds").value.map(_.value))
+          .repeatUntil(_ == when.getEpochSecond.toDouble).timeout(5.seconds).map(_.isDefined)
+      for
+        (store, failing, _) <- storeLayer
+        _ <- TestClock.setTime(when)
+        moved <- stamp(store)
+        _ <- failing.set(true)
+        _ <- TestClock.setTime(when.plusSeconds(30))
+        _ <- store.refresh
+        stamped <- zio.metrics.Metric.gauge("antifraud_tuning_refreshed_timestamp_seconds").value.map(_.value)
+      yield assertTrue(moved, stamped != when.plusSeconds(30).getEpochSecond.toDouble)
+    },
     test("a refresh that fails keeps the tuning there is") {
       for
         (store, failing, _) <- storeLayer
@@ -94,14 +111,14 @@ object AntifraudTuningSpec extends UnitSpecBase:
         store = AntifraudTuningStore.Impl(repo)
         _ <- store.refresh
         decision <- Antifraud.Impl(enabled.copy(failureAction = DecisionAction.Challenge), List(rules(rule("a", 1))), store).evaluate(ctx)
-      yield assertTrue(store.available, store.current == base, decision == Decision(DecisionAction.Allow, 1, List("a")))
+      yield assertTrue(store.available, store.current == Tuning.off, decision == Decision(DecisionAction.Allow, 1, List("a")))
     },
     test("reset puts the seeded values back") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 70, shadowRules = Set("a")), "alice")
+        _ <- store.put(base.copy(blockAt = 70, shadowRules = Set("velocity_ip_1m")), "alice")
         _ <- store.reset("alice")
-      yield assertTrue(store.current == base)
+      yield assertTrue(store.current == Tuning.off, store.current.mode == TuningMode.shadow)
     },
     test("a row stored while there was a Delay step or a fake-send wait still reads: those keys are ignored") {
       val stored = base.toJson.dropRight(1) + ""","delayAt":3,"delayMillis":2000,"fakeSendDelayMillis":500}"""
@@ -112,9 +129,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
       assertTrue(
         refused(base.copy(blockAt = -1)),
         refused(base.copy(challengeAt = 1000000)),
-        refused(base.copy(smsLimits = SmsLimits(SmsLimit(0, 0, 0.1), Map("49x" -> SmsLimit(5, 0, 0.1))))),
+        refused(base.copy(smsLimits = SmsLimits(SmsLimit(0, 0, 0.1), Map("49x" -> SmsLimit(50, 0, 0.1))))),
         refused(base.copy(smsLimits = SmsLimits(SmsLimit(0, 0, 2.0), Map.empty))),
-        !refused(base.copy(smsLimits = SmsLimits(SmsLimit(0, 0, 0.1), Map("49" -> SmsLimit(5, 0, 0.1))))),
+        !refused(base.copy(smsLimits = SmsLimits(SmsLimit(0, 0, 0.1), Map("49" -> SmsLimit(50, 0, 0.1))))),
         refused(base.copy(ruleWeights = Map("Bad Name" -> 5))),
         refused(base.copy(shadowRules = Set(""))),
         refused(base.copy(pow = PowDifficulty(minDifficulty = 20, maxDifficulty = 18, scoreStep = 15))),
@@ -133,33 +150,42 @@ object AntifraudTuningSpec extends UnitSpecBase:
     test("the engine takes the thresholds that are stored") {
       for
         (store, _, _) <- storeLayer
-        engine = Antifraud.Impl(enabled, List(rules(rule("a", 6))), store)
+        engine = Antifraud.Impl(enabled, List(rules(rule("a", 12))), store)
         before <- engine.evaluate(ctx)
-        _ <- store.put(base.copy(blockAt = 5), "alice")
+        _ <- store.put(base.copy(blockAt = 10), "alice")
         after <- engine.evaluate(ctx)
       yield assertTrue(before.action == DecisionAction.Allow, after.action == DecisionAction.Block)
     },
     test("a rule weight overrides the rule's, but not a rule that forces an action") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 10, ruleWeights = Map("a" -> 20, "deny" -> 1)), "alice")
-        heavy <- Antifraud.Impl(enabled, List(rules(rule("a", 1))), store).evaluate(ctx)
-        forced <- Antifraud.Impl(enabled, List(rules(rule("deny", 0, Some(DecisionAction.Fake)))), store).evaluate(ctx)
+        _ <- store.put(base.copy(blockAt = 10, ruleWeights = Map("velocity_ip_1m" -> 20, "fake_list:ip" -> 1)), "alice")
+        heavy <- Antifraud.Impl(enabled, List(rules(rule("velocity_ip_1m", 1))), store).evaluate(ctx)
+        forced <- Antifraud.Impl(enabled, List(rules(rule("fake_list:ip", 0, Some(DecisionAction.Fake)))), store).evaluate(ctx)
       yield assertTrue(heavy.score == 20, heavy.action == DecisionAction.Block, forced.score == 0, forced.action == DecisionAction.Fake)
     },
     test("a shadow rule is listed as such and adds nothing") {
       for
         (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(blockAt = 5, shadowRules = Set("a", "deny")), "alice")
-        decision <- Antifraud.Impl(enabled, List(rules(rule("a", 9), rule("b", 1), rule("deny", 0, Some(DecisionAction.Block)))), store).evaluate(ctx)
-      yield assertTrue(decision.score == 1, decision.action == DecisionAction.Allow, decision.firedRules == List("b", "shadow:a", "shadow:deny"))
+        _ <- store.put(base.copy(blockAt = 10, shadowRules = Set("deny_list:ip", "velocity_ip_1m")), "alice")
+        decision <- Antifraud.Impl(
+          enabled,
+          List(rules(rule("velocity_ip_1m", 90), rule("b", 1), rule("deny_list:ip", 0, Some(DecisionAction.Block)))),
+          store,
+        ).evaluate(ctx)
+      yield assertTrue(
+        decision.score == 1,
+        decision.action == DecisionAction.Allow,
+        decision.firedRules == List("b", "shadow:velocity_ip_1m", "shadow:deny_list:ip"),
+      )
     },
     test("the limit on codes sent follows the longest prefix a number starts with") {
       val limits = SmsLimits(SmsLimit(0, 0, 0.1), Map("49" -> SmsLimit(2, 0, 0.1), "4915" -> SmsLimit(1, 0, 0.1)))
       val tenant = Some(TenantId("a"))
       for
-        (store, _, _) <- storeLayer
-        _ <- store.put(base.copy(smsLimits = limits), "alice")
+        (store, _, repo) <- storeLayer
+        // Stored by hand: the limits of 1 and 2 codes are what the store refuses, and what keeps the counts short here.
+        _ <- repo.put(base.copy(smsLimits = limits), "alice", at) *> store.refresh
         budget = new SmsBudget(AntifraudTestSettings.smsBudget.copy(prefixLength = 6), AntifraudTestSettings.smsSizing, () => store.current.smsLimits)
         first = budget.decide(tenant, "491512", at, charge = true)
         second = budget.decide(tenant, "491512", at, charge = true)

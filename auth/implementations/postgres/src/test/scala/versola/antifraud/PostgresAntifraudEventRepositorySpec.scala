@@ -22,6 +22,7 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
       decision: Option[String],
       score: Option[Int],
       rules: String,
+      wouldAction: Option[String],
   ) derives DbCodec
 
   private val today = LocalDate.of(2026, 10, 21)
@@ -79,13 +80,14 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
           tenantId = None,
           destPrefix = None,
           userAgent = None,
-          decision = Some("fake"),
+          decision = Some("Allow"),
           score = Some(75),
           rules = List("prefix_budget", "velocity"),
+          wouldAction = Some("Fake"),
         )
         _ <- repository.insertBatch(List(first, second))
         rows <- xa.connect:
-          sql"SELECT id, tenant_id, client_id, outcome, dest_prefix, user_agent, decision, score, array_to_string(rules, ',') FROM af_event ORDER BY at"
+          sql"SELECT id, tenant_id, client_id, outcome, dest_prefix, user_agent, decision, score, array_to_string(rules, ','), would_action FROM af_event ORDER BY at"
             .query[Row].run().toList
       yield assertTrue(
         rows.map(_.id) == List(first.id, second.id),
@@ -93,10 +95,42 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
         rows.map(_.outcome) == List("sent", "suppressed"),
         rows.map(_.destPrefix) == List(Some("491512"), None),
         rows.map(_.userAgent) == List(Some("Mozilla/5.0"), None),
-        rows.map(_.decision) == List(None, Some("fake")),
+        rows.map(_.decision) == List(None, Some("Allow")),
+        // What the engine decided, which in shadow mode is not what was done.
+        rows.map(_.wouldAction) == List(None, Some("Fake")),
         rows.map(_.score) == List(None, Some(75)),
         rows.map(_.rules) == List("", "prefix_budget,velocity"),
       )
+    },
+    test("deletes the rows older than the limit from the day it falls in, to the minute, and leaves the newer ones and other days") {
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- repository.maintainPartitions(today.minusDays(1), 3, today.minusDays(30))
+        limit = today.atTime(10, 0).toInstant(java.time.ZoneOffset.UTC)
+        old = event(today.atTime(9, 59).toInstant(java.time.ZoneOffset.UTC))
+        atLimit = event(limit)
+        newer = event(today.atTime(10, 1).toInstant(java.time.ZoneOffset.UTC))
+        // A row of the day before is a partition's to drop, not this method's.
+        dayBefore = event(today.minusDays(1).atTime(23, 0).toInstant(java.time.ZoneOffset.UTC))
+        _ <- repository.insertBatch(List(old, atLimit, newer, dayBefore))
+        _ <- repository.pruneEvents(limit)
+        left <- xa.connect(sql"SELECT id FROM af_event ORDER BY at".query[UUID].run().toList)
+      yield assertTrue(left == List(dayBefore.id, atLimit.id, newer.id))
+    },
+    test("deletes in batches, so that no statement has a whole day to delete, and goes on until none is left") {
+      for
+        _ <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        repository = PostgresAntifraudEventRepository(xa, pruneBatch = 2)
+        _ <- repository.maintainPartitions(today, 1, today.minusDays(30))
+        limit = today.atTime(10, 0).toInstant(java.time.ZoneOffset.UTC)
+        old = (1 to 7).toList.map(i => event(today.atTime(9, i).toInstant(java.time.ZoneOffset.UTC)))
+        newer = event(today.atTime(10, 30).toInstant(java.time.ZoneOffset.UTC))
+        _ <- repository.insertBatch(newer :: old)
+        _ <- repository.pruneEvents(limit)
+        left <- xa.connect(sql"SELECT id FROM af_event".query[UUID].run().toList)
+      yield assertTrue(left == List(newer.id))
     },
     test("an event of a day with no partition fails the write, so a late maintenance run is visible") {
       for

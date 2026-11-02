@@ -85,6 +85,12 @@ case class ConversationRecord(
       * Fixed when the conversation starts: a passkey enrolled halfway through must not change what
       * the sign-in in progress is held to. `None` for a class the tenant's vocabulary defines. */
     targetFactors: Option[List[PassedAuthFactor]] = None,
+    /** Wrong solutions of a proof-of-work challenge so far (see [[versola.antifraud.ChallengeVerifier]]). Kept by the
+      * repository's own statements, and left alone by `overwrite`: counted here and not in the challenge token, which a
+      * client can keep and send again. */
+    challengeFailed: Int = 0,
+    /** Challenges solved so far; a challenge token names the value it was issued at, so a solved one cannot be used twice. */
+    challengeSolved: Int = 0,
 ):
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(
