@@ -1,0 +1,57 @@
+# Alert rules
+
+`versola-antifraud.rules.yaml` holds the first alert rules of the repository, for the antifraud module of `auth`. It is in the
+Prometheus rule-group format, so Prometheus and VictoriaMetrics' vmalert read the same file. Each rule has a `for` and a
+`severity` label (`warning`, or `critical` where the writer is about to lose events) and a `summary` and a `description`.
+The board [`versola-antifraud`](../grafana/versola-antifraud.json) draws the same signals.
+
+## Loading
+
+Prometheus: add the file to `rule_files` in the configuration and reload.
+
+```yaml
+rule_files:
+  - /etc/prometheus/rules/versola-antifraud.rules.yaml
+```
+
+vmalert (the cluster scrapes with vmagent, see [`k8s/monitoring/`](../../k8s/monitoring/vmagent-values.yaml)):
+
+```bash
+vmalert -rule=versola-antifraud.rules.yaml -datasource.url=<vmselect or victoria-metrics url> -notifier.url=<alertmanager url>
+```
+
+Check the file before loading it (`promtool check rules` for Prometheus, `vmalert -rule=... -dryRun` for vmalert):
+
+```bash
+promtool check rules dashboards/alerts/versola-antifraud.rules.yaml
+```
+
+The rules select by metric name and sum by `namespace`; they do not assume a `job`.
+
+## What is in it
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `AntifraudPartitionMaintenanceFailed` | partition maintenance of the event log failed | 15m | warning |
+| `AntifraudPartitionsRunningOut` | `antifraud_partition_days_ahead` below 2 | 5m | critical |
+| `AntifraudTuningRefreshFailed` | the tuning could not be read | 5m | warning |
+| `AntifraudListRefreshFailed` | the lists could not be read | 5m | warning |
+| `AntifraudListsStale` | the lists were last read more than 10 minutes ago | 5m | warning |
+| `AntifraudTuningStale` | the tuning was last read more than 10 minutes ago | 5m | warning |
+| `AntifraudStatsRollupFailed` | the statistics rollup failed | 10m | warning |
+| `AntifraudDetectorFailed` | a detector failed (by kind) | 5m | warning |
+| `AntifraudProposalHousekeepingFailed` | expiring or deleting proposals failed | 5m | warning |
+| `AntifraudVelocityUntracked` | requests were not counted, a key could not be admitted to the full table | 5m | warning |
+| `AntifraudSmsBudgetFull` | ranges went untracked, the SMS budget table is full | 5m | warning |
+| `AntifraudEventsDropped` | events dropped with reason `write_failed` or `queue_full` | 10m | warning |
+| `AntifraudVelocityFailed` | the velocity counters failed to flush, load or prune | 10m | warning |
+| `AntifraudEvaluationFailed` | evaluations gave no decision (by reason) | 5m | warning |
+| `AntifraudCountersResetFailed` | a counter reset did not complete | 5m | warning |
+
+The file passes `promtool check rules` (15 rules, run by the reviewer of the PR that added it).
+
+Counters appear with their first increment, so `increase()` does not see the very first failure of a new pod; a failure
+that repeats is seen. The two stale-age rules read gauges the service sets after each successful refresh, so they stay
+silent while lists are off (the default), and they catch a refresh that hangs, which moves no failure counter.
+`antifraud_lists_refreshed_timestamp_seconds`, `antifraud_tuning_refreshed_timestamp_seconds`,
+`antifraud_partition_days_ahead` and `antifraud_counters_reset_failed_total` arrive with the antifraud shadow and store changes.
