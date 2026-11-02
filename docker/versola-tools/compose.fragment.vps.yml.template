@@ -48,23 +48,45 @@ services:
 
 #@PG@  # ---- Bundled Postgres (POSTGRES_MODE=bundled) ------------------------------------------------------
 #@PG@  # Only in a bundle generated with POSTGRES_MODE=bundled; in the default `external` mode every line
-#@PG@  # marked like this one is dropped, so that bundle is the same file it always was. The role, the
-#@PG@  # database and the three schemas are created by the image's first start (POSTGRES_USER/DB and
-#@PG@  # postgres-init-schemas.sh) and never again: the image skips its init when the data directory is not
-#@PG@  # empty. The password comes from postgres.secrets.env, which versola-cli writes with this one
-#@PG@  # variable and nothing else of auth's secrets. `listen_addresses` is what keeps it off the public
-#@PG@  # interface: with network_mode: host there is no `ports:` to restrict. The pinned tag is the
+#@PG@  # marked like this one is dropped, so that bundle is the same file it always was. The database and the
+#@PG@  # application role, which owns it and the three schemas, are created by the image's first start
+#@PG@  # (POSTGRES_DB and postgres-init-schemas.sh) and never again: the image skips its init when the data
+#@PG@  # directory is not empty. The password comes from postgres.secrets.env, which versola-cli writes with
+#@PG@  # this one variable and nothing else of auth's secrets. `listen_addresses` is what keeps it off the
+#@PG@  # public interface: with network_mode: host there is no `ports:` to restrict. The pinned tag is the
 #@PG@  # PostgreSQL release the project verifies against; a major upgrade is not automatic.
+#@PG@  #
+#@PG@  # The services connect as VERSOLA_PG_ROLE, a plain role, not as the cluster's superuser: POSTGRES_USER
+#@PG@  # is left unset so the superuser is `postgres`, and the init script takes its password away, so it can
+#@PG@  # only log in over the container's socket (`docker exec`, which already needs Docker on the VM).
 #@PG@  postgres:
 #@PG@    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
 #@PG@    container_name: versola-postgres-vps
 #@PG@    restart: unless-stopped
 #@PG@    network_mode: host
+#@PG@    # Fast shutdown: SIGINT is the image's own STOPSIGNAL, stated here so it is not lost to an override (SIGTERM
+#@PG@    # would wait for every client to disconnect). The grace period gives the shutdown checkpoint time, so a stop
+#@PG@    # does not end in a SIGKILL after Docker's default 10 s and a crash recovery on the next start.
+#@PG@    stop_signal: SIGINT
+#@PG@    stop_grace_period: 60s
+#@PG@    # Docker's default /dev/shm is 64 MB; parallel queries allocate their shared memory there and fail with
+#@PG@    # "could not resize shared memory segment" when it runs out. Not counted in shared_buffers.
+#@PG@    shm_size: 256m
 #@PG@    env_file:
 #@PG@      - ./postgres.secrets.env
 #@PG@    environment:
-#@PG@      POSTGRES_USER: "@POSTGRES_USER@"
+#@PG@      VERSOLA_PG_ROLE: "@VERSOLA_PG_ROLE@"
 #@PG@      POSTGRES_DB: "@POSTGRES_DB@"
+#@PG@      # Without it initdb writes `trust` for 127.0.0.1 and ::1, and on the host network the container's
+#@PG@      # loopback is the VM's: any process on the VM would get in with no password. The socket stays
+#@PG@      # `trust`, which the init script, the healthcheck and `docker exec ... pg_dump` use. An initdb
+#@PG@      # argument: it applies when a data directory is created, never to an existing one.
+#@PG@      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+#@PG@      # A path with no major version in it: the image's default (/var/lib/postgresql/<major>/docker) would
+#@PG@      # make a release that moves the tag to a newer major start on an empty directory and initialise a
+#@PG@      # blank database next to the customer's. Here the newer server finds the old files and refuses to
+#@PG@      # start ("database files are incompatible with server") until they are dumped and restored.
+#@PG@      PGDATA: /var/lib/postgresql/data
 #@PG@    # 150 connections: auth 10, central 15 and edge 10 pool connections (central and edge add a LISTEN connection
 #@PG@    # each) per replica, the rollout's stand-ins, `migrate` and the reserved superuser slots. shared_buffers is
 #@PG@    # sized for a server with 4 GB of RAM, where the three JVMs take most of the memory.
@@ -77,7 +99,9 @@ services:
 #@PG@      - -c
 #@PG@      - shared_buffers=256MB
 #@PG@    healthcheck:
-#@PG@      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+#@PG@      # `-h 127.0.0.1`, not the socket: during the first start the image runs a temporary server that listens on
+#@PG@      # the socket only while the init script runs, so a socket probe would report healthy too early.
+#@PG@      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d \"$$POSTGRES_DB\""]
 #@PG@      # The first start runs initdb and the schema script before it accepts connections; failures in this
 #@PG@      # window do not count, so a slow disk cannot make `depends_on: service_healthy` fail the `up`.
 #@PG@      start_period: 30s

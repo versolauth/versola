@@ -200,11 +200,16 @@ The file is written only on that first run; the password itself is kept in OpenB
 **Bundled Postgres.** With `POSTGRES_MODE=bundled` (a `versola-tools` input; the default `external` is
 everything above, unchanged) the compose file also runs the database, so none of the SQL above is run by
 hand. The `postgres` service is the pinned `postgres:<major>.<minor>` image (the PostgreSQL release the
-project is verified against; a major upgrade is never automatic, a release can move the tag to a newer minor), on the host network and
+project is verified against; a release can move the tag to a newer minor, never to a newer major: the data
+directory is `/var/lib/postgresql/data`, with no major in its path, so a newer major finds the old files and
+refuses to start, "database files are incompatible with server", until they are dumped and restored), on the host network and
 listening on `127.0.0.1:5432` only, never on a public interface. Its healthcheck gates `migrate` and the
 three services. The first start with an empty data directory creates the role (the user in the configs),
-the database (`--postgres-db`, `auth` by default) and the three schemas owned by that role; a later start
-finds the data directory and initialises nothing. The password reaches the container through
+a plain role and not a superuser, the database (`--postgres-db`, `auth` by default) owned by it and the
+three schemas owned by it; a later start finds the data directory and initialises nothing. The cluster's
+superuser is `postgres`, with no password: it logs in over the container's socket only (`docker exec`),
+never over TCP, and connections to `127.0.0.1:5432` need the role's password (`scram-sha-256`), so no other
+process on the VM gets in without it. The password reaches the container through
 `postgres.secrets.env` (`POSTGRES_PASSWORD` only), written by `versola-cli` from the same value it stores
 in OpenBao. `env_file` makes it part of the container's configuration, so `docker inspect` shows it to
 anyone who can use Docker on the VM; it is in no image layer, log line or generator output. The services
@@ -219,9 +224,8 @@ into: `(umask 077; docker exec versola-postgres-vps pg_dump -U versola_app -Fc a
 (`auth` is `--postgres-db`; `-U` is the role in the configs). Like the external role, the password is
 read once, at initialisation: changing it later in OpenBao does not change the role's.
 
-Two things to know. The image makes `POSTGRES_USER` a superuser, so the services connect as one, unlike
-the plain role the external setup asks for. And the container uses the host network, so port 5432 on
-the VM must be free: a native Postgres already listening there stops the container from starting.
+One thing to know: the container uses the host network, so port 5432 on the VM must be free: a native
+Postgres already listening there stops the container from starting.
 
 Sizing: `max_connections` is 150 and `shared_buffers` 256 MB, for a server with 4 GB of RAM; the services'
 pools (auth 10, central 15, edge 10 per replica; central and edge add one `LISTEN` connection each) and a

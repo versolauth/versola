@@ -175,9 +175,11 @@ The script first asks for the environment **Name** (default `local`):
   leaves the bundle exactly as it was) adds a `postgres` service to the compose file: the pinned
   `postgres:<major>.<minor>` image on `network_mode: host`, listening on `127.0.0.1:5432` only, a
   `pg_isready` healthcheck that `migrate`, `central`, `auth` and `edge` wait for, and the external volume
-  `versola-postgres-data-vps` for its data. Its first start (an empty data directory, and only then)
-  creates the role and the database from the configs `gen-env` wrote and, through
-  `postgres-init-schemas.sh`, the `auth`, `central` and `edge` schemas, so there is no manual SQL. The
+  `versola-postgres-data-vps` for its data (`PGDATA=/var/lib/postgresql/data`, no major in the path). Its
+  first start (an empty data directory, and only then) creates the database and, through
+  `postgres-init-schemas.sh`, the role from the configs `gen-env` wrote (`VERSOLA_PG_ROLE`, not a
+  superuser) owning it and the `auth`, `central` and `edge` schemas, so there is no manual SQL; the
+  superuser `postgres` is left without a password and loopback TCP needs `scram-sha-256`. The
   password comes from a `postgres.secrets.env` that holds `POSTGRES_PASSWORD` and nothing else of auth's
   secrets; `versola-cli` writes it next to the other `*.secrets.env`. `POSTGRES_HOST` is then
   `127.0.0.1:5432` (the default; any other value is refused), the URLs get `sslmode=disable` from the

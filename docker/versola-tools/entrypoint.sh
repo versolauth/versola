@@ -330,6 +330,12 @@ if [ "$TARGET" = "vps" ]; then
         exit 1
         ;;
     esac
+    # `postgres` is the container's own superuser, which the init script leaves without a password; the
+    # services must connect as a role of their own (and CREATE ROLE would fail on it at the first start).
+    if [ "$pg_role" = postgres ]; then
+      echo "versola-tools: the Postgres user cannot be 'postgres' with POSTGRES_MODE=bundled: that is the container's superuser; the services need a role of their own (for example versola_app)" >&2
+      exit 1
+    fi
     if [ "${#pg_role}" -gt 63 ]; then
       echo "versola-tools: the Postgres user '$pg_role' is not a plain role name: longer than 63 characters" >&2
       exit 1
@@ -340,7 +346,7 @@ if [ "$TARGET" = "vps" ]; then
     pg_sed="/^#@PG@/d"
   fi
   # The validated public names (possibly empty) become `mtls-init`'s environment.
-  sed -e "$pg_sed" -e "s/@POSTGRES_USER@/$pg_role/g" -e "s/@POSTGRES_DB@/${POSTGRES_DB:-auth}/g" -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
+  sed -e "$pg_sed" -e "s/@VERSOLA_PG_ROLE@/$pg_role/g" -e "s/@POSTGRES_DB@/${POSTGRES_DB:-auth}/g" -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" -e "s/@MTLS_DOMAIN@/$MTLS_DOMAIN/g" -e "s/@CENTRAL_MTLS_DOMAIN@/$CENTRAL_MTLS_DOMAIN/g" -e "s/@MTLS_CERT_DAYS@/$MTLS_CERT_DAYS/g" \
     "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 else
   sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
