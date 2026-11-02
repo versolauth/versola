@@ -746,6 +746,8 @@ object Observability:
       challenge: Option[String],
       /** How hard it was, as the kind measures it (zero bits for `pow`). */
       challengeLevel: Option[Int],
+      /** What the engine decided, which is not what `decision` says in `shadow` mode. */
+      wouldAction: Option[String] = None,
   ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key

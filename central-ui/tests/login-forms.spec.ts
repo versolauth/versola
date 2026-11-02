@@ -16,7 +16,7 @@ const PASSWORD_REGEX = '^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$';
 test.describe('otp', () => {
   const step = { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' };
 
-  test('a step left with no code sent asks for it by itself, as a resend, and answers the proof it is given', async ({ page }) => {
+  test('a step left with no code sent asks for it by itself, as a resend, at once, answers the proof it is given and shows the code in place', async ({ page }) => {
     const seen: Array<{ path: string; fields: URLSearchParams }> = [];
     const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true } }, {
       beforeRender: async (p) => {

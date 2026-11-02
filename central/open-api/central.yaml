@@ -2757,7 +2757,9 @@ paths:
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
         `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
-        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
+        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits, a rule name that names no rule,
+        and combinations that can only be a mistake (`challengeAt` above `blockAt`, `blockAt` under 10, `pow.maxDifficulty` over
+        24, a limit on codes of 1 to 19).
       operationId: putAntifraudSettings
       requestBody:
         required: true
@@ -6868,6 +6870,13 @@ components:
       type: object
       description: What applies to the whole deployment. A map, or `thresholds`, is set as a whole.
       properties:
+        mode:
+          type: string
+          enum: [shadow, enforce]
+          description: |
+            `shadow` computes the whole decision (score thresholds, forced list actions and the SMS budget) and records what it
+            would have done, but lets every request through; `enforce` acts on it. Required: a `PUT` that left it out would put an
+            enforcing deployment back in `shadow`.
         challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `blockAt`). }
         blockAt: { type: integer, minimum: 0 }
         pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
@@ -6881,4 +6890,4 @@ components:
           type: array
           description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
           items: { type: string }
-      required: [challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]
+      required: [mode, challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]
