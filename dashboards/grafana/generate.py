@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates the Grafana boards in this directory: versola.json (auth, central, edge), versola-db.json (the database as the
-services see it), versola-ingress.json (the ingress controller in full) and loadgen.json.
+services see it), versola-ingress.json (the ingress controller in full), versola-antifraud.json (the antifraud module of auth) and loadgen.json.
 
     python3 dashboards/grafana/generate.py
 
@@ -943,6 +943,183 @@ def build_db() -> Board:
     return b
 
 
+# -- antifraud --------------------------------------------------------------------------------
+
+RED_SERIES = [{"matcher": {"id": "byRegexp", "options": ".*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}]
+
+
+def build_antifraud() -> Board:
+    """The antifraud module of auth, read for a shadow-mode rollout: what it decided, what it would have done had it
+    enforced, and whether the pipeline that feeds and stores its decisions is healthy. Some metrics are only on `main` once
+    the shadow, store and api PRs of the antifraud work are merged; a panel on a missing metric stays empty."""
+    b = Board(
+        "versola-antifraud", "Versola — Antifraud",
+        "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, "
+        "velocity counters, lists, detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
+        with_tail=False,
+    )
+    b.use("auth")
+    s = b.sel
+    r = b.rate
+
+    def total(metric: str, extra: str = "") -> str:
+        return f"sum({r(metric, extra)})"
+
+    def rng(metric: str, extra: str = "") -> str:
+        return f"sum(increase({metric}{{{s}{extra}}}[$__range])) or vector(0)"
+
+    def share(part: str, whole: str) -> str:
+        return b.ratio(part, whole)
+
+    dec = "antifraud_decisions_total"
+
+    # -- decisions --------------------------------------------------------------------------
+    b.row("auth — Decisions")
+    b.stat("Decisions / s", total(dec), unit="ops", decimals=2,
+           desc="Antifraud decisions taken by this service: one per request that was judged. Empty means nothing is being judged: the engine is off, or no request has asked for a code.")
+    b.stat("Would be refused or challenged", share(r(dec, ', would_action!="Allow"'), r(dec)), unit="percentunit", decimals=1,
+           desc="Share of decisions whose would-be action (what the rules decided) was not Allow: Challenge, Fake or Block. In shadow mode this is the number to judge enforcing by: near the real share of bad traffic is right, a large share of ordinary traffic means a rule or a threshold is too tight.")
+    b.stat("Let through, would be stopped", share(r(dec, ', action="Allow", would_action!="Allow"'), r(dec)), unit="percentunit", decimals=1,
+           desc="Share of decisions that were acted on as Allow although the rules decided Challenge, Fake or Block. That is shadow mode working: the request went through and the decision was only recorded. After switching to enforce this falls to 0 (a failed evaluation under `failure-action` aside).")
+    b.stat("Evaluation failures", rng("antifraud_evaluation_failed_total"), unit="short", decimals=0, thresholds=steps((None, GREEN), (1, RED)),
+           desc="Evaluations that gave no decision in the selected time range (timeout, error or tuning unavailable); `failure-action` was applied instead. Must be 0: any is red.")
+    b.ts("Decisions / s by would-be action", [(f"sum by (would_action) ({r(dec)})", "{{would_action}}")], unit="ops", stack=True, minimum=0,
+         desc="What the rules decided, whatever was done about it. Mostly Allow is healthy; Challenge, Fake and Block here are what enforcing would do.")
+    b.ts("Share not allowed: would-be vs acted", [
+        (share(r(dec, ', would_action!="Allow"'), r(dec)), "would be (decided)"),
+        (share(r(dec, ', action!="Allow"'), r(dec)), "acted on"),
+    ], unit="percentunit", minimum=0,
+         desc="Share of decisions that were not Allow, by what was decided and by what was done. In shadow mode the second line is flat at 0 while the first shows what enforcing would change; in enforce mode they are the same line.")
+    b.ts("Acted on / s by action", [(f"sum by (action) ({r(dec)})", "{{action}}")], unit="ops", stack=True, minimum=0,
+         desc="What was really done to requests. In shadow mode it is all Allow. Side by side with the panel on the right.")
+    b.ts("Would have been / s by would-be action", [(f"sum by (would_action) ({r(dec)})", "{{would_action}}")], unit="ops", stack=True, minimum=0,
+         desc="What the decisions were. Compare with the panel on the left: the gap between them is what switching to enforce would change.")
+    b.ts("Evaluation failures / s by reason", [(f"sum by (reason) ({r('antifraud_evaluation_failed_total')})", "{{reason}}")], unit="ops", minimum=0, overrides=RED_SERIES,
+         desc="Evaluations with no decision: `timeout` (the engine took too long), `error` (an unexpected failure), `tuning_unavailable` (the tuned settings were never read). Empty is healthy; any value is red, and `failure-action` was applied to those requests.")
+
+    # -- rules ------------------------------------------------------------------------------
+    b.row("auth — Rules")
+    fired = "antifraud_rules_fired_total"
+    b.ts("Rules fired / s (enforcing)", [(f'topk(10, sum by (rule) ({r(fired, ", shadow=\"false\"")}))', "{{rule}}")], unit="ops", minimum=0,
+         desc="The ten rules that fired most, among rules that count towards the decision. A rule that fires on most requests is a rule that is too wide.")
+    b.ts("Rules fired / s (shadow rules)", [(f'topk(10, sum by (rule) ({r(fired, ", shadow=\"true\"")}))', "{{rule}}")], unit="ops", minimum=0,
+         desc="The ten most frequent rules that only record (`shadow:<name>` in the decision) and take no part in it. Read these before making a rule count: a rule that would fire on ordinary traffic must not be promoted.")
+    b.ts("Rules fired — share of decisions", [(f"topk(10, sum by (rule, shadow) ({r(fired)})) / scalar(clamp_min({total(dec)}, 0.001))", "{{rule}} (shadow={{shadow}})")], unit="percentunit", minimum=0,
+         desc="Each rule's firing rate over the decisions per second. Several rules can fire on one request, so the shares do not add up to 100%.")
+
+    # -- challenges -------------------------------------------------------------------------
+    ch = "antifraud_challenges_total"
+    b.row("auth — Challenges")
+    b.stat("Proof of work: solved", share(r(ch, ', kind="pow", outcome="challenge_passed"'), r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"')), unit="percentunit", decimals=0,
+           desc="Of the proofs of work that were answered, the share that were right. Real browsers solve nearly all; a low share is scripts guessing, or a difficulty a phone cannot meet.")
+    b.stat("Proof of work: answered", share(r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"'), r(ch, ', kind="pow", outcome="challenged"')), unit="percentunit", decimals=0,
+           desc="Of the proofs of work put to clients, the share that came back with an answer. The rest are clients that cannot or will not do the work (no script, a bot that gave up): that is the point of the challenge. Falls if real users cannot solve it.")
+    b.stat("Pause: paid", share(r(ch, ', kind="pause", outcome="challenge_passed"'), r(ch, ', kind="pause", outcome="challenged"')), unit="percentunit", decimals=0,
+           desc="Of the pauses imposed on clients that cannot answer a proof of work, the share followed by the request that completed it and got the code. Real people wait and come back; a low share is traffic that leaves.")
+    b.stat("Challenges / s", total(ch, ', outcome="challenged"'), unit="ops", decimals=2,
+           desc="Challenges put to clients. Empty while no decision is Challenge, which in shadow mode is always: nothing is challenged until enforcing.")
+    b.ts("Challenges / s by kind and outcome", [(f"sum by (kind, outcome) ({r(ch)})", "{{kind}} {{outcome}}")], unit="ops", stack=True, minimum=0,
+         desc="`challenged` is a challenge put to a client, `challenge_passed` a right answer, `challenge_failed` a wrong one. `pow` is the proof of work, `pause` the wait for clients that cannot do one. Empty in shadow mode: nothing is challenged until enforcing.")
+    b.ts("Pass rate and answered share", [
+        (share(r(ch, ', kind="pow", outcome="challenge_passed"'), r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"')), "pow: right of those answered"),
+        (share(r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"'), r(ch, ', kind="pow", outcome="challenged"')), "pow: answered of challenged"),
+        (share(r(ch, ', kind="pause", outcome="challenge_passed"'), r(ch, ', kind="pause", outcome="challenged"')), "pause: paid of imposed"),
+    ], unit="percentunit", minimum=0, maximum=1,
+         desc="A challenge that people pass and bots do not has a high pass rate among those answered and a lower answered share. Both low at once means real users are failing it.")
+
+    # -- sms budget -------------------------------------------------------------------------
+    b.row("auth — SMS budget")
+    b.ts("Refused / s by reason and mode", [(f"sum by (reason, mode) ({r('antifraud_sms_budget_refused_total')})", "{{reason}} ({{mode}})")], unit="ops", stack=True, minimum=0,
+         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
+    b.ts("Ranges not tracked / evicted per s", [
+        (r("antifraud_sms_budget_full_total"), "not tracked (table full)"),
+        (r("antifraud_sms_budget_evicted_total"), "evicted"),
+    ], unit="ops", minimum=0,
+         desc="`not tracked`: a code to a new range went out unchecked because the table of ranges was full: the budget no longer protects that tenant, and it is a sign of an attack or a table too small. `evicted`: a range was dropped to make room. Empty is healthy.")
+
+    # -- event pipeline ---------------------------------------------------------------------
+    ev = "antifraud_events_"
+    b.row("auth — Event pipeline")
+    b.ts("Events enqueued, written and dropped / s", [
+        (r(ev + "enqueued_total"), "enqueued"),
+        (r(ev + "written_total"), "written"),
+        (f"sum by (reason) ({r(ev + 'dropped_total')})", "dropped: {{reason}}"),
+    ], unit="ops", minimum=0,
+         desc="Every request leaves an event; a writer stores them in batches. Healthy: written follows enqueued, and dropped is empty. `throttled_shed` is the log giving way under load, `queue_full` and `write_failed` are lost events, `shutdown` is a pod stopping with a queue.")
+    b.ts("Events dropped / s by reason", [(f"sum by (reason) ({r(ev + 'dropped_total')})", "{{reason}}")], unit="ops", minimum=0,
+         desc="Events the log lost. Empty is healthy. `queue_full` and `write_failed` lose statistics (the decisions themselves are not affected); `build_failed` is a request that could not be described.")
+    b.ts("Event queue size", [(f"max by (pod) (antifraud_event_queue_size{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="Events waiting for the writer, sampled each time the writer takes a batch. Near 0 is healthy; a queue that stays high is a database that cannot keep up.")
+    b.ts("Backlog growth: enqueued − written − dropped", [
+        (f"{total(ev + 'enqueued_total')} - {total(ev + 'written_total')} - ({total(ev + 'dropped_total', ', reason=~\"write_failed|shutdown\"')} or vector(0))", "net growth"),
+    ], unit="ops",
+         desc="Events that entered the queue and were neither written nor lost after entering (drops before the queue, `queue_full` and `throttled_shed`, are not in `enqueued`). Around 0 is healthy; above 0 for long is a queue filling up.")
+
+    # -- velocity ---------------------------------------------------------------------------
+    b.row("auth — Velocity")
+    b.ts("Buckets flushed / s", [(r("antifraud_velocity_flushed_total"), "flushed")], unit="ops", minimum=0,
+         desc="Counter buckets this service wrote to the database so that every instance sees the others' counts. Follows traffic; flat at 0 under traffic is a writer that does not run.")
+    b.ts("Velocity failures / s by what", [(f"sum by (what) ({r('antifraud_velocity_failed_total')})", "{{what}}")], unit="ops", minimum=0,
+         desc="`flush` (writing counts), `load` (reading the other instances' counts), `prune` (removing old rows). Empty is healthy; while it fails the counts are per instance only, so a limit is looser by the number of instances.")
+    b.ts("Keys tracked", [(f"max by (pod) (antifraud_velocity_keys{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="Keys (networks, devices, ranges, phones) held in memory on each pod. Grows with distinct callers and is bounded by `velocity.max-keys`; a pod pinned at the bound is being flooded with keys.")
+    b.ts("Keys not counted or evicted / s", [
+        (r("antifraud_velocity_untracked_total"), "not counted (table full)"),
+        (r("antifraud_velocity_evicted_total"), "evicted (seen once)"),
+    ], unit="ops", minimum=0,
+         desc="`not counted`: requests whose key found the table full of keys seen more than once, so no counter limited them. Empty is healthy; any value is an attack or a table too small. `evicted`: single-use keys that made room; a steady stream is a flood of distinct keys.")
+
+    # -- lists ------------------------------------------------------------------------------
+    b.row("auth — Lists")
+    hits = "antifraud_list_hits_total"
+    b.ts("List hits / s", [(f"sum by (list_type, value_type, shadow) ({r(hits)})", "{{list_type}} {{value_type}} (shadow={{shadow}})")], unit="ops", minimum=0,
+         desc="Requests that matched a list entry, by list, kind of value and whether the entry is a `shadow` one (matched, enforces nothing). Written every 30 seconds, so it is stepped. A shadow entry that hits ordinary traffic must not be made enforcing.")
+    b.ts("List and tuning refresh failures", [
+        (f"sum(increase(antifraud_list_refresh_failed_total{{{s}}}[$__rate_interval]))", "list refresh failed"),
+        (f"sum(increase(antifraud_tuning_refresh_failed_total{{{s}}}[$__rate_interval]))", "tuning refresh failed"),
+        (f"sum(increase(antifraud_list_hit_flush_failed_total{{{s}}}[$__rate_interval]))", "hit counts not written"),
+    ], unit="short", minimum=0,
+         desc="A refresh that fails keeps the previous lists or tuning (fail open), so nothing breaks at once but changes stop arriving. Empty is healthy.")
+    b.ts("List snapshot age", [(f"time() - max by (pod) (antifraud_lists_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
+         desc="Seconds since the lists were last read successfully. A minute or so is healthy (the refresh interval). The dashed line is the alert: 10 minutes means the pod enforces lists that old, and a hung refresh moves no failure counter, so this is the only place it shows. Empty while lists are off.")
+    b.ts("Tuning age", [(f"time() - max by (pod) (antifraud_tuning_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
+         desc="Seconds since the tuned settings (mode, thresholds, weights) were last read successfully. A few seconds is healthy (the refresh interval). The dashed line is the alert at 10 minutes: a pod that old ignores a switch from shadow to enforce.")
+
+    # -- detectors and resets ---------------------------------------------------------------
+    b.row("auth — Detectors and resets")
+    b.ts("Proposals created / s by kind", [(f"sum by (kind) ({r('antifraud_proposals_created_total')})", "{{kind}}")], unit="ops", minimum=0,
+         desc="List entries the detectors proposed (they never create one). Empty while the detectors are off (the default) or nothing looks anomalous; a steady stream is worth reading in the console.")
+    b.ts("Detector and housekeeping failures", [
+        (f"sum by (kind) (increase(antifraud_detector_failed_total{{{s}}}[$__rate_interval]))", "detector {{kind}} failed"),
+        (f"sum(increase(antifraud_proposal_housekeeping_failed_total{{{s}}}[$__rate_interval]))", "housekeeping failed"),
+    ], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="A detector run that failed (it tries again next interval) or the removal of old proposals that failed. Empty is healthy.")
+    b.ts("Counter resets / s by scope", [(f"sum by (scope) ({r('antifraud_counters_reset_total')})", "{{scope}}")], unit="ops", minimum=0,
+         desc="Resets of the velocity counters and the SMS budget made through the API (`velocity`, `budget`, `all`). Each is an operator forgiving someone; a burst of them is worth asking about.")
+    b.ts("Counter reset failures", [(f"sum by (what) (increase(antifraud_counters_reset_failed_total{{{s}}}[$__rate_interval]))", "{{what}}")], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="A reset that did not complete: `delete` (removing the stored rows) or `poll` (an instance reading the resets). Until it does, that instance goes on counting. Empty is healthy.")
+
+    # -- storage ----------------------------------------------------------------------------
+    b.row("auth — Storage")
+    dbsel = f'{s}, operation=~".*antifraud.*"'
+    b.ts("Event partitions ahead", [(f"min by (pod) (antifraud_partition_days_ahead{{{s}}})", "{{pod}}")], unit="d", minimum=0, line=steps((None, RED), (2, GREEN)),
+         desc="Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the writer has nowhere to write and events are dropped.")
+    b.ts("Maintenance and rollup failures", [
+        (f"sum(increase(antifraud_partition_maintenance_failed_total{{{s}}}[$__rate_interval]))", "partition maintenance"),
+        (f"sum(increase(antifraud_stats_rollup_failed_total{{{s}}}[$__rate_interval]))", "statistics rollup"),
+    ], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="Creating and dropping event partitions (retried every minute) and rolling the log up into the statistics the SMS detectors read. Empty is healthy; a failed rollup is recomputed by the next run, so a single one is not an incident.")
+    b.ts("Database latency, antifraud operations", [
+        (f"histogram_quantile({q}, sum by (le) (rate(db_client_operation_duration_seconds_bucket{{{dbsel}}}[$__rate_interval])))", name) for q, name in QUANTILES
+    ], unit="s", minimum=0,
+         desc="Every antifraud database operation together (event inserts, rollups, velocity, lists, proposals). Client side, so it includes the pool and the pooler.")
+    b.ts("Slowest antifraud operations (p99)", [(f"topk(5, histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{{{dbsel}}}[$__rate_interval]))))", "{{operation}}")], unit="s", minimum=0,
+         desc="The five operations with the highest p99. The event insert and the rollup are expected to lead; one that was fast and is not is where to look.")
+    b.ts("Failed antifraud database operations / s", [(f'sum by (operation) (rate(db_client_operation_duration_seconds_count{{{dbsel}, outcome!="success"}}[$__rate_interval]))', "{{operation}}")], unit="ops", minimum=0, overrides=RED_SERIES, w=24,
+         desc="Antifraud database operations that did not succeed. Empty is healthy.")
+    return b
+
+
 def build() -> Board:
     b = Board(
         "versola", "Versola",
@@ -961,7 +1138,7 @@ def build() -> Board:
 
 
 def main() -> None:
-    for name, board in (("versola.json", build()), ("versola-db.json", build_db()), ("versola-ingress.json", build_ingress()), ("loadgen.json", build_loadgen())):
+    for name, board in (("versola.json", build()), ("versola-db.json", build_db()), ("versola-ingress.json", build_ingress()), ("versola-antifraud.json", build_antifraud()), ("loadgen.json", build_loadgen())):
         out = OUT_DIR / name
         out.write_text(json.dumps(board.render(), indent=2, ensure_ascii=False) + "\n")
         print(f"wrote {out}")

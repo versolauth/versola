@@ -923,6 +923,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the lists, the velocity limits and the SMS budget. Only the proof of work is built; the `ChallengeVerifier` interface and
   the `kind` and `params` of the answer are where a provider's check (Turnstile and the like, drawn by the same page) is added.
 
+- **Dashboards and alerts.** The Grafana board `versola-antifraud` (`dashboards/grafana/versola-antifraud.json`) shows
+  decisions against what enforcing would do, rules, challenges, the SMS budget, the event pipeline, velocity, lists,
+  detectors and storage; read its Decisions row during a shadow rollout. The alert rules are in
+  `dashboards/alerts/versola-antifraud.rules.yaml` (Prometheus rule format, also read by vmalert); how to load them is in
+  `dashboards/alerts/README.md`. Both use metrics that exist only from the release that added them.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
