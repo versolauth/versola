@@ -32,8 +32,45 @@ object AsnClassifierSpec extends ZIOSpecDefault:
         classify("") == AsnClass.other,
       )
     },
-    test("a keyword matches as a substring, so it also hits inside a longer word: the odd network is corrected with a list entry") {
-      assertTrue(classify("Colombia Movil") == AsnClass.hosting, classify("Ghostnet") == AsnClass.hosting)
+    test("the providers' own names are hosting") {
+      assertTrue(
+        classify("Hetzner Online GmbH") == AsnClass.hosting,
+        classify("DigitalOcean, LLC") == AsnClass.hosting,
+        classify("OVH SAS") == AsnClass.hosting,
+        classify("Contabo GmbH") == AsnClass.hosting,
+        classify("Amazon.com, Inc.") == AsnClass.hosting,
+        classify("Choopa, LLC") == AsnClass.hosting,
+      )
+    },
+    test("a keyword is a whole word: it is not found inside a longer one, so a carrier is not taken for a hosting provider") {
+      assertTrue(
+        classify("Colombia Movil") == AsnClass.other,
+        classify("Ghostnet") == AsnClass.other,
+        classify("Observer Networks") == AsnClass.other,
+        classify("Colonial Broadband") == AsnClass.other,
+        classify("Cloudy Networks") == AsnClass.other,
+        classify("Undedicated Telecom") == AsnClass.other,
+        classify("Hostelworld Wifi") == AsnClass.other,
+        classify("Amazonas Telecom") == AsnClass.other,
+      )
+    },
+    test("a keyword is found between any characters that are not letters or digits, and a phrase over any white space") {
+      assertTrue(
+        classify("ACME-CLOUD") == AsnClass.hosting,
+        classify("(cloud)") == AsnClass.hosting,
+        classify("Acme Cloud, Ltd.") == AsnClass.hosting,
+        classify("Some  Data \t Center Ltd") == AsnClass.hosting,
+        classify("cloud") == AsnClass.hosting,
+        classify("Cloud9 Networks") == AsnClass.other,
+        classify("Hosting") == AsnClass.hosting,
+      )
+    },
+    test("the generic words of the old list are not keywords: host, server, servers and colo hit carriers") {
+      assertTrue(
+        !AsnClassifier.defaultKeywords.exists(Set("host", "server", "servers", "colo").contains),
+        classify("Server Farm Telecom") == AsnClass.other,
+        classify("Colo Wireless") == AsnClass.other,
+      )
     },
     test("the keywords are the operator's: only they decide, in any case, and a blank one matches nothing") {
       val own = AsnClassifier(List("  Telekom ", "", "   "))
@@ -48,7 +85,7 @@ object AsnClassifierSpec extends ZIOSpecDefault:
     },
     test("the default keywords are the ones the documentation lists") {
       assertTrue(
-        AsnClassifier.defaultKeywords.size == 36,
+        AsnClassifier.defaultKeywords.size == 32,
         AsnClassifier.defaultKeywords.head == "hosting",
         AsnClassifier.defaultKeywords.contains("huawei cloud"),
         AsnClassifier.defaultKeywords == AsnClassifier.defaultKeywords.distinct,

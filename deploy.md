@@ -966,13 +966,15 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     events that follow read it again from memory and are not counted again. With `antifraud.decision.enabled = false`
     nothing is looked up.
   - *The class.* An AS is `hosting` when its description contains one of `antifraud.asn.hosting-keywords`, compared
-    case-insensitively as substrings, and `other` otherwise. The default list is: `hosting`, `host`, `cloud`, `datacenter`,
-    `data center`, `data-center`, `server`, `servers`, `vps`, `dedicated`, `colocation`, `colo`, `amazon`, `aws`, `google`,
+    case-insensitively as a whole word or phrase (between characters that are not letters or digits, runs of white space
+    counting as one), and `other` otherwise. The default list is: `hosting`, `cloud`, `datacenter`,
+    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google`,
     `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `akamai`, `vultr`, `choopa`, `alibaba`, `oracle`,
     `contabo`, `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent`, `huawei cloud`.
     Setting `hosting-keywords` replaces the list (an empty list classifies nothing as hosting). **A name is a guess:** a
-    keyword also matches inside other words (`colo` is in `Colombia`, `host` in `Ghostnet`) and a provider with a plain
-    name is `other`. That is why the rule is weighed low and why the exact tool is the list: an `asn` entry corrects one
+    keyword is never found inside a longer word (`cloud` is not in `Cloudy`, `dedicated` not in `Undedicated`), but a
+    provider with a plain name is `other`, and a carrier with one of the words in its name (`Cloud` in a mobile brand) is
+    `hosting`. That is why the rule is weighed low and why the exact tool is the list: an `asn` entry corrects one
     network, whatever its name says.
   - *What a request carries.* For an OTP request with an address the context gets the AS number (`asn`, which the
     `asn` velocity key and the `asn` list entries read) and the signals `asn_class` (`hosting` or `other`) and

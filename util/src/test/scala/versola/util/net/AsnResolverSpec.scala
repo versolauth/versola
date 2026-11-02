@@ -66,7 +66,7 @@ object AsnResolverSpec extends ZIOSpecDefault:
       AsnResolver(AsnDatabaseLoader.off, AsnClassifier(AsnClassifier.defaultKeywords)).resolve("5.45.64.1").map(found => assertTrue(found.isEmpty))
     },
     test("the classifier is the operator's: another keyword list changes the class and nothing else") {
-      val own = AsnResolver(AsnDatabaseLoader.fixed(database), AsnClassifier(List("kazakh")))
+      val own = AsnResolver(AsnDatabaseLoader.fixed(database), AsnClassifier(List("kazakhtelecom")))
       for
         carrier <- own.resolve("203.0.113.7")
         hetzner <- own.resolve("5.45.64.1")
