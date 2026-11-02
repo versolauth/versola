@@ -73,6 +73,10 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
             sql"SELECT COUNT(*) FILTER (WHERE left(dest_prefix, ${value.length}) = $value), COUNT(*) FROM af_event WHERE at >= $since"
               .query[Counts].run().head,
           )
+        case AntifraudValueType.asn =>
+          // The AS number is normalised to digits; compared as a bigint so that a number above Int.MaxValue (no AS in use)
+          // matches nothing instead of wrapping.
+          Some(sql"SELECT COUNT(*) FILTER (WHERE asn = ${value.toLong}), COUNT(*) FROM af_event WHERE at >= $since".query[Counts].run().head)
         case AntifraudValueType.ua_hash =>
           Some(
             sql"SELECT COUNT(*) FILTER (WHERE encode(sha256(convert_to(user_agent, 'UTF8')), 'hex') = $value), COUNT(*) FROM af_event WHERE at >= $since"

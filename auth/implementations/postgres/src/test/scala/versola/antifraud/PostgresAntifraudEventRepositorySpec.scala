@@ -23,6 +23,8 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
       score: Option[Int],
       rules: String,
       wouldAction: Option[String],
+      asn: Option[Int],
+      asnClass: Option[String],
   ) derives DbCodec
 
   private val today = LocalDate.of(2026, 10, 21)
@@ -84,10 +86,12 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
           score = Some(75),
           rules = List("prefix_budget", "velocity"),
           wouldAction = Some("Fake"),
+          asn = Some(24940),
+          asnClass = Some("hosting"),
         )
         _ <- repository.insertBatch(List(first, second))
         rows <- xa.connect:
-          sql"SELECT id, tenant_id, client_id, outcome, dest_prefix, user_agent, decision, score, array_to_string(rules, ','), would_action FROM af_event ORDER BY at"
+          sql"SELECT id, tenant_id, client_id, outcome, dest_prefix, user_agent, decision, score, array_to_string(rules, ','), would_action, asn, asn_class FROM af_event ORDER BY at"
             .query[Row].run().toList
       yield assertTrue(
         rows.map(_.id) == List(first.id, second.id),
@@ -100,6 +104,9 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
         rows.map(_.wouldAction) == List(None, Some("Fake")),
         rows.map(_.score) == List(None, Some(75)),
         rows.map(_.rules) == List("", "prefix_budget,velocity"),
+        // An event with no ASN (the database is off, or the address is in no AS) keeps both columns empty.
+        rows.map(_.asn) == List(None, Some(24940)),
+        rows.map(_.asnClass) == List(None, Some("hosting")),
       )
     },
     test("deletes the rows older than the limit from the day it falls in, to the minute, and leaves the newer ones and other days") {

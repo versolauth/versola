@@ -5,6 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
+import versola.util.net.AsnResolver
 import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -190,14 +191,14 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & Scope,
     Nothing,
     AntifraudEvents,
   ] =
     liveWith(Sizing.standard)
 
   def liveWith(sizing: Sizing): ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -212,6 +213,7 @@ object AntifraudEvents:
         secureRandom <- ZIO.service[SecureRandom]
         config <- ZIO.service[CoreConfig]
         configService <- ZIO.service[OAuthConfigurationService]
+        asn <- ZIO.service[AsnResolver]
         queue <- Queue.dropping[AntifraudEvent](sizing.queueCapacity)
         // The key of the destinations' hash, run through a fixed label so that what an event stores of a number
         // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
@@ -232,6 +234,7 @@ object AntifraudEvents:
           secureRandom,
           configService,
           subjectKey,
+          asn,
         )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings, sizing).run
@@ -253,6 +256,7 @@ object AntifraudEvents:
       secureRandom: SecureRandom,
       configService: OAuthConfigurationService,
       subjectKey: Secret,
+      asn: AsnResolver,
   ) extends AntifraudEvents:
 
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[SmsBudget.Decision] =
@@ -293,6 +297,8 @@ object AntifraudEvents:
           client <- configService.find(clientId)
           hash <- subjectHash(credential)
           ip <- Observability.currentIp
+          // The one lookup of the request: from the database in memory, never a call outside the process.
+          network <- ip.fold(ZIO.none)(asn.resolve)
           context = AntifraudContext(
             tenantId = client.map(_.tenantId),
             clientId = clientId,
@@ -301,11 +307,13 @@ object AntifraudEvents:
             destPrefix = credential.toOption.map(destPrefix),
             deviceId = None,
             ip = ip,
-            asn = None,
+            asn = network.map(_.info.asn),
             // Whole: a `ua_hash` entry is the hash of the whole header, and a cut one would never match it.
             userAgent = userAgent,
             ja4 = None,
-            signals = credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap,
+            signals =
+              credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap ++
+                network.toList.flatMap(found => List(AsnRules.ClassSignal -> found.asnClass.toString, AsnRules.CountrySignal -> found.info.country)),
           )
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged
@@ -321,6 +329,8 @@ object AntifraudEvents:
               wouldAction = Some(decision.wouldAction.toString),
               score = decision.score,
               rules = decision.firedRules,
+              asn = network.map(_.info.asn),
+              asnClass = network.map(_.asnClass.toString),
             ),
           )
         yield decision).catchAllCause: cause =>
@@ -338,6 +348,8 @@ object AntifraudEvents:
         outcome = None,
         challenge = None,
         challengeLevel = None,
+        asn = None,
+        asnClass = None,
       )
 
     override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
@@ -455,10 +467,19 @@ object AntifraudEvents:
         outcome: AntifraudOutcome,
         decision: Option[Decision] = None,
     ): UIO[Unit] =
-      // How the step ended goes on the `receive-http` line of the request too.
-      Observability.updateAntifraud(details(action, credential))(_.copy(outcome = Some(outcome.toString))) *>
+      for
+        // Looked up before (by `decideOtpRequest`, which counted it); here it is only read again, from memory.
+        network <- Observability.currentIp.flatMap(_.fold(ZIO.none)(asn.peek))
+        // How the step ended goes on the `receive-http` line of the request too, with the network it came from.
+        _ <- Observability.updateAntifraud(details(action, credential))(d =>
+          d.copy(
+            outcome = Some(outcome.toString),
+            asn = network.map(_.info.asn).orElse(d.asn),
+            asnClass = network.map(_.asnClass.toString).orElse(d.asnClass),
+          ),
+        )
         // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
-        (for
+        _ <- (for
           id <- secureRandom.nextUUIDv7
           now <- Clock.instant
           client <- configService.find(clientId)
@@ -480,11 +501,14 @@ object AntifraudEvents:
               score = decision.map(_.score),
               rules = decision.fold(List.empty[String])(_.firedRules),
               wouldAction = decision.map(_.wouldAction.toString),
+              asn = network.map(_.info.asn),
+              asnClass = network.map(_.asnClass.toString),
             ),
           )
         yield ()).catchAllCause(cause =>
           AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause),
         )
+      yield ()
 
   /** How often the rows past the retention are deleted. */
   val PruneInterval: Duration = 5.minutes

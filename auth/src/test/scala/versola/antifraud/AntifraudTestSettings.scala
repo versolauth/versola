@@ -1,5 +1,6 @@
 package versola.antifraud
 
+import versola.util.net.{AsnClassifier, AsnSettings}
 import zio.*
 
 /** Settings for specs to `copy` the keys they care about from: everything off, as a deployment's `antifraud` block (see
@@ -21,6 +22,9 @@ object AntifraudTestSettings:
   val detectors: AntifraudDetectors.Settings = AntifraudDetectors.Settings(enabled = false, interval = 1.minute, retention = 90.days)
 
   val challenge: PowChallengeVerifier.Settings = PowChallengeVerifier.Settings(enabled = true, ttl = 2.minutes, maxAttempts = 5, pause = 20.seconds)
+
+  /** The `antifraud.asn` block as `scripts/gen-env.scala` writes it: no file, so the feature is off. */
+  val asn: AsnSettings = AsnSettings(file = "", url = "", refreshInterval = 24.hours, hostingKeywords = AsnClassifier.defaultKeywords)
 
   val smsBudget: SmsBudget.Settings = events.smsBudget
   val decision: Antifraud.Settings = events.decision

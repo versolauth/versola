@@ -6,14 +6,19 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, TenantId}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
+import versola.util.net.{AsnClassifier, AsnDatabase, AsnDatabaseLoader, AsnResolver}
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
+import zio.json.*
 import zio.logging.logContext
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
+import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets
 import java.time.{Instant, LocalDate}
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 object AntifraudEventsSpec extends UnitSpecBase:
 
@@ -49,6 +54,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       velocity: VelocityCounters = AntifraudTestSettings.velocityOff,
       tuning: Tuning = AntifraudTestSettings.tuning,
       sizing: AntifraudEvents.Sizing = smallSizing,
+      asn: AsnResolver = AsnResolver.off,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
@@ -64,9 +70,27 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed[Antifraud](antifraud),
       ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed[VelocityCounters](velocity),
+      ZLayer.succeed[AsnResolver](asn),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
+
+  /** The ASN database of the specs: a hosting provider, a carrier, and nothing for the rest (`100.64.0.1`). */
+  private val resolver: AsnResolver = AsnResolver(
+    AsnDatabaseLoader.fixed(
+      AsnDatabase
+        .read(
+          ByteArrayInputStream(
+            List(
+              "5.45.64.0\t5.45.79.255\t24940\tDE\tHETZNER-AS Hetzner Online GmbH",
+              "203.0.113.0\t203.0.113.255\t64500\tKZ\tKAZTELECOM-AS JSC Kazakhtelecom",
+            ).mkString("\n").getBytes(StandardCharsets.UTF_8),
+          ),
+        )
+        .database,
+    ),
+    AsnClassifier(AsnClassifier.defaultKeywords),
+  )
 
   private val t0 = Instant.parse("2026-10-21T10:00:30Z")
 
@@ -216,6 +240,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed[Antifraud](Antifraud.off),
             ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
             ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
+            ZLayer.succeed[AsnResolver](AsnResolver.off),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -273,6 +298,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[Antifraud](Antifraud.off),
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
+              ZLayer.succeed[AsnResolver](AsnResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -300,6 +326,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[Antifraud](Antifraud.off),
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
+              ZLayer.succeed[AsnResolver](AsnResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -858,6 +885,246 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written.map(_.subjectHash).distinct.size == 1,
             written.head.userAgent == Some(long),
           )
+      },
+    ),
+    suite("the ASN signal")(
+      test(
+        "the context carries the AS of the request's address and the class and country in the signals, and the engine is not told the address twice",
+      ) {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            hosting = seen.get
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.decideOtpRequest(clientId, None, Left(Email("a@example.com")), repeated = false)
+            carrier = seen.get
+            _ <- Observability.setIp("100.64.0.1")
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            unknown = seen.get
+          yield assertTrue(
+            hosting.flatMap(_.asn).contains(24940),
+            hosting.map(_.signals.get(AsnRules.ClassSignal)).contains(Some("hosting")),
+            hosting.map(_.signals.get(AsnRules.CountrySignal)).contains(Some("DE")),
+            carrier.flatMap(_.asn).contains(64500),
+            carrier.map(_.signals.get(AsnRules.ClassSignal)).contains(Some("other")),
+            carrier.map(_.signals.get(AsnRules.CountrySignal)).contains(Some("KZ")),
+            // The mail domain signal is still there next to them.
+            carrier.map(_.signals.get(AntifraudLists.EmailDomainSignal)).contains(Some("example.com")),
+            unknown.flatMap(_.asn).isEmpty,
+            unknown.map(_.signals.keySet.intersect(Set(AsnRules.ClassSignal, AsnRules.CountrySignal))).contains(Set.empty[String]),
+          )
+      },
+      test("without a database the context has no ASN and no signal, and the request goes on") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- Observability.setIp("5.45.64.1")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(decision == Decision.allow, seen.get.exists(c => c.asn.isEmpty && !c.signals.contains(AsnRules.ClassSignal)))
+      },
+      test("a request that has no address (no proxy header set) has no ASN either, and is not looked up") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            decision == Decision.allow,
+            seen.get.exists(c => c.ip.isEmpty && c.asn.isEmpty && !c.signals.contains(AsnRules.ClassSignal)),
+          )
+      },
+      test("the asn_hosting rule fires for a hosting network and not for a carrier, and adds its weight of 20 to the score") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(challengeAt = 20)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Block),
+          List(AsnRules.ruleSet),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <-
+              build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, tuning = tuned, asn = resolver)
+            _ <- Observability.setIp("5.45.64.1")
+            hosting <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- Observability.setIp("203.0.113.7")
+            carrier <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            hosting == Decision(DecisionAction.Challenge, 20, List("asn_hosting")),
+            carrier == Decision.allow,
+          )
+      },
+      test("the per-AS velocity limit fires for requests from an AS and counts nothing for an address in no AS") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(asn = AntifraudTestSettings.limit.copy(perMinute = 2, weight = 60)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Challenge),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+              asn = resolver,
+            )
+            // Three different addresses of one AS: the limit is on the network, not on the address.
+            _ <- Observability.setIp("5.45.64.1")
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- Observability.setIp("5.45.64.2")
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- Observability.setIp("5.45.70.9")
+            third <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            // Another AS has its own count.
+            _ <- Observability.setIp("203.0.113.7")
+            elsewhere <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            // An address in no AS is not counted as one.
+            _ <- ZIO.foreachDiscard(1 to 5)(_ =>
+              Observability.setIp("100.64.0.1") *> events.decideOtpRequest(clientId, None, Right(phone), repeated = false),
+            )
+            now <- Clock.instant
+            hetzner = velocity.count(VelocityKey.asn, "24940", VelocityWindow.OneMinute, now)
+            kazakhtelecom = velocity.count(VelocityKey.asn, "64500", VelocityWindow.OneMinute, now)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            second.action == DecisionAction.Allow,
+            third.action == DecisionAction.Block,
+            third.firedRules == List("velocity_asn_1m"),
+            elsewhere.action == DecisionAction.Allow,
+            // The third was refused, and a refused request is not counted.
+            hetzner == 2,
+            kazakhtelecom == 1,
+          )
+      },
+      test("the event written for a step carries the AS and the class, and none where there is none, and never the address") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10), asn = resolver)
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
+            _ <- Observability.setIp("100.64.0.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.otpRequested(authId, clientId, None, Left(Email("a@example.com")), AntifraudOutcome.suppressed)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.asn) == List(Some(24940), Some(24940), None, Some(64500)),
+            written.map(_.asnClass) == List(Some("hosting"), Some("hosting"), None, Some("other")),
+            written.forall(w => !w.toString.contains("5.45.64.1") && !w.toString.contains("203.0.113.7")),
+          )
+      },
+      test("an event of a request that has no address, or runs with no database, has no AS") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- TestClock.adjust(0.seconds)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(written.map(_.asn) == List(None), written.map(_.asnClass) == List(None))
+      },
+      test("the AS and the class are on the request's log context, and the address is not repeated in them") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
+            _ <- Observability.setIp("5.45.64.1")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            afterDecision <- logContext.get.map(_.get(Observability.antifraud))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(decision))
+            afterEvent <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(
+            afterDecision.flatMap(_.asn).contains(24940),
+            afterDecision.flatMap(_.asnClass).contains("hosting"),
+            // The step that follows adds its outcome and keeps what was there.
+            afterEvent.flatMap(_.asn).contains(24940),
+            afterEvent.flatMap(_.asnClass).contains("hosting"),
+            afterEvent.flatMap(_.outcome).contains("sent"),
+            afterEvent.exists(d => !d.toJson.contains("5.45.64.1")),
+          )
+      },
+      test("a step that was not decided here (a check of a code) still puts the AS on the request's log context") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, asn = resolver)
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.wrong_code)
+            details <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(details.flatMap(_.asn).contains(64500), details.flatMap(_.asnClass).contains("other"))
+      },
+      test("a request is counted once in the lookups: the decision looks the address up, the events only read it again") {
+        val e = env
+        def lookups(result: String) = Metric.counter("antifraud_asn_lookups_total").tagged(Set(MetricLabel("result", result))).value.map(_.count)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
+            before <- lookups("hit")
+            _ <- Observability.setIp("5.45.64.1")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(decision))
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
+            after <- lookups("hit")
+          yield assertTrue(after - before == 1.0)
+      },
+      test("with the decision engine off the address is not looked up at all") {
+        val e = env
+        def lookups = Metric.counter("antifraud_asn_lookups_total").tagged(Set(MetricLabel("result", "hit"))).value.map(_.count)
+        ZIO.scoped:
+          for
+            events <- build(e, small, asn = resolver)
+            before <- lookups
+            _ <- Observability.setIp("5.45.64.1")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            after <- lookups
+          yield assertTrue(decision == Decision.allow, after == before)
       },
     ),
   ) @@ TestAspect.sequential

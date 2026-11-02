@@ -6,7 +6,7 @@ import zio.config.magnolia.DeriveConfig
 
 /** What the rules get to see about one risky step: who asks, for what, from where. Every field but the action,
   * tenant and client is optional, because not every signal exists on every path (no device id before P1-1, no ASN
-  * before P1-3); a caller says so explicitly with `None`.
+  * when the database is off or the address is in no AS); a caller says so explicitly with `None`.
   *
   * Destinations are never carried as themselves: [[subjectHash]] is the keyed hash the event log uses.
   *
@@ -99,11 +99,11 @@ object Antifraud:
       fakeSendDelay: Duration,
   )
 
-  /** The engine over the rules of the components that add them: the lists and the velocity limits. A component that adds
+  /** The engine over the rules of the components that add them: the lists, the velocity limits and the ASN signal. A component that adds
     * rules is added here, where the engine is, not in the application's wiring. */
   val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists, Antifraud] =
     ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists) =>
-      Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning)), tuning): Antifraud
+      Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning), AsnRules.ruleSet), tuning): Antifraud
 
   /** The rule a decision made of a failed evaluation names. */
   val ErrorRule = "antifraud_error"

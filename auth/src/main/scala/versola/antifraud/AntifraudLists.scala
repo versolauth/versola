@@ -33,8 +33,10 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *     exempt a population from every score-based rule, and one on a device id would exempt whoever presents the id,
   *     which a client chooses until P1-1 issues it. Such an entry is refused at creation. It never cancels a forcing
   *     rule, nor the SMS budget, which is decided outside the score.
-  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, `asn`, see [[ListValues.live]]) is refused
-  *     too: accepted, it would be audited and shown in a dry run and match nothing.
+  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, see [[ListValues.live]]) is refused
+  *     too: accepted, it would be audited and shown in a dry run and match nothing. An `asn` entry is a `deny`, `fake` or
+  *     `watch` (never an `allow`) and matches the AS the ASN database gives the request's address; without a database
+  *     (`antifraud.asn.file` empty) it matches nothing, as an `ip` entry would for a request with no address.
   *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
   *

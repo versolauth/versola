@@ -243,13 +243,15 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           userAgent = Some(ua),
           score = None,
           rules = Nil,
+          asn = Some(24940),
+          asnClass = Some("hosting"),
         )
         _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
         _ <- events.insertBatch(
           List(
             base,
-            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other")),
-            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None),
+            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other"), asn = Some(64500)),
+            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None, asn = None, asnClass = None),
             base.copy(id = UUID.randomUUID(), at = at.minusSeconds(48 * 3600), subjectHash = "h1"),
           ),
         )
@@ -258,11 +260,20 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         byPrefix <- repository.preview(AntifraudValueType.prefix, "4915", since)
         byUa <- repository.preview(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua), since)
         byIp <- repository.preview(AntifraudValueType.ip, "10.0.0.1", since)
+        byAsn <- repository.preview(AntifraudValueType.asn, "24940", since)
+        byOtherAsn <- repository.preview(AntifraudValueType.asn, "64500", since)
+        byNoAsn <- repository.preview(AntifraudValueType.asn, "65000", since)
+        byHugeAsn <- repository.preview(AntifraudValueType.asn, "4200000000", since)
       yield assertTrue(
         byPhone == ListPreview(matched = Some(1), total = 3),
         byPrefix == ListPreview(matched = Some(1), total = 3),
         byUa == ListPreview(matched = Some(1), total = 3),
         byIp == ListPreview(matched = None, total = 3),
+        // The event of 48 hours ago is out of the window; the one with no ASN is in the total and not in the match.
+        byAsn == ListPreview(matched = Some(1), total = 3),
+        byOtherAsn == ListPreview(matched = Some(1), total = 3),
+        byNoAsn == ListPreview(matched = Some(0), total = 3),
+        byHugeAsn == ListPreview(matched = Some(0), total = 3),
       )
       // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
       // does so in the middle of this, the test is repeated.

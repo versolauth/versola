@@ -2681,8 +2681,9 @@ paths:
       description: |
         How many of the last 24 hours of events the entry would have matched, with the same validation as adding it and
         nothing stored. `matched` is `null` for a kind of value the event log has no column for (an address, a network,
-        an ASN, a device, a JA4 hash, a mail domain): the share guard cannot judge those, so give them an expiry and add
-        them as `shadow` first. The count is over every tenant's events, so only an admin who may add the entry may preview it.
+        a device, a JA4 hash, a mail domain): the share guard cannot judge those, so give them an expiry and add
+        them as `shadow` first. For an ASN it is the events of that AS, which the event log has once `antifraud.asn.file` is set
+        (events written before, or without the database, have none). The count is over every tenant's events, so only an admin who may add the entry may preview it.
       operationId: previewAntifraudListEntry
       requestBody:
         required: true
@@ -6753,7 +6754,7 @@ components:
           type: string
           description: |
             What is matched, up to 256 characters: the keyed hash (`phone_hash`), digits of a number without the `+`
-            (`prefix`, at most 4), an address, a network `address/length`, an AS number, a device id, the lower-case hex
+            (`prefix`, at most 4), an address, a network `address/length`, an AS number (`64500` or `AS64500`), a device id, the lower-case hex
             SHA-256 of a user agent, a JA4 fingerprint or a domain name.
         phone:
           type: string

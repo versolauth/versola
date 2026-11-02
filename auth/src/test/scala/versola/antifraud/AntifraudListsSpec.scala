@@ -77,6 +77,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       subjectHash: Option[String] = None,
       destPrefix: Option[String] = None,
       tenantId: Option[TenantId] = Some(tenant),
+      asn: Option[Int] = None,
   ) = AntifraudContext(
     tenantId = tenantId,
     clientId = ClientId("c"),
@@ -85,7 +86,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     destPrefix = destPrefix,
     deviceId = None,
     ip = ip,
-    asn = None,
+    asn = asn,
     userAgent = None,
     ja4 = None,
     signals = Map.empty,
@@ -339,6 +340,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       def allow(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.allow, valueType, value).either.map(_.isLeft)
       for
         asn <- allow(AntifraudValueType.asn, "64500")
+        asnWritten <- allow(AntifraudValueType.asn, "AS64500")
         wide <- allow(AntifraudValueType.cidr, "10.0.0.0/8")
         prefix <- allow(AntifraudValueType.prefix, "49")
         domain <- allow(AntifraudValueType.email_domain, "gmail.com")
@@ -352,7 +354,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         phone <- allow(AntifraudValueType.phone_hash, "h")
         // the same broad values are fine for a deny
         denied <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/8").either.map(_.isRight)
-      yield assertTrue(asn, wide, prefix, domain, ua, ja4, !host, !host6, !ip, device, !phone, denied)
+      yield assertTrue(asn, asnWritten, wide, prefix, domain, ua, ja4, !host, !host6, !ip, device, !phone, denied)
     },
     test("an entry of a kind no request carries yet is refused, so that nothing is listed that cannot match") {
       val (lists, _) = make(FakeRepository())
@@ -360,16 +362,90 @@ object AntifraudListsSpec extends UnitSpecBase:
       for
         device <- deny(AntifraudValueType.device_id, "d")
         ja4 <- deny(AntifraudValueType.ja4_hash, "t13d")
-        asn <- deny(AntifraudValueType.asn, "64500")
         phone <- deny(AntifraudValueType.phone_hash, "h")
         domain <- deny(AntifraudValueType.email_domain, "mailinator.com")
       yield assertTrue(
         device.swap.exists(_.getMessage.contains("device_id")),
         ja4.isLeft,
-        asn.isLeft,
         phone.isRight,
         domain.isRight,
       )
+    },
+    test("an asn entry is accepted in either spelling, stored as digits, and matches the AS the address was given") {
+      val (lists, _) = make(FakeRepository())
+      for
+        written <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "AS64500")
+        lower <- add(lists, AntifraudListType.watch, AntifraudValueType.asn, "as64501")
+        blocked <- decide(lists)(ctx(asn = Some(64500)))
+        watched <- decide(lists)(ctx(asn = Some(64501)))
+        other <- decide(lists)(ctx(asn = Some(64502)))
+        none <- decide(lists)(ctx(asn = None))
+      yield assertTrue(
+        written.value == "64500",
+        lower.value == "64501",
+        blocked.action == DecisionAction.Block,
+        blocked.firedRules == List("deny_list:asn"),
+        watched == Decision(DecisionAction.Allow, 20, List("watch_list:asn")),
+        other == Decision.allow,
+        none == Decision.allow,
+      )
+    },
+    test("a request with no ASN (the database is off) matches no asn entry") {
+      val (lists, _) = make(FakeRepository())
+      for
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500")
+        d <- decide(lists)(ctx(ip = Some("203.0.113.7"), subjectHash = Some("h")))
+      yield assertTrue(d == Decision.allow)
+    },
+    test("an asn entry is refused when it is not a number: text, a negative or a number larger than an AS can be") {
+      val (lists, _) = make(FakeRepository())
+      def deny(value: String) = add(lists, AntifraudListType.deny, AntifraudValueType.asn, value).either.map(_.isLeft)
+      for
+        text <- deny("ASx")
+        negative <- deny("-5")
+        huge <- deny("4294967296")
+        empty <- deny("AS")
+      yield assertTrue(text, negative, huge, empty)
+    },
+    test("an allow on an asn is refused with the reason, so that a whole network is never exempted from the score") {
+      val (lists, _) = make(FakeRepository())
+      add(lists, AntifraudListType.allow, AntifraudValueType.asn, "64500").either.map: result =>
+        assertTrue(result.swap.exists(e => e.isInstanceOf[InvalidListEntry] && e.getMessage.contains("exact subject")))
+    },
+    test("an asn entry names a whole network, so it needs an expiry, and an address that is allowed inside a denied AS is allowed") {
+      val (lists, _) = make(FakeRepository())
+      def deny(expiresAt: Option[Instant]) =
+        lists
+          .create(
+            NewListEntry(
+              listType = AntifraudListType.deny,
+              valueType = AntifraudValueType.asn,
+              value = "64500",
+              tenantId = None,
+              expiresAt = expiresAt,
+              reason = None,
+              source = "manual",
+              shadow = false,
+            ),
+            operator,
+          )
+          .either
+          .map(_.isRight)
+      for
+        permanent <- deny(None)
+        _ <- deny(Some(Instant.EPOCH.plusSeconds(3600)))
+        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.7")
+        inside <- decide(lists)(ctx(asn = Some(64500), ip = Some("203.0.113.7")))
+        beside <- decide(lists)(ctx(asn = Some(64500), ip = Some("203.0.113.8")))
+      yield assertTrue(!permanent, inside.action == DecisionAction.Allow, beside.action == DecisionAction.Block)
+    },
+    test("an asn entry of a tenant applies to that tenant's requests only") {
+      val (lists, _) = make(FakeRepository())
+      for
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500", tenantId = Some(tenant))
+        own <- decide(lists)(ctx(asn = Some(64500)))
+        foreign <- decide(lists)(ctx(asn = Some(64500), tenantId = Some(TenantId("tenant-b"))))
+      yield assertTrue(own.action == DecisionAction.Block, foreign == Decision.allow)
     },
     test("an entry that names many clients, or an automated one, needs an expiry") {
       val (lists, _) = make(FakeRepository())
