@@ -605,7 +605,11 @@ object AntifraudListsSpec extends UnitSpecBase:
       for
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         rules <- lists.ruleSet.rules
-      yield assertTrue(rules.nonEmpty, rules.forall(r => Antifraud.ruleNames.contains(r.name)), Antifraud.ruleNames.filter(_.contains("_list:")) == rules.map(_.name).toSet)
+      yield assertTrue(
+        rules.nonEmpty,
+        rules.forall(r => Antifraud.ruleNames.contains(r.name)),
+        Antifraud.ruleNames.filter(_.contains("_list:")) == rules.map(_.name).toSet,
+      )
     },
     test("counts hits by list and kind of value, for the metric") {
       val (lists, cache) = make(FakeRepository())

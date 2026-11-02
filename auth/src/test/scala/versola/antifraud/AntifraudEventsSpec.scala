@@ -423,12 +423,24 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
-            before <- Metric.counter("antifraud_decisions_total").tagged(Set(MetricLabel("action", "Allow"), MetricLabel("would_action", "Block"))).value.map(_.count)
-            ruleBefore <- Metric.counter("antifraud_rules_fired_total").tagged(Set(MetricLabel("rule", "velocity_ip_1m"), MetricLabel("shadow", "true"))).value.map(_.count)
+            before <- Metric.counter("antifraud_decisions_total").tagged(Set(
+              MetricLabel("action", "Allow"),
+              MetricLabel("would_action", "Block"),
+            )).value.map(_.count)
+            ruleBefore <- Metric.counter("antifraud_rules_fired_total").tagged(Set(
+              MetricLabel("rule", "velocity_ip_1m"),
+              MetricLabel("shadow", "true"),
+            )).value.map(_.count)
             decision <- events.decideOtpRequest(clientId, Some("Mozilla/5.0"), Right(phone), repeated = false)
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(decision))
-            after <- Metric.counter("antifraud_decisions_total").tagged(Set(MetricLabel("action", "Allow"), MetricLabel("would_action", "Block"))).value.map(_.count)
-            ruleAfter <- Metric.counter("antifraud_rules_fired_total").tagged(Set(MetricLabel("rule", "velocity_ip_1m"), MetricLabel("shadow", "true"))).value.map(_.count)
+            after <- Metric.counter("antifraud_decisions_total").tagged(Set(
+              MetricLabel("action", "Allow"),
+              MetricLabel("would_action", "Block"),
+            )).value.map(_.count)
+            ruleAfter <- Metric.counter("antifraud_rules_fired_total").tagged(Set(
+              MetricLabel("rule", "velocity_ip_1m"),
+              MetricLabel("shadow", "true"),
+            )).value.map(_.count)
             details <- logContext.get.map(_.get(Observability.antifraud))
             _ <- TestClock.adjust(0.seconds)
             written = e.repository.insertBatch.calls.flatten
@@ -472,9 +484,15 @@ object AntifraudEventsSpec extends UnitSpecBase:
               fourth <- events.allowSms(clientId, phone, t0, charge = true)
             yield List(first, second, third, fourth)
         for
-          before <- Metric.counter("antifraud_sms_budget_refused_total").tagged(Set(MetricLabel("reason", "cap"), MetricLabel("mode", "shadow"))).value.map(_.count)
+          before <- Metric.counter("antifraud_sms_budget_refused_total").tagged(Set(
+            MetricLabel("reason", "cap"),
+            MetricLabel("mode", "shadow"),
+          )).value.map(_.count)
           shadowed <- run(TuningMode.shadow)
-          after <- Metric.counter("antifraud_sms_budget_refused_total").tagged(Set(MetricLabel("reason", "cap"), MetricLabel("mode", "shadow"))).value.map(_.count)
+          after <- Metric.counter("antifraud_sms_budget_refused_total").tagged(Set(
+            MetricLabel("reason", "cap"),
+            MetricLabel("mode", "shadow"),
+          )).value.map(_.count)
           enforced <- run(TuningMode.enforce)
         yield assertTrue(
           shadowed == List(SmsBudget.Decision.Allowed, SmsBudget.Decision.Allowed, SmsBudget.Decision.WouldRefuse, SmsBudget.Decision.WouldRefuse),
@@ -592,7 +610,17 @@ object AntifraudEventsSpec extends UnitSpecBase:
             seen.get.flatMap(_.ip) == Some("203.0.113.7"),
             seen.get.flatMap(_.destPrefix) == Some("491512"),
             details == Some(
-              Observability.AntifraudDetails("otp_request", "Block", 12, List("deny_list"), Some("491512"), Some("blocked"), None, None, Some("Block")),
+              Observability.AntifraudDetails(
+                "otp_request",
+                "Block",
+                12,
+                List("deny_list"),
+                Some("491512"),
+                Some("blocked"),
+                None,
+                None,
+                Some("Block"),
+              ),
             ),
           )
       },

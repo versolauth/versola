@@ -347,7 +347,9 @@ object AntifraudLists:
         )
 
     private[antifraud] val flushHits: UIO[Unit] =
-      ZIO.succeed(cache.drainKinds()).flatMap(kinds => ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, kind._3, n))) *>
+      ZIO.succeed(cache.drainKinds()).flatMap(kinds =>
+        ZIO.foreachDiscard(kinds)((kind, n) => AntifraudListMetrics.hits(kind._1, kind._2, kind._3, n)),
+      ) *>
         ZIO.succeed(cache.drain()).flatMap: hits =>
           ZIO.when(hits.nonEmpty):
             repository.addHits(hits).foldCauseZIO(

@@ -78,6 +78,14 @@ object AsnRulesSpec extends UnitSpecBase:
         numberOnly == Decision.allow,
       )
     },
+    test("every rule of the signal is in the catalogue, so that the tuned settings may weigh it and run it as a shadow rule") {
+      for rules <- AsnRules.ruleSet.rules
+      yield assertTrue(
+        rules.map(_.name).forall(Antifraud.ruleNames.contains),
+        AsnRules.ruleNames == rules.map(_.name),
+        Antifraud.ruleNames.contains("asn_hosting"),
+      )
+    },
     test("the signal names are the ones the documentation gives") {
       assertTrue(AsnRules.ClassSignal == "asn_class", AsnRules.CountrySignal == "asn_country", AsnRules.HostingRule == "asn_hosting")
     },

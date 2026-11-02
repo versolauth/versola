@@ -726,7 +726,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`; for example `deny_list:cidr`). The two stand-ins of a failed evaluation are not rules.
+  `email_domain`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
+  failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
   (`PUT` replaces every key, so read the settings first):

@@ -19,8 +19,7 @@ class PostgresAntifraudEventRepository(
     lockTimeout: Duration = 5.seconds,
     statementTimeout: Duration = 30.seconds,
     pruneBatch: Int = 5000,
-)
-  extends AntifraudEventRepository,
+) extends AntifraudEventRepository,
     BasicCodecs:
   import PgCodec.SeqCodec
   import PostgresAntifraudEventRepository.*

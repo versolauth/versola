@@ -42,6 +42,9 @@ object AsnRules:
     test = _.signals.get(ClassSignal).contains(AsnClass.hosting.toString),
   )
 
+  /** The names of the rules of the signal, for [[Antifraud.ruleNames]]. */
+  val ruleNames: List[String] = List(HostingRule)
+
   /** The rules of the signal, for [[Antifraud.live]]. */
   val ruleSet: Antifraud.RuleSet = new Antifraud.RuleSet:
     override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(List(hosting))

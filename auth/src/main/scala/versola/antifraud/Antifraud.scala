@@ -140,9 +140,9 @@ object Antifraud:
     yield s"$kind:$valueType"
 
   /** The names of the rules there are, which `ruleWeights` and `shadowRules` of the tuning may name: the lists' (one rule
-    * per kind of list and of value) and the velocity ones (one per key and window). A name that is not here would
-    * never match, which is what a typo looks like; the settings are refused for it. */
-  val ruleNames: Set[String] = (velocityRuleNames ++ listRuleNames).toSet
+    * per kind of list and of value), the velocity ones (one per key and window) and the ASN signal's. A name that is not
+    * here would never match, which is what a typo looks like; the settings are refused for it. */
+  val ruleNames: Set[String] = (velocityRuleNames ++ listRuleNames ++ AsnRules.ruleNames).toSet
 
   val off: Antifraud = _ => ZIO.succeed(Decision.allow)
 
