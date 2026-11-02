@@ -919,6 +919,7 @@ export const formStyles = css`
   input[type="search"],
   input[type="url"],
   input[type="number"],
+  input[type="password"],
   textarea,
   select {
     width: 100%;
@@ -937,6 +938,7 @@ export const formStyles = css`
   input[type="search"]:hover,
   input[type="url"]:hover,
   input[type="number"]:hover,
+  input[type="password"]:hover,
   textarea:hover,
   select:hover {
     background-color: var(--field-hover);

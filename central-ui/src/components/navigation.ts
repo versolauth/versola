@@ -6,7 +6,7 @@ import './tenant-selector';
 import './theme-switcher';
 
 export type NavItem = 'security' | 'clients' | 'resources' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
-  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'forms' | 'themes';
+  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -343,6 +343,7 @@ export class VersolaNavigation extends LitElement {
       case 'otp-templates':
       case 'authorization-details':
       case 'system-settings':
+      case 'delivery':
         return p.has('security:read');
       case 'users':
         return p.has('users:read');
@@ -411,6 +412,7 @@ export class VersolaNavigation extends LitElement {
               ${this.navItem('users', 'Users')}
               ${this.navItem('keys', 'Keys & metadata')}
               ${this.navItem('system-settings', 'System settings')}
+              ${this.navItem('delivery', 'Delivery')}
               ${this.navItem('forms', 'Forms')}
               ${this.navItem('themes', 'Themes')}
             </div>
