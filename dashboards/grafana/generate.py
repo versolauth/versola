@@ -1067,7 +1067,7 @@ def build_antifraud() -> Board:
         (r("antifraud_velocity_untracked_total"), "not counted (table full)"),
         (r("antifraud_velocity_evicted_total"), "evicted (seen once)"),
     ], unit="ops", minimum=0,
-         desc="`not counted`: requests whose key found the table full of keys seen more than once, so no counter limited them. Empty is healthy; any value is an attack or a table too small. `evicted`: single-use keys that made room; a steady stream is a flood of distinct keys.")
+         desc="`not counted`: requests whose key could not be admitted to a full table, so no counter limited them. Rare once a full table evicts by sampling; any value is a flood of distinct keys far above `velocity.max-keys` or a table too small. `evicted`: keys that made room for a new one; a steady stream is a flood of distinct keys.")
 
     # -- lists ------------------------------------------------------------------------------
     b.row("auth — Lists")

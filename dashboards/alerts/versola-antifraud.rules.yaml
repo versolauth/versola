@@ -95,7 +95,7 @@ groups:
           severity: warning
         annotations:
           summary: "Antifraud velocity counters are full in {{ $labels.namespace }}"
-          description: "Requests whose key found the table full of keys seen more than once were not counted for 5 minutes, so no velocity limit applied to them. This is a flood of distinct keys (an attack) or velocity.max-keys set too low."
+          description: "Requests whose key could not be admitted to a full velocity table were not counted for 5 minutes, so no velocity limit applied to them. After the sampled eviction this should be rare: a flood of distinct keys far above velocity.max-keys, or max-keys set too low."
 
       - alert: AntifraudSmsBudgetFull
         expr: sum by (namespace) (increase(antifraud_sms_budget_full_total[5m])) > 0

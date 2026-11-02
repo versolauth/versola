@@ -41,12 +41,14 @@ The rules select by metric name and sum by `namespace`; they do not assume a `jo
 | `AntifraudStatsRollupFailed` | the statistics rollup failed | 10m | warning |
 | `AntifraudDetectorFailed` | a detector failed (by kind) | 5m | warning |
 | `AntifraudProposalHousekeepingFailed` | expiring or deleting proposals failed | 5m | warning |
-| `AntifraudVelocityUntracked` | requests were not counted, the table of keys is full | 5m | warning |
+| `AntifraudVelocityUntracked` | requests were not counted, a key could not be admitted to the full table | 5m | warning |
 | `AntifraudSmsBudgetFull` | ranges went untracked, the SMS budget table is full | 5m | warning |
 | `AntifraudEventsDropped` | events dropped with reason `write_failed` or `queue_full` | 10m | warning |
 | `AntifraudVelocityFailed` | the velocity counters failed to flush, load or prune | 10m | warning |
 | `AntifraudEvaluationFailed` | evaluations gave no decision (by reason) | 5m | warning |
 | `AntifraudCountersResetFailed` | a counter reset did not complete | 5m | warning |
+
+The file passes `promtool check rules` (15 rules, run by the reviewer of the PR that added it).
 
 Counters appear with their first increment, so `increase()` does not see the very first failure of a new pod; a failure
 that repeats is seen. The two stale-age rules read gauges the service sets after each successful refresh, so they stay
