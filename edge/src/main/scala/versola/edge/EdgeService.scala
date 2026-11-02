@@ -390,6 +390,7 @@ object EdgeService:
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
+        case Outcome.UnsupportedMediaType => ZIO.succeed(Response.status(Status.UnsupportedMediaType))
         // No body: a body is a contract callers would parse, and everything a caller can act on is in the headers. `Retry-After` is whole
         // seconds, rounded up; the policy is named by `RateLimit-Policy`, never the key or what else is being counted.
         case Outcome.RateLimited(_, retryAfterSeconds, headers) =>
@@ -1300,6 +1301,12 @@ object EdgeService:
           // Body was already read before permission check; reconstruct from the parsed JSON
           // so we don't double-consume the body stream when forwarding to upstream.
           ZIO.succeed(Body.fromString(json.toJson, StandardCharsets.UTF_8))
+        // An inject rule is trusted only because edge overwrites the field. A body edge did not parse (another content type) would
+        // reach upstream as the client wrote it, `userId` or `callerTenantId` included, and upstream reads it whatever the
+        // content type says: refused, not forwarded.
+        case None if rules.nonEmpty && !request.body.isEmpty =>
+          Observability.setError("inject_body_not_json", Some("an endpoint with body inject rules got a body that is not JSON")) *>
+            ZIO.fail(Outcome.UnsupportedMediaType)
         case None =>
           ZIO.succeed(request.body)
 
@@ -1310,8 +1317,11 @@ object EdgeService:
           if raw.isEmpty then ZIO.none
           else ZIO.fromEither(raw.fromJson[Json]).mapError(new RuntimeException(_)).asSome
 
+    /** `application/json`, and the JSON merge patch type (RFC 7396 §3, `application/merge-patch+json`), which is a JSON document too. */
     private def isJsonRequest(request: Request): Boolean =
-      request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json)
+      request.header(Header.ContentType).exists(contentType =>
+        contentType.mediaType == MediaType.application.json || contentType.mediaType.fullType == "application/merge-patch+json",
+      )
 
     /** Picks the most specific endpoint whose template matches the request: a static
       * segment always wins over a `{name}` placeholder at the same position, so
@@ -1365,6 +1375,9 @@ object EdgeService:
     case Forbidden
     case NotFound
     case InternalServerError
+
+    /** The endpoint has body inject rules and the body is not JSON that edge could rewrite. */
+    case UnsupportedMediaType
 
     /** A rate limit policy in `enforce` refused the call: `429`, with the wait in whole seconds. */
     case RateLimited(policy: String, retryAfterSeconds: Int, headers: List[(String, String)])

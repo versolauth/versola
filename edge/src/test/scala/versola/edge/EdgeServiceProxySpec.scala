@@ -1546,6 +1546,57 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         parsed.exists(_.fields.exists((k, v) => k == "name" && v == Json.Str("Alice"))),
       )
     },
+    test("an endpoint with body injects refuses a body that is not JSON, so a client cannot send the field edge would overwrite") {
+      val env = new Env
+      val endpoint = createUserEndpoint(inject = Vector(InjectRule(InjectTarget.body, "actor", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        forged = Json.Obj("actor" -> Json.Str("attacker-controlled")).toJson
+        asText = Request.post(URL.empty / "users", Body.fromString(forged))
+          .addHeader(Header.ContentType(MediaType.text.plain))
+          .addCookie(sessionCookie(token))
+        noType = Request.post(URL.empty / "users", Body.fromString(forged)).addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        text <- service.proxy(ResourceId("users-api"), Path.decode("/users"), asText)
+        untyped <- service.proxy(ResourceId("users-api"), Path.decode("/users"), noType)
+        upstream <- capture.get
+      yield assertTrue(
+        text.status == Status.UnsupportedMediaType,
+        untyped.status == Status.UnsupportedMediaType,
+        upstream.isEmpty,
+      )
+    },
+    test("a JSON merge patch body is rewritten like JSON: the injected field replaces the client's") {
+      val env = new Env
+      val endpoint = createUserEndpoint(inject = Vector(InjectRule(InjectTarget.body, "actor", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        body = Json.Obj("blockAt" -> Json.Num(70), "actor" -> Json.Str("attacker-controlled")).toJson
+        request = Request.post(URL.empty / "users", Body.fromString(body))
+          .addHeader(Header.ContentType(MediaType.parseCustomMediaType("application/merge-patch+json").get))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        forwarded <- ZIO.foreach(upstream)(_.body.asString).map(_.getOrElse(""))
+        parsed = forwarded.fromJson[Json.Obj].toOption
+      yield assertTrue(
+        response.status == Status.Ok,
+        parsed.exists(_.fields.exists((k, v) => k == "actor" && v == Json.Str("user-1"))),
+        parsed.exists(_.fields.count(_._1 == "actor") == 1),
+        parsed.exists(_.fields.exists((k, v) => k == "blockAt" && v == Json.Num(70))),
+      )
+    },
     test("a query inject replaces a parameter of the same name the client sent") {
       val env = new Env
       val endpoint = usersEndpoint(inject = Vector(InjectRule(InjectTarget.query, "adminSubject", "token.sub")))
