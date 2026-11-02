@@ -356,9 +356,13 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
       for
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
+        // The polls that wait for the entry to be loaded are requests for a number too, and take steps of its limit: they use
+        // a number of their own, so that the one under test starts with none.
+        probe <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, probe)(ListEntry("watch", "ip", ip))
         auth = f.a.auth
+        before <- AntifraudFixture.otpRequestSteps(s.phone.get)
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
         csrf <- auth.getChallenge(cookie).map(_.csrf)
@@ -371,6 +375,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         sentLine <- line(f.a, ip, "/challenge/otp/resend", 0)
         steps <- AntifraudFixture.otpRequestSteps(s.phone.get)
       yield assertTrue(
+        before == 0,
         stepEarly.contains(ConversationStep.Otp),
         sentLine.decision == "Challenge",
         sentLine.outcome.contains("sent"),
