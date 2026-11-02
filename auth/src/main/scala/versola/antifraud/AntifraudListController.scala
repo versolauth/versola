@@ -120,7 +120,8 @@ object AntifraudListController extends Controller:
       tenantId = entry.tenantId,
       expiresAt = entry.expiresAt,
       reason = entry.reason,
-      source = entry.source.getOrElse("manual"),
+      // Never the client's: a request of the API is manual, whatever its body says.
+      source = ListEntrySource.Manual,
       shadow = entry.shadow.getOrElse(false),
     )
 
@@ -133,7 +134,6 @@ object AntifraudListController extends Controller:
       tenantId: Option[TenantId],
       expiresAt: Option[Instant],
       reason: Option[String],
-      source: Option[String],
       shadow: Option[Boolean],
       userId: UserId,
   ) derives JsonCodec

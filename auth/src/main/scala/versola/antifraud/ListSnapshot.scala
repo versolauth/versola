@@ -245,6 +245,23 @@ object ListValues:
       bits < (if normalized.contains(':') then 48 else 24)
     case _ => true
 
+  /** The shortest prefix a `cidr` entry may have, by family: a network wider than that is a country or an operator, not an
+    * attacker's range, and `/0` is everybody. */
+  val MinCidrBitsV4 = 8
+  val MinCidrBitsV6 = 32
+
+  /** Why a `cidr` entry is wider than may be listed, `None` for any other entry and for a network that is not. */
+  def tooWide(valueType: AntifraudValueType, normalized: String): Option[String] =
+    Option.when(valueType == AntifraudValueType.cidr):
+      val bits = normalized.substring(normalized.indexOf('/') + 1).toInt
+      if normalized.contains(':') then Option.when(bits < MinCidrBitsV6)(s"an IPv6 network is /$MinCidrBitsV6 or narrower")
+      else Option.when(bits < MinCidrBitsV4)(s"an IPv4 network is /$MinCidrBitsV4 or narrower")
+    .flatten
+
+  /** The kinds that name many clients with one value, and so have a longest life ([[AntifraudLists.Settings.maxBroadTtl]]). */
+  def expiresAtMost(valueType: AntifraudValueType): Boolean =
+    valueType == AntifraudValueType.cidr || valueType == AntifraudValueType.email_domain || valueType == AntifraudValueType.prefix
+
   /** The address with the bits beyond the prefix cleared, as text. */
   private def canonical(parsed: (Boolean, IpKey), bits: Option[Int]): String =
     val (v6, key) = parsed

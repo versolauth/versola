@@ -42,8 +42,15 @@ object AntifraudListsSpec extends UnitSpecBase:
     override def find(id: UUID): Task[Option[AntifraudListEntry]] = ZIO.succeed(entries.find(_.id == id))
 
     var previewResult = ListPreview(matched = None, total = 0)
+    var previewedFor: List[Option[TenantId]] = Nil
 
-    override def preview(valueType: AntifraudValueType, value: String, since: Instant): Task[ListPreview] = ZIO.succeed(previewResult)
+    /** Answers by tenant, as the repository does; by default `previewResult` for all. */
+    var previewBy: Option[Option[TenantId] => ListPreview] = None
+
+    override def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview] =
+      ZIO.succeed:
+        previewedFor = previewedFor :+ tenantId
+        previewBy.fold(previewResult)(_(tenantId))
 
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] = ZIO.succeed(entries)
 
@@ -66,7 +73,8 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
-  private val settings = AntifraudTestSettings.lists.copy(enabled = true)
+  // The longest an entry may live is longer than the year the helpers below give theirs; the limit has specs of its own.
+  private val settings = AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 400.days)
 
   // challenge 50, block 100: a watch (20) is only visible in the score
   private val engine = AntifraudTestSettings.decision.copy(enabled = true)
@@ -401,6 +409,133 @@ object AntifraudListsSpec extends UnitSpecBase:
         automatedExpiring <- create(AntifraudValueType.phone_hash, "d3", "rule:velocity", later)
         broadExpiring <- create(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("ua2"), "manual", later)
       yield assertTrue(!broad, !wide, !prefix, narrow, exact, !automated, automatedExpiring, broadExpiring)
+    },
+    test("a network wider than /8 (IPv4) or /32 (IPv6) is refused, the limit itself is not, and an address is not a network") {
+      val (lists, _) = make(FakeRepository())
+      def deny(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.deny, valueType, value).either
+      for
+        everybody <- deny(AntifraudValueType.cidr, "0.0.0.0/0")
+        seven <- deny(AntifraudValueType.cidr, "10.0.0.0/7")
+        eight <- deny(AntifraudValueType.cidr, "10.0.0.0/8")
+        sixteen <- deny(AntifraudValueType.cidr, "10.1.0.0/16")
+        everybody6 <- deny(AntifraudValueType.cidr, "::/0")
+        thirtyOne <- deny(AntifraudValueType.cidr, "2001:db8::/31")
+        thirtyTwo <- deny(AntifraudValueType.cidr, "2001:db8::/32")
+        ip <- deny(AntifraudValueType.ip, "10.0.0.1")
+      yield assertTrue(
+        everybody.swap.exists(_.getMessage.contains("/8")),
+        seven.isLeft,
+        eight.isRight,
+        sixteen.isRight,
+        everybody6.swap.exists(_.getMessage.contains("/32")),
+        thirtyOne.isLeft,
+        thirtyTwo.isRight,
+        ip.isRight,
+      )
+    },
+    test("a network, a mail domain or a prefix lives 30 days at most, and the other kinds are not held to it") {
+      val (lists, _) = make(FakeRepository(), AntifraudTestSettings.lists.copy(enabled = true))
+      def create(valueType: AntifraudValueType, value: String, days: Long) =
+        lists
+          .create(
+            NewListEntry(
+              listType = AntifraudListType.deny,
+              valueType = valueType,
+              value = value,
+              tenantId = None,
+              expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
+              reason = None,
+              source = ListEntrySource.Manual,
+              shadow = false,
+            ),
+            operator,
+          )
+          .either
+      for
+        prefix <- create(AntifraudValueType.prefix, "4915", 31)
+        domain <- create(AntifraudValueType.email_domain, "mailinator.com", 31)
+        cidr <- create(AntifraudValueType.cidr, "10.0.0.0/16", 31)
+        exactNetwork <- create(AntifraudValueType.cidr, "10.0.0.1/32", 31)
+        prefixAtLimit <- create(AntifraudValueType.prefix, "4916", 30)
+        cidrAtLimit <- create(AntifraudValueType.cidr, "10.2.0.0/16", 30)
+        phone <- create(AntifraudValueType.phone_hash, "h", 365)
+        ua <- create(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("ua"), 365)
+      yield assertTrue(
+        prefix.swap.exists(_.getMessage.contains("30 days")),
+        domain.isLeft,
+        cidr.isLeft,
+        exactNetwork.isLeft,
+        prefixAtLimit.isRight,
+        cidrAtLimit.isRight,
+        phone.isRight,
+        ua.isRight,
+      )
+    },
+    test("the limit of a lifetime is the configured one") {
+      val (lists, _) = make(FakeRepository(), AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 3.days))
+      def prefix(days: Long) =
+        lists
+          .create(
+            NewListEntry(
+              listType = AntifraudListType.deny,
+              valueType = AntifraudValueType.prefix,
+              value = "4915",
+              tenantId = None,
+              expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
+              reason = None,
+              source = ListEntrySource.Manual,
+              shadow = false,
+            ),
+            operator,
+          )
+          .either
+      for
+        long <- prefix(4)
+        short <- prefix(3)
+      yield assertTrue(long.isLeft, short.isRight)
+    },
+    test("a preview and the traffic-share guard are over the traffic of the entry's tenant, and of all of it for a global entry") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def entry(tenantId: Option[TenantId]) =
+        NewListEntry(
+          listType = AntifraudListType.deny,
+          valueType = AntifraudValueType.prefix,
+          value = "4915",
+          tenantId = tenantId,
+          expiresAt = Some(Instant.EPOCH.plusSeconds(60)),
+          reason = None,
+          source = ListEntrySource.Manual,
+          shadow = false,
+        )
+      for
+        _ <- lists.preview(entry(Some(tenant)))
+        _ <- lists.preview(entry(None))
+        _ <- lists.create(entry(Some(tenant)), operator)
+        _ <- lists.create(entry(None), operator)
+      yield assertTrue(repository.previewedFor == List(Some(tenant), None, Some(tenant), None))
+    },
+    test("a tenant's entry that covers all of that tenant's traffic is refused although it is a small part of everyone's") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      // The tenant has 400 requests, all of the range; everyone has 100000.
+      repository.previewBy = Some(tenantId => if tenantId.isDefined then ListPreview(Some(400), 400) else ListPreview(Some(400), 100000))
+      val guarded = lists
+      def entry(tenantId: Option[TenantId]) =
+        NewListEntry(
+          listType = AntifraudListType.deny,
+          valueType = AntifraudValueType.prefix,
+          value = "4915",
+          tenantId = tenantId,
+          expiresAt = Some(Instant.EPOCH.plusSeconds(60)),
+          reason = None,
+          source = ListEntrySource.Manual,
+          shadow = false,
+        )
+      for
+        scoped <- guarded.create(entry(Some(tenant)), operator).either
+        global <- guarded.create(entry(None), operator).either
+      yield assertTrue(scoped.left.exists(_.isInstanceOf[InvalidListEntry]), global.isRight)
     },
     test("a shadow entry enforces nothing and only shows in the fired rules") {
       val (lists, _) = make(FakeRepository())

@@ -93,7 +93,8 @@ case class ListedValue(
 /** Hits of one entry since the last flush. */
 case class ListHit(id: UUID, count: Long, lastAt: Instant)
 
-/** What a request to add an entry says; the service fills in the id and the time. */
+/** What a request to add an entry says; the service fills in the id and the time. `source` is never the client's: the
+  * server says `manual` for a request of the API and `detector:<kind>` for an approved proposal. */
 case class NewListEntry(
     listType: AntifraudListType,
     valueType: AntifraudValueType,
@@ -105,14 +106,28 @@ case class NewListEntry(
     shadow: Boolean,
 )
 
+/** Who put an entry on the list; set by the server, never read from a request. */
+object ListEntrySource:
+  val Manual = "manual"
+
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
   * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
 case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec
 
 enum AntifraudListAction derives JsonCodec:
-  case create, delete, expire
+  /** `update` is the same value added again: the entry is refreshed, and the record has what it was. */
+  case create, update, delete, expire
 
-/** One change of the lists. The entry is copied in because the row it describes may be gone. */
+/** What an entry had before an update changed it. */
+case class PreviousListValues(
+    expiresAt: Option[Instant],
+    reason: Option[String],
+    source: String,
+    shadow: Boolean,
+) derives JsonCodec
+
+/** One change of the lists. The entry is copied in because the row it describes may be gone; `previous` is only there
+  * for an `update`. */
 case class AntifraudListAudit(
     id: UUID,
     at: Instant,
@@ -125,6 +140,7 @@ case class AntifraudListAudit(
     tenantId: Option[TenantId],
     expiresAt: Option[Instant],
     reason: Option[String],
+    previous: Option[PreviousListValues],
 ) derives JsonCodec
 
 /** @param tenantId `None` does not filter; `Some(None)` is the global entries only */
