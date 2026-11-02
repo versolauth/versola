@@ -5,6 +5,7 @@ import zio.{Duration, UIO, ZIO, durationInt}
 
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** A limit on how many codes may be sent to one range of phone numbers within an hour, and a breaker for a range
   * where the codes are not being used.
@@ -16,11 +17,20 @@ import java.util.concurrent.ConcurrentHashMap
   *   - `sentPerHour` codes were sent to it already (so that many are allowed), or
   *   - at least `minVolume` were sent and fewer than `minConversion` of them were verified.
   * It opens again by itself as the hour moves on. Both limits are off while they are 0.
+  *
+  * The table is bounded by `maxRanges`. Ranges are made by whoever asks (the leading digits of a number), so a full table
+  * does not stop new ranges from being tracked: the range with the fewest codes sent in the last ten minutes, of eight
+  * picked at random, makes room (see [[VelocityCounters]], which does the same with its keys). A busy range, the kind an
+  * attack makes, is the last to be evicted, and one a flood of made-up ranges pushes out loses its hour of counts and
+  * starts again, which is the budget failing open for that range, not for the others.
   */
 final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, limits: () => SmsLimits):
   import SmsBudget.*
 
   private val windows = ConcurrentHashMap[Key, Window]()
+  // The ranges by slot, to pick some at random when the table is full; a little room beyond `maxRanges` for a burst that overshoots.
+  private val slots = SampledSlots[Window](sizing.maxRanges + SlotSlack)
+  private val evictedCount = AtomicLong(0)
 
   private def key(tenantId: Option[TenantId], prefix: String): Key =
     Key(tenantId.map(identity[String]).getOrElse(""), prefix.take(settings.prefixLength))
@@ -42,12 +52,40 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
       val existing = Option(windows.get(k))
       val window =
         if existing.isDefined || !charge then existing
-        else if windows.size >= sizing.maxRanges then None
-        else Some(windows.computeIfAbsent(k, _ => Window()))
+        else admit(k, at)
       window match
         case Some(w) => if w.admit(at, charge, closed(_, _, conversionBreaker, limit)) then Decision.Allowed else Decision.Refused
         case None if charge => Decision.Untracked
         case None => Decision.Allowed
+
+  private def admit(k: Key, at: Instant): Option[Window] =
+    if windows.size >= sizing.maxRanges && !makeRoom(at) then None
+    else
+      val window = Window(k)
+      val slot = slots.claim(window)
+      if slot < 0 then None
+      else
+        window.slot = slot
+        val raced = windows.putIfAbsent(k, window)
+        if raced == null then Some(window)
+        else
+          // Another request made the range first: use its window, and give the slot back.
+          slots.release(slot, window)
+          Some(raced)
+
+  private def makeRoom(at: Instant): Boolean =
+    val sample = slots.sample(EvictionSample)
+    if sample.isEmpty then false
+    else
+      val victim = sample.minBy(_.sentSince(at, RecentMinutes))
+      if windows.remove(victim.key, victim) then
+        slots.release(victim.slot, victim)
+        evictedCount.incrementAndGet()
+        true
+      else false
+
+  /** Ranges evicted to make room since the last call (for the metric). */
+  def drainEvicted(): Long = evictedCount.getAndSet(0)
 
   /** Gives back a code that was charged at `at` and not sent after all. */
   def release(tenantId: Option[TenantId], prefix: String, at: Instant): Unit =
@@ -59,7 +97,19 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
 
   /** Forgets ranges that have been quiet for the whole hour. */
   def evict(at: Instant): Unit =
-    windows.entrySet().removeIf(entry => entry.getValue.totals(at) == (0, 0))
+    windows.entrySet().removeIf: entry =>
+      val gone = entry.getValue.totals(at) == (0, 0)
+      if gone then slots.release(entry.getValue.slot, entry.getValue)
+      gone
+
+  /** Forgets the ranges that `prefix` (digits) is in or contains, of every tenant; every range for `None`. A range's budget
+    * starts over: its count and the conversion that goes with it (a reset: see [[AntifraudCounters]]). */
+  def forget(prefix: Option[String]): Unit =
+    windows.entrySet().removeIf: entry =>
+      val range = entry.getKey.prefix
+      val matches = prefix.forall(p => range.startsWith(p) || p.startsWith(range))
+      if matches then slots.release(entry.getValue.slot, entry.getValue)
+      matches
 
   def size: Int = windows.size
 
@@ -89,8 +139,15 @@ object SmsBudget:
 
   private val Minutes = 60
 
+  /** Ranges looked at when a full table makes room for a new one, and the minutes their use is counted over. */
+  private val EvictionSample = 8
+  private val RecentMinutes = 10
+  private val SlotSlack = 64
+
   /** The last hour, a minute at a time. */
-  private final class Window:
+  private final class Window(val key: Key):
+    @volatile var slot: Int = -1
+
     private val sent = new Array[Int](Minutes)
     private val verified = new Array[Int](Minutes)
     private val minuteOf = new Array[Long](Minutes)
@@ -117,6 +174,12 @@ object SmsBudget:
       val open = !closed(sent, verified)
       if open && charge then add(at, sent = 1, verified = 0)
       open
+
+    /** Codes sent in the last `minutes` minutes. */
+    def sentSince(at: Instant, minutes: Int): Int = synchronized:
+      val now = at.getEpochSecond / 60
+      (0 until Minutes).foldLeft(0): (sum, slot) =>
+        if now - minuteOf(slot) < minutes && minuteOf(slot) <= now then sum + sent(slot) else sum
 
     def totals(at: Instant): (Int, Int) = synchronized:
       val now = at.getEpochSecond / 60

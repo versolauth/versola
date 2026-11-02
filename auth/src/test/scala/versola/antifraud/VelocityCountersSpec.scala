@@ -21,7 +21,8 @@ object VelocityCountersSpec extends UnitSpecBase:
   import VelocityWindow.*
 
   /** What the instances write, in memory; `failing` makes every call fail, as a database that is down does. */
-  private class InMemoryRepository(rows: Ref[Map[(UUID, VelocityKey, String, Long), Int]], failing: Ref[Boolean]) extends VelocityRepository:
+  private[antifraud] class InMemoryRepository(rows: Ref[Map[(UUID, VelocityKey, String, Long), Int]], failing: Ref[Boolean])
+    extends VelocityRepository:
     private def check = failing.get.flatMap(ZIO.fail(RuntimeException("db down")).when(_)).unit
 
     override def save(instance: UUID, buckets: List[VelocityBucket]): Task[Unit] =
@@ -37,18 +38,23 @@ object VelocityCountersSpec extends UnitSpecBase:
 
     def all: UIO[Map[(UUID, VelocityKey, String, Long), Int]] = rows.get
 
+    override def forget(target: VelocityTarget, instance: Option[UUID]): Task[Int] =
+      check *> rows.modify: all =>
+        val gone = all.keys.filter(k => target.matches(k._2, k._3) && instance.forall(_ == k._1)).toSet
+        (gone.size, all -- gone)
+
     override def prune(minute: Long, batch: Int): Task[Int] =
       check *> rows.modify: all =>
         val gone = all.keys.filter(_._4 < minute).take(batch).toSet
         (gone.size, all -- gone)
 
-  private val repository: UIO[(InMemoryRepository, Ref[Boolean])] =
+  private[antifraud] val repository: UIO[(InMemoryRepository, Ref[Boolean])] =
     for
       rows <- Ref.make(Map.empty[(UUID, VelocityKey, String, Long), Int])
       failing <- Ref.make(false)
     yield (InMemoryRepository(rows, failing), failing)
 
-  private def instance(
+  private[antifraud] def instance(
       repo: VelocityRepository,
       settings: VelocityCounters.Settings,
       limits: VelocityCounters.Limits,
@@ -64,7 +70,7 @@ object VelocityCountersSpec extends UnitSpecBase:
     )
 
   /** Lets the flush and load fibers of the instances run a round. */
-  private def rounds(n: Int): UIO[Unit] =
+  private[antifraud] def rounds(n: Int): UIO[Unit] =
     ZIO.foreachDiscard(1 to n)(_ => TestClock.adjust(10.seconds) *> Live.live(ZIO.sleep(30.millis)))
 
   def spec = suite("VelocityCounters")(
@@ -138,35 +144,41 @@ object VelocityCountersSpec extends UnitSpecBase:
       counters.evict(t0.plusSeconds(25 * 3600))
       assertTrue(counters.size == 1, counters.count(ip, "recent", OneDay, t0.plusSeconds(25 * 3600)) == 1)
     },
-    test("a full table makes room for a new key by dropping the oldest key seen once, and keeps the established ones") {
-      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 3))
-      counters.record(ip, "hot", t0)
-      counters.record(ip, "hot", t0)
-      (1 to 1000).foreach(i => counters.record(ip, s"junk$i", t0))
+    test("a full table makes room for a new key by dropping the least used of a random sample, and keeps the busy ones") {
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 200))
+      // Ten keys with real traffic (5% of the table), then a flood of a hundred thousand made-up ones, each seen once or twice.
+      (1 to 10).foreach(i => (1 to 30).foreach(_ => counters.record(ip, s"hot$i", t0)))
+      (1 to 100000).foreach: i =>
+        counters.record(ip, s"junk$i", t0.plusSeconds(1))
+        if i % 2 == 0 then counters.record(ip, s"junk$i", t0.plusSeconds(1))
+      val survivors = (1 to 10).count(i => counters.count(ip, s"hot$i", TenMinutes, t0.plusSeconds(1)) == 30)
       assertTrue(
-        counters.size == 3,
-        counters.count(ip, "hot", OneDay, t0) == 2,
-        // The newest of the junk is there, the oldest is gone.
-        counters.count(ip, "junk1000", OneDay, t0) == 1,
-        counters.count(ip, "junk1", OneDay, t0) == 0,
-        counters.evicted == 998,
+        counters.size == 200,
+        // A hot key is evicted only when all eight keys of a sample are as busy as it: with 10 of 200 slots hot, that is
+        // 0.05 to the eighth power a try, about 4e-11, so none is in a hundred thousand tries.
+        survivors == 10,
+        counters.evicted > 99000,
         counters.untracked == 0,
       )
     },
-    test("fails open for a new key, and counts it, only when every key held has been seen again; per kind") {
+    test("what is counted over the last ten minutes decides, not when the key came: an old idle key goes before a new busy one") {
       val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 2))
-      List("a", "b").foreach(k => (1 to 2).foreach(_ => counters.record(ip, k, t0)))
-      counters.record(ip, "c", t0)
-      counters.record(ip, "a", t0)
-      counters.record(phone, "x", t0)
+      counters.record(ip, "idle", t0)
+      (1 to 5).foreach(_ => counters.record(ip, "busy", t0.plusSeconds(3600)))
+      // Both held (the sample is the whole table): the idle one has nothing in the last ten minutes.
+      counters.record(ip, "new", t0.plusSeconds(3600))
       assertTrue(
-        counters.size == 3,
-        counters.count(ip, "a", OneDay, t0) == 3,
-        counters.count(ip, "c", OneDay, t0) == 0,
-        counters.untracked == 1,
-        counters.evicted == 0,
-        counters.count(phone, "x", OneDay, t0) == 1,
+        counters.count(ip, "idle", OneDay, t0.plusSeconds(3600)) == 0,
+        counters.count(ip, "busy", OneDay, t0.plusSeconds(3600)) == 5,
+        counters.count(ip, "new", OneDay, t0.plusSeconds(3600)) == 1,
+        counters.evicted == 1,
       )
+    },
+    test("the table of one kind is full without crowding the other kinds") {
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 2))
+      (1 to 10).foreach(i => counters.record(ip, s"k$i", t0))
+      counters.record(phone, "x", t0)
+      assertTrue(counters.size == 3, counters.count(phone, "x", OneDay, t0) == 1, counters.untracked == 0)
     },
     test("cuts a key to a bounded length") {
       val counters = newCounters(on)
@@ -265,7 +277,8 @@ object VelocityCountersSpec extends UnitSpecBase:
     test("an address is counted as its network under a keyed hash: spellings and a /64 are one key, and no address is stored") {
       val settings = on
       val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
-      val tuned = AntifraudTestSettings.tuning.copy(thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perDay = 1000)))
+      val tuned =
+        AntifraudTestSettings.tuning.copy(thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perDay = 1000)))
       def ctx(ip: String) = AntifraudContext(
         tenantId = None,
         clientId = ClientId("c"),

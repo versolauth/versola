@@ -46,6 +46,13 @@ final class RecordingAntifraudEvents(
 
   override def releaseSms(clientId: ClientId, phone: Phone, at: java.time.Instant): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
 
+  private val budgetResets = scala.collection.mutable.ListBuffer.empty[Option[String]]
+
+  /** The prefix of each [[resetBudget]] call, in order. */
+  def budgetResetCalls: List[Option[String]] = synchronized(budgetResets.toList)
+
+  override def resetBudget(prefix: Option[String]): UIO[Unit] = zio.ZIO.succeed(synchronized(budgetResets += prefix)).unit
+
   private val decided = scala.collection.mutable.ListBuffer.empty[Boolean]
 
   /** The `repeated` flag of each [[decideOtpRequest]] call, in order. */
