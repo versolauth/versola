@@ -3,7 +3,6 @@ package versola.antifraud
 import zio.*
 import zio.json.JsonCodec
 
-import java.net.{Inet4Address, Inet6Address, InetAddress}
 import java.time.Instant
 
 /** The velocity rules: a request fires one when its phone, address, device, ASN or range of numbers was seen more often
@@ -84,17 +83,11 @@ object VelocityRules:
   /** The network an address is counted as: `4:a.b.c.d` for an IPv4 address (an IPv4-mapped IPv6 one is that address),
     * `6:` and the first 64 bits in hex for IPv6, so that the spellings of one address (`::1`, `0:0::1`) are one key and a
     * client that rotates through its own /64 is one key too. `None` for anything but an address literal, a host name
-    * included: nothing here reaches the resolver, and text that is not an address makes no key. */
+    * included: the text is read by [[IpLiteral]], never by the resolver, and text that is not an address makes no key. */
   def network(text: String): Option[String] =
-    val trimmed = text.trim
-    val literal = trimmed.nonEmpty && trimmed.length <= 45 &&
-      trimmed.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f')) &&
-      (trimmed.contains(':') || trimmed.count(_ == '.') == 3)
-    if !literal then None
-    else
-      scala.util.Try(InetAddress.getByName(trimmed)).toOption.collect:
-        case v4: Inet4Address => s"4:${v4.getHostAddress}"
-        case v6: Inet6Address => "6:" + v6.getAddress.take(8).map("%02x".format(_)).mkString
+    IpLiteral.parse(text).map:
+      case (false, key) => "4:" + (0 until 4).map(i => ((key.hi >>> (56 - 8 * i)) & 0xff).toString).mkString(".")
+      case (true, key) => "6:" + "%016x".format(key.hi)
 
   /** The keys the context can be told by, as counted; `ipNetwork` is the key of its address. */
   def keys(ctx: AntifraudContext, ipNetwork: Option[String]): List[(VelocityKey, String)] =

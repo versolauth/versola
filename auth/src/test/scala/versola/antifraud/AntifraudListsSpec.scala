@@ -74,16 +74,16 @@ object AntifraudListsSpec extends UnitSpecBase:
 
   private def ctx(
       ip: Option[String] = None,
-      deviceId: Option[String] = None,
+      subjectHash: Option[String] = None,
       destPrefix: Option[String] = None,
       tenantId: Option[TenantId] = Some(tenant),
   ) = AntifraudContext(
     tenantId = tenantId,
     clientId = ClientId("c"),
     action = AntifraudAction.otp_request,
-    subjectHash = None,
+    subjectHash = subjectHash,
     destPrefix = destPrefix,
-    deviceId = deviceId,
+    deviceId = None,
     ip = ip,
     asn = None,
     userAgent = None,
@@ -133,23 +133,23 @@ object AntifraudListsSpec extends UnitSpecBase:
       val (lists, _) = make(repository)
       val (off, _) = make(repository, AntifraudTestSettings.lists)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         offRules <- off.ruleSet.rules
-        d <- decide(off)(ctx(deviceId = Some("d")))
+        d <- decide(off)(ctx(subjectHash = Some("d")))
       yield assertTrue(offRules.isEmpty, d == Decision.allow)
     },
     test("a deny blocks, a fake fakes, a watch adds its weight") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "bad")
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "bad")
         _ <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
         _ <- add(lists, AntifraudListType.watch, AntifraudValueType.cidr, "10.0.0.0/8")
-        blocked <- decide(lists)(ctx(deviceId = Some("bad")))
+        blocked <- decide(lists)(ctx(subjectHash = Some("bad")))
         faked <- decide(lists)(ctx(destPrefix = Some("491512")))
         watched <- decide(lists)(ctx(ip = Some("10.2.3.4")))
-        clean <- decide(lists)(ctx(ip = Some("192.0.2.1"), deviceId = Some("fine")))
+        clean <- decide(lists)(ctx(ip = Some("192.0.2.1"), subjectHash = Some("fine")))
       yield assertTrue(
-        blocked == Decision(DecisionAction.Block, 0, List("deny_list:device_id")),
+        blocked == Decision(DecisionAction.Block, 0, List("deny_list:phone_hash")),
         faked == Decision(DecisionAction.Fake, 0, List("fake_list:prefix")),
         watched == Decision(DecisionAction.Allow, 20, List("watch_list:cidr")),
         clean == Decision.allow,
@@ -158,31 +158,31 @@ object AntifraudListsSpec extends UnitSpecBase:
     test("an allow outweighs score-based rules, the lists' own watch included") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.device_id, "vip")
-        _ <- add(lists, AntifraudListType.watch, AntifraudValueType.device_id, "vip")
-        unlisted <- decide(lists, scoring)(ctx(deviceId = Some("other")))
-        allowed <- decide(lists, scoring)(ctx(deviceId = Some("vip")))
+        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
+        _ <- add(lists, AntifraudListType.watch, AntifraudValueType.phone_hash, "vip")
+        unlisted <- decide(lists, scoring)(ctx(subjectHash = Some("other")))
+        allowed <- decide(lists, scoring)(ctx(subjectHash = Some("vip")))
       yield assertTrue(
         unlisted.action == DecisionAction.Challenge,
         allowed.action == DecisionAction.Allow,
-        allowed.firedRules.contains("allow_list:device_id"),
+        allowed.firedRules.contains("allow_list:phone_hash"),
       )
     },
     test("an allow does not override a rule of another source that forces an action") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.device_id, "vip")
-        d <- decide(lists, scoring, blocking)(ctx(deviceId = Some("vip")))
+        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
+        d <- decide(lists, scoring, blocking)(ctx(subjectHash = Some("vip")))
       yield assertTrue(d.action == DecisionAction.Block)
     },
     test("an allow never overrides a deny of the same specificity, nor a more specific one") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.device_id, "same")
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "same")
+        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "same")
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "same")
         _ <- add(lists, AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.9/32")
         _ <- add(lists, AntifraudListType.deny, AntifraudValueType.ip, "203.0.113.9")
-        tie <- decide(lists, scoring)(ctx(deviceId = Some("same")))
+        tie <- decide(lists, scoring)(ctx(subjectHash = Some("same")))
         narrower <- decide(lists, scoring)(ctx(ip = Some("203.0.113.9")))
         rest <- decide(lists, scoring)(ctx(ip = Some("203.0.113.1")))
       yield assertTrue(
@@ -204,9 +204,9 @@ object AntifraudListsSpec extends UnitSpecBase:
     test("a tenant's entry does not apply to another tenant") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d", tenantId = Some(tenant))
-        mine <- decide(lists)(ctx(deviceId = Some("d")))
-        other <- decide(lists)(ctx(deviceId = Some("d"), tenantId = Some(TenantId("tenant-b"))))
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", tenantId = Some(tenant))
+        mine <- decide(lists)(ctx(subjectHash = Some("d")))
+        other <- decide(lists)(ctx(subjectHash = Some("d"), tenantId = Some(TenantId("tenant-b"))))
       yield assertTrue(mine.action == DecisionAction.Block, other == Decision.allow)
     },
     test("an entry stops applying when it expires, without a refresh") {
@@ -216,7 +216,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         _ <- lists.create(
           NewListEntry(
             listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.device_id,
+            valueType = AntifraudValueType.phone_hash,
             value = "d",
             tenantId = None,
             expiresAt = Some(now.plusSeconds(60)),
@@ -226,22 +226,22 @@ object AntifraudListsSpec extends UnitSpecBase:
           ),
           operator,
         )
-        before <- decide(lists)(ctx(deviceId = Some("d")))
+        before <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- TestClock.adjust(61.seconds)
-        after <- decide(lists)(ctx(deviceId = Some("d")))
+        after <- decide(lists)(ctx(subjectHash = Some("d")))
       yield assertTrue(before.action == DecisionAction.Block, after == Decision.allow)
     },
     test("a refresh that fails keeps the lists there are; the next one that works replaces them") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         _ <- ZIO.succeed { repository.failLoad = true }
         _ <- lists.refresh
-        kept <- decide(lists)(ctx(deviceId = Some("d")))
+        kept <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- ZIO.succeed { repository.failLoad = false; repository.entries = Nil; repository.changed() }
         _ <- lists.refresh
-        gone <- decide(lists)(ctx(deviceId = Some("d")))
+        gone <- decide(lists)(ctx(subjectHash = Some("d")))
       yield assertTrue(kept.action == DecisionAction.Block, gone == Decision.allow)
     },
     test("starting reads the table, a change made elsewhere shows within the refresh interval, and the hits are written") {
@@ -256,7 +256,7 @@ object AntifraudListsSpec extends UnitSpecBase:
               AntifraudListEntry(
                 id = UUID.randomUUID(),
                 listType = AntifraudListType.deny,
-                valueType = AntifraudValueType.device_id,
+                valueType = AntifraudValueType.phone_hash,
                 value = "d",
                 tenantId = None,
                 expiresAt = None,
@@ -270,10 +270,10 @@ object AntifraudListsSpec extends UnitSpecBase:
               ),
             )
           }
-          before <- decide(lists)(ctx(deviceId = Some("d")))
+          before <- decide(lists)(ctx(subjectHash = Some("d")))
           _ <- TestClock.adjust(settings.refreshInterval) *> ZIO.yieldNow.repeatN(20)
-          after <- decide(lists)(ctx(deviceId = Some("d")))
-          _ <- decide(lists)(ctx(deviceId = Some("d")))
+          after <- decide(lists)(ctx(subjectHash = Some("d")))
+          _ <- decide(lists)(ctx(subjectHash = Some("d")))
           _ <- TestClock.adjust(AntifraudTestSettings.listsPolicy.hitFlushInterval) *> ZIO.yieldNow.repeatN(20)
           written <- ZIO.succeed(repository.written)
         yield assertTrue(before == Decision.allow, after.action == DecisionAction.Block, written.map(_.count) == List(2L))
@@ -282,14 +282,14 @@ object AntifraudListsSpec extends UnitSpecBase:
       val repository = FakeRepository()
       val (lists, cache) = make(repository)
       for
-        stored <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
-        _ <- decide(lists)(ctx(deviceId = Some("d")))
-        _ <- decide(lists)(ctx(deviceId = Some("d")))
-        _ <- decide(lists)(ctx(deviceId = Some("other")))
+        stored <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- decide(lists)(ctx(subjectHash = Some("d")))
+        _ <- decide(lists)(ctx(subjectHash = Some("d")))
+        _ <- decide(lists)(ctx(subjectHash = Some("other")))
         _ <- ZIO.succeed { repository.failHits = true }
         _ <- lists.flushHits
         _ <- ZIO.succeed { repository.failHits = false }
-        _ <- decide(lists)(ctx(deviceId = Some("d")))
+        _ <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- lists.flushHits
         _ <- lists.flushHits
       yield assertTrue(
@@ -304,7 +304,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         past <- lists.create(
           NewListEntry(
             listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.device_id,
+            valueType = AntifraudValueType.phone_hash,
             value = "d",
             tenantId = None,
             expiresAt = Some(Instant.EPOCH),
@@ -347,11 +347,29 @@ object AntifraudListsSpec extends UnitSpecBase:
         host <- allow(AntifraudValueType.cidr, "10.0.0.1/32")
         host6 <- allow(AntifraudValueType.cidr, "2001:db8::1/128")
         ip <- allow(AntifraudValueType.ip, "10.0.0.2")
+        // a device id is what the client says it is until P1-1 issues it: not a subject an allow may name
         device <- allow(AntifraudValueType.device_id, "d")
         phone <- allow(AntifraudValueType.phone_hash, "h")
         // the same broad values are fine for a deny
-        denied <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500").either.map(_.isRight)
-      yield assertTrue(asn, wide, prefix, domain, ua, ja4, !host, !host6, !ip, !device, !phone, denied)
+        denied <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/8").either.map(_.isRight)
+      yield assertTrue(asn, wide, prefix, domain, ua, ja4, !host, !host6, !ip, device, !phone, denied)
+    },
+    test("an entry of a kind no request carries yet is refused, so that nothing is listed that cannot match") {
+      val (lists, _) = make(FakeRepository())
+      def deny(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.deny, valueType, value).either
+      for
+        device <- deny(AntifraudValueType.device_id, "d")
+        ja4 <- deny(AntifraudValueType.ja4_hash, "t13d")
+        asn <- deny(AntifraudValueType.asn, "64500")
+        phone <- deny(AntifraudValueType.phone_hash, "h")
+        domain <- deny(AntifraudValueType.email_domain, "mailinator.com")
+      yield assertTrue(
+        device.swap.exists(_.getMessage.contains("device_id")),
+        ja4.isLeft,
+        asn.isLeft,
+        phone.isRight,
+        domain.isRight,
+      )
     },
     test("an entry that names many clients, or an automated one, needs an expiry") {
       val (lists, _) = make(FakeRepository())
@@ -374,22 +392,22 @@ object AntifraudListsSpec extends UnitSpecBase:
           .map(_.isRight)
       val later = Some(Instant.EPOCH.plusSeconds(3600))
       for
-        broad <- create(AntifraudValueType.asn, "64500", "manual", None)
+        broad <- create(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("ua"), "manual", None)
         wide <- create(AntifraudValueType.cidr, "10.0.0.0/16", "manual", None)
         prefix <- create(AntifraudValueType.prefix, "4915", "manual", None)
         narrow <- create(AntifraudValueType.cidr, "10.1.0.0/24", "manual", None)
-        exact <- create(AntifraudValueType.device_id, "d", "manual", None)
-        automated <- create(AntifraudValueType.device_id, "d2", "rule:velocity", None)
-        automatedExpiring <- create(AntifraudValueType.device_id, "d3", "rule:velocity", later)
-        broadExpiring <- create(AntifraudValueType.asn, "64501", "manual", later)
+        exact <- create(AntifraudValueType.phone_hash, "d", "manual", None)
+        automated <- create(AntifraudValueType.phone_hash, "d2", "rule:velocity", None)
+        automatedExpiring <- create(AntifraudValueType.phone_hash, "d3", "rule:velocity", later)
+        broadExpiring <- create(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("ua2"), "manual", later)
       yield assertTrue(!broad, !wide, !prefix, narrow, exact, !automated, automatedExpiring, broadExpiring)
     },
     test("a shadow entry enforces nothing and only shows in the fired rules") {
       val (lists, _) = make(FakeRepository())
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d", shadow = true)
-        d <- decide(lists)(ctx(deviceId = Some("d")))
-      yield assertTrue(d == Decision(DecisionAction.Allow, 0, List("shadow_list:device_id")))
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
+        d <- decide(lists)(ctx(subjectHash = Some("d")))
+      yield assertTrue(d == Decision(DecisionAction.Allow, 0, List("shadow_list:phone_hash")))
     },
     test("an enforcing entry that would have matched too much of the recent traffic is refused, a shadow one is not") {
       val repository = FakeRepository()
@@ -403,7 +421,8 @@ object AntifraudListsSpec extends UnitSpecBase:
         _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = Some(5), total = 5) }
         tooFew <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "4916").either
         _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = None, total = 1000) }
-        unknown <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500").either
+        // a network: a kind the event log has no column for, so the preview cannot count it
+        unknown <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "198.51.100.0/24").either
         previewed <- lists.preview(
           NewListEntry(
             listType = AntifraudListType.deny,
@@ -450,7 +469,7 @@ object AntifraudListsSpec extends UnitSpecBase:
               AntifraudListEntry(
                 id = UUID.randomUUID(),
                 listType = AntifraudListType.deny,
-                valueType = AntifraudValueType.device_id,
+                valueType = AntifraudValueType.phone_hash,
                 value = "d",
                 tenantId = None,
                 expiresAt = None,
@@ -470,24 +489,24 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- ZIO.succeed { repository.failLoad = false }
           _ <- TestClock.adjust(1.second) *> ZIO.yieldNow.repeatN(20)
           _ <- fiber.join
-          d <- decide(lists)(ctx(deviceId = Some("d")))
+          d <- decide(lists)(ctx(subjectHash = Some("d")))
         yield assertTrue(stillStarting, d.action == DecisionAction.Block)
     },
     test("an unchanged table is not read again, except once a minute for a change made behind the service's back") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.device_id, "d")
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         afterCreate <- ZIO.succeed(repository.loads)
         _ <- lists.refresh.repeatN(9)
         unchanged <- ZIO.succeed(repository.loads)
         // by hand in SQL: no version bump
         _ <- ZIO.succeed { repository.entries = Nil }
         _ <- lists.refresh
-        stillThere <- decide(lists)(ctx(deviceId = Some("d")))
+        stillThere <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- TestClock.adjust(61.seconds)
         _ <- lists.refresh
-        gone <- decide(lists)(ctx(deviceId = Some("d")))
+        gone <- decide(lists)(ctx(subjectHash = Some("d")))
       yield assertTrue(unchanged == afterCreate, stillThere.action == DecisionAction.Block, gone == Decision.allow)
     },
     test("counts hits by list and kind of value, for the metric") {

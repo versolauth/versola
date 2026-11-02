@@ -851,7 +851,9 @@ object BootstrapService:
       userAgentTtlSeconds = 15552000,
       ipHeader = "X-Real-IP",
       acrVocabulary = Some(DefaultAcrVocabulary),
-      postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
+      // Empty on purpose: the allow-list gets the console's post-logout address from `bootstrap.presets`
+      // (`registerPostLogoutRedirectUri`, derived from the deployment's AUTH_URL), not from a hostname baked in here.
+      postLogoutRedirectUris = Nil,
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
       mtlsCertificateEncoding = None,

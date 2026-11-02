@@ -16,7 +16,7 @@ Files next to this one:
 ## Principles
 
 1. **One brand.** The console, the login forms (`forms/common.css`, the `default` theme) and
-   the website (`versola.kz/design`, `public/css/tokens.css`) share one set of tokens: warm
+   the website (`versola.io/design`, `public/css/tokens.css`) share one set of tokens: warm
    neutrals (near-white page, white sheet, soft filled fields, ink text), the petrol brand colour
    (`#155e75`) and the system UI face with JetBrains Mono for code. **Ink primary, brand accent:**
    the primary button is ink (inverse in dark), the brand colour is the accent for links, IDs,
@@ -56,7 +56,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--surface` | `#ffffff` | `#1e2324` | Cards, tables, the side panel (the sheet). Dark: brand 7% on `#1f1f20` |
 | `--surface-inset` | `#f5f3ee` | `#292f31` | A panel inside a card (claims, permissions, nested rows), hovered table row, disabled button; the site's `--surface-alt` |
 | `--surface-raised` | `#ffffff` | `#262c2e` | Popovers, dropdowns, menus (with `--shadow-card`) |
-| `--sidebar-bg` | `#e2e6e4` | `#0c1416` | The sidebar: the site's `--page` tint (brand 9% on `#f6f4ef` in oklab, the header behind versola.kz) |
+| `--sidebar-bg` | `#e2e6e4` | `#0c1416` | The sidebar: the site's `--page` tint (brand 9% on `#f6f4ef` in oklab, the header behind versola.io) |
 | `--sidebar-hover-bg` | `#d6d9d6` | `#1b2426` | A hovered nav item (the same tint one step deeper). The active item is `--accent-subtle` / `--accent-text` with a 3px `--accent` bar on its left edge |
 | `--field` | `#f5f3ee` | `#292f31` | The fill of an input, select, textarea, the tenant selector, a code editor: the forms' soft filled field. Focus lifts the field to `--surface` with an ink border |
 | `--field-hover` | `#edeae3` | `#30383b` | A hovered field |

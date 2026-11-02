@@ -100,6 +100,13 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
       assertTrue(settings.acrVocabulary == Some(Map("otp" -> List("otp"), "passkey" -> List("passkey"))))
     },
+    test("starts a tenant with no post-logout address: the deployment's own comes from the seeded presets, not from the code") {
+      val settings = BootstrapService.defaultChallengeSettings(
+        versola.central.configuration.tenants.TenantId("default"),
+        versola.central.CentralConfig.PasskeyConfig("localhost", List("http://localhost")),
+      )
+      assertTrue(settings.postLogoutRedirectUris.isEmpty)
+    },
     test("names each seeded locale in its own language, as the login forms' language selector shows it") {
       assertTrue(
         BootstrapService.defaultLocales.map(locale => locale.code -> locale.name).toMap ==

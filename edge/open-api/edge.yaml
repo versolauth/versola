@@ -72,7 +72,7 @@ info:
 
 externalDocs:
   description: Versola documentation
-  url: https://docs.versola.kz
+  url: https://docs.versola.io
 
 servers:
   - url: '{edgeBaseUrl}'

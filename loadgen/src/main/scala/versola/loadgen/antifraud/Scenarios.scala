@@ -10,21 +10,38 @@ import java.util.SplittableRandom
   *
   * Every scenario is an arrival process at a fixed rate (the sessions are started on a schedule, not when the
   * last one is done, so a slow system does not slow the offered load down) over fresh numbers.
+  *
+  * @param sourced the client a session with a source address uses (see [[SourcesConfig]]): the same `auth` with the
+  *                address in the header the stack reads it from
   */
 final class Scenarios(
     client: Client,
     auth: AuthClient,
+    sourced: String => AuthClient,
     config: AntifraudConfig,
     stub: SmsStub,
     numbers: PhoneNumbers,
     random: SplittableRandom,
 ):
 
+  private val sources = Sources(random)
+
+  /** The addresses legitimate sessions come from, drawn once per run. */
+  private val legitPool: Vector[String] = if config.sources.enabled then sources.pool(config.sources.legit) else Vector.empty
+
+  /** The address of a session, or none when the run sends no source header. */
+  private def fromPool(pool: Vector[String]): Option[String] =
+    if pool.isEmpty then None else Some(pool(random.nextInt(pool.size)))
+
+  /** One address for an attack that comes from one place, fresh for each scenario. */
+  private def ownSource(): Option[String] = Option.when(config.sources.enabled)(sources.next())
+
   def run(scenario: AntifraudScenario): Task[ScenarioResult] =
     scenario match
       case AntifraudScenario.Normal => normal
       case AntifraudScenario.PrefixAttack => prefixAttack
       case AntifraudScenario.DeviceAttack => deviceAttack
+      case AntifraudScenario.DistributedAttack => distributedAttack
       case AntifraudScenario.TokenControl => tokenControl
       case AntifraudScenario.MixedAttack => mixedAttack
       case AntifraudScenario.ConversionMimicking => conversionMimicking
@@ -37,7 +54,7 @@ final class Scenarios(
     val phones = List.fill(config.warmupSessions)(numbers.any())
     ZIO.foreachParDiscard(phones)(phone => flows.login(phone).ignore).withParallelism(4)
 
-  private case class Draw(phone: String, verifies: Boolean, refreshes: Int, inRange: Boolean)
+  private case class Draw(phone: String, verifies: Boolean, refreshes: Int, inRange: Boolean, source: Option[String])
 
   private def legitDraw(inRangeShare: Double, range: Option[String]): UIO[Draw] =
     val settings = config.normal
@@ -48,10 +65,12 @@ final class Scenarios(
         verifies = random.nextDouble() < settings.conversion,
         refreshes = settings.refreshesMin + random.nextInt(settings.refreshesMax - settings.refreshesMin + 1),
         inRange = inRange,
+        source = fromPool(legitPool),
       )
 
   /** A legitimate user: asks for a code, enters it unless they give up, and uses the tokens. */
-  private def legitSession(flows: OtpFlows, tally: Tally, draw: Draw): UIO[Unit] =
+  private def legitSession(run: Run, tally: Tally, draw: Draw): UIO[Unit] =
+    val flows = run.flows(tally, source = draw.source)
     flows
       .requestOtp(draw.phone)
       .flatMap:
@@ -67,19 +86,18 @@ final class Scenarios(
   private def normal: Task[ScenarioResult] =
     val settings = config.normal
     measured(AntifraudScenario.Normal): run =>
-      val flows = run.flows(run.main)
       Arrivals
         .run(rate = settings.rate, duration = settings.duration, maxInFlight = config.maxInFlight)(legitDraw(0.0, None))(draw =>
-          legitSession(flows, run.main, draw),
+          legitSession(run, run.main, draw),
         )
         .map(Outcome(_, None, None))
 
-  /** Many codes to numbers of one range, none verified. The range is drawn once per run, so that a run made after
-    * another does not meet a range the first one closed (the budget remembers an hour). */
+  /** Many codes to numbers of one range from one source, none verified. The range is drawn once per run, so that a
+    * run made after another does not meet a range the first one closed (the budget remembers an hour). */
   private def prefixAttack: Task[ScenarioResult] =
     val range = numbers.anyRange()
     measured(AntifraudScenario.PrefixAttack): run =>
-      val flows = run.flows(run.main)
+      val flows = run.flows(run.main, source = ownSource())
       Arrivals
         .run(rate = config.prefixAttack.rate, duration = config.prefixAttack.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed(numbers.in(range)),
@@ -89,11 +107,23 @@ final class Scenarios(
   /** One source asking for codes to numbers all over, none verified. */
   private def deviceAttack: Task[ScenarioResult] =
     measured(AntifraudScenario.DeviceAttack): run =>
-      val flows = run.flows(run.main)
+      val flows = run.flows(run.main, source = ownSource())
       Arrivals
         .run(rate = config.deviceAttack.rate, duration = config.deviceAttack.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed(numbers.any()),
         )(phone => flows.requestOtp(phone).ignore)
+        .map(Outcome(_, None, None))
+
+  /** The prefix attack spread over `sources.distributed` addresses: each request from one of them, so that no
+    * source is seen often. What is left to stop it is the range, and the numbers. */
+  private def distributedAttack: Task[ScenarioResult] =
+    val range = numbers.anyRange()
+    val pool = if config.sources.enabled then sources.pool(config.sources.distributed) else Vector.empty
+    measured(AntifraudScenario.DistributedAttack): run =>
+      Arrivals
+        .run(rate = config.distributedAttack.rate, duration = config.distributedAttack.duration, maxInFlight = config.maxInFlight)(
+          ZIO.succeed((numbers.in(range), fromPool(pool))),
+        )((phone, source) => run.flows(run.main, source = source).requestOtp(phone).ignore)
         .map(Outcome(_, None, None))
 
   /** Legitimate users, `legit-in-range-share` of them with a number inside the range that is being attacked, at the
@@ -105,15 +135,13 @@ final class Scenarios(
     measured(AntifraudScenario.MixedAttack): run =>
       val inRange = Tally()
       val elsewhere = Tally()
-      val attacker = run.flows(run.main)
-      val inFlows = run.flows(inRange)
-      val outFlows = run.flows(elsewhere)
+      val attacker = run.flows(run.main, source = ownSource())
       val attack = Arrivals.run(rate = settings.attackRate, duration = settings.duration, maxInFlight = config.maxInFlight)(
         ZIO.succeed(numbers.in(range)),
       )(phone => attacker.requestOtp(phone).ignore)
       val legit = Arrivals.run(rate = settings.normalRate, duration = settings.duration, maxInFlight = config.maxInFlight)(
         legitDraw(settings.legitInRangeShare, Some(range)),
-      )(draw => if draw.inRange then legitSession(inFlows, inRange, draw) else legitSession(outFlows, elsewhere, draw))
+      )(draw => if draw.inRange then legitSession(run, inRange, draw) else legitSession(run, elsewhere, draw))
       attack.zipPar(legit).map((a, l) =>
         Outcome(ArrivalSummary(arrivals = a.arrivals + l.arrivals, waited = a.waited + l.waited), Some(inRange), Some(elsewhere)),
       )
@@ -124,7 +152,7 @@ final class Scenarios(
     val settings = config.mimicking
     val range = numbers.anyRange()
     measured(AntifraudScenario.ConversionMimicking): run =>
-      val flows = run.flows(run.main)
+      val flows = run.flows(run.main, source = ownSource())
       Arrivals
         .run(rate = settings.rate, duration = settings.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed((numbers.in(range), random.nextDouble() < settings.verifyShare)),
@@ -139,7 +167,7 @@ final class Scenarios(
   private def targetedPhone: Task[ScenarioResult] =
     val phone = numbers.any()
     measured(AntifraudScenario.TargetedPhone): run =>
-      val flows = run.flows(run.main)
+      val flows = run.flows(run.main, source = ownSource())
       Arrivals
         .run(rate = config.targeted.rate, duration = config.targeted.duration, maxInFlight = config.maxInFlight)(ZIO.succeed(phone))(number =>
           flows.requestOtp(number).ignore,
@@ -151,7 +179,7 @@ final class Scenarios(
   private def verifyGuessing: Task[ScenarioResult] =
     val settings = config.guessing
     measured(AntifraudScenario.VerifyGuessing): run =>
-      val flows = run.flows(run.main)
+      val flows = run.flows(run.main, source = ownSource())
       val digits = config.otp.length
       Arrivals
         .run(rate = settings.rate, duration = settings.duration, maxInFlight = config.maxInFlight)(
@@ -182,8 +210,8 @@ final class Scenarios(
   /** What a scenario's body is given: the measurements it records into, the tally of its own requests, and a way to
     * make flows that count into another tally. */
   private final class Run(val measurements: Measurements, val main: Tally):
-    def flows(tally: Tally, measureOtp: Boolean = true): OtpFlows =
-      OtpFlows(auth = auth, config = config, stub = stub, measurements = measurements, tally = tally, measureOtp = measureOtp)
+    def flows(tally: Tally, measureOtp: Boolean = true, source: Option[String] = None): OtpFlows =
+      OtpFlows(auth = source.fold(auth)(sourced), config = config, stub = stub, measurements = measurements, tally = tally, measureOtp = measureOtp)
 
   private case class Outcome(summary: ArrivalSummary, legitInRange: Option[Tally], legitElsewhere: Option[Tally])
 
