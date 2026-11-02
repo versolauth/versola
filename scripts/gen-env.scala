@@ -1954,6 +1954,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    enabled        = false
        |    timeout        = "20 milliseconds"
        |    failure-action = "allow"       # allow, challenge, fake or block: what a request gets when the evaluation fails or is too slow
+       |    fake-send-delay = "400 milliseconds"  # how long a fake send waits until a real send has been timed; then it waits as long as a recent real one took
        |  }
        |  velocity {
        |    enabled        = false

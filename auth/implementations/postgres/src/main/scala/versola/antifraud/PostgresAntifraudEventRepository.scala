@@ -34,15 +34,24 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
         batchUpdate(events): event =>
           sql"""
             INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
-                                  subject_hash, dest_prefix, user_agent, decision, score, rules)
+                                  subject_hash, dest_prefix, user_agent, decision, score, rules, would_action)
             VALUES (
               ${event.id}, ${event.at}, ${event.tenantId.map(identity[String])}, ${event.clientId: String},
               ${event.conversationId}, ${event.action.toString}, ${event.outcome.toString},
               ${event.channel.toString}, ${event.subjectHash}, ${event.destPrefix}, ${event.userAgent},
-              ${event.decision}, ${event.score}, ${event.rules}
+              ${event.decision}, ${event.score}, ${event.rules}, ${event.wouldAction}
             )
           """.update
       .unit
+
+  override def pruneEvents(before: Instant): Task[Unit] =
+    xa.transactMeasured("prune-antifraud-events"):
+      timed()
+      // The partition the limit falls in is the only one that can hold rows older than it (the ones before are dropped); the
+      // lower bound lets the planner leave every other partition alone.
+      val dayStart = before.atOffset(ZoneOffset.UTC).toLocalDate.atStartOfDay().atOffset(ZoneOffset.UTC)
+      sql"DELETE FROM af_event WHERE at >= $dayStart AND at < ${before.atOffset(ZoneOffset.UTC)}".update.run()
+    .unit
 
   override def rollupStats(from: Instant, to: Instant, prefixLength: Int): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):

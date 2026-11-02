@@ -21,6 +21,8 @@ final class RecordingAntifraudEvents(
     smsAllowed: Boolean = true,
     afterRequested: UIO[Unit] = zio.ZIO.unit,
     decision: Decision = Decision.allow,
+    fakeDelay: zio.Duration = zio.Duration.Zero,
+    smsWouldRefuse: Boolean = false,
 ) extends AntifraudEvents:
   import RecordingAntifraudEvents.Step
 
@@ -41,8 +43,20 @@ final class RecordingAntifraudEvents(
 
   def smsReleased: Int = released.get
 
-  override def allowSms(clientId: ClientId, phone: Phone, at: java.time.Instant, charge: Boolean): UIO[Boolean] =
-    zio.ZIO.succeed(synchronized(asked += charge)) *> zio.ZIO.succeed(smsAllowed)
+  override def allowSms(clientId: ClientId, phone: Phone, at: java.time.Instant, charge: Boolean): UIO[SmsBudget.Decision] =
+    zio.ZIO.succeed(synchronized(asked += charge)) *> zio.ZIO.succeed:
+      if !smsAllowed then SmsBudget.Decision.Refused
+      else if smsWouldRefuse then SmsBudget.Decision.WouldRefuse
+      else SmsBudget.Decision.Allowed
+
+  private val took = scala.collection.mutable.ListBuffer.empty[zio.Duration]
+
+  /** The durations of the real sends told to [[sendTook]], in order. */
+  def sends: List[zio.Duration] = synchronized(took.toList)
+
+  override def sendTook(duration: zio.Duration): UIO[Unit] = zio.ZIO.succeed(synchronized(took += duration)).unit
+
+  override def fakeSendDelay: UIO[zio.Duration] = zio.ZIO.succeed(fakeDelay)
 
   override def releaseSms(clientId: ClientId, phone: Phone, at: java.time.Instant): UIO[Unit] = zio.ZIO.succeed(released.incrementAndGet()).unit
 

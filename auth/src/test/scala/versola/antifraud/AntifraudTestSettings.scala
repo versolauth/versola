@@ -12,7 +12,7 @@ object AntifraudTestSettings:
     statsInterval = 1.minute,
     statsRetention = 30.days,
     smsBudget = SmsBudget.Settings(prefixLength = 4),
-    decision = Antifraud.Settings(enabled = false, timeout = 20.millis, failureAction = DecisionAction.Allow),
+    decision = Antifraud.Settings(enabled = false, timeout = 20.millis, failureAction = DecisionAction.Allow, fakeSendDelay = 400.millis),
     velocity = VelocityCounters.Settings(enabled = false, flushInterval = 10.seconds, loadInterval = 20.seconds),
   )
 
@@ -33,8 +33,9 @@ object AntifraudTestSettings:
   val listsPolicy: AntifraudLists.Policy = AntifraudLists.Policy.standard
   val analytics: AntifraudDetectors.Analytics = AntifraudDetectors.Analytics.standard
 
-  /** Nothing limited or weighed: what applies until something is stored. */
-  val tuning: Tuning = Tuning.off
+  /** Nothing limited or weighed, and enforcing: what the specs of the rules, the thresholds and the actions start from.
+    * (The default, [[Tuning.off]], is `shadow`, which acts on nothing.) */
+  val tuning: Tuning = Tuning.off.copy(mode = TuningMode.enforce)
   val thresholds: VelocityRules.Thresholds = tuning.thresholds
 
   /** A limit that is not set: no window limited, the weight a limit of a single key has in most specs. */

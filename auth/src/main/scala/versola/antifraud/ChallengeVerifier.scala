@@ -9,6 +9,8 @@ import zio.*
   *
   * @param generation says which code of the conversation the request is for: the moment the last one was sent, 0 before
   *                   any. Sending a code moves it on, which is what spends every challenge made before.
+  * @param solved     how many challenges the conversation has solved (its `challengeSolved`). Solving one moves it on, which
+  *                   spends the token that was solved and every other issued before.
   */
 case class ChallengeSubject(
     tenantId: Option[TenantId],
@@ -16,6 +18,7 @@ case class ChallengeSubject(
     conversationId: AuthId,
     subjectHash: String,
     generation: Long,
+    solved: Int,
 )
 
 /** A challenge to put to the client. `token` is what the verifier needs back to check a solution; `params` is what
@@ -31,21 +34,23 @@ case class Challenge(
 enum ChallengeResult:
   case Passed
 
-  /** Not a solution. `attempts` is how many wrong ones the request has made, this included. */
+  /** Not a solution. A verifier keeps no count and says 1; the count of wrong ones is the conversation's, and whoever
+    * has it says how many the request has made, this one included. */
   case Failed(attempts: Int)
   case Expired
 
 /** Something a client has to do before a request is let through, which a script that only sends requests does not do:
   * proof of work today ([[PowChallengeVerifier]]), a provider's widget (Turnstile and the like) when one is added.
   *
-  * A verifier keeps no state of its own. A token is bound to the conversation and to its [[ChallengeSubject.generation]],
-  * so it is spent by the code it lets through being sent, which is what makes a solution single-use.
+  * A verifier keeps no state of its own. A token is bound to the conversation, to its [[ChallengeSubject.generation]] and to
+  * [[ChallengeSubject.solved]]: whoever uses a solution that passed has the conversation count it (see
+  * `ConversationRepository.consumeChallenge`), which is what makes a solution single-use, and the wrong ones are
+  * counted there too.
   */
 trait ChallengeVerifier:
-  /** The challenge for a request that scored `score` and has answered `attempts` wrong ones, or `None` when none can be
-    * made (the verifier is off, or failed): the request is then let through as if it had not been challenged, the
-    * engine's fail-open rule. */
-  def issue(subject: ChallengeSubject, score: Int, attempts: Int): UIO[Option[Challenge]]
+  /** The challenge for a request that scored `score`, or `None` when none can be made (the verifier is off, or failed):
+    * the request is then let through as if it had not been challenged, the engine's fail-open rule. */
+  def issue(subject: ChallengeSubject, score: Int): UIO[Option[Challenge]]
 
   /** Whether `solution` solves `token` for `subject`. Never fails: anything that cannot be checked is `Failed`. */
   def verify(subject: ChallengeSubject, token: String, solution: String): UIO[ChallengeResult]
@@ -59,7 +64,7 @@ trait ChallengeVerifier:
 object ChallengeVerifier:
   /** Issues nothing, so a `Challenge` decision stays a pause. */
   object off extends ChallengeVerifier:
-    override def issue(subject: ChallengeSubject, score: Int, attempts: Int): UIO[Option[Challenge]] = ZIO.none
+    override def issue(subject: ChallengeSubject, score: Int): UIO[Option[Challenge]] = ZIO.none
     override def verify(subject: ChallengeSubject, token: String, solution: String): UIO[ChallengeResult] = ZIO.succeed(ChallengeResult.Failed(1))
     override def enabled: Boolean = false
     override def maxAttempts: Int = 0

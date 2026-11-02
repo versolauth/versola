@@ -27,7 +27,8 @@ object PowChallengeVerifier:
     *
     * @param enabled       whether a `Challenge` decision is put to the client at all; off, it stays a pause
     * @param ttl           how long a challenge may be solved
-    * @param maxAttempts   wrong solutions allowed before the request is refused
+    * @param maxAttempts   wrong solutions a conversation may make before the request is refused (counted in the conversation,
+    *                      not in the token)
     */
   case class Settings(
       enabled: Boolean,
@@ -41,7 +42,7 @@ object PowChallengeVerifier:
       client: String,
       conversation: String,
       generation: Long,
-      attempts: Int,
+      solved: Int,
       subject: String,
       expires: Long,
       difficulty: Int,
@@ -96,7 +97,7 @@ object PowChallengeVerifier:
 
     override def maxAttempts: Int = settings.maxAttempts
 
-    override def issue(subject: ChallengeSubject, score: Int, attempts: Int): UIO[Option[Challenge]] =
+    override def issue(subject: ChallengeSubject, score: Int): UIO[Option[Challenge]] =
       (for
         now <- Clock.instant
         seed <- secureRandom.nextBytes(16).map(Base64.urlEncode)
@@ -107,7 +108,7 @@ object PowChallengeVerifier:
           client = subject.clientId.toString,
           conversation = subject.conversationId.toString,
           generation = subject.generation,
-          attempts = attempts,
+          solved = subject.solved,
           subject = subject.subjectHash,
           expires = now.plusSeconds(settings.ttl.toSeconds).getEpochSecond,
           difficulty = difficulty,
@@ -134,7 +135,7 @@ object PowChallengeVerifier:
               if !MessageDigest.isEqual(expected, signature) then ChallengeResult.Failed(1)
               else if !Instant.ofEpochSecond(payload.expires).isAfter(now) then ChallengeResult.Expired
               else if !boundTo(payload, subject) then ChallengeResult.Failed(1)
-              else if !solves(payload, solution) then ChallengeResult.Failed(payload.attempts + 1)
+              else if !solves(payload, solution) then ChallengeResult.Failed(1)
               else ChallengeResult.Passed
       yield result).catchAllCause(cause =>
         ZIO.logDebugCause("could not check a proof-of-work solution", cause).as(ChallengeResult.Failed(1)),
@@ -155,6 +156,7 @@ object PowChallengeVerifier:
         payload.client == subject.clientId.toString &&
         payload.conversation == subject.conversationId.toString &&
         payload.generation == subject.generation &&
+        payload.solved == subject.solved &&
         payload.subject == subject.subjectHash
 
     private def solves(payload: Payload, solution: String): Boolean =
