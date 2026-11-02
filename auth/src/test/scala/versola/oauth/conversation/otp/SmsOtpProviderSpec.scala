@@ -1,12 +1,11 @@
 package versola.oauth.conversation.otp
 
-import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.util.{CoreConfig, Phone}
+import versola.oauth.delivery.DeliveryChannels
+import versola.util.Phone
+import versola.util.delivery.SmsSender
 import zio.*
-import zio.http.*
-import zio.json.*
 import zio.test.*
 import zio.test.TestAspect.silentLogging
 
@@ -15,109 +14,57 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
   private val phone = Phone("+12025551234")
   private val code = OtpCode("123456")
   private val template = OtpTemplate("Use {{code}} to login")
-  private val expectedMessage = "Use 123456 to login"
 
-  private def makeConfig(
-      username: Option[String] = None,
-      password: Option[String] = None,
-      body: Map[String, String] = Map(
-        "login" -> "versola",
-        "phones" -> "{{phone}}",
-        "mes" -> "{{message}}",
-      ),
-  ) =
-    TestEnvConfig.coreConfig.copy(
-      otpProvider = Some(
-        CoreConfig.OtpProvider(
-          method = Method.POST,
-          url = URL.empty,
-          username = username,
-          password = password,
-          body = body,
-        ),
-      ),
-    )
+  private class RecordingSender extends SmsSender:
+    val sent = Unsafe.unsafe(Ref.unsafe.make(List.empty[(Phone, String)])(using _))
+    override def send(to: Phone, message: String): Task[Unit] = sent.update(_ :+ (to -> message))
 
   def spec = suite("SmsOtpProvider")(
-    test("renders placeholders into JSON body and sends POST") {
+    test("sendOtp renders the code into the template and hands it to the configured sender") {
+      val sender = RecordingSender()
       for
-        seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request] { req =>
-            seen.set(Some(req)).as(Response.ok)
-          }.toRoutes,
-        )
-        provider <- ZIO.service[SmsOtpProvider]
-        _ <- provider.sendOtp(phone, code, template)
-        request <- seen.get.someOrFail(RuntimeException("No request captured"))
-        bodyStr <- request.body.asString
-        body <- ZIO.fromEither(bodyStr.fromJson[Map[String, String]])
-      yield assertTrue(
-        request.method == Method.POST,
-        request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json),
-        body("login") == "versola",
-        body("phones") == phone,
-        body("mes") == expectedMessage,
-      )
-    }.provide(TestClient.layer, ZLayer.succeed(makeConfig()), SmsOtpProvider.live),
-    test("adds Basic-Auth header when credentials are configured") {
+        _ <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, Some(sender))).sendOtp(phone, code, template)
+        sent <- sender.sent.get
+      yield assertTrue(sent == List(phone -> "Use 123456 to login"))
+    },
+    test("send hands the message over as it is") {
+      val sender = RecordingSender()
       for
-        seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request] { req =>
-            seen.set(Some(req)).as(Response.ok)
-          }.toRoutes,
-        )
-        provider <- ZIO.service[SmsOtpProvider]
-        _ <- provider.sendOtp(phone, code, template)
-        request <- seen.get.someOrFail(RuntimeException("No request captured"))
-      yield assertTrue(
-        request.header(Header.Authorization) match
-          case Some(Header.Authorization.Basic(_, _)) => true
-          case _ => false,
-      )
-    }.provide(
-      TestClient.layer,
-      ZLayer.succeed(makeConfig(username = Some("user"), password = Some("pass"))),
-      SmsOtpProvider.live,
-    ),
-    test("omits Authorization header when credentials are absent") {
+        _ <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, Some(sender))).send(phone, "hello")
+        sent <- sender.sent.get
+      yield assertTrue(sent == List(phone -> "hello"))
+    },
+    test("asks the channels again for every message, so a changed provider is used without a restart") {
+      val first = RecordingSender()
+      val second = RecordingSender()
       for
-        seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request] { req =>
-            seen.set(Some(req)).as(Response.ok)
-          }.toRoutes,
-        )
-        provider <- ZIO.service[SmsOtpProvider]
-        _ <- provider.sendOtp(phone, code, template)
-        request <- seen.get.someOrFail(RuntimeException("No request captured"))
-      yield assertTrue(request.header(Header.Authorization).isEmpty)
-    }.provide(TestClient.layer, ZLayer.succeed(makeConfig()), SmsOtpProvider.live),
-    test("fails when provider responds with non-2xx status") {
+        current <- Ref.make[Option[SmsSender]](Some(first))
+        channels = new DeliveryChannels:
+          override def email = ZIO.none
+          override def sms: UIO[Option[SmsSender]] = current.get
+          override def refresh: UIO[Unit] = ZIO.unit
+        provider = SmsOtpProvider.Impl(channels)
+        _ <- provider.send(phone, "one")
+        _ <- current.set(Some(second))
+        _ <- provider.send(phone, "two")
+        sentFirst <- first.sent.get
+        sentSecond <- second.sent.get
+      yield assertTrue(sentFirst.map(_._2) == List("one"), sentSecond.map(_._2) == List("two"))
+    },
+    test("a one-time code is skipped, with a warning, when no provider is configured or the saved one is switched off") {
+      val provider = SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None))
+      for _ <- provider.sendOtp(phone, code, template)
+      yield assertCompletes
+    },
+    test("a message is skipped, with a warning, when no provider is configured or the saved one is switched off") {
+      for _ <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(phone, "hello")
+      yield assertCompletes
+    },
+    test("fails when the sender fails, so a caller can undo what it stored for the message") {
+      val failing = new SmsSender:
+        override def send(to: Phone, message: String): Task[Unit] = ZIO.fail(RuntimeException("provider down"))
       for
-        _ <- TestClient.addRoutes(
-          Handler.fromFunction[Request](_ => Response.status(Status.ServiceUnavailable)).toRoutes,
-        )
-        provider <- ZIO.service[SmsOtpProvider]
-        result <- provider.sendOtp(phone, code, template).exit
-      yield assertTrue(result.isFailure)
-    }.provide(TestClient.layer, ZLayer.succeed(makeConfig()), SmsOtpProvider.live),
-    test("does not send anything when otp provider is not configured") {
-      for
-        seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request] { req =>
-            seen.set(Some(req)).as(Response.ok)
-          }.toRoutes,
-        )
-        provider <- ZIO.service[SmsOtpProvider]
-        _ <- provider.sendOtp(phone, code, template)
-        request <- seen.get
-      yield assertTrue(request.isEmpty)
-    }.provide(
-      TestClient.layer,
-      ZLayer.succeed(TestEnvConfig.coreConfig.copy(otpProvider = None)),
-      SmsOtpProvider.live,
-    ),
+        result <- SmsOtpProvider.Impl(DeliveryChannels.fixed(None, Some(failing))).send(phone, "hello").either
+      yield assertTrue(result.left.map(_.getMessage) == Left("provider down"))
+    },
   ) @@ silentLogging
