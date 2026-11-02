@@ -19,8 +19,12 @@ enum AsnClass:
   * `Acme Cloud Ltd` and in `ACME-CLOUD`, not in `Cloudy Networks`, and `data center` is found in `Data  Center` (runs of
   * white space count as one). That keeps a short word from hitting inside the name of a carrier, but a name is still all
   * there is to go by, so this is a heuristic: a provider with an unremarkable name is `other`, and a carrier that has the
-  * word in its name (`Cloud` in a mobile operator's brand) is `hosting`. The rule that uses it is therefore weighed low,
-  * and an operator corrects the odd network with an `asn` list entry, which is exact.
+  * word in its name (`Cloud` in a mobile operator's brand) is `hosting`. And a hosting-class address is not always a
+  * server: consumer relays and VPNs (Apple's Private Relay egresses through CDN space, a corporate VPN exits in a cloud) put
+  * people behind the same networks, which is why a company whose consumer and cloud arms share a name is listed by its
+  * cloud arm (`google cloud`, not `google`) and Akamai is not listed at all (Linode, its hosting arm, is). The rule that
+  * uses it is therefore weighed low, run as a shadow rule first, and an operator corrects the odd network with an `asn`
+  * list entry, which is exact.
   */
 final class AsnClassifier(keywords: List[String]):
   private val patterns: Array[Pattern] =
@@ -53,14 +57,14 @@ object AsnClassifier:
     "colocation",
     "amazon",
     "aws",
-    "google",
+    "google cloud",
+    "google-cloud",
     "microsoft",
     "azure",
     "digitalocean",
     "ovh",
     "hetzner",
     "linode",
-    "akamai",
     "vultr",
     "choopa",
     "alibaba",

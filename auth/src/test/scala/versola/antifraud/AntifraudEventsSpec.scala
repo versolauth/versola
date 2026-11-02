@@ -940,14 +940,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
           yield assertTrue(
             hosting.flatMap(_.asn).contains(24940),
             hosting.map(_.signals.get(AsnRules.ClassSignal)).contains(Some("hosting")),
-            hosting.map(_.signals.get(AsnRules.CountrySignal)).contains(Some("DE")),
             carrier.flatMap(_.asn).contains(64500),
             carrier.map(_.signals.get(AsnRules.ClassSignal)).contains(Some("other")),
-            carrier.map(_.signals.get(AsnRules.CountrySignal)).contains(Some("KZ")),
             // The mail domain signal is still there next to them.
             carrier.map(_.signals.get(AntifraudLists.EmailDomainSignal)).contains(Some("example.com")),
             unknown.flatMap(_.asn).isEmpty,
-            unknown.map(_.signals.keySet.intersect(Set(AsnRules.ClassSignal, AsnRules.CountrySignal))).contains(Set.empty[String]),
+            unknown.map(_.signals.contains(AsnRules.ClassSignal)).contains(false),
+            // The country the database gives is no signal: nothing reads it yet.
+            hosting.map(_.signals.keySet.filter(_.startsWith("asn_"))).contains(Set(AsnRules.ClassSignal)),
           )
       },
       test("without a database the context has no ASN and no signal, and the request goes on") {

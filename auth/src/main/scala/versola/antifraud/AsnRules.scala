@@ -13,8 +13,9 @@ import zio.*
   * (`ruleWeights`), or correct a network by hand with an `asn` list entry, which is exact where the name is a guess.
   *
   * A rule's `test` is pure, so what it reads is in the context's `signals`, put there by [[AntifraudEvents]] from the
-  * address: [[ClassSignal]] (`hosting` or `other`) and [[CountrySignal]]. Neither is there without a database (the feature
-  * is off, or the address is in no AS), and the rule does not fire.
+  * address: [[ClassSignal]] (`hosting` or `other`). It is not there without a database (the feature is off, or the address
+  * is in no AS), and the rule does not fire. The country of the AS is read with it but is no signal yet: a signal nobody
+  * reads stays out of the context until a rule needs it.
   *
   * Counting requests per AS needs no rule here: `asn` is a key of [[VelocityRules]], filled from the same lookup, with a
   * limit of its own (`thresholds.asn`, 0 for none by default). An AS is a whole network, so a limit on one is a limit on
@@ -26,9 +27,6 @@ object AsnRules:
 
   /** The [[AntifraudContext.signals]] key of the class of the network: `hosting` or `other`. */
   val ClassSignal = "asn_class"
-
-  /** The [[AntifraudContext.signals]] key of the country the AS is registered in (ISO 3166, `ZZ` if unknown). */
-  val CountrySignal = "asn_country"
 
   val HostingRule = "asn_hosting"
 

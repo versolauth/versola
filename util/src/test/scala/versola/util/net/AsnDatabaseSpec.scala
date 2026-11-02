@@ -232,6 +232,15 @@ object AsnDatabaseSpec extends ZIOSpecDefault:
         val within = Try(AsnDatabase.read(ByteArrayInputStream(bytes(sample)), maxRanges = 7))
         assertTrue(result.isFailure, within.map(_.database.ranges).toOption.contains(7), AsnDatabase.MaxRanges >= 1000000)
       },
+      test("a small gzip that unpacks past the bound fails to read, rather than being read to its end") {
+        // 2 MB of one valid line repeated packs into a few kilobytes; read under a bound of 1 MB it must not get through.
+        val line = "1.0.0.0\t1.0.0.255\t13335\tUS\tCLOUDFLARENET\n".getBytes(StandardCharsets.UTF_8)
+        val big = Array.fill(2 * 1024 * 1024 / line.length)(line).flatten
+        val bomb = gzip(big)
+        val result = Try(AsnDatabase.read(ByteArrayInputStream(bomb), maxUnpacked = 1024 * 1024))
+        val within = Try(AsnDatabase.read(ByteArrayInputStream(bomb)))
+        assertTrue(bomb.length < 64 * 1024, result.isFailure, within.isSuccess)
+      },
       test("a gzip file that is cut short fails to read, rather than giving half a database") {
         val packed = gzip(bytes(sample))
         val cut = packed.take(packed.length - 12)

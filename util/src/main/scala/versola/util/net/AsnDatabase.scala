@@ -133,7 +133,7 @@ object AsnDatabase:
     try read(in)
     finally in.close()
 
-  def read(source: InputStream, maxRanges: Int = MaxRanges): Loaded =
+  def read(source: InputStream, maxRanges: Int = MaxRanges, maxUnpacked: Long = MaxUnpackedBytes): Loaded =
     val buffered = BufferedInputStream(source, 1 << 16)
     buffered.mark(2)
     val first = buffered.read()
@@ -141,7 +141,7 @@ object AsnDatabase:
     buffered.reset()
     val gzipped = first == 0x1f && second == 0x8b
     val unpacked: InputStream = if gzipped then GZIPInputStream(buffered, 1 << 16) else buffered
-    parse(Bounded(unpacked, MaxUnpackedBytes), maxRanges)
+    parse(Bounded(unpacked, maxUnpacked), maxRanges)
 
   private def parse(in: InputStream, maxRanges: Int): Loaded =
     val builder = Builder(maxRanges)

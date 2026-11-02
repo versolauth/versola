@@ -313,7 +313,7 @@ object AntifraudEvents:
             ja4 = None,
             signals =
               credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap ++
-                network.toList.flatMap(found => List(AsnRules.ClassSignal -> found.asnClass.toString, AsnRules.CountrySignal -> found.info.country)),
+                network.map(found => AsnRules.ClassSignal -> found.asnClass.toString),
           )
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged

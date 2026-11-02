@@ -29,6 +29,14 @@ object AsnClassifierSpec extends ZIOSpecDefault:
         classify("KAZTELECOM-AS JSC Kazakhtelecom") == AsnClass.other,
         classify("Deutsche Telekom AG") == AsnClass.other,
         classify("Beeline Kazakhstan") == AsnClass.other,
+        // Consumer relays and the residential arm of a cloud company: Private Relay egresses through Akamai space, Google
+        // Fiber is a residential ISP, AS15169 GOOGLE carries end users; only the cloud arm is hosting.
+        classify("AKAMAI-ASN1") == AsnClass.other,
+        classify("AKAMAI-AS") == AsnClass.other,
+        classify("GOOGLE-FIBER") == AsnClass.other,
+        classify("GOOGLE") == AsnClass.other,
+        classify("GOOGLE-CLOUD-PLATFORM") == AsnClass.hosting,
+        classify("Google Cloud") == AsnClass.hosting,
         classify("") == AsnClass.other,
       )
     },

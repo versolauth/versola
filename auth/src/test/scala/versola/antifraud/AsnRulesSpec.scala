@@ -21,8 +21,8 @@ object AsnRulesSpec extends UnitSpecBase:
     signals = signals,
   )
 
-  private val hostingContext = ctx(Map(AsnRules.ClassSignal -> "hosting", AsnRules.CountrySignal -> "DE"), Some(24940))
-  private val carrierContext = ctx(Map(AsnRules.ClassSignal -> "other", AsnRules.CountrySignal -> "KZ"), Some(64500))
+  private val hostingContext = ctx(Map(AsnRules.ClassSignal -> "hosting"), Some(24940))
+  private val carrierContext = ctx(Map(AsnRules.ClassSignal -> "other"), Some(64500))
 
   private val challenging = AntifraudTestSettings.tuning.copy(challengeAt = 20, blockAt = 100)
 
@@ -87,6 +87,6 @@ object AsnRulesSpec extends UnitSpecBase:
       )
     },
     test("the signal names are the ones the documentation gives") {
-      assertTrue(AsnRules.ClassSignal == "asn_class", AsnRules.CountrySignal == "asn_country", AsnRules.HostingRule == "asn_hosting")
+      assertTrue(AsnRules.ClassSignal == "asn_class", AsnRules.HostingRule == "asn_hosting")
     },
   )

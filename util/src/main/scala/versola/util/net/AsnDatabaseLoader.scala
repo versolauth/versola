@@ -4,6 +4,7 @@ import zio.*
 import zio.http.{Client, Request, URL}
 import zio.stream.{ZSink, ZStream}
 
+import java.nio.file.attribute.FileTime
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.util.concurrent.atomic.AtomicReference
 
@@ -71,8 +72,9 @@ object AsnDatabaseLoader:
 
     override def refreshNow: UIO[Unit] = refresh
 
-    /** Reads `path` and, if it is a database, takes it into use as the contents of `file`. */
-    private def read(path: Path): Task[Int] =
+    /** Reads `path` as a database, or fails if it is not one. It is not taken into use here: the caller does that once the
+      * file it came from is where `file` is, so that what is in memory is always what a restart would read. */
+    private def read(path: Path): Task[AsnDatabase] =
       for
         loaded <- ZIO.attemptBlocking(AsnDatabase.read(path))
         total = loaded.database.ranges + loaded.malformed + loaded.notAnnounced
@@ -80,17 +82,22 @@ object AsnDatabaseLoader:
           .fail(RuntimeException(s"not an ASN database: ${loaded.database.ranges} ranges and ${loaded.malformed} malformed lines"))
           .when(loaded.database.ranges == 0 || loaded.malformed > MaxMalformedShare * total)
         _ <- ZIO.logWarning(s"${loaded.malformed} lines of the ASN database are not valid ranges and were left out").when(loaded.malformed > 0)
-        _ <- ZIO.succeed(database.set(Some(loaded.database)))
-      yield loaded.database.ranges
+      yield loaded.database
 
-    /** Takes the file in use from `path`, which holds what `file` will hold. */
+    /** Takes `loaded` into use as the contents of `file`, written at `written`. */
+    private def use(loaded: AsnDatabase, written: FileTime): UIO[Unit] =
+      ZIO.succeed {
+        database.set(Some(loaded))
+        loadedFrom.set(Some(written.toMillis))
+      } *> AsnMetrics.loaded(written.toInstant, loaded.ranges)
+
+    /** Reads `file` and takes it into use. */
     private def adopt(path: Path): Task[Unit] =
       for
-        ranges <- read(path)
+        loaded <- read(path)
         written <- ZIO.attemptBlocking(Files.getLastModifiedTime(path))
-        _ <- ZIO.succeed(loadedFrom.set(Some(written.toMillis)))
-        _ <- AsnMetrics.loaded(written.toInstant, ranges)
-        _ <- ZIO.logInfo(s"ASN database loaded: $ranges ranges")
+        _ <- use(loaded, written)
+        _ <- ZIO.logInfo(s"ASN database loaded: ${loaded.ranges} ranges")
       yield ()
 
     private def failed(what: String)(cause: Cause[Throwable]): UIO[Unit] =
@@ -112,20 +119,21 @@ object AsnDatabaseLoader:
       Random.nextUUID.flatMap: suffix =>
         val tmp = file.resolveSibling(s"${file.getFileName}.$suffix.tmp")
         fetch(from, tmp)
-          .flatMap: ranges =>
+          .flatMap: loaded =>
+            // Moved first, used after: a move that fails (the target not writable, a symlink across devices) leaves memory and
+            // disk agreeing on the old database, with the failure counted; the other order had them disagree until a restart.
             for
               _ <- ZIO.attemptBlocking(Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING))
               written <- ZIO.attemptBlocking(Files.getLastModifiedTime(file))
-              _ <- ZIO.succeed(loadedFrom.set(Some(written.toMillis)))
-              _ <- AsnMetrics.loaded(written.toInstant, ranges)
-              _ <- ZIO.logInfo(s"ASN database downloaded from ${from.host.getOrElse("")}: $ranges ranges")
+              _ <- use(loaded, written)
+              _ <- ZIO.logInfo(s"ASN database downloaded from ${from.host.getOrElse("")}: ${loaded.ranges} ranges")
             yield ()
           .ensuring:
             // Best effort: a leftover temporary file is a few megabytes in a directory the operator owns.
             ZIO.attemptBlocking(Files.deleteIfExists(tmp)).catchAllCause(ZIO.logWarningCause("could not remove the temporary ASN download", _))
 
-    /** Downloads `from` to `tmp` within the bounds, and reads it as a database (which takes it into use). */
-    private def fetch(from: URL, tmp: Path): Task[Int] =
+    /** Downloads `from` to `tmp` within the bounds, and reads it as a database (not yet taken into use). */
+    private def fetch(from: URL, tmp: Path): Task[AsnDatabase] =
       for
         _ <- client
           .stream(Request.get(from)): response =>
@@ -135,8 +143,8 @@ object AsnDatabaseLoader:
           .timeoutFail(RuntimeException(s"the download took more than ${DownloadTimeout.render}"))(DownloadTimeout)
         size <- ZIO.attemptBlocking(Files.size(tmp))
         _ <- ZIO.fail(RuntimeException(s"the download is larger than $MaxDownloadBytes bytes")).when(size > MaxDownloadBytes)
-        ranges <- read(tmp)
-      yield ranges
+        loaded <- read(tmp)
+      yield loaded
 
     /** The download of the configured `url`; without one, the file again if it has changed (an operator replaces it). */
     private def refresh: UIO[Unit] = url match

@@ -749,12 +749,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
       },
       "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
       "ruleWeights": {},
-      "shadowRules": []
+      "shadowRules": ["asn_hosting"]
     }
   }
   ```
 
-  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. Size `smsLimits` from the range statistics first.)
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `asn_hosting` starts as a shadow rule: see how much
+  honest traffic comes through hosting-class networks (consumer relays and VPNs) before it counts. Size `smsLimits` from the range statistics first.)
   Run it for at least a week and read what it says it would do: `would_action` in `af_event` against traffic you know to be
   good, `antifraud_decisions_total{action="Allow",would_action!="Allow"}`, `antifraud_rules_fired_total` for the rules
   that carry it, `antifraud_sms_budget_refused_total{mode="shadow"}` for the ranges the budget would have closed, the proposals of the detectors. Raise a
@@ -968,18 +969,20 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   - *The class.* An AS is `hosting` when its description contains one of `antifraud.asn.hosting-keywords`, compared
     case-insensitively as a whole word or phrase (between characters that are not letters or digits, runs of white space
     counting as one), and `other` otherwise. The default list is: `hosting`, `cloud`, `datacenter`,
-    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google`,
-    `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `akamai`, `vultr`, `choopa`, `alibaba`, `oracle`,
+    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google cloud`, `google-cloud`,
+    `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `vultr`, `choopa`, `alibaba`, `oracle`,
     `contabo`, `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent`, `huawei cloud`.
     Setting `hosting-keywords` replaces the list (an empty list classifies nothing as hosting). **A name is a guess:** a
     keyword is never found inside a longer word (`cloud` is not in `Cloudy`, `dedicated` not in `Undedicated`), but a
     provider with a plain name is `other`, and a carrier with one of the words in its name (`Cloud` in a mobile brand) is
-    `hosting`. That is why the rule is weighed low and why the exact tool is the list: an `asn` entry corrects one
-    network, whatever its name says.
+    `hosting`. And people sit behind hosting-class addresses too: Apple's Private Relay egresses through CDN space
+    (Akamai, Cloudflare, Fastly), corporate VPNs exit in clouds, a cloud company's residential arm shares its name
+    (`GOOGLE-FIBER`); the default list therefore names cloud arms (`google cloud`), not the company, and leaves Akamai
+    out (Linode, its hosting arm, is listed). That is why the rule is weighed low, starts as a shadow rule, and why the
+    exact tool is the list: an `asn` entry corrects one network, whatever its name says.
   - *What a request carries.* For an OTP request with an address the context gets the AS number (`asn`, which the
-    `asn` velocity key and the `asn` list entries read) and the signals `asn_class` (`hosting` or `other`) and
-    `asn_country` (the ISO country of the AS's registration, `ZZ` if the source gives none). An address that is no literal
-    (the proxy sent a name) or is in no AS carries none of them. The address is the request's `auth.ip`, with the caveat
+    `asn` velocity key and the `asn` list entries read) and the signal `asn_class` (`hosting` or `other`). An address that
+    is no literal (the proxy sent a name) or is in no AS carries neither. The address is the request's `auth.ip`, with the caveat
     of the velocity counters: it is the client's only if the proxy in front sets the header as configured.
   - *Rules.* The rule `asn_hosting` fires when `asn_class` is `hosting`. It is not forcing: it adds its weight, **20 by
     default**, to the score, and a score alone turns into an action through the tuned `challengeAt` and `blockAt`. Its
