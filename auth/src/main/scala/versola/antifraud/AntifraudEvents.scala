@@ -26,14 +26,22 @@ trait AntifraudEvents:
   /** The keyed hash an event stores for a destination, which a `phone_hash` list entry is matched against. */
   def subjectHash(credential: Either[Email, Phone]): Task[String]
 
-  /** Whether a code may be sent to `phone`: false when the budget of its range is used up or the range is not
-    * converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given back
-    * with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
-    * sends nothing and must be answered exactly like one that does. Always true while no budget is configured. */
-  def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean]
+  /** Whether a code may be sent to `phone`: [[SmsBudget.Decision.Refused]] when the budget of its range is used up or the
+    * range is not converting (see [[SmsBudget]]). With `charge` the code is counted as sent at once (and is to be given
+    * back with [[releaseSms]] if it is not sent after all); without it the answer alone is given, for a request that
+    * sends nothing and must be answered exactly like one that does. In `shadow` mode a closed range is answered
+    * [[SmsBudget.Decision.WouldRefuse]], and the code goes out. Always allowed while no budget is configured. */
+  def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[SmsBudget.Decision]
 
   /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
+
+  /** A real code took `took` to hand to the provider; what a fake send imitates. */
+  def sendTook(took: Duration): UIO[Unit]
+
+  /** How long a fake send waits so that it is not told from a real one by its timing: a sample of the recent real
+    * ones, and `decision.fake-send-delay` until one has been timed. Zero while the decision engine is off. */
+  def fakeSendDelay: UIO[Duration]
 
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
     * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
@@ -84,7 +92,7 @@ object AntifraudEvents:
 
   /** What a deployment sets (the `antifraud` block of the config).
     *
-    * @param retention      how long a day's partition of the event log is kept; it bounds how long personal data is held
+    * @param retention      how long the event log is kept, to the minute (see [[Retention]]); it bounds how long personal data is held
     * @param statsInterval  how often `af_dest_stats` is rolled up from the log
     * @param statsRetention how long a minute of statistics is kept
     * @param smsBudget      the size of a range of numbers the SMS budget counts (see [[SmsBudget]])
@@ -139,7 +147,12 @@ object AntifraudEvents:
 
     override def subjectHash(credential: Either[Email, Phone]): Task[String] = ZIO.succeed(credential.fold(identity[String], identity[String]))
 
-    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] = ZIO.succeed(true)
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[SmsBudget.Decision] =
+      ZIO.succeed(SmsBudget.Decision.Allowed)
+
+    override def sendTook(took: Duration): UIO[Unit] = ZIO.unit
+
+    override def fakeSendDelay: UIO[Duration] = ZIO.succeed(Duration.Zero)
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
 
@@ -212,6 +225,7 @@ object AntifraudEvents:
           budget,
           antifraud,
           velocity,
+          SendLatency(),
           settings,
           tuning,
           securityService,
@@ -222,6 +236,7 @@ object AntifraudEvents:
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings, sizing).run
         _ <- Maintenance(repository, settings, sizing).run
+        _ <- Retention(repository, settings).run
         _ <- Writer(queue, repository, sizing).run
       yield events
 
@@ -231,6 +246,7 @@ object AntifraudEvents:
       budget: SmsBudget,
       antifraud: Antifraud,
       velocity: VelocityCounters,
+      latency: SendLatency,
       settings: Settings,
       tuning: AntifraudTuning,
       securityService: SecurityService,
@@ -239,8 +255,8 @@ object AntifraudEvents:
       subjectKey: Secret,
   ) extends AntifraudEvents:
 
-    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[Boolean] =
-      if !tuning.current.smsLimits.enabled then ZIO.succeed(true)
+    override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[SmsBudget.Decision] =
+      if !tuning.current.smsLimits.enabled then ZIO.succeed(SmsBudget.Decision.Allowed)
       else
         for
           client <- configService.find(clientId)
@@ -249,12 +265,21 @@ object AntifraudEvents:
           // not used says nothing about its users and everything about whoever asks; the conversion is only looked
           // at where registration is closed for the number.
           breaker = !PhoneRegion.allowsRegistration(regions, phone)
-          decision = budget.decide(client.map(_.tenantId), phone.filter(_.isDigit), at, charge, conversionBreaker = breaker)
-          _ <- decision match
-            case SmsBudget.Decision.Refused => AntifraudMetrics.smsRefused
+          mode = tuning.current.mode
+          verdict = budget.assess(
+            client.map(_.tenantId),
+            phone.filter(_.isDigit),
+            at,
+            charge,
+            conversionBreaker = breaker,
+            enforce = mode == TuningMode.enforce,
+          )
+          _ <- verdict.decision match
+            case SmsBudget.Decision.Refused | SmsBudget.Decision.WouldRefuse =>
+              AntifraudMetrics.smsRefused(verdict.reason.fold("cap")(_.label), mode)
             case SmsBudget.Decision.Untracked => AntifraudMetrics.smsBudgetFull
             case SmsBudget.Decision.Allowed => ZIO.unit
-        yield decision != SmsBudget.Decision.Refused
+        yield verdict.decision
 
     override def decideOtpRequest(
         clientId: ClientId,
@@ -277,7 +302,8 @@ object AntifraudEvents:
             deviceId = None,
             ip = ip,
             asn = None,
-            userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+            // Whole: a `ua_hash` entry is the hash of the whole header, and a cut one would never match it.
+            userAgent = userAgent,
             ja4 = None,
             signals = credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap,
           )
@@ -287,14 +313,20 @@ object AntifraudEvents:
           counted <- velocity.snapshot(context)
           decision <- antifraud.evaluate(counted)
           _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context.copy(subjectHash = None)))
-          _ <- AntifraudMetrics.decided(decision.action)
+          _ <- AntifraudMetrics.decided(decision) *> AntifraudMetrics.rulesFired(decision.firedRules)
           // The check goes on the `receive-http` line of the request, not into a line of its own.
           _ <- Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
-            _.copy(decision = decision.action.toString, score = decision.score, rules = decision.firedRules),
+            _.copy(
+              decision = decision.action.toString,
+              wouldAction = Some(decision.wouldAction.toString),
+              score = decision.score,
+              rules = decision.firedRules,
+            ),
           )
         yield decision).catchAllCause: cause =>
+          val failed = Antifraud.failed(settings.decision, tuning, Antifraud.Failure.Error)
           ZIO.logDebugCause("could not build the antifraud context", cause) *>
-            AntifraudMetrics.decided(settings.decision.failureAction).as(Decision(settings.decision.failureAction, 0, List(Antifraud.ErrorRule)))
+            AntifraudMetrics.evaluationFailed(Antifraud.Failure.Error.reason) *> AntifraudMetrics.decided(failed).as(failed)
 
     private def details(action: AntifraudAction, credential: Either[Email, Phone]): AntifraudDetails =
       AntifraudDetails(
@@ -307,6 +339,12 @@ object AntifraudEvents:
         challenge = None,
         challengeLevel = None,
       )
+
+    override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
+
+    override def fakeSendDelay: UIO[Duration] =
+      if !settings.decision.enabled then ZIO.succeed(Duration.Zero)
+      else Random.nextIntBounded(Int.MaxValue).map(pick => latency.sample(pick).getOrElse(settings.decision.fakeSendDelay))
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] =
       ZIO.when(tuning.current.smsLimits.enabled):
@@ -381,6 +419,7 @@ object AntifraudEvents:
         Observability.updateAntifraud(details(AntifraudAction.otp_request, credential))(
           _.copy(
             decision = decision.action.toString,
+            wouldAction = Some(decision.wouldAction.toString),
             score = decision.score,
             rules = decision.firedRules,
             challenge = Some(kind),
@@ -436,21 +475,23 @@ object AntifraudEvents:
               channel = credential.fold(_ => AntifraudChannel.email, _ => AntifraudChannel.sms),
               subjectHash = hash,
               destPrefix = credential.toOption.map(destPrefix),
-              userAgent = userAgent.map(_.take(AntifraudEvents.userAgentLength)),
+              userAgent = userAgent,
               decision = decision.map(_.action.toString),
               score = decision.map(_.score),
               rules = decision.fold(List.empty[String])(_.firedRules),
+              wouldAction = decision.map(_.wouldAction.toString),
             ),
           )
         yield ()).catchAllCause(cause =>
           AntifraudMetrics.dropped("build_failed") *> ZIO.logDebugCause("could not describe an antifraud event", cause),
         )
 
+  /** How often the rows past the retention are deleted. */
+  val PruneInterval: Duration = 5.minutes
+
   /** The leading digits of a phone number, country code included, an event keeps. Statistics group by a shorter
     * one with `left()`; this is the longest they could want. */
   val destPrefixLength = 6
-
-  val userAgentLength = 256
 
   /** Outcomes of requests that were turned away, at the pace the sender sets: they give way first when the queue
     * fills up. */
@@ -549,6 +590,17 @@ object AntifraudEvents:
       once.either.flatMap: first =>
         (ZIO.when(first.isLeft)(ZIO.sleep(1.minute) *> untilDone) *> (ZIO.sleep(6.hours) *> untilDone).forever).forkScoped.unit
 
+/** Keeps the event log for `retention`, to the minute. Dropping a day's partition (see [[Maintenance]]) can only happen once the whole
+  * day is older than that, which keeps up to a day more than was said; the rows of the day the limit falls in that are older
+  * than it are deleted here, in small pieces, since the limit moves a few minutes at a time. */
+private class Retention(repository: AntifraudEventRepository, settings: AntifraudEvents.Settings):
+  private val once: UIO[Unit] =
+    Clock.instant.flatMap(now => repository.pruneEvents(now.minusSeconds(settings.retention.toSeconds)))
+      .catchAllCause(cause => ZIO.logWarningCause("could not delete the antifraud events past their retention", cause))
+
+  val run: URIO[Scope, Unit] =
+    (ZIO.sleep(AntifraudEvents.PruneInterval) *> once).forever.forkScoped.unit
+
 object AntifraudMetrics:
   private val enqueuedTotal = Metric.counter("antifraud_events_enqueued_total")
   private val writtenTotal = Metric.counter("antifraud_events_written_total")
@@ -559,6 +611,11 @@ object AntifraudMetrics:
   val enqueued: UIO[Unit] = enqueuedTotal.increment
 
   private val tuningRefreshFailedTotal = Metric.counter("antifraud_tuning_refresh_failed_total")
+  private val tuningRefreshedGauge = Metric.gauge("antifraud_tuning_refreshed_timestamp_seconds")
+
+  /** The tuning was read (or found unchanged) at `at`. A gauge of a time, not a counter, so that a refresh that hangs, which
+    * moves no failure counter, shows as the age of the last success. */
+  def tuningRefreshed(at: Instant): UIO[Unit] = tuningRefreshedGauge.set(at.getEpochSecond.toDouble)
 
   /** The stored tuning could not be read; the instance goes on with the one it has (fail-open). Alert on it increasing. */
   val tuningRefreshFailed: UIO[Unit] = tuningRefreshFailedTotal.increment
@@ -567,17 +624,35 @@ object AntifraudMetrics:
 
   private val smsBudgetFullTotal = Metric.counter("antifraud_sms_budget_full_total")
 
-  /** No label for the range: the ranges are whatever an attacker's numbers make them. */
-  val smsRefused: UIO[Unit] = smsRefusedTotal.increment
+  /** A range was closed to a code: `reason` is `cap` or `conversion`, and `mode` the tuning's, since in `shadow` the code
+    * went out all the same. No label for the range: the ranges are whatever an attacker's numbers make them. */
+  def smsRefused(reason: String, mode: TuningMode): UIO[Unit] =
+    smsRefusedTotal.tagged(Set(MetricLabel("reason", reason), MetricLabel("mode", mode.label))).increment
 
   /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges. */
   val smsBudgetFull: UIO[Unit] = smsBudgetFullTotal.increment
 
   private val decisionsTotal = Metric.counter("antifraud_decisions_total")
 
-  /** Decisions by action, a closed set of labels. */
-  def decided(action: DecisionAction): UIO[Unit] =
-    decisionsTotal.tagged(Set(MetricLabel("action", action.toString))).increment
+  /** Decisions by the action taken and the one that was decided (they differ in `shadow`), a closed set of labels. */
+  def decided(decision: Decision): UIO[Unit] =
+    decisionsTotal.tagged(Set(MetricLabel("action", decision.action.toString), MetricLabel("would_action", decision.wouldAction.toString))).increment
+
+  private val rulesFiredTotal = Metric.counter("antifraud_rules_fired_total")
+
+  /** The rules a decision fired, by rule name (a rule of the catalogue, [[Antifraud.ruleNames]]) and whether it was one that only
+    * records (`shadow:<name>` in the decision). The stand-ins of a failed evaluation are not rules and are not counted. */
+  def rulesFired(names: List[String]): UIO[Unit] =
+    ZIO.foreachDiscard(names.filterNot(Antifraud.failureRules.contains)): name =>
+      val shadow = name.startsWith(Antifraud.ShadowPrefix)
+      rulesFiredTotal.tagged(Set(MetricLabel("rule", name.stripPrefix(Antifraud.ShadowPrefix)), MetricLabel("shadow", shadow.toString))).increment
+
+  private val evaluationFailedTotal = Metric.counter("antifraud_evaluation_failed_total")
+
+  /** An evaluation gave no decision and `failure-action` applied: `reason` is `timeout`, `error` or `tuning_unavailable`
+    * ([[Antifraud.Failure]]). */
+  def evaluationFailed(reason: String): UIO[Unit] =
+    evaluationFailedTotal.tagged(Set(MetricLabel("reason", reason))).increment
 
   private val challengesTotal = Metric.counter("antifraud_challenges_total")
 

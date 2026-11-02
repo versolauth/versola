@@ -15,6 +15,7 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
   private val at = Instant.parse("2026-10-26T10:00:00Z")
 
   private val tuned = Tuning.off.copy(
+    mode = TuningMode.enforce,
     blockAt = 100,
     pow = PowDifficulty(minDifficulty = 10, maxDifficulty = 20, scoreStep = 5),
     smsLimits = SmsLimits(SmsLimit(10, 0, 0.1), Map("49" -> SmsLimit(2, 5, 0.2))),
@@ -57,6 +58,14 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
         failure <- repository.find.flip
         raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
       yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
+    },
+    test("a row written before a key existed reads with the key's default: shadow for the mode, off for the rest") {
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "shadowRules": ["velocity_ip_1m"]}'::jsonb, 'old', $at)""".update.run())
+        stored <- repository.find
+      yield assertTrue(stored.contains(Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))), stored.exists(_.mode == TuningMode.shadow))
     },
     test("a put replaces the row as a whole and moves the version") {
       for

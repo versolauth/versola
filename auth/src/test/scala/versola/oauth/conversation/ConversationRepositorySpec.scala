@@ -239,6 +239,51 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.version == found1.version + 1,
         )
       },
+      test("wrong solutions of a challenge are counted by the statement, one by one, and read back with the record") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          first <- env.repository.recordChallengeFailure(authId1)
+          second <- env.repository.recordChallengeFailure(authId1)
+          other <- env.repository.recordChallengeFailure(authId2)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(first == 1, second == 2, other == 0, found.challengeFailed == 2, found.challengeSolved == 0)
+      },
+      test("wrong solutions sent at once are all counted") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          counts <- ZIO.foreachPar(1 to 20)(_ => env.repository.recordChallengeFailure(authId1))
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(counts.toSet == (1 to 20).toSet, found.challengeFailed == 20)
+      },
+      test("a solved challenge is spent once per count: the same token does not pass twice, and the wrong solutions are forgotten") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          first <- env.repository.consumeChallenge(authId1, solved = 0)
+          again <- env.repository.consumeChallenge(authId1, solved = 0)
+          stale <- env.repository.consumeChallenge(authId1, solved = 5)
+          next <- env.repository.consumeChallenge(authId1, solved = 1)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(first, !again, !stale, next, found.challengeSolved == 2, found.challengeFailed == 0)
+      },
+      test("of callers racing with the same solved token exactly one passes") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          results <- ZIO.foreachPar(1 to 20)(_ => env.repository.consumeChallenge(authId1, solved = 0))
+        yield assertTrue(results.count(identity) == 1)
+      },
+      test("overwrite leaves the challenge counts alone, whatever the record it is given says") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          _ <- env.repository.consumeChallenge(authId1, solved = 0)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          stale <- env.repository.find(authId1).map(_.get.copy(challengeFailed = 0, challengeSolved = 0))
+          _ <- env.repository.recordChallengeFailure(authId1)
+          overwritten <- env.repository.overwrite(authId1, stale.copy(step = fakeOtp))
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(overwritten, found.challengeSolved == 1, found.challengeFailed == 2)
+      },
       test("find returns None for expired conversation") {
         val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))
         for

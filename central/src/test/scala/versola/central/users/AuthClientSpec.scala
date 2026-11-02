@@ -343,6 +343,7 @@ object AuthClientSpec extends ZIOSpecDefault:
     test("the antifraud settings calls send the body and the userId to auth's /antifraud/settings") {
       val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
       val settings = AntifraudSettings(
+        mode = AntifraudMode.enforce,
         challengeAt = 0,
         blockAt = 80,
         pow = PowDifficultyDto(14, 18, 15),

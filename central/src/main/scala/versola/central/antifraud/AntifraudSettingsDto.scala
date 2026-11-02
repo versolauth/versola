@@ -1,8 +1,17 @@
 package versola.central.antifraud
 
 import versola.central.users.UserId
+import versola.util.JsonStringSchema
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
+
+/** Whether the engine's decision is acted on (`enforce`) or only computed and recorded, letting every request through
+  * (`shadow`); see auth's `TuningMode`. */
+enum AntifraudMode derives JsonCodec:
+  case shadow, enforce
+
+object AntifraudMode:
+  given Schema[AntifraudMode] = JsonStringSchema.of
 
 /** The limits of one kind of velocity key, see auth's `VelocityRules.Limit`. 0 is no limit. */
 case class VelocityLimitDto(perMinute: Int, perTenMinutes: Int, perHour: Int, perDay: Int, weight: Int) derives JsonCodec, Schema
@@ -26,8 +35,10 @@ case class SmsLimitDto(sentPerHour: Int, minVolume: Int, minConversion: Double) 
   * decides, and `default` applies to a number that starts with none. */
 case class SmsLimitsDto(default: SmsLimitDto, byPrefix: Map[String, SmsLimitDto]) derives JsonCodec, Schema
 
-/** The settings: what applies to the whole deployment. Auth validates them. */
+/** The settings: what applies to the whole deployment. Auth validates them. `mode` is required: a `PUT` replaces the
+  * settings as a whole, and one that left it out would silently put an enforcing deployment back in `shadow`. */
 case class AntifraudSettings(
+    mode: AntifraudMode,
     challengeAt: Int,
     blockAt: Int,
     pow: PowDifficultyDto,
