@@ -149,7 +149,8 @@ class PostgresAntifraudEventRepository(xa: TransactorZIO, lockTimeout: Duration 
     """.query[String].run().toList.flatMap(partitionDay)
 
   override def partitionDaysAhead(today: LocalDate): Task[Int] =
-    xa.connectMeasured("count-antifraud-partitions-ahead"):
+    xa.transactMeasured("count-antifraud-partitions-ahead"):
+      timed()
       partitionDays().count(_.isAfter(today))
 
 object PostgresAntifraudEventRepository:

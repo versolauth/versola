@@ -6,6 +6,7 @@ import versola.util.{SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.test.*
 
+import java.lang.System.nanoTime
 import java.time.Instant
 import java.util.UUID
 
@@ -159,6 +160,23 @@ object VelocityCountersSpec extends UnitSpecBase:
         survivors == 10,
         counters.evicted > 99000,
         counters.untracked == 0,
+      )
+    },
+    test("a flood of 100k distinct keys against a full table of 1000 never evicts 20 hot keys, and each admission stays cheap") {
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 1000))
+      // Fill the table with junk first, so that every key of the flood has to make room, then the hot keys come in the same way.
+      (1 to 1000).foreach(i => counters.record(ip, s"fill$i", t0))
+      (1 to 20).foreach(i => (1 to 50).foreach(_ => counters.record(ip, s"hot$i", t0.plusSeconds(1))))
+      val started = nanoTime()
+      (1 to 100000).foreach(i => counters.record(ip, s"flood$i", t0.plusSeconds(2)))
+      val elapsedMillis = (nanoTime() - started) / 1000000
+      assertTrue(
+        counters.size == 1000,
+        (1 to 20).forall(i => counters.count(ip, s"hot$i", TenMinutes, t0.plusSeconds(2)) == 50),
+        counters.untracked == 0,
+        // About 64 uncontended locks per key: a second or so for the whole flood on a laptop; a regression to something
+        // like a scan of the table (1000 entries per key) would take a hundred times that.
+        elapsedMillis < 20000,
       )
     },
     test("what is counted over the last ten minutes decides, not when the key came: an old idle key goes before a new busy one") {

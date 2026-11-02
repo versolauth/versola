@@ -136,7 +136,11 @@ final class VelocityCounters(
 
   /** Makes room by dropping the key with the fewest requests in the last ten minutes among eight picked at random. A
     * key seen once and never again has none to speak of, so junk goes first; an established key is only evicted when the
-    * whole sample is as busy. A request does the sampling itself: a few array reads and eight counts, no lock on the table. */
+    * whole sample is as busy. A request does the sampling itself: a few array reads and eight counts, no lock on the table.
+    * *Cost:* each count sums the key's stripes, one short lock per stripe in use, so with a full table every admitted new key
+    * costs up to 8 entries x `stripes` (8) = about 64 lock acquisitions, none contended in practice (a stripe is chosen per
+    * thread, and a made-up key has one stripe). That is microseconds per new key, paid only while the table is full; see
+    * the key-flood spec for a wall-clock bound. */
   private def makeRoom(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], minute: Long): Boolean =
     val from = minute - VelocityWindow.TenMinutes.minutes + 1
     val sample = slots(keyType.ordinal).sample(EvictionSample)

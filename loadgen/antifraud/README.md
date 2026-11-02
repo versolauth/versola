@@ -69,6 +69,9 @@ which is how the runs before `velocity` were made. No device identifier is sent 
   what a `challenge` profile needs.
 - **Slow-and-low**: the prefix attack at a few codes a minute for hours; a config of `prefix-attack` (`rate`,
   `duration`) but longer than a CI-sized run, and meaningful only against a budget window of an hour.
+- **A key flood at 500 requests a second against a full counter table** (`velocity.max-keys` reached, every request a new
+  key): what the sampled eviction costs in CPU and request latency on a live `auth` (about 64 short lock acquisitions per
+  admitted key by design), and that the established keys survive it. Only the unit spec measures it so far.
 - **Hot-key behaviour of the velocity counters** and a **micro-benchmark of the `evaluate` path** (CPU, GC, DB
   reads and writes per instance, 2+ `auth` instances): a JMH benchmark is a new dependency
   (`project/Dependencies.scala`) that needs agreement first, and the second instance needs several `auth-url`s and
