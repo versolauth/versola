@@ -113,7 +113,7 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean, resendInterval: Int, pause: Int = 0)
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean, resendInterval: Int)
       extends StepView
 
     @jsonHint("passkey-enroll")
@@ -761,8 +761,6 @@ object ConversationRenderService:
             pending = s.pending,
             // The wait between two codes, which the page starts again when it shows a code that was just sent in place.
             resendInterval = otp.resendAfter,
-            // The page asks for the code itself, and not before the pause of the pending step is over.
-            pause = s.pauseRemaining(now),
           )
 
         case s: ConversationStep.PasskeyEnroll =>

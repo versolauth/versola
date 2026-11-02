@@ -409,10 +409,11 @@ object ConversationService:
         proof: ProofInput,
     ): Task[ConversationResult.Render] =
       val subject = credential.merge
-      // The page's ask for the code from the pending step, a plain post or a script's: the pause is what it pays instead of
-      // work, so it is honoured only once the pause is over. Sooner it is answered with the same page and nothing else: no
-      // code, no error, not counted.
-      val asking = pending(conversation) && (proof == ProofInput.Asked || proof == ProofInput.NoScript)
+      // The pause is what a request pays that cannot do work: a plain post's ask for the code from the pending step (and a script's
+      // where there is no proof of work to ask for), honoured only once the pause is over. Sooner it is answered with the
+      // same page and nothing else: no code, no error, not counted. A script's ask while a proof of work can be asked for is
+      // not held back: it is given the challenge, at once, and pays with work.
+      val asking = pending(conversation) && (proof == ProofInput.NoScript || (proof == ProofInput.Asked && !challengeVerifier.enabled))
       Clock.instant.flatMap: now =>
         conversation.step match
           case otp: ConversationStep.Otp if asking && otp.pauseRemaining(now) > 0 =>
@@ -445,9 +446,9 @@ object ConversationService:
           case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
             challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
           case _ => ZIO.none
-        // The ask of a request left pending, once its pause is over, is that request made again: it took its step and was
-        // counted when it was left, and one code is one step and one count.
-        paid = verdict.contains(ChallengeResult.Passed) || waited
+        // The ask of a request left pending (after its pause, or a script's, which is given a proof to solve) is that request
+        // made again: it took its step and was counted when it was left, and one code is one step and one count.
+        paid = verdict.contains(ChallengeResult.Passed) || waited || (pending(conversation) && proof == ProofInput.Asked)
         requestStatus <- submitStatus match
           // Claimed before anything is sent: were this left until after sendOtp, concurrent requests
           // for the same credential would all observe the pre-limit state and each send an OTP.

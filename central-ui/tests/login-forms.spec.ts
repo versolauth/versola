@@ -16,43 +16,30 @@ const PASSWORD_REGEX = '^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$';
 test.describe('otp', () => {
   const step = { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' };
 
-  test('a step left with no code sent asks for it by itself, as a resend, once its pause is over, and shows the code in place', async ({ page }) => {
+  test('a step left with no code sent asks for it by itself, as a resend, at once, answers the proof it is given and shows the code in place', async ({ page }) => {
     const seen: Array<{ path: string; fields: URLSearchParams }> = [];
-    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true, pause: 0 } }, {
+    const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true } }, {
       beforeRender: async (p) => {
         await p.route('**/challenge/otp/resend*', (route) => {
           const request = route.request();
           seen.push({ path: new URL(request.url()).pathname, fields: new URLSearchParams(request.postData() ?? '') });
-          return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: true }) });
+          const body = seen.length === 1 ? { challenge: { kind: 'pow', token: 'signed.token', params: { seed: 'abc', difficulty: '12' } } } : { next: '/challenge', otp: true };
+          return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
         });
       },
     });
 
-    await expect.poll(() => seen.length).toBe(1);
-    expect(seen[0].path).toBe('/challenge/otp/resend');
+    await expect.poll(() => seen.length).toBe(2);
+    expect(seen.map((request) => request.path)).toEqual(['/challenge/otp/resend', '/challenge/otp/resend']);
     expect(seen[0].fields.get('proof_inline')).toBe('1');
+    expect(seen[1].fields.get('proof_token')).toBe('signed.token');
+    const digest = createHash('sha256').update(`abc:${seen[1].fields.get('proof_solution')}`).digest();
+    expect(digest[0]).toBe(0);
+    expect(digest[1] >> 4).toBe(0);
     // Shown in place: the page is the same one, with the wait for the next code running, and the code field ready.
     await expect(page.getByText(t.resend_in.replace('{seconds}', '60'))).toBeVisible();
     await expect(page.getByRole('textbox')).toBeFocused();
     await expect(page.getByRole('heading', { name: t.title })).toBeVisible();
-  });
-
-  test('a step still in its pause does not ask before the pause is over: the server would honour no ask sooner', async ({ page }) => {
-    const seen: number[] = [];
-    const started = Date.now();
-    await renderForm(page, 'otp', { step: { ...step, resendAfter: 60, pending: true, pause: 2 } }, {
-      beforeRender: async (p) => {
-        await p.route('**/challenge/otp/resend*', (route) => {
-          seen.push(Date.now() - started);
-          return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: true }) });
-        });
-      },
-    });
-
-    await page.waitForTimeout(1500);
-    expect(seen).toEqual([]);
-    await expect.poll(() => seen.length, { timeout: 5000 }).toBe(1);
-    expect(seen[0]).toBeGreaterThanOrEqual(2000);
   });
 
   test('a resend that sends a code is shown in place too, with the wait of the step started again', async ({ page }) => {

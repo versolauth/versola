@@ -972,22 +972,24 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   for the one request that gets there first, so the same token (or one issued before it) cannot pass again, and the wrong
   solutions so far are forgotten; a replay of it is a wrong solution and is charged like one. Sending a code also spends
   every challenge made before it. A guess costs the server one SHA-256 and a statement.
-  **For a client that runs no script, a `Challenge` is a pause, and then the code.** A plain form post (the password form
-  that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) cannot do the work, so it is
-  left on the code step with nothing sent (`challenged` in the log, once) and the step is stamped with the moment its pause
-  ends (`antifraud.challenge.pause`, 20 seconds after it was left; it travels in the conversation, no migration). The ask
-  for the code from that step, whether the page makes it from script or a plain post does, is **honoured only after the
-  pause**: sooner it is answered with the same page, no code and no error, and it is not charged, counted or recorded. The
-  page makes its own ask once the seconds still to wait (told in the step) have passed. An honoured ask is the request that
-  was left pending, made again: it is judged again (a block, a fake and the lists still apply; a decision that is still
-  `Challenge` no longer stops it) and sends the code, with **no further step of the OTP request limit and no further
-  velocity record: such a client pays one step of the limit per code**. An attacker without script therefore gets at most
-  one code per pause per conversation, besides the limits above. The pause is counted as a challenge of its own kind,
-  `antifraud_challenges_total{kind="pause",outcome="challenged"}` (a step left pending) and `outcome="challenge_passed"` (an
-  ask honoured), so the dashboard shows how many challenges are paid by waiting and how many by work (`kind="pow"`).
-  Keep `challenge.pause` at or under the time a person will wait on a page that says nothing (the page counts it down
-  by the resend timer); the page's own ask carries a margin of half a second. When the code is sent the page shows it in
-  place (the wait for the next one starts again and the code field is focused) instead of reloading. A client that
+  **A client with script that is challenged does work; one without waits `challenge.pause`.** A plain form post (the
+  password form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) cannot do the
+  work, so it is left on the code step with nothing sent (`challenged` in the log, once) and the step is stamped with the
+  moment its pause ends (`antifraud.challenge.pause`, 20 seconds after it was left; it travels in the conversation, no
+  migration). The code page then asks for the code from script, at once, and is given the proof of work like the credential
+  form: a person who came through the password form and has script pays with work and waits for nothing. An ask made as a
+  plain post, which carries no proof, is **honoured only after the pause**: sooner it is answered with the same page, no
+  code and no error, and it is not charged, counted or recorded. (A script's ask also waits the pause when the proof of
+  work is off, `challenge.enabled = false`, the only friction there is.) A solved answer, and an ask honoured after the
+  pause, are the request that was left pending, made again: judged again (a block, a fake and the lists still apply; for
+  the pause, a decision that is still `Challenge` no longer stops it) and send the code with **no further step of the OTP
+  request limit and no further velocity record: such a client pays one step of the limit per code**. An attacker without
+  script therefore gets at most one code per pause per conversation, besides the limits above; one with script, one proof
+  of work per code. The pause is counted as a challenge of its own kind, `antifraud_challenges_total{kind="pause"}`:
+  `outcome="challenged"` for a step left pending and `outcome="challenge_passed"` for an ask honoured after waiting, so the
+  dashboard shows how many challenges are paid by waiting and how many by work (`kind="pow"`, which a pending step that
+  ends in a proof of work is counted under). When the code is sent the page shows it in place (the wait for the next one
+  starts again and the code field is focused) instead of reloading. A client that
   cannot answer a challenge at all (an unsolvable kind) stays on the page and gets no code. Only a verifier that is
   off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
   `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
