@@ -373,6 +373,30 @@ object ConversationRouterSpec extends UnitSpecBase:
           (result, _) <- env.router.submit(authId, OtpResendSubmission(answered, "test-csrf"), None, None)
         yield assertTrue(env.otpConversationService.prepareInitialOtp.calls.map(_._5) == List(answered))
       },
+      test("a resend from the pending step, plain or from script, reaches the one service method that applies the pause, with the pending conversation") {
+        val env = Env()
+        val pendingStep = ConversationStep.Otp(
+          real = None,
+          timesRequested = 0,
+          timesSubmitted = 0,
+          factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
+          pendingUntil = Some(java.time.Instant.EPOCH.plusSeconds(20)),
+        )
+        val pending = otpRecord.copy(step = pendingStep)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(pending))
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.submit(authId, OtpResendSubmission(ProofInput.NoScript, "test-csrf"), None, None)
+          _ <- env.router.submit(authId, OtpResendSubmission(ProofInput.Asked, "test-csrf"), None, None)
+          calls = env.otpConversationService.prepareInitialOtp.calls
+        yield assertTrue(
+          calls.map(_._5) == List(ProofInput.NoScript, ProofInput.Asked),
+          calls.forall(_._2 == pending),
+        )
+      },
       test("return BadRequest when the submission does not match the current step") {
         val env = Env()
         val submission = OtpSubmission(otpCode, "test-csrf")

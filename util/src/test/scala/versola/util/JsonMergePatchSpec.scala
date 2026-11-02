@@ -30,7 +30,8 @@ object JsonMergePatchSpec extends ZIOSpecDefault:
       )
     },
     test("nested objects merge, a map entry is removed by null, an array replaces, the rest is left as it was") {
-      val target = """{"blockAt":50,"smsLimits":{"default":{"sentPerHour":10},"byPrefix":{"49":{"sentPerHour":2},"7":{"sentPerHour":3}}},"shadowRules":["a","b"]}"""
+      val target =
+        """{"blockAt":50,"smsLimits":{"default":{"sentPerHour":10},"byPrefix":{"49":{"sentPerHour":2},"7":{"sentPerHour":3}}},"shadowRules":["a","b"]}"""
       val patch = """{"blockAt":80,"smsLimits":{"byPrefix":{"49":null,"44":{"sentPerHour":1}}},"shadowRules":["c"]}"""
       assertTrue(
         merged(target, patch) == json(

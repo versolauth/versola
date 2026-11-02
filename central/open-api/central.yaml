@@ -113,8 +113,9 @@ tags:
   - name: Delivery settings
     description: |
       How auth delivers one-time codes and temporary passwords: the SMTP server for email and
-      the HTTP provider for SMS. One record per deployment; it replaces the `smtp` and
-      `otp-provider` blocks of `auth.conf` once stored. Passwords are write-only.
+      the HTTP provider for SMS. One record per deployment. A block saved here is used instead of
+      the matching block of `auth.conf`; a block not saved here is read from `auth.conf`.
+      Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
@@ -2215,9 +2216,12 @@ paths:
         Stores both blocks as sent. A password that is left out (or sent as `null`) keeps the one
         on record, so a caller that never sees the stored password can still change the rest of
         the block; an empty password clears it. A block that is left out is removed together with
-        its password. Passwords are encrypted at rest and never returned. A save with both blocks
-        left out still counts as a stored record (auth then delivers nothing); to return to the
-        `auth.conf` blocks, delete the record instead.
+        its password. Passwords are encrypted at rest and never returned.
+
+        Auth decides each block on its own: a block saved here and switched on is used, one that
+        is switched off sends nothing, and a block that is not saved here is read from the
+        matching block of `auth.conf`. A record with both blocks left out therefore holds nothing
+        and changes nothing; delete the record to make that explicit.
       operationId: upsertDeliverySettings
       requestBody:
         required: true
@@ -2942,7 +2946,9 @@ paths:
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
         `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
-        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits and a malformed rule name.
+        the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits, a rule name that names no rule,
+        and combinations that can only be a mistake (`challengeAt` above `blockAt`, `blockAt` under 10, `pow.maxDifficulty` over
+        24, a limit on codes of 1 to 19).
       operationId: putAntifraudSettings
       parameters:
         - name: If-Match
@@ -2987,11 +2993,13 @@ paths:
       summary: Change some of the settings
       description: |
         A JSON merge patch (RFC 7396) of the settings: the body is a partial settings document. Members it names are changed,
-        objects merge recursively, a member that is `null` is removed (a `smsLimits.byPrefix` or `ruleWeights` entry; a member
-        every settings document has cannot be removed and is `400`), and a string, number or array replaces what is there
+        objects merge recursively, a member that is `null` is removed (a `smsLimits.byPrefix` or `ruleWeights` entry goes; a
+        member every settings document has reads as its default again: `mode` as `shadow`, the thresholds as 0 and so on, and
+        that is written), and a string, number or array replaces what is there
         (`shadowRules` is replaced as a whole). Everything it does not name is left as it is. Auth applies the patch to the stored
         settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
-        valid), and answers all the settings with their new version. The body is `application/merge-patch+json`;
+        valid), and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
+        member: it names only what it changes. The body is `application/merge-patch+json`;
         `application/json` is taken too, and any other type is `415`.
 
         Naming the version is optional, as for `PUT`: with `If-Match` (or `version` in the body) the patch is made on that
@@ -7189,8 +7197,9 @@ components:
     AntifraudSettingsPatch:
       type: object
       description: |
-        A partial settings document, a JSON merge patch (RFC 7396): any members of `AntifraudSettings`, nested objects with only
-        the members to change, `null` for a member to remove. `userId` is added by edge and is not part of the patch.
+        A partial settings document, a JSON merge patch (RFC 7396): any members of `AntifraudSettings` (none is required, `mode`
+        included), nested objects with only the members to change, `null` for a member to remove (it then reads as its default).
+        `userId` is added by edge and is not part of the patch.
       additionalProperties: true
     AntifraudCountersResetRequest:
       type: object
@@ -7284,6 +7293,13 @@ components:
       type: object
       description: What applies to the whole deployment. A map, or `thresholds`, is set as a whole.
       properties:
+        mode:
+          type: string
+          enum: [shadow, enforce]
+          description: |
+            `shadow` computes the whole decision (score thresholds, forced list actions and the SMS budget) and records what it
+            would have done, but lets every request through; `enforce` acts on it. Required: a `PUT` that left it out would put an
+            enforcing deployment back in `shadow`.
         challengeAt: { type: integer, minimum: 0, description: Score from which a step is challenged; 0 disables (likewise `blockAt`). }
         blockAt: { type: integer, minimum: 0 }
         pow: { $ref: '#/components/schemas/AntifraudPowDifficulty' }
@@ -7297,4 +7313,4 @@ components:
           type: array
           description: Rules that are evaluated and listed as `shadow:<name>` but add no weight and force nothing.
           items: { type: string }
-      required: [challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]
+      required: [mode, challengeAt, blockAt, pow, thresholds, smsLimits, ruleWeights, shadowRules]

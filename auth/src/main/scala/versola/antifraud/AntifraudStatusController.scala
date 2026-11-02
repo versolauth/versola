@@ -19,10 +19,10 @@ object AntifraudStatusController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(rulesEndpoint, statusEndpoint)
 
-  /** The names a rule is fired under, see [[AntifraudRuleCatalogue]]. */
+  /** The names a rule is fired under, which the settings may name (see [[Antifraud.ruleNames]]), in order. */
   val rulesEndpoint =
     Method.GET / "antifraud" / "rules" -> handler { (request: Request) =>
-      authorizeInternal(request).as(Response.json(RulesResponse(AntifraudRuleCatalogue.names).toJson))
+      authorizeInternal(request).as(Response.json(RulesResponse(Antifraud.ruleNames.toList.sorted).toJson))
     }
 
   val statusEndpoint =

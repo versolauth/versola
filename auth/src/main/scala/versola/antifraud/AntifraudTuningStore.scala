@@ -22,7 +22,8 @@ case class TuningStatus(available: Boolean, version: Option[Long], checkedAt: Op
 /** The tuning as stored, and the internal API that changes it.
   *
   * ==The row==
-  * `af_settings` has one row with every key, written with everything off by auth's bootstrap if there is none. A change
+  * `af_settings` has one row with every key, written with everything off (and in `shadow` mode) by auth's bootstrap if there
+  * is none; a row that lacks a key added by a later version is read with the key's default (see [[Tuning]]). A change
   * replaces it as a whole and bumps `af_settings_version` and the version of the row (the ETag the admin API hands out, so that
   * a change made on a stale read is refused, see [[VersionMismatch]]); [[reset]] puts everything off again. A deployment with no row
   * (bootstrap has not run yet, or the row was deleted by hand) is taken to have everything off ([[Tuning.off]]). Nothing in
@@ -64,13 +65,23 @@ object AntifraudTuningStore:
   private val MaxScore = 100000
   private val MaxWeight = 100000
   private val MaxLimitValue = 100000000
-  private val MaxDifficulty = 32
+
+  /** Each bit doubles the work a phone has to do: past 24 a challenge cannot be solved in a browser in any time a person waits. */
+  private val MaxDifficulty = 24
+
+  /** A limit of fewer codes than this closes a range to whoever is behind it before an attack has started; 0 is off. */
+  private val MinSmsLimit = 20
+
+  /** A score below this is crossed by a single rule of the default weights. */
+  private val MinBlockAt = 10
 
   /** @param refreshInterval how often the version of the stored tuning is looked at, so how long a change takes to
     *                        reach another instance */
   case class Settings(refreshInterval: Duration)
 
-  /** Why a tuning is not valid, if it is not. */
+  /** Why a tuning is not valid, if it is not. Each field is checked in its range, and then the combinations that can only be
+    * a mistake: a challenge score above the block score (the challenge would never be reached), a limit so low it closes
+    * a range on first use, a block score a single rule crosses, and the name of a rule there is none of. */
   def invalid(tuning: Tuning): Option[String] =
     def score(name: String, value: Int) = Option.when(value < 0 || value > MaxScore)(s"$name must be between 0 and $MaxScore")
     def limit(name: String, l: VelocityRules.Limit) =
@@ -82,6 +93,9 @@ object AntifraudTuningStore:
       Option.when(
         l.sentPerHour < 0 || l.sentPerHour > MaxLimitValue || l.minVolume < 0 || l.minVolume > MaxLimitValue,
       )(s"$name counts must be between 0 and $MaxLimitValue")
+        .orElse(Option.when(
+          (l.sentPerHour != 0 && l.sentPerHour < MinSmsLimit) || (l.minVolume != 0 && l.minVolume < MinSmsLimit),
+        )(s"$name counts must be 0 or at least $MinSmsLimit"))
         .orElse(Option.when(l.minConversion.isNaN || l.minConversion < 0 || l.minConversion > 1)(s"$name minConversion must be between 0 and 1"))
     val rule = "[a-z0-9_:.-]{1,100}".r
     val t = tuning.thresholds
@@ -89,6 +103,10 @@ object AntifraudTuningStore:
     List(
       score("challengeAt", tuning.challengeAt),
       score("blockAt", tuning.blockAt),
+      Option.when(tuning.challengeAt > 0 && tuning.blockAt > 0 && tuning.challengeAt > tuning.blockAt)(
+        "challengeAt must not be above blockAt when both are set",
+      ),
+      Option.when(tuning.blockAt > 0 && tuning.blockAt < MinBlockAt)(s"blockAt must be at least $MinBlockAt when set"),
       Option.when(p.minDifficulty < 0 || p.maxDifficulty > MaxDifficulty || p.minDifficulty > p.maxDifficulty)(
         s"pow difficulty must satisfy 0 <= minDifficulty <= maxDifficulty <= $MaxDifficulty",
       ),
@@ -104,8 +122,14 @@ object AntifraudTuningStore:
       tuning.ruleWeights.collectFirst {
         case (name, weight) if !rule.matches(name) || weight < -MaxWeight || weight > MaxWeight => s"rule weight '$name' is not valid"
       },
+      tuning.ruleWeights.keys.toList.sorted.collectFirst {
+        case name if !Antifraud.ruleNames.contains(name) => s"rule weight '$name' names no rule (see GET /antifraud/rules)"
+      },
       Option.when(tuning.ruleWeights.size > 200)("at most 200 rule weights"),
       tuning.shadowRules.collectFirst { case name if !rule.matches(name) => s"shadow rule '$name' is not valid" },
+      tuning.shadowRules.toList.sorted.collectFirst {
+        case name if !Antifraud.ruleNames.contains(name) => s"shadow rule '$name' names no rule (see GET /antifraud/rules)"
+      },
       Option.when(tuning.shadowRules.size > 200)("at most 200 shadow rules"),
     ).flatten.headOption
 
@@ -178,6 +202,8 @@ object AntifraudTuningStore:
             loadedAt.set(now)
         _ = checkedAt.set(Some(now))
         _ = lastError.set(None)
+        // Read, or found unchanged: either way the tuning is as new as the table.
+        _ <- AntifraudMetrics.tuningRefreshed(now)
       yield ()).catchAllCause: cause =>
         lastError.set(Some(Option(cause.squash.getMessage).getOrElse(cause.squash.getClass.getSimpleName).take(300)))
         AntifraudMetrics.tuningRefreshFailed

@@ -539,12 +539,38 @@ object AntifraudListsSpec extends UnitSpecBase:
         gone <- decide(lists)(ctx(subjectHash = Some("d")))
       yield assertTrue(unchanged == afterCreate, stillThere.action == DecisionAction.Block, gone == Decision.allow)
     },
+    test("a hit on a shadow entry is counted as one, apart from a hit on an enforcing entry of the same kind") {
+      val (lists, cache) = make(FakeRepository())
+      for
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "4915")
+        _ <- decide(lists)(ctx(subjectHash = Some("d")))
+        _ <- decide(lists)(ctx(destPrefix = Some("491512")))
+        _ <- decide(lists)(ctx(destPrefix = Some("491512")))
+      yield assertTrue(
+        cache.drainKinds().toMap == Map(
+          (AntifraudListType.deny, AntifraudValueType.phone_hash, true) -> 1L,
+          (AntifraudListType.deny, AntifraudValueType.prefix, false) -> 2L,
+        ),
+      )
+    },
+    test("every rule the lists contribute is in the catalogue of rule names the settings are checked against") {
+      val (lists, _) = make(FakeRepository())
+      for
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        rules <- lists.ruleSet.rules
+      yield assertTrue(
+        rules.nonEmpty,
+        rules.forall(r => Antifraud.ruleNames.contains(r.name)),
+        Antifraud.ruleNames.filter(_.contains("_list:")) == rules.map(_.name).toSet,
+      )
+    },
     test("counts hits by list and kind of value, for the metric") {
       val (lists, cache) = make(FakeRepository())
       for
         _ <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
-      yield assertTrue(cache.drainKinds() == List((AntifraudListType.fake, AntifraudValueType.prefix) -> 2L), cache.drainKinds().isEmpty)
+      yield assertTrue(cache.drainKinds() == List((AntifraudListType.fake, AntifraudValueType.prefix, false) -> 2L), cache.drainKinds().isEmpty)
     },
   )

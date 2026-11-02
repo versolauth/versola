@@ -76,7 +76,7 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
         }.getOrElse(Chunk.empty)
       yield assertTrue(
         response.status == Status.Ok,
-        names.toList == AntifraudRuleCatalogue.names,
+        names.toList == Antifraud.ruleNames.toList.sorted,
         names.distinct.size == names.size,
         names.contains("velocity_phone_1m"),
         names.contains("velocity_prefix_24h"),
@@ -94,7 +94,7 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         built <- AntifraudTestSettings.velocityRules(AntifraudTestSettings.velocity.copy(enabled = true), tuning).rulesFor(ctx)
         names = built.map(_.name)
-      yield assertTrue(names.size >= 21, names.forall(AntifraudRuleCatalogue.names.contains))
+      yield assertTrue(names.size >= 21, names.forall(Antifraud.ruleNames.contains))
     },
     test("GET status says whether the decision and the lists are on, the tuning version and age, and the lists' snapshot") {
       val lists = stub[AntifraudLists]

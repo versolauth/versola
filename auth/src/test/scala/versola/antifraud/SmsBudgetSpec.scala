@@ -30,6 +30,31 @@ object SmsBudgetSpec extends UnitSpecBase:
     SmsBudget(AntifraudTestSettings.smsBudget, AntifraudTestSettings.smsSizing.copy(maxRanges = maxRanges), SmsLimits(SmsLimit(sentPerHour, minVolume, minConversion), Map.empty))
 
   def spec = suite("SmsBudget")(
+    test("without enforcing, a closed range is answered WouldRefuse with its reason, and the code that goes out is counted all the same") {
+      val budget = budgetOf(sentPerHour = 3)
+      def shadow() = budget.assess(tenant, "491512", t0, charge = true, conversionBreaker = true, enforce = false)
+      val answers = (1 to 5).map(_ => shadow())
+      val afterwards = budget.assess(tenant, "491512", t0, charge = false, conversionBreaker = true, enforce = true)
+      assertTrue(
+        answers.map(_.decision) == List(Decision.Allowed, Decision.Allowed, Decision.Allowed, Decision.WouldRefuse, Decision.WouldRefuse),
+        answers.drop(3).forall(_.reason.contains(SmsBudget.Reason.Cap)),
+        // The window holds what went out (five), so enforcing from now on starts from the truth.
+        afterwards.decision == Decision.Refused,
+      )
+    },
+    test("says why: the cap, or too few verified of those sent") {
+      val capped = budgetOf(sentPerHour = 2)
+      sendTo(capped, "491512", 2)
+      val cold = budgetOf(minVolume = 5, minConversion = 0.5)
+      sendTo(cold, "491512", 5)
+      assertTrue(
+        capped.assess(tenant, "491512", t0, charge = false, conversionBreaker = true, enforce = true).reason.contains(SmsBudget.Reason.Cap),
+        cold.assess(tenant, "491512", t0, charge = false, conversionBreaker = true, enforce = true).reason.contains(SmsBudget.Reason.Conversion),
+        cold.assess(tenant, "491512", t0, charge = false, conversionBreaker = false, enforce = true).reason.isEmpty,
+        SmsBudget.Reason.Cap.label == "cap",
+        SmsBudget.Reason.Conversion.label == "conversion",
+      )
+    },
     test("allows everything while no limit is configured, and tracks nothing") {
       val budget = budgetOf()
       sendTo(budget, "491512", 10000)

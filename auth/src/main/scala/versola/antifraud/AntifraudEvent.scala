@@ -25,11 +25,14 @@ case class AntifraudEvent(
     subjectHash: String,
     destPrefix: Option[String],
     userAgent: Option[String],
-    /** The decision, score and rules that produced this outcome. Filled in once decisions exist (P0-1 of #771);
-      * an event written before then carries none. */
+    /** The decision, score and rules that produced this outcome: what was done. Filled in for a step that something
+      * noteworthy happened to, that is one whose action or would-be action is not `Allow`, or that fired a rule. */
     decision: Option[String] = None,
     score: Option[Int],
     rules: List[String],
+    /** What the engine decided, which is not what was done in `shadow` mode (`decision` is then `Allow`). Empty where
+      * there was no decision to record. */
+    wouldAction: Option[String] = None,
 )
 
 enum AntifraudAction:

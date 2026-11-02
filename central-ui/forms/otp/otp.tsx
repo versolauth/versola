@@ -74,8 +74,9 @@ function OtpForm(props: { config: FormConfig }) {
 
   onMount(() => {
     if (!props.config.previewId && lockRemaining() <= 0) inputRef.focus();
-    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend,
-    // which can. If that cannot be done from script the person can ask for it with the button below.
+    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend, at
+    // once. A page with script is given the proof to solve and solves it, so it pays with work and waits for nothing; the
+    // `pause` the step tells is the price of a client without script (a plain post), which this page is not.
     if (props.config.step.pending && canSubmitInline(props.config)) requestCode().catch(() => { resending = false; });
   });
 

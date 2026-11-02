@@ -444,6 +444,15 @@ const edgeTenants = [
 const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [] }];
 const edgesState: MockState = { tenants: edgeTenants, edges };
 
+const deliverySettingsState: MockState = {
+  deliverySettings: {
+    smtp: { host: 'smtp.example.com', port: 587, username: 'mailer', from: 'noreply@example.com', subject: 'Your verification code', startTls: true, enabled: true },
+    smtpPassword: 'example-password',
+    otpProvider: { method: 'POST', url: 'https://sms.example.com/send', username: 'sms-account', body: { phones: '{{phone}}', mes: '{{message}}' }, enabled: true },
+    otpProviderPassword: 'example-password',
+  },
+};
+
 const systemSettingsState: MockState = {
   systemSettings: { passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', passwordHistorySize: 2, passwordNumDifferent: 1 },
 };
@@ -947,6 +956,30 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await page.getByRole('button', { name: 'Edit password policy' }).click();
       await expect(page.getByLabel('Password regex *')).toBeVisible();
+    },
+  },
+
+  // Delivery
+  {
+    name: 'console/delivery-empty', kind: 'frame', path: '/?view=delivery', state: {},
+    before: async page => { await expect(page.getByText('Nothing is saved here yet')).toBeVisible(); },
+  },
+  {
+    name: 'console/delivery', kind: 'frame', fullPage: true, path: '/?view=delivery', state: deliverySettingsState,
+    before: async page => { await expect(page.getByRole('region', { name: 'Email' })).toContainText('smtp.example.com:587'); },
+  },
+  {
+    name: 'console/delivery-email-edit', kind: 'frame', fullPage: true, path: '/?view=delivery', state: deliverySettingsState,
+    before: async page => {
+      await page.getByRole('region', { name: 'Email' }).getByRole('button', { name: 'Edit' }).click();
+      await expect(page.getByLabel('Server address *')).toBeVisible();
+    },
+  },
+  {
+    name: 'console/delivery-sms-edit', kind: 'frame', fullPage: true, path: '/?view=delivery', state: deliverySettingsState,
+    before: async page => {
+      await page.getByRole('region', { name: 'SMS' }).getByRole('button', { name: 'Edit' }).click();
+      await expect(page.getByLabel('Address *')).toBeVisible();
     },
   },
 

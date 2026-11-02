@@ -213,5 +213,9 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           after.flatMap(_.otpProviderPassword).isEmpty,
         )
       },
+      test("does not print the passwords of an update") {
+        val printed = update(smtp = Some(smtp), smtpPassword = Some(plaintext), otpProviderPassword = Some("sms-s3cret")).toString
+        assertTrue(!printed.contains(plaintext), !printed.contains("sms-s3cret"))
+      },
     ),
   )
