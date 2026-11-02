@@ -122,6 +122,21 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         !sent.shadow,
       )
     },
+    test("the source is the server's: a body that names one is stored as manual all the same") {
+      val lists = stub[AntifraudLists]
+      val claimed = """{"listType":"deny","valueType":"prefix","value":"4915","source":"detector:prefix_anomaly","reason":"x"}"""
+      for
+        _ <- lists.create.succeedsWith(stored)
+        _ <- lists.preview.succeedsWith(ListPreview(matched = None, total = 0))
+        created <- call(lists, Request.post(base, entryBody(claimed)))
+        previewed <- call(lists, Request.post(base / "preview", entryBody(claimed)))
+      yield assertTrue(
+        created.status == Status.Created,
+        previewed.status == Status.Ok,
+        lists.create.calls.head._1.source == ListEntrySource.Manual,
+        lists.preview.calls.head.source == ListEntrySource.Manual,
+      )
+    },
     test("a phone is hashed the way an event's destination is, and stored as the hash") {
       val lists = stub[AntifraudLists]
       val entry = """{"listType":"deny","valueType":"phone_hash","phone":"+77011234567"}"""
@@ -405,6 +420,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tenantId = Some(tenant),
         expiresAt = None,
         reason = None,
+        previous = None,
       )
       for
         _ <- lists.audit.succeedsWith(List(record))

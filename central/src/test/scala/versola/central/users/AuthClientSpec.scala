@@ -291,7 +291,6 @@ object AuthClientSpec extends ZIOSpecDefault:
         tenantId = Some(tenantId),
         expiresAt = None,
         reason = None,
-        source = None,
         shadow = None,
         userId = userId,
         callerTenantId = Some(TenantId("forged")),

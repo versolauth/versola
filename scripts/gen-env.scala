@@ -1968,6 +1968,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    enabled         = false
        |    refresh-interval = "5 seconds"
        |    audit-retention = "365 days"
+       |    max-broad-ttl    = "30 days"   # the longest a network, mail-domain or prefix entry may live
        |  }
        |  detectors {
        |    enabled   = false

@@ -36,6 +36,10 @@ trait AntifraudEvents:
   /** Gives back a code that [[allowSms]] charged at `at` and that was not sent. */
   def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit]
 
+  /** Forgets this instance's SMS budget of the ranges `prefix` is in or contains (digits), or of all ranges for `None`
+    * (a reset: see [[AntifraudCounters]]). */
+  def resetBudget(prefix: Option[String]): UIO[Unit]
+
   /** A real code took `took` to hand to the provider; what a fake send imitates. */
   def sendTook(took: Duration): UIO[Unit]
 
@@ -135,7 +139,7 @@ object AntifraudEvents:
       queueCapacity = 20000,
       batchSize = 1000,
       flushInterval = 1.second,
-      partitionsAhead = 3,
+      partitionsAhead = 7,
       statsLookback = 2.minutes,
       statsPrefixLength = 4,
       smsBudget = SmsBudget.Sizing.standard,
@@ -155,6 +159,8 @@ object AntifraudEvents:
     override def fakeSendDelay: UIO[Duration] = ZIO.succeed(Duration.Zero)
 
     override def releaseSms(clientId: ClientId, phone: Phone, at: Instant): UIO[Unit] = ZIO.unit
+
+    override def resetBudget(prefix: Option[String]): UIO[Unit] = ZIO.unit
 
     override def decideOtpRequest(clientId: ClientId, userAgent: Option[String], credential: Either[Email, Phone], repeated: Boolean): UIO[Decision] =
       ZIO.succeed(Decision.allow)
@@ -274,6 +280,7 @@ object AntifraudEvents:
             conversionBreaker = breaker,
             enforce = mode == TuningMode.enforce,
           )
+          _ <- ZIO.succeed(budget.drainEvicted()).flatMap(n => AntifraudMetrics.smsBudgetEvicted(n).when(n > 0))
           _ <- verdict.decision match
             case SmsBudget.Decision.Refused | SmsBudget.Decision.WouldRefuse =>
               AntifraudMetrics.smsRefused(verdict.reason.fold("cap")(_.label), mode)
@@ -339,6 +346,8 @@ object AntifraudEvents:
         challenge = None,
         challengeLevel = None,
       )
+
+    override def resetBudget(prefix: Option[String]): UIO[Unit] = ZIO.succeed(budget.forget(prefix))
 
     override def sendTook(took: Duration): UIO[Unit] = ZIO.succeed(latency.add(took))
 
@@ -547,6 +556,14 @@ object AntifraudEvents:
         _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
       yield ()
 
+  /** Why `statsInterval` is not usable, if it is: the rollup works in whole minutes (`af_dest_stats` has a row per minute and
+    * a run covers the minutes that are complete), and the instances share the work by the interval, so a fraction of a
+    * minute would make them run it for the same minutes over and over. Checked when the configuration is loaded. */
+  def statsIntervalError(interval: Duration): Option[String] =
+    Option.when(interval.toMillis < 60000L || interval.toMillis % 60000L != 0L)(
+      s"antifraud.stats-interval must be a whole number of minutes, at least one (it is $interval)",
+    )
+
   private class Rollup(repository: AntifraudEventRepository, settings: Settings, sizing: Sizing):
 
     // Each run recomputes at least two intervals, so that a minute is rolled up twice whatever the interval is, and
@@ -559,8 +576,10 @@ object AntifraudEvents:
       Clock.instant.flatMap: now =>
         val to = now.truncatedTo(ChronoUnit.MINUTES)
         val from = to.minusSeconds(lookback.toSeconds)
-        (repository.rollupStats(from, to, sizing.statsPrefixLength) *>
-          repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds))).foldCauseZIO(
+        // One instance rolls up per interval (the repository skips the run when another has done it lately), and the one
+        // that did also prunes: the others have nothing to do.
+        (repository.rollupStats(from, to, sizing.statsPrefixLength, settings.statsInterval).flatMap: ran =>
+          ZIO.when(ran)(repository.pruneStats(now.minusSeconds(settings.statsRetention.toSeconds)))).foldCauseZIO(
           cause => AntifraudMetrics.rollupFailed *> ZIO.logWarningCause("could not roll up the antifraud statistics", cause),
           _ => ZIO.unit,
         )
@@ -574,13 +593,20 @@ object AntifraudEvents:
       Clock.instant.flatMap: now =>
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
+        // The gauge is read after every run, a failed one included: it is what says how long the writer can still go on.
         repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
           cause =>
             AntifraudMetrics.partitionMaintenanceFailed *>
               ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
+              daysAhead(today) *>
               ZIO.fail(()),
-          _ => ZIO.unit,
+          _ => daysAhead(today),
         )
+
+    private def daysAhead(today: LocalDate): UIO[Unit] =
+      repository.partitionDaysAhead(today).flatMap(AntifraudMetrics.partitionDaysAhead).catchAllCause(cause =>
+        ZIO.logDebugCause("could not count the antifraud partitions ahead", cause),
+      )
 
     /** Once before the writer starts, so its first batch finds a partition, then every six hours. A run that failed
       * (a lock that could not be had in time, a database that was down) is tried again after a minute, not six
@@ -629,7 +655,12 @@ object AntifraudMetrics:
   def smsRefused(reason: String, mode: TuningMode): UIO[Unit] =
     smsRefusedTotal.tagged(Set(MetricLabel("reason", reason), MetricLabel("mode", mode.label))).increment
 
-  /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges. */
+  private val smsBudgetEvictedTotal = Metric.counter("antifraud_sms_budget_evicted_total")
+
+  /** Ranges that made room for a new one in a full budget table, having had the fewest codes of a sample of eight. */
+  def smsBudgetEvicted(count: Long): UIO[Unit] = smsBudgetEvictedTotal.incrementBy(count)
+
+  /** A code to a new range went out untracked because the budget already follows `max-ranges` ranges and could make no room. */
   val smsBudgetFull: UIO[Unit] = smsBudgetFullTotal.increment
 
   private val decisionsTotal = Metric.counter("antifraud_decisions_total")
@@ -675,18 +706,25 @@ object AntifraudMetrics:
   /** `what` is `flush`, `load` or `prune`: a closed set, since it is a label. A failure leaves the counts per instance. */
   def velocityFailed(what: String): UIO[Unit] = velocityFailedTotal.tagged(Set(MetricLabel("what", what))).increment
 
-  /** Requests of keys that were not counted because the table of keys was full of keys seen more than once
-    * (`velocity.max-keys`): more than 0 is itself a sign of an attack, or of a table too small. */
+  /** Requests of keys that were not counted because the table of keys was full and no key could be picked to make room
+    * (a race): more than 0 is a sign of a table too small. */
   def velocityUntracked(count: Long): UIO[Unit] = velocityUntrackedTotal.incrementBy(count)
 
   private val velocityEvictedTotal = Metric.counter("antifraud_velocity_evicted_total")
 
-  /** Keys that made room for a new one in a full table, having been seen once. A steady stream is a flood of keys. */
+  /** Keys that made room for a new one in a full table, having had the fewest requests of a random sample of eight in the
+    * last ten minutes. A steady stream is a flood of keys. */
   def velocityEvicted(count: Long): UIO[Unit] = velocityEvictedTotal.incrementBy(count)
 
   def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
+
+  private val partitionDaysAheadGauge = Metric.gauge("antifraud_partition_days_ahead")
+
+  /** Days after today that have a partition of the event log, as of the last maintenance run. The writer drops events
+    * when it reaches 0 (and `partitions-ahead` is 7), so alert on it falling, not only on the failures. */
+  def partitionDaysAhead(days: Int): UIO[Unit] = partitionDaysAheadGauge.set(days.toDouble)
 
   def written(count: Int): UIO[Unit] = writtenTotal.incrementBy(count.toLong)
 

@@ -16,7 +16,8 @@ object AntifraudTestSettings:
     velocity = VelocityCounters.Settings(enabled = false, flushInterval = 10.seconds, loadInterval = 20.seconds),
   )
 
-  val lists: AntifraudLists.Settings = AntifraudLists.Settings(enabled = false, refreshInterval = 5.seconds, auditRetention = 365.days)
+  val lists: AntifraudLists.Settings =
+    AntifraudLists.Settings(enabled = false, refreshInterval = 5.seconds, auditRetention = 365.days, maxBroadTtl = 30.days)
 
   val detectors: AntifraudDetectors.Settings = AntifraudDetectors.Settings(enabled = false, interval = 1.minute, retention = 90.days)
 
