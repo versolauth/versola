@@ -85,44 +85,105 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.reset.calls.isEmpty,
       )
     },
-    test("a put is handed to the service with the userId edge added, whatever the client sent") {
+    test("a put is handed to the service with the userId edge added, whatever the client sent, on the version in If-Match") {
       val service = stub[AntifraudSettingsService]
       for
-        _ <- service.put.succeedsWith(settings)
-        response <- runAs(put(putBody.dropRight(1) + s""","userId":"$attacker"}"""), service)
+        _ <- service.put.succeedsWith(VersionedAntifraudSettings(settings, 4))
+        response <- runAs(put(putBody.dropRight(1) + s""","userId":"$attacker"}""").addHeader(Header.Custom("If-Match", "\"3\"")), service)
         body <- response.body.asString
+        json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
       yield assertTrue(
         response.status == Status.Ok,
         body.fromJson[AntifraudSettings] == Right(settings),
-        service.put.calls == List(PutAntifraudSettingsRequest(settings, admin)),
+        json.get("version").contains(Json.Num(4)),
+        response.headers.get("ETag").contains("\"4\""),
+        service.put.calls == List(PutAntifraudSettingsRequest(settings, admin, Some(3))),
       )
     },
-    test("a get needs no caller to name") {
+    test("a put takes the version from the body when there is no If-Match; both given must agree, and one that is no version is 400") {
+      val service = stub[AntifraudSettingsService]
+      val withVersion = putBody.dropRight(1) + ""","version":7}"""
+      for
+        _ <- service.put.succeedsWith(VersionedAntifraudSettings(settings, 8))
+        fromBody <- runAs(put(withVersion), service)
+        agree <- runAs(put(withVersion).addHeader(Header.Custom("If-Match", "7")), service)
+        differ <- runAs(put(withVersion).addHeader(Header.Custom("If-Match", "\"6\"")), service)
+        garbage <- runAs(put(putBody).addHeader(Header.Custom("If-Match", "W/\"3\"")), service)
+        any <- runAs(put(putBody).addHeader(Header.Custom("If-Match", "*")), service)
+      yield assertTrue(
+        fromBody.status == Status.Ok,
+        agree.status == Status.Ok,
+        differ.status == Status.BadRequest,
+        garbage.status == Status.BadRequest,
+        any.status == Status.BadRequest,
+        service.put.calls.map(_.version) == List(Some(7L), Some(7L)),
+      )
+    },
+    test("a put that names no version is 428 and reaches nothing") {
       val service = stub[AntifraudSettingsService]
       for
-        _ <- service.get.succeedsWith(settings)
+        response <- runAs(put(putBody), service)
+      yield assertTrue(response.status == Status.PreconditionRequired, service.put.calls.isEmpty)
+    },
+    test("a put on a version the settings have left is 412, with the version they are at as the ETag") {
+      val service = stub[AntifraudSettingsService]
+      for
+        _ <- service.put.failsWith(AntifraudListError.StaleVersion("the settings are at version 5", Some(5)))
+        stale <- runAs(put(putBody).addHeader(Header.Custom("If-Match", "\"3\"")), service)
+        _ <- service.put.failsWith(AntifraudListError.StaleVersion("changed", None))
+        unknown <- runAs(put(putBody).addHeader(Header.Custom("If-Match", "\"3\"")), service)
+      yield assertTrue(
+        stale.status == Status.PreconditionFailed,
+        stale.headers.get("ETag").contains("\"5\""),
+        unknown.status == Status.PreconditionFailed,
+        unknown.headers.get("ETag").isEmpty,
+      )
+    },
+    test("a get needs no caller to name, and answers the settings with their version as the ETag") {
+      val service = stub[AntifraudSettingsService]
+      for
+        _ <- service.get.succeedsWith(VersionedAntifraudSettings(settings, 3))
         response <- run(Request.get(base), service)
         body <- response.body.asString
-      yield assertTrue(response.status == Status.Ok, body.fromJson[AntifraudSettings] == Right(settings), service.get.calls.size == 1)
+        json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
+      yield assertTrue(
+        response.status == Status.Ok,
+        body.fromJson[AntifraudSettings] == Right(settings),
+        json.get("version").contains(Json.Num(3)),
+        response.headers.get("ETag").contains("\"3\""),
+        service.get.calls.size == 1,
+      )
     },
-    test("a delete resets, with the userId edge added to the body") {
+    test("a delete resets, with the userId edge added to the body, and need not name a version; one it names is passed on") {
       val service = stub[AntifraudSettingsService]
       for
         _ <- service.reset.succeedsWith(())
         deleted <- runAs(delete("{}"), service)
-      yield assertTrue(deleted.status == Status.NoContent, service.reset.calls == List(DeleteAntifraudSettingsRequest(admin)))
+        named <- runAs(delete("{}").addHeader(Header.Custom("If-Match", "\"4\"")), service)
+        _ <- service.reset.failsWith(AntifraudListError.StaleVersion("changed", Some(9)))
+        stale <- runAs(delete("{}").addHeader(Header.Custom("If-Match", "\"4\"")), service)
+      yield assertTrue(
+        deleted.status == Status.NoContent,
+        named.status == Status.NoContent,
+        stale.status == Status.PreconditionFailed,
+        service.reset.calls == List(
+          (DeleteAntifraudSettingsRequest(admin), None),
+          (DeleteAntifraudSettingsRequest(admin), Some(4L)),
+          (DeleteAntifraudSettingsRequest(admin), Some(4L)),
+        ),
+      )
     },
     test("a put without a userId reaches nothing") {
       val service = stub[AntifraudSettingsService]
       for
-        put <- run(Request.put(base, Body.fromString(putBody)), service)
+        put <- run(Request.put(base, Body.fromString(putBody)).addHeader(Header.Custom("If-Match", "\"3\"")), service)
       yield assertTrue(put.status == Status.BadRequest, service.put.calls.isEmpty)
     },
     test("what auth refused is 400 with its reason") {
       val service = stub[AntifraudSettingsService]
       for
         _ <- service.put.failsWith(AntifraudListError.Invalid("blockAt must be between 0 and 100000"))
-        invalid <- runAs(put(putBody), service)
+        invalid <- runAs(put(putBody).addHeader(Header.Custom("If-Match", "\"3\"")), service)
         text <- invalid.body.asString
       yield assertTrue(invalid.status == Status.BadRequest, text.contains("blockAt must be between"))
     },

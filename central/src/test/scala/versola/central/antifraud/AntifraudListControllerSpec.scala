@@ -49,14 +49,23 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
-  /** What edge does to the request: `userId` as a query parameter of a `GET`, as a body field of the rest, replacing what the client sent. */
-  private def asAdmin(request: Request, userId: UserId): Task[Request] =
+  /** What edge does to the request, replacing what the client sent. On a tenant route: `callerTenantId` (the token's tenant) as
+    * a query parameter of a `GET` and a body field of the rest; and `userId` on a change, a body field. An operator route
+    * (`/antifraud/global/...`) gets no `callerTenantId`. */
+  private def asAdmin(request: Request, userId: UserId, callerTenant: Option[TenantId] = Some(tenant)): Task[Request] =
+    val tenantRoute = !request.url.path.segments.contains("global")
+    val callerTenantId = callerTenant.filter(_ => tenantRoute)
     if request.method == Method.GET then
-      ZIO.succeed(request.updateURL(url => url.setQueryParams(url.queryParams.removeQueryParam("userId").addQueryParam("userId", userId.toString))))
+      ZIO.succeed(request.updateURL(url =>
+        val cleaned = url.queryParams.removeQueryParam("callerTenantId")
+        url.setQueryParams(callerTenantId.fold(cleaned)(t => cleaned.addQueryParam("callerTenantId", t.toString))),
+      ))
     else
       request.body.asString.map: raw =>
-        val fields = raw.fromJson[Json.Obj].toOption.fold(Chunk.empty[(String, Json)])(_.fields).filterNot((name, _) => name == "userId")
-        request.copy(body = Body.fromString(Json.Obj(fields :+ ("userId" -> Json.Str(userId.toString))).toJson))
+        val fields = raw.fromJson[Json.Obj].toOption.fold(Chunk.empty[(String, Json)])(_.fields)
+          .filterNot((name, _) => name == "userId" || name == "callerTenantId")
+        val injected = (fields :+ ("userId" -> Json.Str(userId.toString))) ++ callerTenantId.map(t => "callerTenantId" -> Json.Str(t.toString))
+        request.copy(body = Body.fromString(Json.Obj(injected).toJson))
 
   private def run(request: Request, service: AntifraudListService, authorized: Boolean = true) =
     for
@@ -74,18 +83,24 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       response <- client.batched(if authorized then request.addHeader(TestAdminAuth.basicAuthHeader) else request)
     yield response
 
-  private def runAs(request: Request, service: AntifraudListService, userId: UserId = admin) =
-    asAdmin(request, userId).flatMap(run(_, service))
+  private def runAs(request: Request, service: AntifraudListService, userId: UserId = admin, callerTenant: Option[TenantId] = Some(tenant)) =
+    asAdmin(request, userId, callerTenant).flatMap(run(_, service))
 
   private val entryBody = """{"listType":"deny","valueType":"prefix","value":"4915","tenantId":"tenant-a","reason":"sms pumping"}"""
   private def post(url: URL, body: String = entryBody) = Request.post(url, Body.fromString(body))
-  private def delete(body: String) = Request.delete(base).withBody(Body.fromString(body))
+  private def delete(body: String, url: URL = base) = Request.delete(url).withBody(Body.fromString(body))
+  private val global = URL.empty / "antifraud" / "global" / "lists"
 
   def spec = suite("central AntifraudListController")(
     test("without the central credentials every endpoint is 401 and the service is not called") {
       val service = stub[AntifraudListService]
       for
-        statuses <- ZIO.foreach(List(Request.get(base), post(base), delete("""{"id":"x"}"""), Request.get(base / "audit"), post(base / "preview"))):
+        statuses <- ZIO.foreach(
+          List(
+            Request.get(base), post(base), delete("""{"id":"x"}"""), Request.get(base / "audit"), post(base / "preview"),
+            Request.get(global), post(global), delete("""{"id":"x"}""", global), Request.get(global / "audit"), post(global / "preview"),
+          ),
+        ):
           r =>
             asAdmin(r, admin).flatMap(run(_, service, authorized = false)).map(_.status)
       yield assertTrue(
@@ -103,10 +118,11 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.create.succeedsWith(entry)
         response <- runAs(post(base), service)
         body <- response.body.asString
-        sent = service.create.calls.head
+        (sent, caller) = service.create.calls.head
       yield assertTrue(
         response.status == Status.Created,
         body.fromJson[ListEntryResponse] == Right(entry),
+        caller == AntifraudCaller.Tenant(tenant),
         sent.userId == admin,
         sent.valueType == AntifraudValueType.prefix,
         sent.value.contains("4915"),
@@ -120,7 +136,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- service.create.succeedsWith(entry)
         _ <- runAs(post(base, entryBody.dropRight(1) + s""","userId":"$attacker"}"""), service)
-      yield assertTrue(service.create.calls.head.userId == admin)
+      yield assertTrue(service.create.calls.head._1.userId == admin)
     },
     test("a change without a userId, or with one that is not a UUID, is 400 and reaches nothing") {
       val service = stub[AntifraudListService]
@@ -169,7 +185,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         body.fromJson[PreviewResponse] == Right(PreviewResponse(matched = Some(3), total = 1000)),
-        service.preview.calls.head.userId == admin,
+        service.preview.calls.head._1.userId == admin,
+        service.preview.calls.head._2 == AntifraudCaller.Tenant(tenant),
       )
     },
     test("list reads its filter and page from the query, and answers the entries") {
@@ -179,10 +196,11 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- service.list.succeedsWith(ListEntriesResponse(List(entry)))
-        response <- run(Request.get(url), service)
+        response <- runAs(Request.get(url), service)
         body <- response.body.asString
-        query = service.list.calls.head
+        (query, caller) = service.list.calls.head
       yield assertTrue(
+        caller == AntifraudCaller.Tenant(tenant),
         response.status == Status.Ok,
         body.fromJson[ListEntriesResponse] == Right(ListEntriesResponse(List(entry))),
         query == ListEntriesQuery(
@@ -197,10 +215,10 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("list with nothing asked passes nothing on; an unknown value, a non-number or a page out of range is 400") {
       val service = stub[AntifraudListService]
-      def get(first: (String, String)) = run(Request.get(base.addQueryParams(QueryParams(first))), service)
+      def get(first: (String, String)) = runAs(Request.get(base.addQueryParams(QueryParams(first))), service)
       for
         _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
-        none <- run(Request.get(base), service)
+        none <- runAs(Request.get(base), service)
         badType <- get("listType" -> "nope")
         badLimit <- get("limit" -> "many")
         badTenant <- get("tenantId" -> "Not A Tenant")
@@ -209,7 +227,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         negative <- get("offset" -> "-1")
       yield assertTrue(
         none.status == Status.Ok,
-        service.list.calls.head == ListEntriesQuery(
+        service.list.calls.head._1 == ListEntriesQuery(
           listType = None,
           valueType = None,
           tenantId = None,
@@ -232,7 +250,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         gone.status == Status.NoContent,
         missing.status == Status.NotFound,
-        service.delete.calls.head == DeleteListEntryRequest(id = entryId, userId = admin),
+        service.delete.calls.head == (DeleteListEntryRequest(id = entryId, userId = admin, callerTenantId = Some(tenant)), AntifraudCaller.Tenant(tenant)),
       )
     },
     test("audit reads the entry and the page from the query and answers the records") {
@@ -252,14 +270,106 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- service.audit.succeedsWith(AuditResponse(List(record)))
-        ok <- run(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> entryId.toString, "limit" -> "5"))), service)
+        ok <- runAs(Request.get((base / "audit").addQueryParams(QueryParams("entryId" -> entryId.toString, "limit" -> "5"))), service)
         body <- ok.body.asString
-        badId <- run(Request.get((base / "audit").addQueryParam("entryId", "nope")), service)
+        badId <- runAs(Request.get((base / "audit").addQueryParam("entryId", "nope")), service)
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[AuditResponse] == Right(AuditResponse(List(record))),
-        service.audit.calls.head == (Some(entryId), Some(PageLimit(5))),
+        service.audit.calls.head == (Some(entryId), Some(PageLimit(5)), AntifraudCaller.Tenant(tenant)),
         badId.status == Status.BadRequest,
+      )
+    },
+    test("a tenant route is a tenant caller's: the tenant is the one edge put in from the token, whatever the body or the query says") {
+      val service = stub[AntifraudListService]
+      val forged = entryBody.dropRight(1) + ""","callerTenantId":"tenant-b"}"""
+      for
+        _ <- service.create.succeedsWith(entry)
+        _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
+        _ <- service.audit.succeedsWith(AuditResponse(Nil))
+        _ <- service.delete.succeedsWith(())
+        _ <- service.preview.succeedsWith(PreviewResponse(None, 1))
+        _ <- runAs(post(base, forged), service)
+        _ <- runAs(post(base / "preview", forged), service)
+        _ <- runAs(Request.get(base.addQueryParam("callerTenantId", "tenant-b")), service)
+        _ <- runAs(Request.get((base / "audit").addQueryParam("callerTenantId", "tenant-b")), service)
+        _ <- runAs(delete("""{"id":"00000000-0000-0000-0000-0000000000e1","callerTenantId":"tenant-b"}"""), service)
+        mine = AntifraudCaller.Tenant(tenant)
+      yield assertTrue(
+        service.create.calls.map(_._2) == List(mine),
+        service.preview.calls.map(_._2) == List(mine),
+        service.list.calls.map(_._2) == List(mine),
+        service.audit.calls.map(_._3) == List(mine),
+        service.delete.calls.map(_._2) == List(mine),
+      )
+    },
+    test("a tenant route without a callerTenantId is 400, never an operator's, and reaches nothing") {
+      val service = stub[AntifraudListService]
+      for
+        create <- run(post(base, entryBody.dropRight(1) + s""","userId":"$admin"}"""), service)
+        list <- run(Request.get(base), service)
+        audit <- run(Request.get(base / "audit"), service)
+        deleted <- run(delete(s"""{"id":"$entryId","userId":"$admin"}"""), service)
+        preview <- run(post(base / "preview", entryBody.dropRight(1) + s""","userId":"$admin"}"""), service)
+      yield assertTrue(
+        List(create, list, audit, deleted, preview).forall(_.status == Status.BadRequest),
+        service.create.calls.isEmpty,
+        service.list.calls.isEmpty,
+        service.audit.calls.isEmpty,
+        service.delete.calls.isEmpty,
+        service.preview.calls.isEmpty,
+      )
+    },
+    test("the global routes are the operator's whatever the request names, and take no callerTenantId") {
+      val service = stub[AntifraudListService]
+      val withTenant = entryBody.dropRight(1) + ""","callerTenantId":"tenant-b"}"""
+      for
+        _ <- service.create.succeedsWith(entry)
+        _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
+        _ <- service.audit.succeedsWith(AuditResponse(Nil))
+        _ <- service.delete.succeedsWith(())
+        _ <- service.preview.succeedsWith(PreviewResponse(None, 1))
+        created <- runAs(post(global, withTenant), service)
+        _ <- runAs(post(global / "preview", withTenant), service)
+        _ <- runAs(Request.get(global.addQueryParam("callerTenantId", "tenant-b")), service)
+        _ <- runAs(Request.get((global / "audit").addQueryParam("callerTenantId", "tenant-b")), service)
+        _ <- runAs(delete(s"""{"id":"$entryId","callerTenantId":"tenant-b"}""", global), service)
+        // and with no tenant at all, as edge sends it
+        noTenant <- runAs(post(global), service, callerTenant = None)
+      yield assertTrue(
+        created.status == Status.Created,
+        noTenant.status == Status.Created,
+        service.create.calls.map(_._2) == List(AntifraudCaller.Operator, AntifraudCaller.Operator),
+        service.preview.calls.map(_._2) == List(AntifraudCaller.Operator),
+        service.list.calls.map(_._2) == List(AntifraudCaller.Operator),
+        service.audit.calls.map(_._3) == List(AntifraudCaller.Operator),
+        service.delete.calls.map(_._2) == List(AntifraudCaller.Operator),
+        // the entry's own tenant is still the body's: it is the entry's, not the caller's
+        service.create.calls.head._1.tenantId.contains(tenant),
+      )
+    },
+    test("a change on a global route still needs the admin: no userId is 400") {
+      val service = stub[AntifraudListService]
+      for
+        create <- run(post(global), service)
+        removed <- run(delete(s"""{"id":"$entryId"}""", global), service)
+      yield assertTrue(create.status == Status.BadRequest, removed.status == Status.BadRequest, service.create.calls.isEmpty, service.delete.calls.isEmpty)
+    },
+    test("auth's 403 is 403 with its reason, on both families of routes") {
+      val service = stub[AntifraudListService]
+      for
+        _ <- service.create.failsWith(AntifraudListError.Forbidden("a tenant admin adds entries of its own tenant only"))
+        _ <- service.delete.failsWith(AntifraudListError.Forbidden("a tenant admin removes its own tenant's entries only"))
+        _ <- service.list.failsWith(AntifraudListError.Forbidden("a tenant admin lists its own tenant's entries and the global ones"))
+        create <- runAs(post(base), service)
+        reason <- create.body.asString
+        removed <- runAs(delete(s"""{"id":"$entryId"}"""), service)
+        listed <- runAs(Request.get(base.addQueryParam("tenantId", "tenant-b")), service)
+      yield assertTrue(
+        create.status == Status.Forbidden,
+        reason == "a tenant admin adds entries of its own tenant only",
+        removed.status == Status.Forbidden,
+        listed.status == Status.Forbidden,
       )
     },
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

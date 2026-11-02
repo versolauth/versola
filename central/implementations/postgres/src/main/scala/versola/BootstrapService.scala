@@ -466,22 +466,39 @@ object BootstrapService:
     ),
     (
       Permission("antifraud:read"),
-      localized("View antifraud lists and settings", "Просмотр списков и настроек антифрода"),
+      localized("View antifraud lists, settings and status", "Просмотр списков, настроек и состояния антифрода"),
       Set(
         endpointId("GET", "/antifraud/lists"),
         endpointId("GET", "/antifraud/lists/audit"),
         endpointId("GET", "/antifraud/settings"),
+        endpointId("GET", "/antifraud/rules"),
+        endpointId("GET", "/antifraud/status"),
       ),
     ),
+    // The routes of a tenant's admin: they act in the scope of the tenant of the token (see AntifraudScope in auth).
     (
       Permission("antifraud:manage"),
-      localized("Manage antifraud lists and settings", "Управление списками и настройками антифрода"),
+      localized("Manage the antifraud lists of the tenant", "Управление списками антифрода тенанта"),
       Set(
         endpointId("POST", "/antifraud/lists"),
         endpointId("POST", "/antifraud/lists/preview"),
         endpointId("DELETE", "/antifraud/lists"),
+      ),
+    ),
+    // The routes of the operator of the deployment: global entries and any tenant's, the settings and the counters. Seeded
+    // into the default tenant's administrator role only.
+    (
+      Permission("antifraud:operate"),
+      localized("Operate antifraud for every tenant", "Антифрод: операции по всем тенантам"),
+      Set(
+        endpointId("GET", "/antifraud/global/lists"),
+        endpointId("POST", "/antifraud/global/lists"),
+        endpointId("DELETE", "/antifraud/global/lists"),
+        endpointId("POST", "/antifraud/global/lists/preview"),
+        endpointId("GET", "/antifraud/global/lists/audit"),
         endpointId("PUT", "/antifraud/settings"),
         endpointId("DELETE", "/antifraud/settings"),
+        endpointId("POST", "/antifraud/counters/reset"),
       ),
     ),
     (
@@ -595,7 +612,7 @@ object BootstrapService:
 
   private val allPermissions: List[Permission] = permissionCatalog.map(_._1)
 
-  private val roleCatalog: List[(RoleId, Map[String, String], List[Permission])] =
+  private[versola] val roleCatalog: List[(RoleId, Map[String, String], List[Permission])] =
     val readOnly = allPermissions.filter(_.endsWith(":read"))
     List(
       (
@@ -1012,24 +1029,56 @@ object BootstrapService:
     "DELETE" -> "/antifraud/lists",
     "POST" -> "/antifraud/lists/preview",
     "GET" -> "/antifraud/lists/audit",
+    "GET" -> "/antifraud/global/lists",
+    "POST" -> "/antifraud/global/lists",
+    "DELETE" -> "/antifraud/global/lists",
+    "POST" -> "/antifraud/global/lists/preview",
+    "GET" -> "/antifraud/global/lists/audit",
     "GET" -> "/antifraud/settings",
     "PUT" -> "/antifraud/settings",
     "DELETE" -> "/antifraud/settings",
+    "POST" -> "/antifraud/counters/reset",
+    "GET" -> "/antifraud/rules",
+    "GET" -> "/antifraud/status",
   )
 
-  /** The reads that need to know nobody, so they are told nothing: nothing records who read the lists, the audit or
-    * the settings. */
-  private val antifraudReads: Set[(String, String)] =
-    Set("GET" -> "/antifraud/lists", "GET" -> "/antifraud/lists/audit", "GET" -> "/antifraud/settings")
+  /** The routes that act in the scope of a tenant, the tenant of the token (the lists' `/antifraud/lists/...`; the
+    * operator's twins under `/antifraud/global/...` act in none). */
+  private val antifraudTenantRoutes: Set[(String, String)] =
+    Set(
+      "GET" -> "/antifraud/lists",
+      "POST" -> "/antifraud/lists",
+      "DELETE" -> "/antifraud/lists",
+      "POST" -> "/antifraud/lists/preview",
+      "GET" -> "/antifraud/lists/audit",
+    )
 
-  /** What central's antifraud endpoints are told of the admin: their `userId`, from the token edge has verified (not from
-    * the caller: edge overwrites a parameter or field of the same name). Auth records it as who changed the lists or the
-    * settings. As for the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the
-    * rest. */
+  /** What central's antifraud endpoints are told of the admin, from the token edge has verified (not from the caller: edge
+    * overwrites a parameter or field of the same name):
+    *  - `userId` on every call that is not a `GET`: auth records it as who made the change. A read is told nobody, since
+    *    nothing records who read.
+    *  - `callerTenantId`, the tenant of the token, on the tenant routes, reads included: it is the scope central asks auth to
+    *    enforce. The operator routes carry none; their scope is the route's.
+    * As for the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
-    if path.startsWith("/antifraud/") && !antifraudReads.contains(method -> path) then
-      Vector(InjectRule(if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub"))
-    else Vector.empty
+    if !path.startsWith("/antifraud/") then Vector.empty
+    else
+      val target = if method == "GET" then InjectTarget.query else InjectTarget.body
+      val user = Option.when(method != "GET")(InjectRule(target, "userId", "token.sub"))
+      val tenant = Option.when(antifraudTenantRoutes.contains(method -> path))(InjectRule(target, "callerTenantId", "token.tenant_id"))
+      (user ++ tenant).toVector
+
+  /** The antifraud endpoints a deployment registered earlier with other inject rules than the ones the code needs now, with
+    * the rules replaced and nothing else touched. Central's antifraud controllers read what edge injects (`userId`,
+    * `callerTenantId`), so an endpoint registered before a rule was added would answer `400` for ever: every other
+    * registration is an operator's to change and is left alone, as is everything but the inject rules of these. */
+  private[versola] def antifraudInjectDrift(
+      existing: Vector[ResourceEndpointRecord],
+      wanted: List[ResourceEndpointRecord],
+  ): Vector[ResourceEndpointRecord] =
+    val byId = wanted.filter(_.path.startsWith("/antifraud/")).map(e => e.id -> e).toMap
+    existing.flatMap: endpoint =>
+      byId.get(endpoint.id).filter(_.inject.toSet != endpoint.inject.toSet).map(w => endpoint.copy(inject = w.inject))
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
@@ -1667,13 +1716,14 @@ object BootstrapService:
                 remove = existing.audience.filterNot(id => id == CentralConfig.centralClientId || utilityClientId.contains(id)).toSet,
               )
               val audienceUnchanged = audience.patch(existing.audience) == existing.audience
-              if missing.isEmpty && stale.isEmpty && audienceUnchanged then
+              val drifted = antifraudInjectDrift(existing.endpoints, allEndpoints)
+              if missing.isEmpty && stale.isEmpty && drifted.isEmpty && audienceUnchanged then
                 ZIO.logInfo(s"Central resource '$centralResourceId' endpoints are up to date, skipping")
               else
                 ZIO.logInfo(
-                  s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s) on central resource '$centralResourceId'",
+                  s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s), and updating the inject rules of ${drifted.size} antifraud endpoint(s), on central resource '$centralResourceId'",
                 ) *>
-                  resourceRepo.updateResource(centralResourceId, None, audience, missing.toVector, stale)
+                  resourceRepo.updateResource(centralResourceId, None, audience, missing.toVector ++ drifted, stale)
         yield ()
 
     /** Seeds the internal resource that proxies Account Settings to auth's additional port.

@@ -294,24 +294,124 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         nonProd.size == prod.size + 2,
       )
     },
-    test(
-      "central's antifraud endpoints are registered in production, and the ones that change something are told who the admin is from the verified token",
-    ) {
+    test("central's antifraud endpoints are registered in production, and the ones that change something are told who the admin is from the verified token") {
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)
       val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
       def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
+      val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
       assertTrue(
-        antifraud.size == 8,
-        antifraud.filterNot((method, path) => method == "GET" && (path.startsWith("/antifraud/lists") || path == "/antifraud/settings")).forall(
-          (method, path) =>
-            injected(method, path) == Vector((if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")),
+        antifraud.size == 16,
+        antifraud.toSet == Set(
+          "GET" -> "/antifraud/lists", "POST" -> "/antifraud/lists", "DELETE" -> "/antifraud/lists",
+          "POST" -> "/antifraud/lists/preview", "GET" -> "/antifraud/lists/audit",
+          "GET" -> "/antifraud/global/lists", "POST" -> "/antifraud/global/lists", "DELETE" -> "/antifraud/global/lists",
+          "POST" -> "/antifraud/global/lists/preview", "GET" -> "/antifraud/global/lists/audit",
+          "GET" -> "/antifraud/settings", "PUT" -> "/antifraud/settings", "DELETE" -> "/antifraud/settings",
+          "POST" -> "/antifraud/counters/reset", "GET" -> "/antifraud/rules", "GET" -> "/antifraud/status",
         ),
-        injected("GET", "/antifraud/lists").isEmpty,
-        injected("GET", "/antifraud/lists/audit").isEmpty,
+        // a change names the admin, a read names nobody
+        injected("POST", "/antifraud/global/lists") == Vector(user("POST")),
+        injected("DELETE", "/antifraud/global/lists") == Vector(user("DELETE")),
+        injected("POST", "/antifraud/global/lists/preview") == Vector(user("POST")),
+        injected("PUT", "/antifraud/settings") == Vector(user("PUT")),
+        injected("DELETE", "/antifraud/settings") == Vector(user("DELETE")),
+        injected("POST", "/antifraud/counters/reset") == Vector(user("POST")),
+        injected("GET", "/antifraud/global/lists").isEmpty,
+        injected("GET", "/antifraud/global/lists/audit").isEmpty,
         injected("GET", "/antifraud/settings").isEmpty,
-        injected("POST", "/antifraud/lists").nonEmpty,
-        injected("PUT", "/antifraud/settings").nonEmpty,
+        injected("GET", "/antifraud/rules").isEmpty,
+        injected("GET", "/antifraud/status").isEmpty,
         injected("GET", "/users").isEmpty,
+      )
+    },
+    test("the tenant routes of the lists are told the tenant of the token as well, reads included, and the operator routes are not") {
+      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression)).toSet
+      val tenant = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "callerTenantId", "token.tenant_id")
+      val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
+      val tenantRoutes = List(
+        "POST" -> "/antifraud/lists", "DELETE" -> "/antifraud/lists", "POST" -> "/antifraud/lists/preview",
+        "GET" -> "/antifraud/lists", "GET" -> "/antifraud/lists/audit",
+      )
+      val operatorRoutes = List(
+        "POST" -> "/antifraud/global/lists", "DELETE" -> "/antifraud/global/lists", "POST" -> "/antifraud/global/lists/preview",
+        "GET" -> "/antifraud/global/lists", "GET" -> "/antifraud/global/lists/audit",
+        "PUT" -> "/antifraud/settings", "DELETE" -> "/antifraud/settings", "POST" -> "/antifraud/counters/reset",
+      )
+      assertTrue(
+        tenantRoutes.forall((method, path) => injected(method, path).contains(tenant(method))),
+        // a change is told the admin too, a read is not
+        tenantRoutes.filter(_._1 != "GET").forall((method, path) => injected(method, path) == Set(tenant(method), user(method))),
+        tenantRoutes.filter(_._1 == "GET").forall((method, path) => injected(method, path) == Set(tenant(method))),
+        operatorRoutes.forall((method, path) => !injected(method, path).exists(_._2 == "callerTenantId")),
+      )
+    },
+    test("antifraud:manage is the tenant's lists, antifraud:operate the global lists, the settings writes and the counters, and antifraud:read the reads") {
+      def endpoints(permission: String) =
+        BootstrapService.permissionCatalog.find(_._1 == versola.central.configuration.permissions.Permission(permission)).map(_._3).getOrElse(Set.empty)
+      def id(method: String, path: String) = endpointId(method, path)
+      val operate = endpoints("antifraud:operate")
+      val manage = endpoints("antifraud:manage")
+      val read = endpoints("antifraud:read")
+      assertTrue(
+        manage == Set(id("POST", "/antifraud/lists"), id("POST", "/antifraud/lists/preview"), id("DELETE", "/antifraud/lists")),
+        operate == Set(
+          id("GET", "/antifraud/global/lists"), id("POST", "/antifraud/global/lists"), id("DELETE", "/antifraud/global/lists"),
+          id("POST", "/antifraud/global/lists/preview"), id("GET", "/antifraud/global/lists/audit"),
+          id("PUT", "/antifraud/settings"), id("DELETE", "/antifraud/settings"), id("POST", "/antifraud/counters/reset"),
+        ),
+        read == Set(
+          id("GET", "/antifraud/lists"), id("GET", "/antifraud/lists/audit"), id("GET", "/antifraud/settings"),
+          id("GET", "/antifraud/rules"), id("GET", "/antifraud/status"),
+        ),
+        // every endpoint of the catalogue belongs to one permission
+        (operate intersect manage).isEmpty,
+        (operate intersect read).isEmpty,
+        (manage intersect read).isEmpty,
+        BootstrapService.centralEndpoints(EnvName.Prod).filter(_._2.startsWith("/antifraud/")).map((method, path) => id(method, path)).toSet == operate ++ manage ++ read,
+      )
+    },
+    test("antifraud:operate is seeded into the administrator role only, and the security officer manages a tenant's lists, not the deployment's") {
+      def holders(permission: String) =
+        BootstrapService.roleCatalog.collect { case (role, _, permissions) if permissions.contains(versola.central.configuration.permissions.Permission(permission)) => role.toString }.toSet
+      assertTrue(
+        holders("antifraud:operate") == Set("oauth-admin"),
+        holders("antifraud:manage") == Set("oauth-admin", "security"),
+        holders("antifraud:read").contains("oauth-admin"),
+        holders("antifraud:read").contains("security"),
+        !holders("antifraud:read").contains("viewer"),
+      )
+    },
+    test("a deployment that registered the antifraud endpoints with older inject rules gets the current ones, and nothing else is rewritten") {
+      def record(method: String, path: String, inject: Vector[InjectRule], allow: Option[String] = None) =
+        versola.central.configuration.resources.ResourceEndpointRecord(
+          id = endpointId(method, path),
+          path = path,
+          method = method,
+          fetchUserInfo = false,
+          allowExpression = allow,
+          inject = inject,
+          stepUpCondition = None,
+          stepUpAcr = None,
+          maxAge = None,
+        )
+      val user = InjectRule(InjectTarget.body, "userId", "token.sub")
+      def wanted(method: String, path: String) = record(method, path, BootstrapService.centralInjects(method, path))
+      val catalogue = List(wanted("POST", "/antifraud/lists"), wanted("GET", "/antifraud/lists"), wanted("GET", "/users"), wanted("PUT", "/antifraud/settings"))
+      // as an earlier release left them: a tenant route with the user only, one that is current, a custom allow rule on another
+      val existing = Vector(
+        record("POST", "/antifraud/lists", Vector(user), allow = Some("token.sub != ''")),
+        record("GET", "/antifraud/lists", Vector(InjectRule(InjectTarget.query, "userId", "token.sub"))),
+        record("PUT", "/antifraud/settings", Vector(user)),
+        record("GET", "/users", Vector(InjectRule(InjectTarget.query, "custom", "token.sub"))),
+        record("GET", "/antifraud/gone", Vector.empty),
+      )
+      val drifted = BootstrapService.antifraudInjectDrift(existing, catalogue)
+      assertTrue(
+        drifted.map(e => (e.method, e.path)).toSet == Set("POST" -> "/antifraud/lists", "GET" -> "/antifraud/lists"),
+        drifted.forall(e => e.inject == BootstrapService.centralInjects(e.method, e.path)),
+        // the rest of the record is the operator's: the custom allow rule stays
+        drifted.find(_.method == "POST").flatMap(_.allowExpression).contains("token.sub != ''"),
+        BootstrapService.antifraudInjectDrift(drifted ++ existing.filter(e => e.path == "/antifraud/settings" || e.path == "/users"), catalogue).isEmpty,
       )
     },
     test("offline_access is described without the word refresh, which users do not know") {

@@ -294,7 +294,9 @@ object AuthClientSpec extends ZIOSpecDefault:
         source = None,
         shadow = None,
         userId = userId,
+        callerTenantId = Some(TenantId("forged")),
       )
+      val tenantCaller = AntifraudCaller.Tenant(tenantId)
       for
         seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(
@@ -310,37 +312,53 @@ object AuthClientSpec extends ZIOSpecDefault:
             limit = Some(PageLimit(5)),
             offset = None,
           ),
+          tenantCaller,
         )
-        _ <- client.antifraudListAudit(None, Some(PageLimit(3)))
+        _ <- client.antifraudListAudit(None, Some(PageLimit(3)), AntifraudCaller.Operator)
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
-        _ <- client.deleteAntifraudListEntry(DeleteListEntryRequest(id = entryId, userId = userId))
+        _ <- client.deleteAntifraudListEntry(DeleteListEntryRequest(id = entryId, userId = userId, callerTenantId = None), tenantCaller)
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request](r =>
             seen.update(_ :+ r).as(Response.json("""{"matched":3,"total":10}""")),
           ).toRoutes,
         )
-        previewed <- client.previewAntifraudListEntry(request)
+        previewed <- client.previewAntifraudListEntry(request, tenantCaller)
+        _ <- client.createAntifraudListEntry(request, AntifraudCaller.Operator).ignore
         requests <- seen.get
-        sent <- requests.last.body.asString
+        sent <- requests(3).body.asString
         sentJson = sent.fromJson[Json.Obj].toOption
+        operatorSent <- requests(4).body.asString
+        operatorJson = operatorSent.fromJson[Json.Obj].toOption
       yield assertTrue(
         previewed == PreviewResponse(matched = Some(3), total = 10),
         requests(0).url.path.segments == Chunk("antifraud", "lists"),
         requests(0).url.queryParams.queryParam("listType").contains("deny"),
         requests(0).url.queryParams.queryParam("limit").contains("5"),
         requests(0).url.queryParams.queryParam("userId").isEmpty,
+        // the scope is the call's own, from the route: a tenant caller names its tenant, the operator says only that
+        requests(0).url.queryParams.queryParam("scope").contains("tenant"),
+        requests(0).url.queryParams.queryParam("callerTenantId").contains(tenantId.toString),
         requests(1).url.path.segments == Chunk("antifraud", "lists", "audit"),
         requests(1).url.queryParams.queryParam("limit").contains("3"),
         requests(1).url.queryParams.queryParam("userId").isEmpty,
+        requests(1).url.queryParams.queryParam("scope").contains("operator"),
+        requests(1).url.queryParams.queryParam("callerTenantId").isEmpty,
         requests(2).method == Method.DELETE,
         requests(2).url.queryParams.queryParam("id").contains(entryId.toString),
         requests(2).url.queryParams.queryParam("userId").contains(userId.toString),
+        requests(2).url.queryParams.queryParam("scope").contains("tenant"),
+        requests(2).url.queryParams.queryParam("callerTenantId").contains(tenantId.toString),
         requests(3).method == Method.POST && requests(3).url.path.segments == Chunk("antifraud", "lists", "preview"),
         sentJson.flatMap(_.get("phone")).contains(Json.Str("+77011234567")),
         sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        // the request's own callerTenantId (here a forged one) is replaced by the caller's, or dropped for the operator
+        sentJson.flatMap(_.get("scope")).contains(Json.Str("tenant")),
+        sentJson.flatMap(_.get("callerTenantId")).contains(Json.Str(tenantId.toString)),
+        operatorJson.flatMap(_.get("scope")).contains(Json.Str("operator")),
+        operatorJson.exists(!_.fields.exists(_._1 == "callerTenantId")),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
-    test("the antifraud settings calls send the body and the userId to auth's /antifraud/settings") {
+    test("the antifraud settings calls send the body, the userId and the version to auth's /antifraud/settings") {
       val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
       val settings = AntifraudSettings(
         challengeAt = 0,
@@ -351,41 +369,92 @@ object AuthClientSpec extends ZIOSpecDefault:
         ruleWeights = Map.empty,
         shadowRules = Set.empty,
       )
+      val versioned = VersionedAntifraudSettings(settings, 3)
       for
         seen <- Ref.make(List.empty[Request])
-        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(settings.toJson))).toRoutes)
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(versioned.toJson))).toRoutes)
         client <- ZIO.service[AuthClient]
         got <- client.getAntifraudSettings
-        put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId))
+        put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId, Some(3)))
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
-        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId))
+        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), None)
+        _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), Some(3))
         requests <- seen.get
         sent <- requests(1).body.asString
+        sentJson = sent.fromJson[Json.Obj].toOption
+        ifMatch = requests.map(_.headers.get("If-Match"))
       yield assertTrue(
-        got == settings,
-        put == settings,
+        got == versioned,
+        put == versioned,
         requests(0).method == Method.GET,
         requests(0).url.path.segments == Chunk("antifraud", "settings"),
         requests(1).method == Method.PUT,
-        sent.fromJson[Json.Obj].toOption.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        sentJson.flatMap(_.get("version")).contains(Json.Num(3)),
         requests(2).method == Method.DELETE,
         requests(2).url.queryParams.queryParam("userId").contains(userId.toString),
+        ifMatch(2).isEmpty,
+        ifMatch(3).contains("\"3\""),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
-    test("auth's 400 and 404 are typed errors for an antifraud call, and any other failure is a failure") {
+    test("the counters reset, the rule catalogue and the status go to auth's endpoints; a reset answers its generation") {
+      val reset = ResetCountersRequest(CounterScope.velocity, Some(CounterValueType.phone), Some("+77011234567"), userId)
+      val status = AntifraudStatusResponse(
+        AntifraudDecisionStatus(true),
+        AntifraudListsStatus(true, Some(4), 10, 1, None),
+        AntifraudTuningStatus(true, Some(2), Some(1), Some("down")),
+      )
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("""{"generation":7}""").status(Status.Accepted))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        generation <- client.resetAntifraudCounters(reset)
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json("""{"rules":["velocity_phone_1m","deny_list:ip"]}"""))).toRoutes)
+        rules <- client.antifraudRules
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(status.toJson))).toRoutes)
+        got <- client.antifraudStatus
+        requests <- seen.get
+        sent <- requests(0).body.asString
+        sentJson = sent.fromJson[Json.Obj].toOption
+      yield assertTrue(
+        generation == ResetCountersResponse(7),
+        rules == AntifraudRulesResponse(List("velocity_phone_1m", "deny_list:ip")),
+        got == status,
+        requests(0).method == Method.POST,
+        requests(0).url.path.segments == Chunk("antifraud", "counters", "reset"),
+        sentJson.flatMap(_.get("scope")).contains(Json.Str("velocity")),
+        sentJson.flatMap(_.get("valueType")).contains(Json.Str("phone")),
+        sentJson.flatMap(_.get("value")).contains(Json.Str("+77011234567")),
+        sentJson.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
+        requests(1).method == Method.GET && requests(1).url.path.segments == Chunk("antifraud", "rules"),
+        requests(2).method == Method.GET && requests(2).url.path.segments == Chunk("antifraud", "status"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("auth's 400, 403, 404 and 412 are typed errors for an antifraud call, and any other failure is a failure") {
       def answer(status: Status, body: String) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text(body).status(status))).toRoutes
-      val delete = DeleteListEntryRequest(id = UUID.randomUUID(), userId = userId)
+      val delete = DeleteListEntryRequest(id = UUID.randomUUID(), userId = userId, callerTenantId = None)
+      val caller = AntifraudCaller.Operator
       for
         client <- ZIO.service[AuthClient]
         _ <- TestClient.addRoutes(answer(Status.BadRequest, "not an IP address"))
-        invalid <- client.listAntifraudListEntries(ListEntriesQuery(None, None, None, None, None, None)).either
+        invalid <- client.listAntifraudListEntries(ListEntriesQuery(None, None, None, None, None, None), caller).either
         _ <- TestClient.addRoutes(answer(Status.NotFound, ""))
-        missing <- client.deleteAntifraudListEntry(delete).either
+        missing <- client.deleteAntifraudListEntry(delete, caller).either
+        _ <- TestClient.addRoutes(answer(Status.Forbidden, "not your tenant"))
+        forbidden <- client.deleteAntifraudListEntry(delete, caller).either
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("the settings are at version 5").status(Status.PreconditionFailed).addHeader(Header.Custom("ETag", "\"5\"")))).toRoutes,
+        )
+        stale <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), Some(3)).either
         _ <- TestClient.addRoutes(answer(Status.InternalServerError, "boom"))
-        broken <- client.deleteAntifraudListEntry(delete).either
+        broken <- client.deleteAntifraudListEntry(delete, caller).either
       yield assertTrue(
         invalid == Left(AntifraudListError.Invalid("not an IP address")),
         missing == Left(AntifraudListError.NotFound),
+        forbidden == Left(AntifraudListError.Forbidden("not your tenant")),
+        stale == Left(AntifraudListError.StaleVersion("the settings are at version 5", Some(5))),
         broken.left.exists(_.isInstanceOf[RuntimeException]),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),

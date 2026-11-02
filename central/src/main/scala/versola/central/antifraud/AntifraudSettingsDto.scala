@@ -38,7 +38,28 @@ case class AntifraudSettings(
 ) derives JsonCodec, Schema
 
 /** `userId` is the admin, which edge puts in from the verified token (see [[AntifraudSettingsController]]); auth records it
-  * as who made the change. The same body goes to auth. */
-case class PutAntifraudSettingsRequest(settings: AntifraudSettings, userId: UserId) derives JsonCodec, Schema
+  * as who made the change. `version` is the version the settings were read at, for a client that cannot send `If-Match`
+  * (which is preferred); the same body goes to auth, with the version the request named in either. */
+case class PutAntifraudSettingsRequest(settings: AntifraudSettings, userId: UserId, version: Option[Long] = None)
+    derives JsonCodec, Schema
 
 case class DeleteAntifraudSettingsRequest(userId: UserId) derives JsonCodec, Schema
+
+/** The settings and the version of the row they are stored in (0 where there is none): what a read answers (the settings
+  * flat, as ever, with `version` next to them, and the version as the `ETag`) and what a change is made on. */
+case class VersionedAntifraudSettings(settings: AntifraudSettings, version: Long)
+
+object VersionedAntifraudSettings:
+  import zio.json.{EncoderOps, JsonDecoder, JsonEncoder}
+  import zio.json.ast.Json
+
+  given JsonEncoder[VersionedAntifraudSettings] = JsonEncoder[Json].contramap: versioned =>
+    versioned.settings.toJsonAST.toOption
+      .collect { case obj: Json.Obj => obj.add("version", Json.Num(versioned.version)) }
+      .getOrElse(Json.Null)
+
+  given JsonDecoder[VersionedAntifraudSettings] = JsonDecoder[Json.Obj].mapOrFail: obj =>
+    for
+      settings <- obj.as[AntifraudSettings]
+      version <- obj.get("version").toRight("version is missing").flatMap(_.as[Long])
+    yield VersionedAntifraudSettings(settings, version)
