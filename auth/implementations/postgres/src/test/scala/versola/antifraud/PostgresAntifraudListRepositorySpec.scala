@@ -52,7 +52,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         e = entry(AntifraudListType.fake, AntifraudValueType.cidr, "10.0.0.0/8", tenant, Some(at.plusSeconds(3600)))
         stored <- repository.upsert(e, "alice", at)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(None, 10)
+        audit <- repository.audit(None, 10, None)
       yield assertTrue(
         stored == e,
         listed == List(e),
@@ -82,7 +82,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         tenantScoped <- repository.upsert(entry(tenantId = Some(TenantId("t"))), "alice", at)
         otherList <- repository.upsert(entry(AntifraudListType.watch), "alice", at)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(first.id), 10)
+        audit <- repository.audit(Some(first.id), 10, None)
       yield assertTrue(
         again.id == first.id,
         again.expiresAt.contains(at.plusSeconds(60)),
@@ -127,6 +127,37 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         active.find(_.id == later.id).flatMap(_.expiresAt).contains(at.plusSeconds(10)),
       )
     },
+    test("a listing and the audit can be limited to what a tenant sees: the global entries and its own") {
+      for
+        repository <- clean
+        a = Some(TenantId("tenant-a"))
+        b = Some(TenantId("tenant-b"))
+        global <- repository.upsert(entry(value = "g"), "x", at)
+        own <- repository.upsert(entry(value = "a", tenantId = a), "x", at.plusSeconds(1))
+        other <- repository.upsert(entry(value = "b", tenantId = b), "x", at.plusSeconds(2))
+        seenByA <- repository.list(AntifraudListFilter.all.copy(visibleTo = a), 10, 0)
+        seenByB <- repository.list(AntifraudListFilter.all.copy(visibleTo = b), 10, 0)
+        everything <- repository.list(AntifraudListFilter.all, 10, 0)
+        onlyOwn <- repository.list(AntifraudListFilter(None, None, Some(a), visibleTo = a), 10, 0)
+        noneOfOthers <- repository.list(AntifraudListFilter(None, None, Some(b), visibleTo = a), 10, 0)
+        auditA <- repository.audit(None, 10, a)
+        auditAll <- repository.audit(None, 10, None)
+        auditOfOthers <- repository.audit(Some(other.id), 10, a)
+        auditOfOwn <- repository.audit(Some(own.id), 10, a)
+        auditOfGlobal <- repository.audit(Some(global.id), 10, a)
+      yield assertTrue(
+        seenByA.map(_.id).toSet == Set(global.id, own.id),
+        seenByB.map(_.id).toSet == Set(global.id, other.id),
+        everything.size == 3,
+        onlyOwn.map(_.id) == List(own.id),
+        noneOfOthers.isEmpty,
+        auditA.map(_.entryId).toSet == Set(global.id, own.id),
+        auditAll.size == 3,
+        auditOfOthers.isEmpty,
+        auditOfOwn.size == 1,
+        auditOfGlobal.size == 1,
+      )
+    },
     test("deletes an entry, records who did, and says so when there was none") {
       for
         repository <- clean
@@ -134,7 +165,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         removed <- repository.delete(e.id, "bob", at.plusSeconds(5))
         again <- repository.delete(e.id, "bob", at.plusSeconds(6))
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(e.id), 10)
+        audit <- repository.audit(Some(e.id), 10, None)
       yield assertTrue(
         removed,
         !again,
@@ -152,7 +183,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
         n <- repository.purgeExpired(at.plusSeconds(2), 1000)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(old.id), 10)
+        audit <- repository.audit(Some(old.id), 10, None)
       yield assertTrue(n == 1, listed.map(_.id) == List(live.id), audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"))
     },
     test("every change bumps the version and nothing else does") {
@@ -189,7 +220,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         none <- repository.pruneAudit(at, 10)
         some <- repository.pruneAudit(at.plusSeconds(50), 3)
         rest <- repository.pruneAudit(at.plusSeconds(50), 3)
-        left <- repository.audit(None, 100)
+        left <- repository.audit(None, 100, None)
       yield assertTrue(
         first == 2,
         second == 2,

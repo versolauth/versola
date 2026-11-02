@@ -1,5 +1,6 @@
 package versola.antifraud
 
+import versola.oauth.client.model.TenantId
 import zio.Task
 
 import java.time.Instant
@@ -37,5 +38,6 @@ trait AntifraudListRepository:
   /** Removes up to `limit` audit records older than `before`; fewer than `limit` means no more are due. */
   def pruneAudit(before: Instant, limit: Int): Task[Int]
 
-  /** The changes of one entry, or of all, the latest first. */
-  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
+  /** The changes of one entry, or of all, the latest first; with `visibleTo`, only those of global entries and that
+    * tenant's. */
+  def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]]
