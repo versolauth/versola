@@ -6765,9 +6765,6 @@ components:
           description: "The tenant the entry applies to. Omitted: every tenant (operators only)."
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
-        source:
-          type: string
-          description: Who or what put it on the list. Defaults to `manual`; anything else needs `expiresAt`.
         shadow:
           type: boolean
           description: Matched and counted, enforces nothing (the fired rule is `shadow_list:<value type>`). Defaults to `false`.
@@ -6811,7 +6808,10 @@ components:
       properties:
         id: { type: string, format: uuid }
         at: { type: string, format: date-time }
-        action: { type: string, enum: [create, delete, expire] }
+        action:
+          type: string
+          enum: [create, update, delete, expire]
+          description: "`update` is the same value added again; `previous` has what the entry had before."
         actor: { type: string }
         entryId: { type: string, format: uuid }
         listType: { $ref: '#/components/schemas/AntifraudListType' }
@@ -6820,6 +6820,15 @@ components:
         tenantId: { $ref: '#/components/schemas/TenantId' }
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
+        previous:
+          type: object
+          description: The entry's values before an `update`; absent for the other actions.
+          properties:
+            expiresAt: { type: string, format: date-time }
+            reason: { type: string }
+            source: { type: string }
+            shadow: { type: boolean }
+          required: [source, shadow]
       required: [id, at, action, actor, entryId, listType, valueType, value]
     AntifraudVelocityLimit:
       type: object

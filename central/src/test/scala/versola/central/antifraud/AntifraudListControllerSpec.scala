@@ -111,7 +111,6 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         sent.valueType == AntifraudValueType.prefix,
         sent.value.contains("4915"),
         sent.tenantId.contains(tenant),
-        sent.source.isEmpty,
         sent.shadow.isEmpty,
       )
     },
@@ -255,6 +254,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tenantId = Some(tenant),
         expiresAt = None,
         reason = None,
+        previous = None,
       )
       for
         _ <- service.audit.succeedsWith(AuditResponse(List(record)))

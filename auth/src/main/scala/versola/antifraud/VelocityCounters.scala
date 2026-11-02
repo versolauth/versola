@@ -8,8 +8,8 @@ import java.lang.System
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReferenceArray}
-import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.{AtomicLong, AtomicReferenceArray}
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters.*
@@ -26,6 +26,19 @@ enum VelocityWindow(val minutes: Int):
   case TenMinutes extends VelocityWindow(10)
   case OneHour extends VelocityWindow(60)
   case OneDay extends VelocityWindow(1440)
+
+/** What a reset forgets (see [[AntifraudCounters]]): everything, one key, or the ranges of numbers that start with some digits. */
+enum VelocityTarget:
+  case All
+  case Key(keyType: VelocityKey, key: String)
+
+  /** The `prefix` keys of every tenant (`tenant/digits`) whose digits start with `digits`. */
+  case Range(digits: String)
+
+  def matches(keyType: VelocityKey, candidate: String): Boolean = this match
+    case All => true
+    case Key(k, key) => k == keyType && key == candidate
+    case Range(digits) => keyType == VelocityKey.prefix && candidate.substring(candidate.lastIndexOf('/') + 1).startsWith(digits)
 
 /** One minute of one key: the count an instance has seen (`minute` is minutes since the epoch). */
 case class VelocityBucket(keyType: VelocityKey, key: String, minute: Long, count: Int)
@@ -49,9 +62,12 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   *     error or a wait).
   * Memory is bounded: at most `maxKeys` keys of each kind, each at most 1440 buckets of 8 bytes in each of its stripes,
   * grown as the key is used and freed when it has been idle for a day. Keys are attacker-chosen (addresses, numbers), so a full table
-  * does not switch the detection off: a new key takes the place of the oldest key that was seen once and never again
-  * (junk, by the look of it), and only when there is none of those is the new key not counted, which fails open (its
-  * count reads 0, its rule does not fire). Both are counted ([[evicted]], [[untracked]]).
+  * does not switch the detection off: a new key takes the place of the least used of eight keys picked at random, by
+  * the requests each had in the last day, the longest window a rule enforces (the power of choices). A key that is counted a lot is picked for eviction
+  * with a chance that falls off with the eighth power of its share of the table, so a flood of made-up keys (each seen
+  * once or twice) replaces other made-up keys and leaves the established ones; it takes a table that is mostly as busy
+  * as the busiest of the sample to evict one of those. Only when no key can be picked (a race) is the new key not counted,
+  * which fails open (its count reads 0, its rule does not fire). Both are counted ([[evicted]], [[untracked]]).
   *
   * A key is spread over `stripes` independent bucket arrays chosen by the thread that records, so many threads on one
   * hot key take different locks; a count sums the stripes.
@@ -68,9 +84,14 @@ final class VelocityCounters(
   import VelocityCounters.*
 
   private val stripes = Integer.highestOneBit(math.max(1, limits.stripes))
+
+  /** Names this instance's rows of `af_velocity`. */
+  val instanceId: UUID = UUID.randomUUID()
+
   private val tables = VelocityKey.values.map(_ => ConcurrentHashMap[String, Entry]())
-  // Keys in the order they were admitted, to find the junk among them when the table is full.
-  private val admitted = VelocityKey.values.map(_ => ConcurrentLinkedQueue[Admitted]())
+  // The members of each table by slot, to pick a few at random when the table is full. A little room beyond `maxKeys`:
+  // the size check and the insert are not one step, so a burst can overshoot.
+  private val slots = VelocityKey.values.map(_ => SampledSlots[Entry](limits.maxKeys + SlotSlack))
   private val remote = Remote(limits.maxKeys * VelocityKey.values.length)
   private val untrackedCount = AtomicLong(0)
   private val evictedCount = AtomicLong(0)
@@ -87,39 +108,51 @@ final class VelocityCounters(
 
   private def normalize(key: String): String = if key.length > maxKeyLength then key.substring(0, maxKeyLength) else key
 
-  /** Counts one request of `key` at `at`. Takes a lock of a stripe nobody else is likely on for a few instructions,
-    * and does nothing for a new key when `maxKeys` are tracked and none of them is junk. */
+  /** Counts one request of `key` at `at`. Takes a lock of a stripe nobody else is likely on for a few instructions;
+    * for a new key when `maxKeys` are tracked it first evicts the least used of a random sample of eight. */
   def record(keyType: VelocityKey, key: String, at: Instant): Unit =
     val k = normalize(key)
     val map = table(keyType)
+    val minute = minuteOf(at)
     val existing = map.get(k)
-    val entry = if existing != null then existing else admit(keyType, map, k)
+    val entry = if existing != null then existing else admit(keyType, map, k, minute)
     if entry == null then untrackedCount.incrementAndGet()
-    else entry.add(minuteOf(at), 1, stripeOfThread)
+    else entry.add(minute, 1, stripeOfThread)
 
-  private def admit(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], key: String): Entry | Null =
-    if map.size >= limits.maxKeys && !evictJunk(keyType, map) then null
+  private def admit(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], key: String, minute: Long): Entry | Null =
+    if map.size >= limits.maxKeys && !makeRoom(keyType, map, minute) then null
     else
-      val entry = map.computeIfAbsent(key, _ => Entry(stripes))
-      admitted(keyType.ordinal).add(Admitted(key, entry))
-      entry
+      val entry = Entry(stripes, key)
+      val slot = slots(keyType.ordinal).claim(entry)
+      if slot < 0 then null
+      else
+        entry.slot = slot
+        val raced = map.putIfAbsent(key, entry)
+        if raced == null then entry
+        else
+          // Another thread admitted the same key first: use its entry, and give the slot back.
+          slots(keyType.ordinal).release(slot, entry)
+          raced
 
-  /** Makes room by dropping the oldest key that has been seen once. A few of the oldest are looked at, so that a
-    * request never spends long here; a key seen twice is established and leaves the queue. */
-  private def evictJunk(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry]): Boolean =
-    val queue = admitted(keyType.ordinal)
-    var tries = 0
-    var made = false
-    while !made && tries < 16 do
-      tries += 1
-      queue.poll() match
-        case null => tries = Int.MaxValue
-        // An entry seen again meanwhile is established, and is no longer a candidate: it is not put back.
-        case Admitted(key, entry) =>
-          if entry.junk && map.remove(key, entry) then
-            evictedCount.incrementAndGet()
-            made = true
-    made
+  /** Makes room by dropping the key with the fewest requests in the last day (the window the rules enforce, so a key that
+    * was hot an hour ago and went quiet is not mistaken for junk) among eight picked at random. A key seen once and never
+    * again has one request to speak of, so junk goes first; an established key is only evicted when the whole sample is
+    * as busy. A request does the sampling itself: a few array reads and eight counts, no lock on the table.
+    * *Cost:* each count sums the key's stripes, one short lock per stripe in use, so with a full table every admitted new key
+    * costs up to 8 entries x `stripes` (8) = about 64 lock acquisitions, none contended in practice (a stripe is chosen per
+    * thread, and a made-up key has one stripe). That is microseconds per new key, paid only while the table is full; see
+    * the key-flood spec for a wall-clock bound. */
+  private def makeRoom(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], minute: Long): Boolean =
+    val from = minute - VelocityWindow.OneDay.minutes + 1
+    val sample = slots(keyType.ordinal).sample(EvictionSample)
+    if sample.isEmpty then false
+    else
+      val victim = sample.minBy(_.count(from, minute))
+      if map.remove(victim.key, victim) then
+        slots(keyType.ordinal).release(victim.slot, victim)
+        evictedCount.incrementAndGet()
+        true
+      else false
 
   /** How many requests of `key` were seen in `window` as of `at`, here and (as last loaded) elsewhere. */
   def count(keyType: VelocityKey, key: String, window: VelocityWindow, at: Instant): Int =
@@ -173,14 +206,45 @@ final class VelocityCounters(
   /** Forgets keys that have been quiet for the whole day, and gives back the memory of old buckets of the others. */
   def evict(at: Instant): Unit =
     val now = minuteOf(at)
-    tables.zip(admitted).foreach: (map, queue) =>
+    tables.zip(slots).foreach: (map, free) =>
       map.entrySet().removeIf: entry =>
         val e = entry.getValue
         e.trim(now)
-        e.lastMinute < now - VelocityWindow.OneDay.minutes + 1 && e.isEmpty
-      // What is gone or established is no use in the queue.
-      queue.removeIf(a => (map.get(a.key).ne(a.entry)) || !a.entry.junk)
+        val gone = e.lastMinute < now - VelocityWindow.OneDay.minutes + 1 && e.isEmpty
+        if gone then free.release(e.slot, e)
+        gone
     remote.trim(now)
+
+  /** Forgets what is counted for `target`, here and as loaded from the other instances (a reset: see
+    * [[AntifraudCounters]]). What another instance has written to the database since is read back by the next load,
+    * unless that instance forgets it too, which it does on its own reset poll. */
+  def forget(target: VelocityTarget): Unit =
+    // A key is in the one table of its kind and a range in the prefix table: only everything walks them all.
+    val kinds = target match
+      case VelocityTarget.All => VelocityKey.values.toList
+      case VelocityTarget.Key(keyType, _) => List(keyType)
+      case VelocityTarget.Range(_) => List(VelocityKey.prefix)
+    kinds.foreach: keyType =>
+      val map = table(keyType)
+      target match
+        case VelocityTarget.Key(_, key) =>
+          Option(map.get(key)).foreach(entry => if map.remove(key, entry) then slots(keyType.ordinal).release(entry.slot, entry))
+        case _ =>
+          map.entrySet().removeIf: entry =>
+            val matches = target.matches(keyType, entry.getKey)
+            if matches then slots(keyType.ordinal).release(entry.getValue.slot, entry.getValue)
+            matches
+    remote.forget(target)
+
+  /** Forgets only what was loaded from the other instances for `target`: the second pass of a reset. */
+  def forgetRemote(target: VelocityTarget): Unit = remote.forget(target)
+
+  /** The key an address is counted under (its network, hashed as the service hashes it), for a reset by address. `None`
+    * for text that is no address. */
+  def ipTarget(address: String): UIO[Option[VelocityTarget]] =
+    VelocityRules.network(address) match
+      case None => ZIO.none
+      case Some(network) => ipKey(network).map(_.map(VelocityTarget.Key(VelocityKey.ip, _)))
 
   /** The minutes that changed since the last call, as this instance's own totals for them, for [[VelocityRepository]]:
     * at most `limit` of them (never more), the busiest keys first, so that a flood of junk keys cannot crowd out the
@@ -237,8 +301,8 @@ object VelocityCounters:
 
   /** What is not configuration: the sizes, which only the memory they bound would make anyone change.
     *
-    * @param maxKeys       keys tracked at once of each kind; beyond that a new key takes the place of a key seen once, or
-    *                      is not counted when there is none (fail open)
+    * @param maxKeys       keys tracked at once of each kind; beyond that a new key takes the place of the least used of eight
+    *                      random keys (see [[VelocityCounters]])
     * @param stripes       independent bucket arrays per key, a power of two (rounded down to one); hot keys contend less
     * @param shareFrom     requests of a key in the day before this instance shares it with the others; bounds what the
     *                      database holds (and what a load reads) to the keys that have any weight
@@ -261,7 +325,10 @@ object VelocityCounters:
   private def minuteOf(packed: Long): Long = packed >>> 32
   private def countOf(packed: Long): Int = (packed & 0xffffffffL).toInt
 
-  private case class Admitted(key: String, entry: Entry)
+  /** Keys looked at when a full table makes room for a new one. */
+  private val EvictionSample = 8
+
+  private val SlotSlack = 256
 
   /** What the other instances wrote: per key, each instance's buckets. Holds at most `maxKeys` keys, so a flood of keys
     * at another instance cannot grow this one without bound. */
@@ -295,21 +362,22 @@ object VelocityCounters:
           instances.filterInPlace((_, buckets) => !buckets.isEmpty)
           instances.isEmpty
 
+    def forget(target: VelocityTarget): Unit =
+      byKey.keySet().removeIf(id => target.matches(id._1, id._2))
+      ()
+
   /** One key: `stripes` bucket arrays, made when first used. */
-  private final class Entry(stripes: Int):
+  private final class Entry(stripes: Int, val key: String):
     private val parts = AtomicReferenceArray[Buckets](stripes)
     private val last = AtomicLong(Long.MinValue)
-    // Requests seen, up to 2: all that is needed to tell a key seen once from the rest. Not counted further, so the
-    // hottest key has no counter for its threads to fight over.
-    private val seen = AtomicInteger(0)
+
+    /** The slot the key holds in its table's [[SampledSlots]]. */
+    @volatile var slot: Int = -1
 
     /** The oldest minute changed since the last drain, or `Long.MaxValue` while nothing is. */
     val dirtySince = AtomicLong(Long.MaxValue)
 
     def lastMinute: Long = last.get
-
-    /** Seen once, so far: what an attacker's throwaway key looks like. */
-    def junk: Boolean = seen.get <= 1
 
     def add(minute: Long, n: Int, stripe: Int): Unit =
       var part = parts.get(stripe)
@@ -317,7 +385,6 @@ object VelocityCounters:
         parts.compareAndSet(stripe, null, Buckets())
         part = parts.get(stripe)
       part.add(minute, n)
-      if seen.get < 2 then seen.incrementAndGet()
       // The usual record is a minute already known: two reads, no write.
       if minute > last.get then last.accumulateAndGet(minute, math.max)
       if minute < dirtySince.get then dirtySince.accumulateAndGet(minute, math.min)
@@ -418,10 +485,12 @@ object VelocityCounters:
     * An address is stored as a keyed hash of its network (`/32` for IPv4, `/64` for IPv6), made with a key derived from
     * the antifraud subject secret under a label of its own, so the table holds no address, and the hash cannot be
     * matched against one made anywhere else with the same secret. */
-  val live: ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
+  val live
+      : ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
     liveWith(Limits.standard)
 
-  def liveWith(limits: Limits): ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
+  def liveWith(limits: Limits)
+      : ZLayer[VelocityRepository & AntifraudEvents.Settings & AntifraudTuning & SecurityService & CoreConfig & Scope, Nothing, VelocityCounters] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[VelocityRepository]
@@ -440,10 +509,9 @@ object VelocityCounters:
           if settings.enabled then
             for
               counters <- ZIO.succeed(new VelocityCounters(settings, limits, () => tuning.current.thresholds, hash))
-              instance <- ZIO.succeed(UUID.randomUUID())
               failing <- Ref.make(false)
               reported <- ZIO.foreach(List.fill(2)(0L))(Ref.make(_))
-              _ <- Flusher(counters, repository, settings, limits, instance, failing, reported(0), reported(1)).run
+              _ <- Flusher(counters, repository, settings, limits, counters.instanceId, failing, reported(0), reported(1)).run
             yield counters
           else ZIO.succeed(new VelocityCounters(settings, limits, () => tuning.current.thresholds, hash))
       yield counters

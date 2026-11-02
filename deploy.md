@@ -620,7 +620,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Antifraud configuration.** Each antifraud key has exactly one home.
   1. **Tuned during an attack** (the mode, thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty,
      shadow rules): the stored settings below, changed through central's admin API, with no restart.
-  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**, as
+  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**
+     (but `lists.max-broad-ttl`, which has a default so that a config written before it existed keeps working), as
      for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
      before the block existed, makes `auth` refuse to start naming the missing key). The chart takes the config from the
      Secret you give it, so there is nothing to set in the chart's values. The keys, with what the generator writes:
@@ -628,7 +629,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
      ```hocon
      antifraud {
        retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
-       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up
+       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up; a whole number of minutes (auth refuses to start otherwise)
        stats-retention  = "30 days"
        sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
        decision {
@@ -640,7 +641,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
        }
        velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
        tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
-       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days" }
+       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days",
+                  max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
        challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
      }
@@ -766,7 +768,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (400 ms). While `decision.enabled` is `false` it does not wait. In `shadow` nothing is faked, so nothing waits.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
-  the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
+  the partitions (today and seven days ahead, at start-up and every six hours) and drops the ones older than
   `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, and the rows of
   the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 rows each under its own
   statement timeout and at most 200 batches a run, so the log keeps the retention to the minute and no longer, and the
@@ -774,10 +776,21 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
   read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
   different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
-  keep the partitions and every write fails. The service takes at most 5 seconds for the lock the change needs
-  (a long query on `af_event` makes it give up, not queue the writes behind it) and tries again after a minute.
-  **Alert on `antifraud_partition_maintenance_failed_total` increasing**: a failed run is only a warning in the log,
-  and once the days ahead are used up the events are dropped (`antifraud_events_dropped_total{reason="write_failed"}`).
+  keep the partitions and every write fails. Creating or dropping a partition takes a lock on `af_event` that the
+  writer's inserts queue behind: the service waits at most 5 seconds for it (`lock_timeout`), so a long query on
+  `af_event` makes the **maintenance** give up after that, but the writes do queue behind the lock request meanwhile:
+  they wait for it, up to those same 5 seconds (and in any case under the writer's 30-second statement timeout, after
+  which a batch fails and is dropped). The partitions are created ahead in one transaction and the old
+  ones dropped in another, so a drop that cannot get its lock (a long read of an old day) never takes the new
+  partitions with it; both are retried after a minute. **Alert on the gauge `antifraud_partition_days_ahead` (days after
+  today that have a partition; 7 when healthy) falling below 3, and on `antifraud_partition_maintenance_failed_total`
+  increasing**: a failed run is only a warning in the log, and once the days ahead are used up the events are dropped
+  (`antifraud_events_dropped_total{reason="write_failed"}`); the gauge says how long there is left, the counter says
+  that it is going wrong. Migration `V0026` drops the two indexes of `af_event` that nothing read
+  (`af_event_subject_idx`, `af_event_dest_idx`, and with them the same index of every partition): the single writer
+  inserts into one B-tree fewer per event, and nothing that reads the table changes (a preview of a phone or a user
+  agent scans the day under its timeout, a preview of a prefix reads `af_dest_stats`). `DROP INDEX` takes a brief
+  exclusive lock on each partition; run `versola migrate` outside a long query on the table.
   Events are queued in memory and written in batches: a full queue or a failed write drops events and counts them,
   never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
   estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
@@ -810,7 +823,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
   an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
   `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
-  `/antifraud/lists`; the console has no screen for them yet. Entries added by SQL skip the audit and the version bump (an
+  `/antifraud/lists`; the console has no screen for them yet. Every statement of the list repository runs under a
+  10-second `statement_timeout`, so a refresh or a flush that hangs fails (`antifraud_list_refresh_failed_total`) instead of
+  stopping for good. Entries added by SQL skip the audit and the version bump (an
   instance still picks them up within a minute). The endpoints are new central resource endpoints with two permissions,
   `antifraud:read` and `antifraud:manage`: every start registers them on the `central` resource and gives them to `oauth-admin`
   (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
@@ -819,9 +834,18 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, address, /32 or /128; a network of
   one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
-  (`source` other than `manual`) must expire; an enforcing entry that would have matched more than
+  (`source` other than `manual`) must expire; a `cidr` entry is **not wider than /8 (IPv4) or /32 (IPv6)** (`0.0.0.0/0`
+  is every client); a `cidr` wider than /24 (IPv4) or /48 (IPv6), an `email_domain` or a `prefix` entry may be **made to live 30 days at most**
+  (`antifraud.lists.max-broad-ttl`; add it again to extend it); `source` is **set by the server** (`manual` for a request
+  of the API whatever its body says, `detector:<kind>` for an approved proposal), so a client cannot call an entry
+  manual to be rid of the expiry an automated one needs; an upsert of an existing entry is audited as `update` with the
+  previous expiry, reason, source and shadow flag (`previous` in the audit record), the first time as `create`;
+  an enforcing entry that would have matched more than
   5% of the last 24 hours of events (judged over at least
-  100 events) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
+  100 events; over the events of the entry's tenant for a tenant's entry, of all tenants for a global one; a prefix is
+  counted from the rolled-up requests of `af_dest_stats`, so a prefix longer than the 4 digits it keeps is counted as
+  the range it falls in, and the guard is as old as the last rollup; an address, network, ASN or mail domain has no
+  column in the log and is not counted) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
   `shadow_list:<type>` in the fired rules; unrelated to the tuning's `mode`, which holds back the enforcing ones too). **`fake` is for confirmed fraud only:**
   a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
   I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type,shadow}`. Starting waits up to
@@ -833,8 +857,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, a constant of the service,
   default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
   (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
-  ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. Only one
-  instance does a rollup at a time; a failed one is logged and counted (`antifraud_stats_rollup_failed_total`) and the
+  ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. The
+  instances share the work: one rolls up per `stats-interval` (a marker, `af_rollup_state`, under the advisory lock; one that
+  finds the last run less than half an interval old skips) and a group of a minute that has not changed is not rewritten, so
+  the rollup leaves no dead tuple for what it recomputes. `stats-interval` is a whole number of minutes (`auth` refuses to
+  start with a fraction). A failed run is logged and counted (`antifraud_stats_rollup_failed_total`) and the
   next run recomputes the last `stats-lookback` (2 minutes, or twice `stats-interval` when that is longer, so that
   every minute is rolled up twice; an event the writer was later with than that is never counted, which under an
   attack makes the statistics a lower estimate, as the log itself is). A BRIN index on `af_event (at)` keeps that read to the
@@ -860,9 +887,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   (`would_action = 'Block'`, rule `sms_budget`); that is how a limit is sized before it closes anything. The counts are kept in memory per instance, over the last
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  10000 ranges are tracked; beyond that new ones are let through untracked
-  (`antifraud_sms_budget_full_total` counts them), so **the limit stops protecting a tenant whose attacker has filled
-  the table of ranges**; alert on that counter. Enforcement of `phoneRegions` is unchanged: a number outside the
+  10000 ranges are tracked. A full table makes room for a new range by evicting the one with the fewest codes sent in
+  the last hour (the window the limit counts) of **eight picked at random** (`antifraud_sms_budget_evicted_total`), so a flood of made-up ranges
+  replaces other made-up ranges and the busy, closed ones stay; the bound on what an attacker can do is that evicting a
+  closed range takes a sample of eight that are all as busy, which falls off with the eighth power of the share of
+  such ranges in the table. A range that is evicted starts its hour again. Only when no range can be picked is a new one let
+  through untracked (`antifraud_sms_budget_full_total`; a race, so nonzero is rare and is worth an alert), and a steady
+  `antifraud_sms_budget_evicted_total` is a flood of ranges. The hour's counts of one range, or all, can be reset
+  (below). Enforcement of `phoneRegions` is unchanged: a number outside the
   tenant's regions is refused before the conversation takes it, whatever the budget says.
 
 - **Velocity counters (`af_velocity`, migration `V0021`)** count requests per network of the IP address, device, ASN
@@ -890,15 +922,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
   about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
   (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
-  full table does not stop counting: a new key takes the place of the oldest key seen only once
-  (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway keys), and only when every key held
-  has been seen again is the new key not counted, so its rules do not fire (`antifraud_velocity_untracked_total`).
-  **Alert on `antifraud_velocity_untracked_total` increasing; any value above 0 is itself a sign of an attack or of a
-  `max-keys` too small for the traffic.**
+  A full table does not stop counting: a new key takes the place of the key with the fewest requests in the last
+  day (the longest window a rule enforces) of **eight picked at random** (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway
+  keys), whether or not it was seen again. *The bound:* a key is evicted when every key of a sample of eight is as busy
+  as it, so with a share `h` of the table as busy as a key, it is evicted at a rate of `h^8` per new key (about 4 in 10^11 for
+  5% of the table, 0.07% for 40%): an established key survives a flood of made-up keys unless the table is mostly
+  established keys of its own weight, in which case `max-keys` is too small. The new key is not counted, and its rules do not fire, only
+  when no key can be picked (a race; `antifraud_velocity_untracked_total`). **Alert on `antifraud_velocity_untracked_total`
+  increasing, and on a steady `antifraud_velocity_evicted_total`: both are a sign of an attack or of a `max-keys` too
+  small for the traffic.**
   *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
   `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
   day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
-  reads the whole day, in 24 queries of an hour each, starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
+  reads the whole day, in 24 queries of an hour each (a query ranks the keys of its range by a sum, keeping the busiest `max-load-keys`, and reads the rows of those keys by their primary key: no row of the range is held for a second step), starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
   `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
   instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
   too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is
@@ -918,6 +954,21 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
   the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
   starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
+
+- **Resetting the counters (`af_counter_reset`, migration `V0026`).** `POST /antifraud/counters/reset` on `auth`'s internal
+  API (central's route for it follows with the admin API) forgets what the velocity counters and the SMS budget have
+  counted: `{ "scope": "velocity" | "budget" | "all", "valueType"?: "phone" | "ip" | "prefix", "value"?: string, "userId": uuid }`,
+  answered `202 { "generation": n }`. Without `valueType` and `value` the whole scope is reset. A `phone` or an `ip` resets
+  the velocity counters of that key only (the budget is per range: a support case for one number does not reopen a
+  range an attack closed), and a `prefix` (1 to 6 digits, every tenant) resets the ranges it is in or contains, in both. It
+  replaces `TRUNCATE af_velocity`, which left the memory of the instances as it was. The request is a row with a
+  generation (also its audit: `requested_by` is the `userId` central names; rows older than
+  `antifraud.lists.audit-retention` are pruned with the list audit, the newest one kept). Every instance reads new rows every
+  `antifraud.tuning.refresh-interval` and forgets the target in memory and its own `af_velocity` rows, then once more,
+  after two refresh intervals plus a flush and a load interval, what it loaded from the others. A reset is therefore
+  complete on every instance **within two refresh intervals plus one flush-and-load cycle**; the instance that took the
+  request forgets at once. An instance that starts later does not replay old resets. Metrics:
+  `antifraud_counters_reset_total{scope}` and `antifraud_counters_reset_failed_total{what="poll"|"delete"}`.
 
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it

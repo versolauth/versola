@@ -131,6 +131,64 @@ object PostgresVelocityRepositorySpec extends PostgresSpec:
         seen <- repository.loadOthers(UUID.randomUUID(), 0, Long.MaxValue, 10000)
       yield assertTrue(seen.size == 2000)
     },
+    test("forgets everything, one key, or the ranges that start with some digits of every tenant") {
+      for
+        repository <- clean
+        a = UUID.randomUUID()
+        reader = UUID.randomUUID()
+        rows = List(
+          bucket(phone, "h1", 100, 1),
+          bucket(phone, "h2", 100, 1),
+          bucket(ip, "h1", 100, 1),
+          bucket(prefix, "t1/491512", 100, 1),
+          bucket(prefix, "t2/491599", 100, 1),
+          bucket(prefix, "t1/337000", 100, 1),
+        )
+        _ <- repository.save(a, rows)
+        oneKey <- repository.forget(VelocityTarget.Key(phone, "h1"), None)
+        afterKey <- repository.loadOthers(reader, 0, Long.MaxValue, 100)
+        ranges <- repository.forget(VelocityTarget.Range("4915"), None)
+        afterRange <- repository.loadOthers(reader, 0, Long.MaxValue, 100)
+        // `%` or `_` cannot be in a range's digits, but a range is not matched in the middle of the digits either.
+        none <- repository.forget(VelocityTarget.Range("9"), None)
+        all <- repository.forget(VelocityTarget.All, None)
+        afterAll <- repository.loadOthers(reader, 0, Long.MaxValue, 100)
+      yield assertTrue(
+        oneKey == 1,
+        afterKey.map(_.bucket).toSet == (rows.toSet - bucket(phone, "h1", 100, 1)),
+        ranges == 2,
+        afterRange.map(_.bucket).toSet == Set(bucket(phone, "h2", 100, 1), bucket(ip, "h1", 100, 1), bucket(prefix, "t1/337000", 100, 1)),
+        none == 0,
+        all == 3,
+        afterAll.isEmpty,
+      )
+    },
+    test("forgetting for one instance leaves the rows of the others") {
+      for
+        repository <- clean
+        a = UUID.randomUUID()
+        b = UUID.randomUUID()
+        _ <- repository.save(a, List(bucket(ip, "k", 100, 1)))
+        _ <- repository.save(b, List(bucket(ip, "k", 100, 2)))
+        gone <- repository.forget(VelocityTarget.All, Some(a))
+        left <- repository.loadOthers(UUID.randomUUID(), 0, Long.MaxValue, 100)
+      yield assertTrue(gone == 1, left == List(shared(b, bucket(ip, "k", 100, 2))))
+    },
+    test("every statement is under the statement timeout, forgetting included") {
+      for
+        _ <- clean
+        xa <- ZIO.service[TransactorZIO]
+        impatient = PostgresVelocityRepository(xa, statementTimeout = 100.millis)
+        holder <- xa.transact:
+          sql"LOCK TABLE af_velocity IN ACCESS EXCLUSIVE MODE".update.run()
+          Thread.sleep(2500)
+        .fork
+        _ <- Live.live(ZIO.sleep(400.millis))
+        forgotten <- impatient.forget(VelocityTarget.All, None).exit
+        loaded <- impatient.loadOthers(UUID.randomUUID(), 0, 1000, 10).exit
+        _ <- holder.join
+      yield assertTrue(forgotten.isFailure, loaded.isFailure)
+    },
     test("a value in the database that is not a key kind is left out, not a failure") {
       for
         repository <- clean

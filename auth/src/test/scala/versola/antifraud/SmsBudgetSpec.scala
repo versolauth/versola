@@ -27,7 +27,11 @@ object SmsBudgetSpec extends UnitSpecBase:
       minConversion: Double = 0.1,
       maxRanges: Int = AntifraudTestSettings.smsSizing.maxRanges,
   ) =
-    SmsBudget(AntifraudTestSettings.smsBudget, AntifraudTestSettings.smsSizing.copy(maxRanges = maxRanges), SmsLimits(SmsLimit(sentPerHour, minVolume, minConversion), Map.empty))
+    SmsBudget(
+      AntifraudTestSettings.smsBudget,
+      AntifraudTestSettings.smsSizing.copy(maxRanges = maxRanges),
+      SmsLimits(SmsLimit(sentPerHour, minVolume, minConversion), Map.empty),
+    )
 
   def spec = suite("SmsBudget")(
     test("without enforcing, a closed range is answered WouldRefuse with its reason, and the code that goes out is counted all the same") {
@@ -97,12 +101,46 @@ object SmsBudgetSpec extends UnitSpecBase:
         if i % 10 != 0 then budget.verified(tenant, "4915", t0)
       assertTrue(allowed(budget, tenant, "4915", t0))
     },
-    test("stops tracking new ranges at the cap and lets them through, so the limit cannot be filled up") {
-      val budget = budgetOf(sentPerHour = 1, maxRanges = 2)
+    test("a full table makes room for a new range, so the limit cannot be filled up, and the busy ranges stay closed") {
+      val budget = budgetOf(sentPerHour = 100, maxRanges = 200)
+      val busy = Some(TenantId("busy"))
+      List("4915", "4916", "4917").foreach(prefix => sendTo(budget, prefix, 150, tenantId = busy))
+      // A flood of made-up ranges (one code each) from thousands of tenants and prefixes.
+      // A quarter of an hour later: the busy ranges went quiet for longer than the ten minutes an earlier version ranked by,
+      // and the limit they enforce is the hour.
+      val later = t0.plusSeconds(15 * 60)
+      val results = (1 to 20000).map(i => budget.decide(Some(TenantId(s"t$i")), "4915", later, charge = true))
+      assertTrue(
+        budget.size == 200,
+        // Every flooding range is tracked as it comes, none goes through untracked.
+        results.forall(_ == Decision.Allowed),
+        budget.drainEvicted() > 19000,
+        // Three of 200 slots are busy: all eight of a sample being busy is 0.015 to the eighth power a try.
+        List("4915", "4916", "4917").forall(prefix => !allowed(budget, busy, prefix, later)),
+      )
+    },
+    test("the least codes in the last hour decide: a range closed half an hour ago stays over one that has just started") {
+      val budget = budgetOf(sentPerHour = 5, maxRanges = 2)
+      sendTo(budget, "4915", 5, at = t0.minusSeconds(30 * 60))
+      sendTo(budget, "4916", 1, at = t0)
+      // The whole table is the sample.
+      budget.decide(tenant, "4917", t0, charge = true)
+      assertTrue(budget.size == 2, budget.drainEvicted() == 1, !allowed(budget, tenant, "4915", t0))
+    },
+    test("forgetting a prefix empties the ranges it is in or contains of every tenant, and forgetting none empties them all") {
+      val budget = budgetOf(sentPerHour = 1)
       sendTo(budget, "4915", 1)
+      sendTo(budget, "4915", 1, tenantId = Some(TenantId("tenant-b")))
       sendTo(budget, "4916", 1)
-      val untracked = budget.decide(tenant, "4917", t0, charge = true)
-      assertTrue(budget.size == 2, !allowed(budget, tenant, "4915", t0), allowed(budget, tenant, "4917", t0), untracked == Decision.Untracked)
+      budget.forget(Some("4915"))
+      val afterOne =
+        (allowed(budget, tenant, "4915", t0), allowed(budget, Some(TenantId("tenant-b")), "4915", t0), allowed(budget, tenant, "4916", t0))
+      sendTo(budget, "4915", 1)
+      // A longer value (a whole number's digits) names its range.
+      budget.forget(Some("491512"))
+      val afterLong = allowed(budget, tenant, "4915", t0)
+      budget.forget(None)
+      assertTrue(afterOne == (true, true, false), afterLong, allowed(budget, tenant, "4916", t0), budget.size == 0)
     },
     test("forgets a range that has been quiet for the hour") {
       val budget = budgetOf(sentPerHour = 1)
@@ -112,7 +150,7 @@ object SmsBudgetSpec extends UnitSpecBase:
       budget.evict(t0.plusSeconds(2 * 3600))
       assertTrue(kept == 1, budget.size == 0)
     },
-      test("a check that charges nothing neither counts nor creates a range") {
+    test("a check that charges nothing neither counts nor creates a range") {
       val budget = budgetOf(sentPerHour = 2)
       (1 to 10).foreach(_ => budget.decide(tenant, "4915", t0, charge = false))
       assertTrue(budget.size == 0, allowed(budget, tenant, "4915", t0))
@@ -129,7 +167,7 @@ object SmsBudgetSpec extends UnitSpecBase:
       for results <- ZIO.foreachPar(1 to 200)(_ => ZIO.attemptBlocking(budget.decide(tenant, "4915", t0, charge = true)).orDie)
       yield assertTrue(results.count(_ == Decision.Allowed) == 10)
     },
-      test("a code given back after its minute is over is taken from its own minute, and a reused minute is left alone") {
+    test("a code given back after its minute is over is taken from its own minute, and a reused minute is left alone") {
       val budget = budgetOf(sentPerHour = 2)
       sendTo(budget, "4915", 2, at = t0)
       budget.release(tenant, "4915", t0)
