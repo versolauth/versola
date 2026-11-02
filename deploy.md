@@ -760,15 +760,17 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **A fake send.** A request the engine fakes (a `fake` list entry, or a number that is no user's, which is faked whatever
   the engine says) is answered as a real send would be, and nothing is sent. Were the fake answered at once, a pumper who
   times the POSTs would see that the fast ones are never delivered and drop those numbers, which would leave `fake` only the
-  false positives. So a fake send waits as long as one of the last 256 real provider sends took, picked at random (a ring
+  false positives. So a fake send is as slow as one of the last 256 real provider sends took, picked at random (what is left
+  of it after the fake's own work, which a real send's time includes too; a ring
   held in memory per instance, no lock); until one has been timed, after a start, it waits `decision.fake-send-delay`
   (400 ms). While `decision.enabled` is `false` it does not wait. In `shadow` nothing is faked, so nothing waits.
 
 - **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
   the partitions (today and three days ahead, at start-up and every six hours) and drops the ones older than
   `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, and the rows of
-  the day the limit falls in that are older than it are deleted every 5 minutes, so the log keeps the retention to the
-  minute and no longer). The migration creates the parent only, and a partition can be created or dropped
+  the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 rows each under its own
+  statement timeout and at most 200 batches a run, so the log keeps the retention to the minute and no longer, and the
+  first run after an upgrade on a busy deployment makes progress instead of timing out on a day of rows). The migration creates the parent only, and a partition can be created or dropped
   only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
   read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
   different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot

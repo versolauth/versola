@@ -118,6 +118,20 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
         left <- xa.connect(sql"SELECT id FROM af_event ORDER BY at".query[UUID].run().toList)
       yield assertTrue(left == List(dayBefore.id, atLimit.id, newer.id))
     },
+    test("deletes in batches, so that no statement has a whole day to delete, and goes on until none is left") {
+      for
+        _ <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        repository = PostgresAntifraudEventRepository(xa, pruneBatch = 2)
+        _ <- repository.maintainPartitions(today, 1, today.minusDays(30))
+        limit = today.atTime(10, 0).toInstant(java.time.ZoneOffset.UTC)
+        old = (1 to 7).toList.map(i => event(today.atTime(9, i).toInstant(java.time.ZoneOffset.UTC)))
+        newer = event(today.atTime(10, 30).toInstant(java.time.ZoneOffset.UTC))
+        _ <- repository.insertBatch(newer :: old)
+        _ <- repository.pruneEvents(limit)
+        left <- xa.connect(sql"SELECT id FROM af_event".query[UUID].run().toList)
+      yield assertTrue(left == List(newer.id))
+    },
     test("an event of a day with no partition fails the write, so a late maintenance run is visible") {
       for
         repository <- noPartitions

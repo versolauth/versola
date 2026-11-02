@@ -307,9 +307,13 @@ object ConversationService:
         authId: AuthId,
         conversation: ConversationRecord,
     ): Task[Unit] =
+      // A fake send does the work around the send too (the template lookup and so on), and a real one's time covers all of
+      // that: so the fake waits for what is left of the sample, not the whole of it, or it would be slower by that work.
       if step.isFake then
-        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales) *>
-          antifraudEvents.fakeSendDelay.flatMap(ZIO.sleep(_))
+        otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales).timed.flatMap: (elapsed, _) =>
+          antifraudEvents.fakeSendDelay.flatMap: delay =>
+            val remaining = delay.minus(elapsed)
+            ZIO.sleep(remaining).unless(remaining.isNegative || remaining.isZero).unit
       else
         otpService.sendOtp(step, credential, authId, conversation.clientId, conversation.uiLocales).timed.flatMap: (took, _) =>
           antifraudEvents.sendTook(took)

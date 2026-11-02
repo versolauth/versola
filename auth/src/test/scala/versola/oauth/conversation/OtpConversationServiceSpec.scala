@@ -528,6 +528,37 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           (realWaited, realTimed) <- run(Decision.allow, realOtp)
         yield assertTrue(fakeWaited, fakeTimed == 0, !realWaited, realTimed == 1)
       },
+      test("a fake send waits for what is left of the sample after its own work, so that it is as slow as a real one, no slower") {
+        val env = Env(decision = Decision(DecisionAction.Fake, 0, Nil), fakeDelay = 3.seconds)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          // The work around the send takes 2 s of the 3 s sample.
+          _ <- env.otpService.sendOtp.returnsZIO(_ => ZIO.sleep(2.seconds))
+          fiber <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, ProofInput.NoScript).fork
+          _ <- TestClock.adjust(2.seconds)
+          early <- fiber.poll
+          _ <- TestClock.adjust(900.millis)
+          stillWaiting <- fiber.poll
+          _ <- TestClock.adjust(100.millis)
+          _ <- fiber.join
+        yield assertTrue(early.isEmpty, stillWaiting.isEmpty)
+      },
+      test("a fake send whose own work took longer than the sample does not wait on top") {
+        val env = Env(decision = Decision(DecisionAction.Fake, 0, Nil), fakeDelay = 1.second)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.returnsZIO(_ => ZIO.sleep(2.seconds))
+          fiber <- env.service.prepareInitialOtp(authId, initialConversation, phone, factorIndex = 0, ProofInput.NoScript).fork
+          _ <- TestClock.adjust(2.seconds)
+          done <- fiber.poll
+        yield assertTrue(done.isDefined)
+      },
       test("a code that is faked because the number is no user's waits just as long: the wait is for what is not sent, not for the decision") {
         val env = Env(fakeDelay = 3.seconds)
         for

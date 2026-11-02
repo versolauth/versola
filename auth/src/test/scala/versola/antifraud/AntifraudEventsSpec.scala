@@ -495,6 +495,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
         assertTrue(latency.sample(0).isDefined, SendLatency().sample(0).isEmpty, seen == (45L to 300L).toSet)
       },
     ),
+    suite("the ring of send durations")(
+      test("keeps working once its position has passed what an int holds") {
+        val latency = SendLatency(start = Int.MaxValue.toLong - 2)
+        (1 to 600).foreach(i => latency.add(Duration.fromMillis(i.toLong)))
+        val picks = (Int.MinValue to Int.MaxValue by 99991).map(latency.sample)
+        assertTrue(picks.forall(_.isDefined), (0 until 300).forall(i => latency.sample(i).isDefined))
+      },
+    ),
     suite("retention")(
       test("deletes the rows past the retention, to the minute, every few minutes") {
         val e = env
