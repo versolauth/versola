@@ -106,23 +106,26 @@ object SmsBudgetSpec extends UnitSpecBase:
       val busy = Some(TenantId("busy"))
       List("4915", "4916", "4917").foreach(prefix => sendTo(budget, prefix, 150, tenantId = busy))
       // A flood of made-up ranges (one code each) from thousands of tenants and prefixes.
-      val results = (1 to 20000).map(i => budget.decide(Some(TenantId(s"t$i")), "4915", t0.plusSeconds(1), charge = true))
+      // A quarter of an hour later: the busy ranges went quiet for longer than the ten minutes an earlier version ranked by,
+      // and the limit they enforce is the hour.
+      val later = t0.plusSeconds(15 * 60)
+      val results = (1 to 20000).map(i => budget.decide(Some(TenantId(s"t$i")), "4915", later, charge = true))
       assertTrue(
         budget.size == 200,
         // Every flooding range is tracked as it comes, none goes through untracked.
         results.forall(_ == Decision.Allowed),
         budget.drainEvicted() > 19000,
         // Three of 200 slots are busy: all eight of a sample being busy is 0.015 to the eighth power a try.
-        List("4915", "4916", "4917").forall(prefix => !allowed(budget, busy, prefix, t0.plusSeconds(1))),
+        List("4915", "4916", "4917").forall(prefix => !allowed(budget, busy, prefix, later)),
       )
     },
-    test("the least codes in the last ten minutes decide: an older busy range stays, an idle one goes") {
-      val budget = budgetOf(sentPerHour = 100, maxRanges = 2)
-      sendTo(budget, "4915", 5, at = t0)
-      sendTo(budget, "4916", 1, at = t0.minusSeconds(40 * 60))
+    test("the least codes in the last hour decide: a range closed half an hour ago stays over one that has just started") {
+      val budget = budgetOf(sentPerHour = 5, maxRanges = 2)
+      sendTo(budget, "4915", 5, at = t0.minusSeconds(30 * 60))
+      sendTo(budget, "4916", 1, at = t0)
       // The whole table is the sample.
       budget.decide(tenant, "4917", t0, charge = true)
-      assertTrue(budget.size == 2, budget.drainEvicted() == 1, budget.decide(tenant, "4915", t0, charge = true) == Decision.Allowed)
+      assertTrue(budget.size == 2, budget.drainEvicted() == 1, !allowed(budget, tenant, "4915", t0))
     },
     test("forgetting a prefix empties the ranges it is in or contains of every tenant, and forgetting none empties them all") {
       val budget = budgetOf(sentPerHour = 1)

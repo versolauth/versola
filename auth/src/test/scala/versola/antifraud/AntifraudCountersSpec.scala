@@ -17,6 +17,8 @@ object AntifraudCountersSpec extends UnitSpecBase:
   private val on = AntifraudTestSettings.velocity.copy(enabled = true)
   private val limits = AntifraudTestSettings.velocityLimits.copy(shareFrom = 1)
   private val pollInterval = 5.seconds
+  // What the layer makes of it: two polls, a load interval and a flush interval.
+  private val settleAfter = pollInterval * 2 + on.loadInterval + on.flushInterval
 
   // What RecordingAntifraudEvents makes of a number.
   private val number = "+77011234567"
@@ -42,7 +44,7 @@ object AntifraudCountersSpec extends UnitSpecBase:
     for
       counters <- instance(shared, on, limits)
       events = RecordingAntifraudEvents()
-      service = AntifraudCounters.Impl(log, shared, counters, events, pollInterval)
+      service = AntifraudCounters.Impl(log, shared, counters, events, pollInterval, settleAfter)
       // Where the log stands now: what is reset from here on is what this instance applies.
       _ <- service.pollOnce
     yield (counters, events, service)
@@ -106,11 +108,32 @@ object AntifraudCountersSpec extends UnitSpecBase:
         resurrected = a.count(phone, numberKey, TenMinutes, t0)
         // b applies it: its memory and its own rows go, and a forgets what it loaded once more after a settle time.
         _ <- serviceB.pollOnce
-        _ <- TestClock.adjust(pollInterval * 2)
+        _ <- TestClock.adjust(settleAfter)
         _ <- serviceA.pollOnce
         _ <- rounds(4)
         left <- repo.all
       yield assertTrue(resurrected == 5, a.count(phone, numberKey, TenMinutes, t0) == 0, b.count(phone, numberKey, TenMinutes, t0) == 0, left.isEmpty)
+    },
+    test("the second pass waits for a flush and a load after the reset, not for two polls alone") {
+      for
+        (repo, _) <- repository
+        log <- resets
+        _ <- TestClock.setTime(t0)
+        (a, _, serviceA) <- node(repo, log)
+        (b, _, serviceB) <- node(repo, log)
+        _ <- ZIO.succeed((1 to 5).foreach(_ => b.record(phone, numberKey, t0)))
+        _ <- serviceA.reset(CounterScope.velocity, Some(CounterValueType.phone), Some(number), "alice")
+        // b flushes before it has read the reset, and a loads what it flushed.
+        _ <- rounds(3)
+        loaded = a.count(phone, numberKey, TenMinutes, t0)
+        // Two polls on (the old moment of the second pass) it has not run: the loaded rows are still held.
+        _ <- serviceA.pollOnce
+        stillHeld = a.count(phone, numberKey, TenMinutes, t0)
+        // b applies the reset and deletes its rows; once the settle time has passed a forgets what it loaded.
+        _ <- serviceB.pollOnce
+        _ <- TestClock.adjust(settleAfter)
+        _ <- serviceA.pollOnce
+      yield assertTrue(pollInterval * 2 < on.loadInterval, loaded == 5, stillHeld == 5, a.count(phone, numberKey, TenMinutes, t0) == 0)
     },
     test("the whole scope, an address, a range of numbers and the budget are each reset as asked") {
       for
@@ -125,7 +148,8 @@ object AntifraudCountersSpec extends UnitSpecBase:
           a.record(phone, "other", t0)
         _ <- service.reset(CounterScope.velocity, Some(CounterValueType.prefix), Some("4915"), "alice")
         afterRange = (a.count(prefix, "tenant/491512", OneDay, t0), a.count(prefix, "tenant/337000", OneDay, t0))
-        _ <- service.reset(CounterScope.budget, Some(CounterValueType.phone), Some(number), "alice")
+        // A phone touches the phone's velocity key and never the budget: the range is reopened by its prefix.
+        _ <- service.reset(CounterScope.all, Some(CounterValueType.phone), Some(number), "alice")
         _ <- service.reset(CounterScope.budget, Some(CounterValueType.prefix), Some("4915"), "alice")
         _ <- service.reset(CounterScope.budget, None, None, "alice")
         // An address has no budget, so for scope all only the velocity counters are reset.
@@ -139,9 +163,10 @@ object AntifraudCountersSpec extends UnitSpecBase:
         // 203.0.113.7 is another network than the key "x", which is not an address at all: nothing to forget there.
         afterIp == 1,
         afterAll == (0, 0),
-        eventsA.budgetResetCalls == List(Some("770112"), Some("4915"), None, None),
+        eventsA.budgetResetCalls == List(Some("4915"), None, None),
         recorded.map(_.generation) == List(1L, 2L, 3L, 4L, 5L, 6L),
-        recorded(1).destPrefix.contains("770112"),
+        recorded(1).destPrefix.isEmpty,
+        recorded(2).destPrefix.contains("4915"),
       )
     },
     test("a request that is not valid is refused and records nothing") {
@@ -154,6 +179,8 @@ object AntifraudCountersSpec extends UnitSpecBase:
             (CounterScope.all, Some(CounterValueType.phone), None),
             (CounterScope.all, None, Some("4915")),
             (CounterScope.velocity, Some(CounterValueType.phone), Some("not a number")),
+            // a phone has no budget of its own
+            (CounterScope.budget, Some(CounterValueType.phone), Some(number)),
             (CounterScope.velocity, Some(CounterValueType.ip), Some("example.com")),
             (CounterScope.velocity, Some(CounterValueType.prefix), Some("49151299")),
             (CounterScope.velocity, Some(CounterValueType.prefix), Some("49%")),

@@ -63,7 +63,7 @@ case class SharedBucket(instance: UUID, bucket: VelocityBucket)
   * Memory is bounded: at most `maxKeys` keys of each kind, each at most 1440 buckets of 8 bytes in each of its stripes,
   * grown as the key is used and freed when it has been idle for a day. Keys are attacker-chosen (addresses, numbers), so a full table
   * does not switch the detection off: a new key takes the place of the least used of eight keys picked at random, by
-  * the requests each had in the last ten minutes (the power of choices). A key that is counted a lot is picked for eviction
+  * the requests each had in the last day, the longest window a rule enforces (the power of choices). A key that is counted a lot is picked for eviction
   * with a chance that falls off with the eighth power of its share of the table, so a flood of made-up keys (each seen
   * once or twice) replaces other made-up keys and leaves the established ones; it takes a table that is mostly as busy
   * as the busiest of the sample to evict one of those. Only when no key can be picked (a race) is the new key not counted,
@@ -134,15 +134,16 @@ final class VelocityCounters(
           slots(keyType.ordinal).release(slot, entry)
           raced
 
-  /** Makes room by dropping the key with the fewest requests in the last ten minutes among eight picked at random. A
-    * key seen once and never again has none to speak of, so junk goes first; an established key is only evicted when the
-    * whole sample is as busy. A request does the sampling itself: a few array reads and eight counts, no lock on the table.
+  /** Makes room by dropping the key with the fewest requests in the last day (the window the rules enforce, so a key that
+    * was hot an hour ago and went quiet is not mistaken for junk) among eight picked at random. A key seen once and never
+    * again has one request to speak of, so junk goes first; an established key is only evicted when the whole sample is
+    * as busy. A request does the sampling itself: a few array reads and eight counts, no lock on the table.
     * *Cost:* each count sums the key's stripes, one short lock per stripe in use, so with a full table every admitted new key
     * costs up to 8 entries x `stripes` (8) = about 64 lock acquisitions, none contended in practice (a stripe is chosen per
     * thread, and a made-up key has one stripe). That is microseconds per new key, paid only while the table is full; see
     * the key-flood spec for a wall-clock bound. */
   private def makeRoom(keyType: VelocityKey, map: ConcurrentHashMap[String, Entry], minute: Long): Boolean =
-    val from = minute - VelocityWindow.TenMinutes.minutes + 1
+    val from = minute - VelocityWindow.OneDay.minutes + 1
     val sample = slots(keyType.ordinal).sample(EvictionSample)
     if sample.isEmpty then false
     else
@@ -218,11 +219,21 @@ final class VelocityCounters(
     * [[AntifraudCounters]]). What another instance has written to the database since is read back by the next load,
     * unless that instance forgets it too, which it does on its own reset poll. */
   def forget(target: VelocityTarget): Unit =
-    VelocityKey.values.foreach: keyType =>
-      table(keyType).entrySet().removeIf: entry =>
-        val matches = target.matches(keyType, entry.getKey)
-        if matches then slots(keyType.ordinal).release(entry.getValue.slot, entry.getValue)
-        matches
+    // A key is in the one table of its kind and a range in the prefix table: only everything walks them all.
+    val kinds = target match
+      case VelocityTarget.All => VelocityKey.values.toList
+      case VelocityTarget.Key(keyType, _) => List(keyType)
+      case VelocityTarget.Range(_) => List(VelocityKey.prefix)
+    kinds.foreach: keyType =>
+      val map = table(keyType)
+      target match
+        case VelocityTarget.Key(_, key) =>
+          Option(map.get(key)).foreach(entry => if map.remove(key, entry) then slots(keyType.ordinal).release(entry.slot, entry))
+        case _ =>
+          map.entrySet().removeIf: entry =>
+            val matches = target.matches(keyType, entry.getKey)
+            if matches then slots(keyType.ordinal).release(entry.getValue.slot, entry.getValue)
+            matches
     remote.forget(target)
 
   /** Forgets only what was loaded from the other instances for `target`: the second pass of a reset. */

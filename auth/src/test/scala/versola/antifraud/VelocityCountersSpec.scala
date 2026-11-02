@@ -162,34 +162,54 @@ object VelocityCountersSpec extends UnitSpecBase:
         counters.untracked == 0,
       )
     },
-    test("a flood of 100k distinct keys against a full table of 1000 never evicts 20 hot keys, and each admission stays cheap") {
+    test("a flood of 100k distinct keys against a full table of 1000 never evicts 20 hot keys that went quiet, and each admission stays cheap") {
       val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 1000))
       // Fill the table with junk first, so that every key of the flood has to make room, then the hot keys come in the same way.
       (1 to 1000).foreach(i => counters.record(ip, s"fill$i", t0))
       (1 to 20).foreach(i => (1 to 50).foreach(_ => counters.record(ip, s"hot$i", t0.plusSeconds(1))))
+      // The hot keys go quiet for a quarter of an hour, longer than the ten minutes an earlier version ranked by, and then
+      // the flood comes: what they count in the hour and the day is what is protected.
+      val later = t0.plusSeconds(15 * 60)
       val started = nanoTime()
-      (1 to 100000).foreach(i => counters.record(ip, s"flood$i", t0.plusSeconds(2)))
+      (1 to 100000).foreach(i => counters.record(ip, s"flood$i", later))
       val elapsedMillis = (nanoTime() - started) / 1000000
       assertTrue(
         counters.size == 1000,
-        (1 to 20).forall(i => counters.count(ip, s"hot$i", TenMinutes, t0.plusSeconds(2)) == 50),
+        (1 to 20).forall(i => counters.count(ip, s"hot$i", OneDay, later) == 50),
         counters.untracked == 0,
         // About 64 uncontended locks per key: a second or so for the whole flood on a laptop; a regression to something
         // like a scan of the table (1000 entries per key) would take a hundred times that.
         elapsedMillis < 20000,
       )
     },
-    test("what is counted over the last ten minutes decides, not when the key came: an old idle key goes before a new busy one") {
+    test("what is counted over the last day decides, not the last minutes: a key that was busy half an hour ago stays over one just started") {
       val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 2))
-      counters.record(ip, "idle", t0)
-      (1 to 5).foreach(_ => counters.record(ip, "busy", t0.plusSeconds(3600)))
-      // Both held (the sample is the whole table): the idle one has nothing in the last ten minutes.
-      counters.record(ip, "new", t0.plusSeconds(3600))
+      (1 to 50).foreach(_ => counters.record(ip, "quiet", t0))
+      (1 to 3).foreach(_ => counters.record(ip, "fresh", t0.plusSeconds(1800)))
+      // Both held (the sample is the whole table): the quiet one has nothing in the last ten minutes, and 50 in the day.
+      counters.record(ip, "new", t0.plusSeconds(1800))
       assertTrue(
-        counters.count(ip, "idle", OneDay, t0.plusSeconds(3600)) == 0,
-        counters.count(ip, "busy", OneDay, t0.plusSeconds(3600)) == 5,
-        counters.count(ip, "new", OneDay, t0.plusSeconds(3600)) == 1,
+        counters.count(ip, "quiet", OneDay, t0.plusSeconds(1800)) == 50,
+        counters.count(ip, "fresh", OneDay, t0.plusSeconds(1800)) == 0,
+        counters.count(ip, "new", OneDay, t0.plusSeconds(1800)) == 1,
         counters.evicted == 1,
+      )
+    },
+    test("forgetting a key removes it from the table of its kind alone, and its slot is free for another") {
+      val counters = newCounters(on, AntifraudTestSettings.velocityLimits.copy(maxKeys = 2))
+      counters.record(ip, "x", t0)
+      counters.record(phone, "x", t0)
+      counters.record(ip, "y", t0)
+      counters.forget(VelocityTarget.Key(ip, "x"))
+      counters.record(ip, "z", t0)
+      assertTrue(
+        counters.count(ip, "x", OneDay, t0) == 0,
+        counters.count(phone, "x", OneDay, t0) == 1,
+        counters.count(ip, "y", OneDay, t0) == 1,
+        counters.count(ip, "z", OneDay, t0) == 1,
+        // The freed slot was taken: nothing was evicted for z.
+        counters.evicted == 0,
+        counters.size == 3,
       )
     },
     test("the table of one kind is full without crowding the other kinds") {

@@ -398,6 +398,26 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         exits.forall(_._2.causeOption.exists(_.squash.getMessage.contains("statement timeout"))),
       )
     },
+    test("pruning the audit also removes counter resets older than the limit, except the newest, which the generations count from") {
+      val oldAt = at.minusSeconds(400L * 86400)
+      def reset(generation: Long, when: Instant)(using DbCon) =
+        sql"INSERT INTO af_counter_reset (generation, scope, requested_by, at) VALUES ($generation, 'all', 'x', ${when.atOffset(java.time.ZoneOffset.UTC)})".update.run()
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"DELETE FROM af_counter_reset".update.run())
+        _ <- xa.connect:
+          reset(1, oldAt)
+          reset(2, oldAt)
+          reset(3, at)
+        _ <- repository.pruneAudit(at.minusSeconds(365L * 86400), 100)
+        left <- xa.connect(sql"SELECT generation FROM af_counter_reset ORDER BY generation".query[Long].run().toList)
+        // Everything is old, and the newest still stays.
+        _ <- repository.pruneAudit(at.plusSeconds(400L * 86400), 100)
+        newest <- xa.connect(sql"SELECT generation FROM af_counter_reset ORDER BY generation".query[Long].run().toList)
+        _ <- xa.connect(sql"DELETE FROM af_counter_reset".update.run())
+      yield assertTrue(left == List(3L), newest == List(3L))
+    },
     test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
       for
         repository <- clean

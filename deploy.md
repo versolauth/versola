@@ -835,7 +835,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);
   entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
   (`source` other than `manual`) must expire; a `cidr` entry is **not wider than /8 (IPv4) or /32 (IPv6)** (`0.0.0.0/0`
-  is every client); a `cidr`, `email_domain` or `prefix` entry may be **made to live 30 days at most**
+  is every client); a `cidr` wider than /24 (IPv4) or /48 (IPv6), an `email_domain` or a `prefix` entry may be **made to live 30 days at most**
   (`antifraud.lists.max-broad-ttl`; add it again to extend it); `source` is **set by the server** (`manual` for a request
   of the API whatever its body says, `detector:<kind>` for an approved proposal), so a client cannot call an entry
   manual to be rid of the expiry an automated one needs; an upsert of an existing entry is audited as `update` with the
@@ -888,7 +888,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
   that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
   10000 ranges are tracked. A full table makes room for a new range by evicting the one with the fewest codes sent in
-  the last ten minutes of **eight picked at random** (`antifraud_sms_budget_evicted_total`), so a flood of made-up ranges
+  the last hour (the window the limit counts) of **eight picked at random** (`antifraud_sms_budget_evicted_total`), so a flood of made-up ranges
   replaces other made-up ranges and the busy, closed ones stay; the bound on what an attacker can do is that evicting a
   closed range takes a sample of eight that are all as busy, which falls off with the eighth power of the share of
   such ranges in the table. A range that is evicted starts its hour again. Only when no range can be picked is a new one let
@@ -922,8 +922,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
   about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
   (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
-  A full table does not stop counting: a new key takes the place of the key with the fewest requests in the last ten
-  minutes of **eight picked at random** (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway
+  A full table does not stop counting: a new key takes the place of the key with the fewest requests in the last
+  day (the longest window a rule enforces) of **eight picked at random** (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway
   keys), whether or not it was seen again. *The bound:* a key is evicted when every key of a sample of eight is as busy
   as it, so with a share `h` of the table as busy as a key, it is evicted at a rate of `h^8` per new key (about 4 in 10^11 for
   5% of the table, 0.07% for 40%): an established key survives a flood of made-up keys unless the table is mostly
@@ -956,25 +956,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
 
 - **Resetting the counters (`af_counter_reset`, migration `V0026`).** `POST /antifraud/counters/reset` on `auth`'s internal
-  API (central's route for it follows with the admin API; until then it is called with the internal token, like
-  `/antifraud/lists`) forgets what the velocity counters and the SMS budget have counted. The body is
-  `{ "scope": "velocity" | "budget" | "all", "valueType"?: "phone" | "ip" | "prefix", "value"?: string, "userId": uuid }`,
-  the answer `202 { "generation": n }`. Without `valueType` and `value` the whole scope is reset; with them, one phone
-  number (given as a number; `auth` hashes it with the key of the event log), one address (its network, `/32` or `/64`)
-  or the ranges of numbers whose digits start with `value` (1 to 6 digits, every tenant). An address has no SMS budget, so
-  it resets the velocity counters only. This is the support path for "my number gets no code" (the phone's counts, and its
-  range's budget) and for a range that was closed in error, and what a load test does between runs (it replaces
-  `TRUNCATE af_velocity`, which left the memory of the instances as it was). The request is a row with a **generation**
-  (also the audit: who, when, what; `requested_by` is the `userId` central names), and every instance reads the new ones
-  every `antifraud.tuning.refresh-interval` (5 s) and forgets the target in memory (its own counts and what it loaded of
-  the others') and its own rows of `af_velocity`; the instance that took the request forgets at once and deletes every
-  row. A second pass, two refresh intervals later, forgets once more what an instance loaded from another that had
-  flushed before it applied the reset. So a reset is complete on every instance within about **two refresh intervals
-  (10 s)**; counts made while it spreads are counted as before, or not at all. An instance that starts later does not
-  replay old resets (its memory is empty); one whose database is unreadable keeps its counts until the next poll that
-  succeeds (`antifraud_counters_reset_failed_total{what="poll"|"delete"}`). `antifraud_counters_reset_total{scope}` counts
-  the requests. A reset forgives: the next requests of a number that was throttled are counted again from zero, so do
-  not script it against an attack in progress.
+  API (central's route for it follows with the admin API) forgets what the velocity counters and the SMS budget have
+  counted: `{ "scope": "velocity" | "budget" | "all", "valueType"?: "phone" | "ip" | "prefix", "value"?: string, "userId": uuid }`,
+  answered `202 { "generation": n }`. Without `valueType` and `value` the whole scope is reset. A `phone` or an `ip` resets
+  the velocity counters of that key only (the budget is per range: a support case for one number does not reopen a
+  range an attack closed), and a `prefix` (1 to 6 digits, every tenant) resets the ranges it is in or contains, in both. It
+  replaces `TRUNCATE af_velocity`, which left the memory of the instances as it was. The request is a row with a
+  generation (also its audit: `requested_by` is the `userId` central names; rows older than
+  `antifraud.lists.audit-retention` are pruned with the list audit, the newest one kept). Every instance reads new rows every
+  `antifraud.tuning.refresh-interval` and forgets the target in memory and its own `af_velocity` rows, then once more,
+  after two refresh intervals plus a flush and a load interval, what it loaded from the others. A reset is therefore
+  complete on every instance **within two refresh intervals plus one flush-and-load cycle**; the instance that took the
+  request forgets at once. An instance that starts later does not replay old resets. Metrics:
+  `antifraud_counters_reset_total{scope}` and `antifraud_counters_reset_failed_total{what="poll"|"delete"}`.
 
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it

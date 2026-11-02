@@ -1,3 +1,8 @@
+-- Fail fast rather than stall the writer: DROP INDEX below waits for a lock on every partition of af_event, and the
+-- inserts of the single writer queue behind a request that waits. Flyway runs a migration in one transaction, so this
+-- holds for the whole file; a migration that cannot get its locks in 5 seconds fails and is run again.
+SET LOCAL lock_timeout = '5s';
+
 -- Antifraud storage, second pass: two indexes nothing reads, the markers a rollup that runs once per interval needs,
 -- what an update of a list entry leaves in the audit, and the counter reset.
 

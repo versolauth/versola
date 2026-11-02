@@ -40,7 +40,8 @@ trait AntifraudListRepository:
     * fewer than `limit` means no more are due. Safe to run on several instances at once. */
   def purgeExpired(now: Instant, limit: Int): Task[Int]
 
-  /** Removes up to `limit` audit records older than `before`; fewer than `limit` means no more are due. */
+  /** Removes up to `limit` audit records older than `before`; fewer than `limit` means no more are due. Also removes (as many,
+    * not counted) the records of counter resets older than `before`, but never the newest, which the generations count from. */
   def pruneAudit(before: Instant, limit: Int): Task[Int]
 
   /** The changes of one entry, or of all, the latest first. */

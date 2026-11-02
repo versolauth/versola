@@ -171,8 +171,8 @@ what happened on the first `evaluate` run here). The reset is `POST /antifraud/c
 `TRUNCATE af_velocity`, which emptied the table and left the memory of every running instance as it was: the reset is a
 row every `auth` reads within two refresh intervals (10 s) and forgets its counts for, the budget's included, and it is
 audited. Wait those 10 s before the next run starts. With `scope` `velocity` or `budget` only one of the two is reset,
-and `valueType` (`phone`, `ip`, `prefix`) with `value` narrows it to one number, address or range (deploy.md,
-"Resetting the counters").
+and `valueType` (`phone`, `ip`, `prefix`) with `value` narrows it to one number or address (velocity counters only) or
+to the ranges of a prefix (both); a phone never reopens its range's budget (deploy.md, "Resetting the counters").
 
 Shorter or lighter runs: put the keys to change in a file that includes `loadgen.conf` (`include required(file(...))`,
 then `antifraud { normal { rate = 5.0, duration = 10s } }`) and pass it as `-Denv.path`. `antifraud.scenarios`

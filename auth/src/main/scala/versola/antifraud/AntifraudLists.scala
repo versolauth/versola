@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *  - An entry that names many clients (anything but an exact subject, a network wider than /24 or /48) must have an
   *    `expiresAt`, and so must one whose `source` is not `manual` (an automated entry).
   *  - A `cidr` entry is not wider than /8 (IPv4) or /32 (IPv6): `0.0.0.0/0` is every client, and a network a registry
-  *    hands to one provider is not narrower than that. A `cidr`, `email_domain` or `prefix` entry lives at most
+  *    hands to one provider is not narrower than that. A broad `cidr` (wider than /24 or /48), `email_domain` or `prefix` entry lives at most
   *    `max-broad-ttl` (30 days by default): a block of many clients is made for an attack and is made again, not kept.
   *  - `source` is the server's: `manual` for a request of the API, `detector:<kind>` for an approved proposal. A client
   *    cannot name its own, so it cannot call an entry `manual` to be rid of the expiry an automated one must have.
@@ -278,7 +278,10 @@ object AntifraudLists:
           .fail(InvalidListEntry(
             s"expiresAt is more than ${settings.maxBroadTtl.toDays} days away: an entry of kind ${entry.valueType} lives that long at most",
           ))
-          .when(ListValues.expiresAtMost(entry.valueType) && entry.expiresAt.exists(_.isAfter(now.plusSeconds(settings.maxBroadTtl.toSeconds))))
+          .when(ListValues.expiresAtMost(
+            entry.valueType,
+            value,
+          ) && entry.expiresAt.exists(_.isAfter(now.plusSeconds(settings.maxBroadTtl.toSeconds))))
       yield value
 
     override def preview(entry: NewListEntry): Task[ListPreview] =

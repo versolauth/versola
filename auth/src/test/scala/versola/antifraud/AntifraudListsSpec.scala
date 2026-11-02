@@ -433,7 +433,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         ip.isRight,
       )
     },
-    test("a network, a mail domain or a prefix lives 30 days at most, and the other kinds are not held to it") {
+    test("a broad network, a mail domain or a prefix lives 30 days at most, and exact subjects and the other kinds are not held to it") {
       val (lists, _) = make(FakeRepository(), AntifraudTestSettings.lists.copy(enabled = true))
       def create(valueType: AntifraudValueType, value: String, days: Long) =
         lists
@@ -456,6 +456,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         domain <- create(AntifraudValueType.email_domain, "mailinator.com", 31)
         cidr <- create(AntifraudValueType.cidr, "10.0.0.0/16", 31)
         exactNetwork <- create(AntifraudValueType.cidr, "10.0.0.1/32", 31)
+        narrowNetwork <- create(AntifraudValueType.cidr, "10.3.0.0/24", 365)
         prefixAtLimit <- create(AntifraudValueType.prefix, "4916", 30)
         cidrAtLimit <- create(AntifraudValueType.cidr, "10.2.0.0/16", 30)
         phone <- create(AntifraudValueType.phone_hash, "h", 365)
@@ -464,7 +465,9 @@ object AntifraudListsSpec extends UnitSpecBase:
         prefix.swap.exists(_.getMessage.contains("30 days")),
         domain.isLeft,
         cidr.isLeft,
-        exactNetwork.isLeft,
+        // A network of one address, or a /24, names one subject or few: held to nothing, as before.
+        exactNetwork.isRight,
+        narrowNetwork.isRight,
         prefixAtLimit.isRight,
         cidrAtLimit.isRight,
         phone.isRight,

@@ -8,6 +8,7 @@ import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
 import java.util.UUID
+import scala.util.chaining.*
 
 /** @param previewTimeout   the longest a preview (a day of `af_event` read in full) may take before the creation fails
   * @param statementTimeout the longest any other statement may take: the refresh, the hit flush and the clean-up run on
@@ -183,7 +184,17 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
           SELECT id FROM af_list_audit WHERE at < $before ORDER BY at LIMIT $limit FOR UPDATE SKIP LOCKED
         )
         DELETE FROM af_list_audit a USING due WHERE a.id = due.id
-      """.update.run()
+      """.update.run().tap: _ =>
+        // The counter resets are audited in their own table and age out with the list audit. The newest row stays whatever its
+        // age: the next generation is counted from it, and one that restarted at 1 would be below what the instances have applied.
+        sql"""
+          DELETE FROM af_counter_reset
+          WHERE generation IN (
+            SELECT generation FROM af_counter_reset
+            WHERE at < $before AND generation < (SELECT MAX(generation) FROM af_counter_reset)
+            ORDER BY generation LIMIT $limit
+          )
+        """.update.run()
 
   // Two statements, not one with `$x IS NULL OR entry_id = $x`: a cached generic plan would have to serve both.
   override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =

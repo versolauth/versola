@@ -34,8 +34,7 @@ case class CounterReset(
 object CounterReset:
   /** A request made into what is stored: `valueHash` is the key the velocity counters hold the value under (the keyed
     * hash of a phone, of an address's network, the digits of a prefix) and `destPrefix` the digits the SMS budget is
-    * keyed by (the leading digits of a phone number, or the prefix); neither is the value itself beyond digits a log
-    * already keeps. */
+    * keyed by (set for a prefix only); neither is the value itself beyond digits a log already keeps. */
   case class Resolved(scope: CounterScope, valueType: Option[CounterValueType], valueHash: Option[String], destPrefix: Option[String])
 
 /** The request is not valid: a value without its type, a value that is not of its type, an address for the budget. */
@@ -49,13 +48,15 @@ final class InvalidCounterReset(message: String) extends RuntimeException(messag
   * `antifraud.tuning.refresh-interval`, as they read the tuning: each forgets its memory of the target (its own counts
   * and what it has loaded of the others'), deletes its own rows of `af_velocity` for it, and forgets what it loaded of the
   * others once more a little later, so that a count another instance wrote between its last flush and its own reset is not
-  * kept. So a reset is complete on every instance within two refresh intervals; the instance that took the request forgets at
-  * once. A request that is counted while the reset is applied is counted as before it, or not at all: nothing
+  * kept (that second pass runs two refresh intervals plus a flush and a load interval after the reset is applied). So a
+  * reset is complete on every instance within two refresh intervals plus one flush-and-load cycle; the instance that took the
+  * request forgets at once. A request that is counted while the reset is applied is counted as before it, or not at all: nothing
   * is lost beyond the few seconds it takes.
   *
-  * The SMS budget is keyed by tenant and range of numbers: a reset of a phone number or a prefix forgets the ranges that
-  * contain it (or are contained by it) of every tenant, and a reset of an address leaves the budget alone, since it has
-  * no address.
+  * The SMS budget is keyed by tenant and range of numbers: only a reset of a prefix (or of the whole budget) reopens ranges,
+  * those that contain it or are contained by it, of every tenant. A reset of a phone number or an address touches the
+  * velocity counters of that key and leaves the budget alone: a support case for one number must not lift a closure an
+  * attack caused, and a request for the budget of a phone alone is refused, since it has none.
   */
 trait AntifraudCounters:
   /** Makes the request, forgets what it says on this instance and returns the generation the others will apply.
@@ -68,7 +69,8 @@ object AntifraudCounters:
   private val PollBatch = 100
 
   val live: ZLayer[
-    AntifraudCounterResetRepository & VelocityRepository & VelocityCounters & AntifraudEvents & AntifraudTuningStore.Settings & Scope,
+    AntifraudCounterResetRepository & VelocityRepository & VelocityCounters & AntifraudEvents & AntifraudEvents.Settings &
+      AntifraudTuningStore.Settings & Scope,
     Nothing,
     AntifraudCounters,
   ] =
@@ -79,7 +81,12 @@ object AntifraudCounters:
         counters <- ZIO.service[VelocityCounters]
         events <- ZIO.service[AntifraudEvents]
         interval <- ZIO.serviceWith[AntifraudTuningStore.Settings](_.refreshInterval)
-        impl = Impl(repository, velocityRepository, counters, events, interval)
+        velocity <- ZIO.serviceWith[AntifraudEvents.Settings](_.velocity)
+        // How long after a reset is applied what the others flushed before they applied it is certainly in the database and
+        // has been loaded: they apply it within a poll (and again a poll later at the latest), then flush, and every
+        // instance loads once per load interval. Only after that does forgetting the loaded rows once more catch them.
+        settle = interval.multipliedBy(2) + velocity.loadInterval + velocity.flushInterval
+        impl = Impl(repository, velocityRepository, counters, events, interval, settle)
         _ <- impl.start
       yield impl
 
@@ -89,18 +96,17 @@ object AntifraudCounters:
       counters: VelocityCounters,
       events: AntifraudEvents,
       pollInterval: Duration,
+      settleAfter: Duration,
   ) extends AntifraudCounters:
 
     // The last generation this instance has applied, or -1 before it knows where the log stands.
     private val applied = AtomicLong(-1L)
-    // Generations this instance applied when it took the request, which the poll must not apply again.
+    // Generations this instance applied when it took the request, which the poll need not apply again. They are added after the
+    // commit, so a poll can read one first and apply it twice (harmless: forgetting is idempotent); the poll drops what it has
+    // passed, so no generation stays in the set.
     private val appliedHere = ConcurrentHashMap.newKeySet[java.lang.Long]()
     // Resets whose second pass (forget what was loaded of the others, delete own rows again) is due, and when.
     private val settling = AtomicReference(List.empty[(Instant, CounterReset)])
-
-    // How long after it a reset is gone from what the others hold: they apply it within a poll, and a load is a
-    // few seconds more; twice the poll covers the first and the usual second.
-    private val settleAfter = pollInterval.multipliedBy(2)
 
     override def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String): Task[Long] =
       for
@@ -123,15 +129,13 @@ object AntifraudCounters:
         case (Some(_), None) | (None, Some(_)) => invalid("give valueType and value together, or neither")
         case (Some(_), Some(v)) if v.isEmpty || v.length > 64 => invalid("value is empty or too long")
         case (Some(CounterValueType.ip), _) if !scope.velocityToo => invalid("an address has no SMS budget: scope is velocity or all")
+        // A support case for one number must not reopen what an attack closed: the range's budget is reset by its prefix.
+        case (Some(CounterValueType.phone), _) if !scope.velocityToo =>
+          invalid("a phone has no SMS budget of its own: reset the budget of its range with valueType prefix")
         case (Some(CounterValueType.phone), Some(v)) =>
           ZIO.fromEither(Phone.parse(v)).mapError(_ => InvalidCounterReset("value is not a valid phone number")).flatMap: phone =>
             events.subjectHash(Right(phone)).map: hash =>
-              CounterReset.Resolved(
-                scope,
-                Some(CounterValueType.phone),
-                Some(hash),
-                Some(phone.filter(_.isDigit).take(AntifraudEvents.destPrefixLength)),
-              )
+              CounterReset.Resolved(scope, Some(CounterValueType.phone), Some(hash), None)
         case (Some(CounterValueType.ip), Some(v)) =>
           counters.ipTarget(v).flatMap:
             case Some(VelocityTarget.Key(_, key)) => ZIO.succeed(CounterReset.Resolved(scope, Some(CounterValueType.ip), Some(key), None))
@@ -154,8 +158,9 @@ object AntifraudCounters:
       val target = velocityTarget(reset)
       val budgetPrefix = reset.valueType match
         case None => Some(None)
-        case Some(CounterValueType.ip) => None
-        case Some(_) => Some(reset.destPrefix)
+        // Neither an address nor a phone has a budget of its own: only the range, by its prefix, is reset.
+        case Some(CounterValueType.ip) | Some(CounterValueType.phone) => None
+        case Some(CounterValueType.prefix) => Some(reset.destPrefix)
       ZIO.when(reset.scope.velocityToo)(ZIO.succeed(counters.forget(target)) *> deleteRows(target, everyRow)) *>
         ZIO.foreachDiscard(budgetPrefix.filter(_ => reset.scope.budgetToo))(events.resetBudget)
 
@@ -183,7 +188,7 @@ object AntifraudCounters:
 
     /** Applies what is new: the resets after the last generation this instance has seen. The first poll only finds out
       * where the log stands: what was reset before this instance started is not in its memory. */
-    private val poll: Task[Unit] =
+    private val pollReset: Task[Unit] =
       repository.latest.flatMap: latest =>
         val seen = applied.get
         if seen < 0 then ZIO.succeed(applied.set(latest))
@@ -197,6 +202,9 @@ object AntifraudCounters:
                 _ <- ZIO.unless(took)(apply(reset, everyRow = false) *> schedule(reset, now))
                 _ <- ZIO.succeed(applied.set(reset.generation))
               yield ()
+
+    private val poll: Task[Unit] =
+      pollReset *> ZIO.succeed(appliedHere.removeIf(_ <= applied.get)).unit
 
     private[antifraud] val pollOnce: UIO[Unit] =
       settle *> poll.foldCauseZIO(

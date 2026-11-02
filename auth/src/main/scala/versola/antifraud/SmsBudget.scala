@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicLong
   * It opens again by itself as the hour moves on. Both limits are off while they are 0.
   *
   * The table is bounded by `maxRanges`. Ranges are made by whoever asks (the leading digits of a number), so a full table
-  * does not stop new ranges from being tracked: the range with the fewest codes sent in the last ten minutes, of eight
+  * does not stop new ranges from being tracked: the range with the fewest codes sent in the last hour (the window the limit counts), of eight
   * picked at random, makes room (see [[VelocityCounters]], which does the same with its keys). A busy range, the kind an
   * attack makes, is the last to be evicted, and one a flood of made-up ranges pushes out loses its hour of counts and
   * starts again, which is the budget failing open for that range, not for the others.
@@ -93,7 +93,7 @@ final class SmsBudget(settings: SmsBudget.Settings, sizing: SmsBudget.Sizing, li
     val sample = slots.sample(EvictionSample)
     if sample.isEmpty then false
     else
-      val victim = sample.minBy(_.sentSince(at, RecentMinutes))
+      val victim = sample.minBy(_.totals(at)._1)
       if windows.remove(victim.key, victim) then
         slots.release(victim.slot, victim)
         evictedCount.incrementAndGet()
@@ -166,9 +166,8 @@ object SmsBudget:
 
   private val Minutes = 60
 
-  /** Ranges looked at when a full table makes room for a new one, and the minutes their use is counted over. */
+  /** Ranges looked at when a full table makes room for a new one. */
   private val EvictionSample = 8
-  private val RecentMinutes = 10
   private val SlotSlack = 64
 
   /** The last hour, a minute at a time. */
@@ -202,12 +201,6 @@ object SmsBudget:
       // A closed range that is not being enforced sends the code, so the code is counted.
       if (why.isEmpty || !enforce) && charge then add(at, sent = 1, verified = 0)
       why
-
-    /** Codes sent in the last `minutes` minutes. */
-    def sentSince(at: Instant, minutes: Int): Int = synchronized:
-      val now = at.getEpochSecond / 60
-      (0 until Minutes).foldLeft(0): (sum, slot) =>
-        if now - minuteOf(slot) < minutes && minuteOf(slot) <= now then sum + sent(slot) else sum
 
     def totals(at: Instant): (Int, Int) = synchronized:
       val now = at.getEpochSecond / 60

@@ -258,9 +258,12 @@ object ListValues:
       else Option.when(bits < MinCidrBitsV4)(s"an IPv4 network is /$MinCidrBitsV4 or narrower")
     .flatten
 
-  /** The kinds that name many clients with one value, and so have a longest life ([[AntifraudLists.Settings.maxBroadTtl]]). */
-  def expiresAtMost(valueType: AntifraudValueType): Boolean =
-    valueType == AntifraudValueType.cidr || valueType == AntifraudValueType.email_domain || valueType == AntifraudValueType.prefix
+  /** The entries that have a longest life ([[AntifraudLists.Settings.maxBroadTtl]]): a `cidr` wider than /24 or /48, a mail
+    * domain or a prefix, which name many clients with one value. A network of one address or a narrow one is an exact
+    * subject and is held to nothing here, as before. */
+  def expiresAtMost(valueType: AntifraudValueType, normalized: String): Boolean =
+    (valueType == AntifraudValueType.cidr || valueType == AntifraudValueType.email_domain || valueType == AntifraudValueType.prefix) &&
+      broad(valueType, normalized)
 
   /** The address with the bits beyond the prefix cleared, as text. */
   private def canonical(parsed: (Boolean, IpKey), bits: Option[Int]): String =
