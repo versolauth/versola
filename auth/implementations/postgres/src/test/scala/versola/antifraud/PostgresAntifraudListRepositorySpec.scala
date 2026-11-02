@@ -256,17 +256,15 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           ),
         )
         since = at.minusSeconds(3600)
-        byPhone <- repository.preview(AntifraudValueType.phone_hash, "h1", since)
-        byPrefix <- repository.preview(AntifraudValueType.prefix, "4915", since)
-        byUa <- repository.preview(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua), since)
-        byIp <- repository.preview(AntifraudValueType.ip, "10.0.0.1", since)
-        byAsn <- repository.preview(AntifraudValueType.asn, "24940", since)
-        byOtherAsn <- repository.preview(AntifraudValueType.asn, "64500", since)
-        byNoAsn <- repository.preview(AntifraudValueType.asn, "65000", since)
-        byHugeAsn <- repository.preview(AntifraudValueType.asn, "4200000000", since)
+        byPhone <- repository.preview(AntifraudValueType.phone_hash, "h1", None, since)
+        byUa <- repository.preview(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua), None, since)
+        byIp <- repository.preview(AntifraudValueType.ip, "10.0.0.1", None, since)
+        byAsn <- repository.preview(AntifraudValueType.asn, "24940", None, since)
+        byOtherAsn <- repository.preview(AntifraudValueType.asn, "64500", None, since)
+        byNoAsn <- repository.preview(AntifraudValueType.asn, "65000", None, since)
+        byHugeAsn <- repository.preview(AntifraudValueType.asn, "4200000000", None, since)
       yield assertTrue(
         byPhone == ListPreview(matched = Some(1), total = 3),
-        byPrefix == ListPreview(matched = Some(1), total = 3),
         byUa == ListPreview(matched = Some(1), total = 3),
         byIp == ListPreview(matched = None, total = 3),
         // The event of 48 hours ago is out of the window; the one with no ASN is in the total and not in the match.
@@ -278,6 +276,159 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
       // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
       // does so in the middle of this, the test is repeated.
     } @@ TestAspect.eventually,
+    test("a preview is over the events of the entry's tenant, and of all of them for a global entry") {
+      val a = Some(TenantId("tenant-a"))
+      val b = Some(TenantId("tenant-b"))
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        events = PostgresAntifraudEventRepository(xa)
+        today = at.atZone(java.time.ZoneOffset.UTC).toLocalDate
+        _ <- events.maintainPartitions(today.minusDays(2), 3, today.minusDays(30))
+        base = AntifraudEvent(
+          id = UUID.randomUUID(),
+          at = at.minusSeconds(60),
+          tenantId = a,
+          clientId = versola.oauth.client.model.ClientId("c"),
+          conversationId = UUID.randomUUID(),
+          action = AntifraudAction.otp_request,
+          outcome = AntifraudOutcome.sent,
+          channel = AntifraudChannel.sms,
+          subjectHash = "h1",
+          destPrefix = Some("491512"),
+          userAgent = Some("Mozilla/5.0 (tenants)"),
+          score = None,
+          rules = Nil,
+        )
+        _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
+        _ <- events.insertBatch(
+          List(
+            base,
+            base.copy(id = UUID.randomUUID(), subjectHash = "h2"),
+            base.copy(id = UUID.randomUUID(), tenantId = b),
+            base.copy(id = UUID.randomUUID(), tenantId = b),
+            base.copy(id = UUID.randomUUID(), tenantId = b),
+            base.copy(id = UUID.randomUUID(), tenantId = None),
+          ),
+        )
+        since = at.minusSeconds(3600)
+        ua = ListSnapshot.sha256Hex("Mozilla/5.0 (tenants)")
+        global <- repository.preview(AntifraudValueType.phone_hash, "h1", None, since)
+        ofA <- repository.preview(AntifraudValueType.phone_hash, "h1", a, since)
+        ofB <- repository.preview(AntifraudValueType.phone_hash, "h1", b, since)
+        uaOfA <- repository.preview(AntifraudValueType.ua_hash, ua, a, since)
+        ipOfB <- repository.preview(AntifraudValueType.ip, "10.0.0.1", b, since)
+      yield assertTrue(
+        global == ListPreview(matched = Some(5), total = 6),
+        ofA == ListPreview(matched = Some(1), total = 2),
+        ofB == ListPreview(matched = Some(3), total = 3),
+        uaOfA == ListPreview(matched = Some(2), total = 2),
+        ipOfB == ListPreview(matched = None, total = 3),
+      )
+    } @@ TestAspect.eventually,
+    test("a preview of a prefix reads the rolled-up requests of the range, of the entry's tenant, and a longer prefix is its range") {
+      val since = at.minusSeconds(3600)
+      def stats(tenant: String, prefix: String, minute: Instant, requests: Int)(using DbCon) =
+        sql"""INSERT INTO af_dest_stats (tenant_id, dest_prefix, minute, requests, sent, suppressed, throttled, provider_errors, verified, wrong_codes)
+              VALUES ($tenant, $prefix, ${minute.atOffset(java.time.ZoneOffset.UTC)}, $requests, 0, 0, 0, 0, 0, 0)""".update.run()
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"DELETE FROM af_dest_stats".update.run())
+        _ <- xa.connect:
+          stats("tenant-a", "4915", since.plusSeconds(600), 30)
+          stats("tenant-a", "4916", since.plusSeconds(660), 60)
+          stats("tenant-b", "4915", since.plusSeconds(600), 10)
+          // before the window
+          stats("tenant-a", "4915", since.minusSeconds(60), 1000)
+        global <- repository.preview(AntifraudValueType.prefix, "4915", None, since)
+        ofA <- repository.preview(AntifraudValueType.prefix, "4915", Some(TenantId("tenant-a")), since)
+        longer <- repository.preview(AntifraudValueType.prefix, "491512", Some(TenantId("tenant-a")), since)
+        shorter <- repository.preview(AntifraudValueType.prefix, "49", Some(TenantId("tenant-a")), since)
+        none <- repository.preview(AntifraudValueType.prefix, "33", Some(TenantId("tenant-a")), since)
+        empty <- repository.preview(AntifraudValueType.prefix, "4915", Some(TenantId("nobody")), since)
+      yield assertTrue(
+        global == ListPreview(matched = Some(40), total = 100),
+        ofA == ListPreview(matched = Some(30), total = 90),
+        longer == ListPreview(matched = Some(30), total = 90),
+        shorter == ListPreview(matched = Some(90), total = 90),
+        none == ListPreview(matched = Some(0), total = 90),
+        empty == ListPreview(matched = Some(0), total = 0),
+      )
+    } @@ TestAspect.eventually,
+    test("an entry added again is audited as an update, with what it was; the first time as a create") {
+      for
+        repository <- clean
+        first <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(3600))), "alice", at)
+        again <- repository.upsert(
+          entry().copy(expiresAt = Some(at.plusSeconds(60)), reason = Some("changed"), source = "detector:prefix_anomaly", shadow = true),
+          "bob",
+          at.plusSeconds(1),
+        )
+        audit <- repository.audit(Some(first.id), 10)
+      yield assertTrue(
+        again.id == first.id,
+        audit.map(_.action) == List(AntifraudListAction.update, AntifraudListAction.create),
+        // The record has the entry as it became, and what it had.
+        audit.head.expiresAt.contains(at.plusSeconds(60)),
+        audit.head.reason.contains("changed"),
+        audit.head.previous.contains(
+          PreviousListValues(expiresAt = Some(at.plusSeconds(3600)), reason = Some("seen in an attack"), source = "manual", shadow = false),
+        ),
+        audit.last.previous.isEmpty,
+      )
+    },
+    test("every method is under the statement timeout: a lock held on its tables fails it instead of hanging") {
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        impatient = PostgresAntifraudListRepository(xa, statementTimeout = 100.millis)
+        id = UUID.randomUUID()
+        holder <- xa.transact:
+          sql"LOCK TABLE af_list_entry, af_list_audit, af_list_version IN ACCESS EXCLUSIVE MODE".update.run()
+          Thread.sleep(4000)
+        .fork
+        _ <- Live.live(ZIO.sleep(500.millis))
+        calls = List(
+          "upsert" -> impatient.upsert(entry(), "x", at).unit,
+          "delete" -> impatient.delete(id, "x", at).unit,
+          "find" -> impatient.find(id).unit,
+          "list" -> impatient.list(AntifraudListFilter.all, 10, 0).unit,
+          "loadActive" -> impatient.loadActive(at).unit,
+          "version" -> impatient.version.unit,
+          "addHits" -> impatient.addHits(List(ListHit(id, 1, at))),
+          "purgeExpired" -> impatient.purgeExpired(at, 10).unit,
+          "pruneAudit" -> impatient.pruneAudit(at, 10).unit,
+          "audit of all" -> impatient.audit(None, 10).unit,
+          "audit of one" -> impatient.audit(Some(id), 10).unit,
+        )
+        exits <- ZIO.foreach(calls)((name, call) => call.exit.map(name -> _))
+        _ <- holder.join
+      yield assertTrue(
+        exits.filterNot(_._2.isFailure).map(_._1) == Nil,
+        exits.forall(_._2.causeOption.exists(_.squash.getMessage.contains("statement timeout"))),
+      )
+    },
+    test("pruning the audit also removes counter resets older than the limit, except the newest, which the generations count from") {
+      val oldAt = at.minusSeconds(400L * 86400)
+      def reset(generation: Long, when: Instant)(using DbCon) =
+        sql"INSERT INTO af_counter_reset (generation, scope, requested_by, at) VALUES ($generation, 'all', 'x', ${when.atOffset(java.time.ZoneOffset.UTC)})".update.run()
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"DELETE FROM af_counter_reset".update.run())
+        _ <- xa.connect:
+          reset(1, oldAt)
+          reset(2, oldAt)
+          reset(3, at)
+        _ <- repository.pruneAudit(at.minusSeconds(365L * 86400), 100)
+        left <- xa.connect(sql"SELECT generation FROM af_counter_reset ORDER BY generation".query[Long].run().toList)
+        // Everything is old, and the newest still stays.
+        _ <- repository.pruneAudit(at.plusSeconds(400L * 86400), 100)
+        newest <- xa.connect(sql"SELECT generation FROM af_counter_reset ORDER BY generation".query[Long].run().toList)
+        _ <- xa.connect(sql"DELETE FROM af_counter_reset".update.run())
+      yield assertTrue(left == List(3L), newest == List(3L))
+    },
     test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
       for
         repository <- clean

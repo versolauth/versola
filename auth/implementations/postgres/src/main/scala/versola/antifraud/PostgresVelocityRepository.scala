@@ -44,23 +44,44 @@ class PostgresVelocityRepository(xa: TransactorZIO, statementTimeout: Duration =
   override def loadOthers(instance: UUID, fromMinute: Long, toMinute: Long, maxKeys: Int): Task[List[SharedBucket]] =
     xa.transactMeasured("load-antifraud-velocity"):
       timed()
-      // Keys are ranked first and their rows read after, so the limit cuts keys and never the minutes of a key.
+      // Keys are ranked first and their rows read after, so the limit cuts keys and never the minutes of a key. The
+      // ranking only aggregates (a key and a sum per key, the top `maxKeys` kept), and each hot key's rows are then read by
+      // the primary key, so no row of the range is held for the second step: the range read is as large as the busiest keys.
       sql"""
-        WITH ranged AS (
-          SELECT key_type, key, minute, instance_id, count
-          FROM af_velocity
+        WITH hot AS (
+          SELECT key_type, key FROM af_velocity
           WHERE minute >= $fromMinute AND minute < $toMinute AND instance_id <> $instance
-        ), hot AS (
-          SELECT key_type, key FROM ranged GROUP BY key_type, key ORDER BY SUM(count) DESC LIMIT $maxKeys
+          GROUP BY key_type, key ORDER BY SUM(count) DESC LIMIT $maxKeys
         )
         SELECT r.key_type, r.key, r.minute, r.instance_id, r.count
-        FROM ranged r JOIN hot h ON h.key_type = r.key_type AND h.key = r.key
+        FROM hot h
+        JOIN af_velocity r ON r.key_type = h.key_type AND r.key = h.key
+          AND r.minute >= $fromMinute AND r.minute < $toMinute AND r.instance_id <> $instance
       """.query[Row].run().toList
     .map(_.flatMap(row =>
       VelocityKey.values.find(_.toString == row.keyType).map(keyType =>
         SharedBucket(instance = row.instanceId, bucket = VelocityBucket(keyType = keyType, key = row.key, minute = row.minute, count = row.count)),
       ),
     ))
+
+  override def forget(target: VelocityTarget, instance: Option[UUID]): Task[Int] =
+    xa.transactMeasured("forget-antifraud-velocity"):
+      timed()
+      val own = instance.isEmpty
+      val who = instance.getOrElse(NoInstance)
+      target match
+        case VelocityTarget.All =>
+          sql"DELETE FROM af_velocity WHERE $own OR instance_id = $who".update.run()
+        case VelocityTarget.Key(keyType, key) =>
+          val kind = keyType.toString
+          sql"DELETE FROM af_velocity WHERE key_type = $kind AND key = $key AND ($own OR instance_id = $who)".update.run()
+        case VelocityTarget.Range(digits) =>
+          // `tenant/digits`: what follows the last slash.
+          val like = s"$digits%"
+          sql"""
+            DELETE FROM af_velocity
+            WHERE key_type = 'prefix' AND substring(key from '[^/]*$$') LIKE $like AND ($own OR instance_id = $who)
+          """.update.run()
 
   override def prune(minute: Long, batch: Int): Task[Int] =
     xa.transactMeasured("prune-antifraud-velocity"):
@@ -76,6 +97,8 @@ class PostgresVelocityRepository(xa: TransactorZIO, statementTimeout: Duration =
 object PostgresVelocityRepository:
   val live: ZLayer[TransactorZIO, Nothing, VelocityRepository] =
     ZLayer.fromFunction(PostgresVelocityRepository(_))
+
+  private val NoInstance = new UUID(0L, 0L)
 
   /** Rows per statement of a save. */
   private val SaveChunk = 2000

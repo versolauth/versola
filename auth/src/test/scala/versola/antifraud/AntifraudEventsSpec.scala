@@ -11,7 +11,7 @@ import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
 import zio.logging.logContext
-import zio.metrics.{Metric, MetricLabel}
+import zio.metrics.{Metric, MetricLabel, MetricState}
 import zio.test.*
 
 import java.io.ByteArrayInputStream
@@ -59,6 +59,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
       _ <- e.repository.rollupStats.succeedsWith(true)
+      _ <- e.repository.partitionDaysAhead.succeedsWith(0)
       _ <- e.repository.pruneStats.succeedsWith(())
       _ <- e.repository.pruneEvents.succeedsWith(())
       events <- AntifraudEvents.liveWith(sizing).build.map(_.get[AntifraudEvents])
@@ -231,6 +232,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
           _ <- e.repository.maintainPartitions.succeedsWith(())
           _ <- e.repository.insertBatch.succeedsWith(())
           _ <- e.repository.rollupStats.succeedsWith(true)
+          _ <- e.repository.partitionDaysAhead.succeedsWith(0)
           _ <- e.repository.pruneStats.succeedsWith(())
           events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
             ZLayer.succeed[AntifraudEventRepository](e.repository),
@@ -289,6 +291,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.partitionDaysAhead.succeedsWith(0)
             _ <- e.repository.pruneStats.succeedsWith(())
             _ <- AntifraudEvents.liveWith(smallSizing).build.provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
@@ -310,6 +313,52 @@ object AntifraudEventsSpec extends UnitSpecBase:
             later <- attempts.get
           yield assertTrue(beforeRetry == 1, afterRetry == 2, later == 2)
       },
+      test("the days ahead that have a partition are a gauge, set after every run, a failed one included") {
+        val e = env
+        val gauge = Metric.gauge("antifraud_partition_days_ahead")
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
+            attempts <- Ref.make(0)
+            _ <- e.repository.maintainPartitions.returnsZIO: _ =>
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 2).unit)
+            ahead <- Ref.make(7)
+            _ <- e.repository.partitionDaysAhead.returnsZIO(_ => ahead.get)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.pruneStats.succeedsWith(())
+            _ <- AntifraudEvents.liveWith(smallSizing).build.provideSome[Scope](
+              ZLayer.succeed[AntifraudEventRepository](e.repository),
+              ZLayer.succeed(small),
+              ZLayer.succeed(TestEnvConfig.coreConfig),
+              ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
+              ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
+              ZLayer.succeed[AsnResolver](AsnResolver.off),
+              SecureRandom.live,
+              SecureRandom.live >>> SecurityService.live,
+            )
+            afterFirst <- gauge.value
+            // The next run (after six hours) fails, and the days ahead have shrunk meanwhile: the gauge says so all the same.
+            _ <- ahead.set(2)
+            _ <- TestClock.adjust(6.hours)
+            afterFailed <- gauge.value
+            // The run after that, a minute later, makes it good.
+            _ <- ahead.set(7)
+            _ <- TestClock.adjust(1.minute)
+            afterRetry <- gauge.value
+            seen = e.repository.partitionDaysAhead.calls
+          yield assertTrue(
+            afterFirst == MetricState.Gauge(7.0),
+            afterFailed == MetricState.Gauge(2.0),
+            afterRetry == MetricState.Gauge(7.0),
+            seen.nonEmpty,
+          )
+      },
+      test("the service keeps seven days of partitions ahead") {
+        assertTrue(AntifraudEvents.Sizing.standard.partitionsAhead == 7)
+      },
       test("a failing run is logged and does not stop the writer") {
         val e = env
         ZIO.scoped:
@@ -317,6 +366,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- e.repository.maintainPartitions.failsWith(RuntimeException("no permission"))
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
+            _ <- e.repository.partitionDaysAhead.succeedsWith(0)
             _ <- e.repository.pruneStats.succeedsWith(())
             events <- AntifraudEvents.liveWith(smallSizing).build.map(_.get[AntifraudEvents]).provideSome[Scope](
               ZLayer.succeed[AntifraudEventRepository](e.repository),
@@ -398,9 +448,43 @@ object AntifraudEventsSpec extends UnitSpecBase:
             rolled = e.repository.rollupStats.calls
             pruned = e.repository.pruneStats.calls
           yield assertTrue(
-            rolled == List((Instant.parse("2026-10-21T09:59:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4)),
+            rolled == List((Instant.parse("2026-10-21T09:59:00Z"), Instant.parse("2026-10-21T10:01:00Z"), 4, 1.minute)),
             pruned == List(Instant.parse("2026-09-21T10:01:30Z")),
           )
+      },
+      test("only the instance that did the rollup prunes: a skipped run leaves the pruning to it") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
+            _ <- e.repository.maintainPartitions.succeedsWith(())
+            _ <- e.repository.partitionDaysAhead.succeedsWith(0)
+            _ <- e.repository.rollupStats.succeedsWith(false)
+            _ <- e.repository.pruneStats.succeedsWith(())
+            events <- AntifraudEvents.liveWith(smallSizing).build.provideSome[Scope](
+              ZLayer.succeed[AntifraudEventRepository](e.repository),
+              ZLayer.succeed(small),
+              ZLayer.succeed(TestEnvConfig.coreConfig),
+              ZLayer.succeed[OAuthConfigurationService](e.configService),
+              ZLayer.succeed[Antifraud](Antifraud.off),
+              ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
+              ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
+              ZLayer.succeed[AsnResolver](AsnResolver.off),
+              SecureRandom.live,
+              SecureRandom.live >>> SecurityService.live,
+            )
+            _ <- TestClock.adjust(2.minutes)
+          yield assertTrue(e.repository.rollupStats.calls.size == 2, e.repository.pruneStats.calls.isEmpty)
+      },
+      test("the interval must be a whole number of minutes, at least one") {
+        assertTrue(
+          AntifraudEvents.statsIntervalError(1.minute).isEmpty,
+          AntifraudEvents.statsIntervalError(5.minutes).isEmpty,
+          AntifraudEvents.statsIntervalError(90.seconds).isDefined,
+          AntifraudEvents.statsIntervalError(30.seconds).isDefined,
+          AntifraudEvents.statsIntervalError(Duration.Zero).isDefined,
+          AntifraudEvents.statsIntervalError(61.seconds).isDefined,
+        )
       },
       test("recomputes twice the interval when that is longer than the lookback, so every minute is rolled up twice") {
         val e = env
@@ -410,7 +494,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- build(e, small.copy(statsInterval = 5.minutes))
             _ <- TestClock.adjust(5.minutes)
             rolled = e.repository.rollupStats.calls
-          yield assertTrue(rolled == List((Instant.parse("2026-10-21T09:55:00Z"), Instant.parse("2026-10-21T10:05:00Z"), 4)))
+          yield assertTrue(rolled == List((Instant.parse("2026-10-21T09:55:00Z"), Instant.parse("2026-10-21T10:05:00Z"), 4, 5.minutes)))
       },
     ),
     suite("shadow mode")(

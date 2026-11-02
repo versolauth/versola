@@ -238,8 +238,8 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
             at(70, AntifraudOutcome.sent),
           ),
         )
-        ran <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4)
-        again <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4)
+        ran <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4, interval = Duration.Zero)
+        again <- repository.rollupStats(minute, minute.plusSeconds(60), prefixLength = 4, interval = Duration.Zero)
         stats <- xa.connect(
           sql"""SELECT tenant_id, dest_prefix, minute, requests, sent, throttled, verified, wrong_codes, fake_verifies
                 FROM af_dest_stats ORDER BY dest_prefix""".query[Stat].run().toList,
@@ -260,8 +260,97 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec:
       for
         repository <- noPartitions
         minute = Instant.parse("2026-10-21T10:05:00Z")
-        results <- ZIO.foreachPar(1 to 6)(_ => repository.rollupStats(minute, minute.plusSeconds(60), 4).exit)
+        results <- ZIO.foreachPar(1 to 6)(_ => repository.rollupStats(minute, minute.plusSeconds(60), 4, Duration.Zero).exit)
       yield assertTrue(results.forall(_.isSuccess))
+    },
+    test("the indexes nothing reads are gone from the table and its partitions, and the one the rollup reads is kept") {
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- repository.maintainPartitions(today, 2, today.minusDays(30))
+        defs <- xa.connect(
+          sql"SELECT indexdef FROM pg_indexes WHERE tablename LIKE 'af_event%' AND schemaname = current_schema()".query[String].run().toList,
+        )
+        // Nothing that reads the table breaks without them: the write, the rollup and a scan of the day for a phone.
+        _ <- repository.insertBatch(List(event(today.atTime(10, 0).toInstant(java.time.ZoneOffset.UTC))))
+        ran <- repository.rollupStats(
+          today.atTime(10, 0).toInstant(java.time.ZoneOffset.UTC),
+          today.atTime(10, 1).toInstant(java.time.ZoneOffset.UTC),
+          4,
+          Duration.Zero,
+        )
+        // What a preview of a phone does: a scan of the day for a subject.
+        scanned <- xa.connect(
+          sql"SELECT COUNT(*) FILTER (WHERE subject_hash = 'hash-1'), COUNT(*) FROM af_event WHERE at >= ${today.atStartOfDay().atOffset(java.time.ZoneOffset.UTC)}"
+            .query[(Long, Long)].run().head,
+        )
+      yield assertTrue(
+        defs.nonEmpty,
+        !defs.exists(d => d.contains("subject_hash") || d.contains("dest_prefix")),
+        defs.exists(_.contains("USING brin (at)")),
+        ran,
+        scanned == (1L, 1L),
+      )
+    },
+    test("the creates are one transaction and the drops another: a drop that fails leaves the partitions made ahead") {
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- repository.maintainPartitions(today.minusDays(5), 1, today.minusDays(30))
+        // Anything that depends on the old partition makes its drop fail.
+        _ <- xa.connect(sql"CREATE VIEW af_event_blocker AS SELECT id FROM af_event_20261016".update.run())
+        blocked <- repository.maintainPartitions(today, 3, today).exit
+        during <- partitions(xa)
+        _ <- xa.connect(sql"DROP VIEW af_event_blocker".update.run())
+        _ <- repository.maintainPartitions(today, 3, today)
+        after <- partitions(xa)
+      yield assertTrue(
+        blocked.isFailure,
+        during == List("af_event_20261016", "af_event_20261021", "af_event_20261022", "af_event_20261023"),
+        after == List("af_event_20261021", "af_event_20261022", "af_event_20261023"),
+      )
+    },
+    test("counts the days after today that have a partition") {
+      for
+        repository <- noPartitions
+        none <- repository.partitionDaysAhead(today)
+        _ <- repository.maintainPartitions(today, 8, today.minusDays(30))
+        ahead <- repository.partitionDaysAhead(today)
+        later <- repository.partitionDaysAhead(today.plusDays(5))
+      yield assertTrue(none == 0, ahead == 7, later == 2)
+    },
+    test("a minute that did not change is not rewritten, and one that did is") {
+      val minute = Instant.parse("2026-10-21T10:05:00Z")
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- repository.maintainPartitions(today, 1, today.minusDays(30))
+        _ <- xa.connect(sql"DELETE FROM af_dest_stats".update.run())
+        _ <- repository.insertBatch(List(event(minute.plusSeconds(1)), event(minute.plusSeconds(2), AntifraudOutcome.throttled)))
+        _ <- repository.rollupStats(minute, minute.plusSeconds(60), 4, Duration.Zero)
+        first <- xa.connect(sql"SELECT xmin::text FROM af_dest_stats".query[String].run().toList)
+        _ <- repository.rollupStats(minute, minute.plusSeconds(60), 4, Duration.Zero)
+        unchanged <- xa.connect(sql"SELECT xmin::text FROM af_dest_stats".query[String].run().toList)
+        _ <- repository.insertBatch(List(event(minute.plusSeconds(3))))
+        _ <- repository.rollupStats(minute, minute.plusSeconds(60), 4, Duration.Zero)
+        changed <- xa.connect(sql"SELECT xmin::text, requests FROM af_dest_stats".query[(String, Int)].run().toList)
+      yield assertTrue(first.size == 1, unchanged == first, changed.map(_._1) != first, changed.map(_._2) == List(3))
+    },
+    test("the rollup runs once per interval across instances: a run within half of one skips, and the marker is the database's") {
+      val minute = Instant.parse("2026-10-21T10:05:00Z")
+      for
+        repository <- noPartitions
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(sql"DELETE FROM af_rollup_state".update.run())
+        first <- repository.rollupStats(minute, minute.plusSeconds(60), 4, 1.minute)
+        second <- repository.rollupStats(minute, minute.plusSeconds(60), 4, 1.minute)
+        // Another instance with a shorter interval finds the marker old enough, and one with none at all always runs.
+        other <- repository.rollupStats(minute, minute.plusSeconds(60), 4, 1.millis)
+        again <- repository.rollupStats(minute, minute.plusSeconds(60), 4, Duration.Zero)
+        // A marker that is a minute old is older than half of a one-minute interval.
+        _ <- xa.connect(sql"UPDATE af_rollup_state SET last_run = clock_timestamp() - interval '40 seconds'".update.run())
+        late <- repository.rollupStats(minute, minute.plusSeconds(60), 4, 1.minute)
+      yield assertTrue(first, !second, other, again, late)
     },
     test("names and reads partitions by day") {
       assertTrue(

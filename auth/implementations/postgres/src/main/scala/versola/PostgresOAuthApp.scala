@@ -3,6 +3,9 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.antifraud.{
   Antifraud,
+  AntifraudCounterResetRepository,
+  AntifraudCounters,
+  AntifraudCountersController,
   AntifraudDetectors,
   AntifraudEventRepository,
   AntifraudEvents,
@@ -15,6 +18,7 @@ import versola.antifraud.{
   AntifraudTuning,
   AntifraudTuningStore,
   ChallengeVerifier,
+  PostgresAntifraudCounterResetRepository,
   PostgresAntifraudEventRepository,
   PostgresAntifraudListRepository,
   PostgresAntifraudProposalRepository,
@@ -134,9 +138,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter &
       ConversationService &
       AntifraudEvents &
+      AntifraudCounters &
       ChallengeVerifier &
       AntifraudEventRepository &
       VelocityRepository &
+      AntifraudCounterResetRepository &
       VelocityCounters &
       AntifraudListRepository &
       AntifraudLists &
@@ -186,6 +192,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       MetadataController.routes,
       UserController.routes,
       AntifraudListController.routes,
+      AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
       ServiceController.routes,
       LogoutController.routes,
@@ -263,6 +270,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
       PostgresVelocityRepository.live >++>
+      PostgresAntifraudCounterResetRepository.live >++>
       PostgresAntifraudListRepository.live >++>
       PostgresAntifraudProposalRepository.live >++>
       PostgresAntifraudSettingsRepository.live >++>
@@ -280,7 +288,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings])))
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]))).flatMap: settings =>
+        // The rollup works in whole minutes and the instances share it by the interval: refused at start, not run wrongly.
+        ZIO.foreachDiscard(AntifraudEvents.statsIntervalError(settings.statsInterval))(message =>
+          ZIO.fail(Config.Error.InvalidData(message = message)),
+        ).as(settings)
 
   /** `antifraud.asn`: every key, and the whole block, may be left out of a config written before it existed; the feature is then off. */
   private val antifraudAsnSettings: ZLayer[ConfigProvider, Config.Error, AsnSettings] =
@@ -387,6 +399,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       antifraudAsnSettings >++>
       AsnResolver.live >++>
       AntifraudEvents.live >++>
+      AntifraudCounters.live >++>
       antifraudDetectorSettings >++>
       AntifraudDetectors.live >++>
       antifraudChallengeSettings >++>

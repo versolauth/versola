@@ -67,11 +67,18 @@ class PostgresAntifraudEventRepository(
       batch.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(remaining - 1) else ZIO.unit)
     loop(MaxPruneBatches)
 
-  override def rollupStats(from: Instant, to: Instant, prefixLength: Int): Task[Boolean] =
+  override def rollupStats(from: Instant, to: Instant, prefixLength: Int, interval: Duration): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):
       timed()
       val locked = sql"SELECT pg_try_advisory_xact_lock($RollupLock)".query[Boolean].run().head
-      if !locked then false
+      // Under the lock, so that two instances cannot both find the marker old. Half an interval, not a whole one: the
+      // instances sleep one interval each from their own start, so the next run of the one that ran last is a little over
+      // an interval after its marker, and a whole interval would skip it half the time. The database's clock is the one
+      // that is compared, so the instances' clocks need not agree.
+      val halfInterval = SqlLiteral(s"${interval.toMillis / 2} * interval '1 millisecond'")
+      val fresh = locked && sql"SELECT EXISTS (SELECT 1 FROM af_rollup_state WHERE id = 1 AND last_run > clock_timestamp() - $halfInterval)"
+        .query[Boolean].run().head
+      if !locked || fresh then false
       else
         val fromAt = from.atOffset(ZoneOffset.UTC)
         val toAt = to.atOffset(ZoneOffset.UTC)
@@ -95,6 +102,17 @@ class PostgresAntifraudEventRepository(
             requests = EXCLUDED.requests, sent = EXCLUDED.sent, suppressed = EXCLUDED.suppressed,
             throttled = EXCLUDED.throttled, provider_errors = EXCLUDED.provider_errors,
             verified = EXCLUDED.verified, wrong_codes = EXCLUDED.wrong_codes, fake_verifies = EXCLUDED.fake_verifies
+          -- A minute that did not change is not rewritten: every run recomputes the lookback, and most of its groups are
+          -- what the last run left, which would otherwise be a dead tuple each.
+          WHERE (af_dest_stats.requests, af_dest_stats.sent, af_dest_stats.suppressed, af_dest_stats.throttled,
+                 af_dest_stats.provider_errors, af_dest_stats.verified, af_dest_stats.wrong_codes, af_dest_stats.fake_verifies)
+            IS DISTINCT FROM
+                (EXCLUDED.requests, EXCLUDED.sent, EXCLUDED.suppressed, EXCLUDED.throttled,
+                 EXCLUDED.provider_errors, EXCLUDED.verified, EXCLUDED.wrong_codes, EXCLUDED.fake_verifies)
+        """.update.run()
+        sql"""
+          INSERT INTO af_rollup_state (id, last_run) VALUES (1, clock_timestamp())
+          ON CONFLICT (id) DO UPDATE SET last_run = EXCLUDED.last_run
         """.update.run()
         true
 
@@ -104,32 +122,59 @@ class PostgresAntifraudEventRepository(
       sql"DELETE FROM af_dest_stats WHERE minute < ${before.atOffset(ZoneOffset.UTC)}".update.run()
     .unit
 
+  /** The creates are one transaction and the drops another: a drop that cannot take its lock (a long read on the partition
+    * of an old day, a dependent object) must not roll back the partitions of the days ahead, or the writer would run out
+    * of them after the few days it is ahead. The drops are tried even when the creates failed; the first failure is the
+    * one reported. */
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Unit] =
-    xa.transactMeasured("maintain-antifraud-partitions"):
-      // Several instances run this at start-up; creating the same partition twice at once can fail in the
-      // catalog, so they take turns.
-      // Creating or dropping a partition takes an exclusive lock on `af_event`; behind a long read it would hold up
-      // every insert of the writer. Better to give up (the next run tries again soon) than to queue them.
-      val timeout = SqlLiteral(s"'${lockTimeout.toMillis}ms'")
-      sql"SET LOCAL lock_timeout = $timeout".update.run()
-      sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
+    for
+      created <- createAhead(from, days).exit
+      dropped <- dropOld(keepFrom).exit
+      _ <- ZIO.done(created) *> ZIO.done(dropped)
+    yield ()
+
+  private def createAhead(from: LocalDate, days: Int): Task[Unit] =
+    xa.transactMeasured("create-antifraud-partitions"):
+      lockedForMaintenance()
       (0 until days).map(from.plusDays(_)).foreach: day =>
         val partition = SqlLiteral(partitionName(day))
         val start = SqlLiteral(s"'${day} 00:00:00+00'")
         val end = SqlLiteral(s"'${day.plusDays(1)} 00:00:00+00'")
         sql"CREATE TABLE IF NOT EXISTS $partition PARTITION OF af_event FOR VALUES FROM ($start) TO ($end)".update.run()
-      val existing = sql"""
-        SELECT c.relname
-        FROM pg_inherits i
-        JOIN pg_class c ON c.oid = i.inhrelid
-        JOIN pg_class p ON p.oid = i.inhparent
-        JOIN pg_namespace n ON n.oid = p.relnamespace
-        WHERE p.relname = 'af_event' AND n.nspname = current_schema()
-      """.query[String].run()
-      existing.flatMap(partitionDay).filter(_.isBefore(keepFrom)).foreach: day =>
+    .unit
+
+  private def dropOld(keepFrom: LocalDate): Task[Unit] =
+    xa.transactMeasured("drop-antifraud-partitions"):
+      lockedForMaintenance()
+      partitionDays().filter(_.isBefore(keepFrom)).foreach: day =>
         val partition = SqlLiteral(partitionName(day))
         sql"DROP TABLE IF EXISTS $partition".update.run()
     .unit
+
+  /** Several instances run this at start-up; creating the same partition twice at once can fail in the catalog, so they
+    * take turns. Creating or dropping a partition takes an exclusive lock on `af_event`, which the writer's inserts queue
+    * behind (they wait, up to `lock_timeout`, not past it): behind a long read it would hold up the writer, so after
+    * `lock_timeout` the maintenance gives up and the next run tries again soon. */
+  private def lockedForMaintenance()(using DbCon): Unit =
+    val timeout = SqlLiteral(s"'${lockTimeout.toMillis}ms'")
+    sql"SET LOCAL lock_timeout = $timeout".update.run()
+    sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
+    ()
+
+  private def partitionDays()(using DbCon): List[LocalDate] =
+    sql"""
+      SELECT c.relname
+      FROM pg_inherits i
+      JOIN pg_class c ON c.oid = i.inhrelid
+      JOIN pg_class p ON p.oid = i.inhparent
+      JOIN pg_namespace n ON n.oid = p.relnamespace
+      WHERE p.relname = 'af_event' AND n.nspname = current_schema()
+    """.query[String].run().toList.flatMap(partitionDay)
+
+  override def partitionDaysAhead(today: LocalDate): Task[Int] =
+    xa.transactMeasured("count-antifraud-partitions-ahead"):
+      timed()
+      partitionDays().count(_.isAfter(today))
 
 object PostgresAntifraudEventRepository:
   val live: ZLayer[TransactorZIO, Nothing, AntifraudEventRepository] =

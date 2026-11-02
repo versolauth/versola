@@ -77,6 +77,9 @@ profiles in `auth-profiles/` leave `antifraud.asn` out, so the signal is off in 
   what a `challenge` profile needs.
 - **Slow-and-low**: the prefix attack at a few codes a minute for hours; a config of `prefix-attack` (`rate`,
   `duration`) but longer than a CI-sized run, and meaningful only against a budget window of an hour.
+- **A key flood at 500 requests a second against a full counter table** (`velocity.max-keys` reached, every request a new
+  key): what the sampled eviction costs in CPU and request latency on a live `auth` (about 64 short lock acquisitions per
+  admitted key by design), and that the established keys survive it. Only the unit spec measures it so far.
 - **Hot-key behaviour of the velocity counters** and a **micro-benchmark of the `evaluate` path** (CPU, GC, DB
   reads and writes per instance, 2+ `auth` instances): a JMH benchmark is a new dependency
   (`project/Dependencies.scala`) that needs agreement first, and the second instance needs several `auth-url`s and
@@ -168,9 +171,16 @@ ones after it. The runs that were recorded are in the runbook (above).
 The process exits non-zero when a verdict is `Fail`. Restart `auth` between runs of different profiles; the budget
 remembers an hour, and the `prefix-attack` range is drawn afresh for each run so that a second run does not meet
 the first one's closed range. **The velocity counters survive the restart** (`af_velocity`: the new instance reads
-the old one's rows as another instance's), so before a run with limits on, `TRUNCATE af_velocity` on the stack's
-Postgres, or the run inherits the hour of attacks the last one made (its `normal` users then get refused in the
-ranges that were attacked: that is what happened on the first `evaluate` run here).
+the old one's rows as another instance's), so before a run with limits on, reset the counters, or the run inherits
+the hour of attacks the last one made (its `normal` users then get refused in the ranges that were attacked: that is
+what happened on the first `evaluate` run here). The reset is `POST /antifraud/counters/reset` with
+`{"scope": "all", "userId": "<an admin's id>"}` (`auth`'s internal API: the internal token of central, as
+`/antifraud/lists` takes; central's admin API gets a route for it with the settings work). It replaces
+`TRUNCATE af_velocity`, which emptied the table and left the memory of every running instance as it was: the reset is a
+row every `auth` reads within two refresh intervals (10 s) and forgets its counts for, the budget's included, and it is
+audited. Wait those 10 s before the next run starts. With `scope` `velocity` or `budget` only one of the two is reset,
+and `valueType` (`phone`, `ip`, `prefix`) with `value` narrows it to one number or address (velocity counters only) or
+to the ranges of a prefix (both); a phone never reopens its range's budget (deploy.md, "Resetting the counters").
 
 Shorter or lighter runs: put the keys to change in a file that includes `loadgen.conf` (`include required(file(...))`,
 then `antifraud { normal { rate = 5.0, duration = 10s } }`) and pass it as `-Denv.path`. `antifraud.scenarios`
