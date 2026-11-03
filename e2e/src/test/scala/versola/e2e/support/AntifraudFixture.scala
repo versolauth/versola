@@ -74,7 +74,16 @@ object AntifraudInstance:
   *               (they read the configuration once, then every `configuration-cache-refresh-interval`), one for
   *               each case that needs a number of its own: velocity counts a number, so cases do not share one
   */
-final case class AntifraudFixture(a: AntifraudInstance, b: AntifraudInstance, private val unused: Ref[List[Flows.Setup]]):
+final case class AntifraudFixture(
+    a: AntifraudInstance,
+    b: AntifraudInstance,
+    private val unused: Ref[List[Flows.Setup]],
+    private val withPasskey: Ref[List[AntifraudFixture.PasskeyUser]],
+    private val withoutPasskey: Ref[List[Flows.Setup]],
+    private val withPasskeyButNoFlow: Ref[List[AntifraudFixture.PasskeyUser]],
+    /** A client of the passkey flow whose tenant lets a new number register, and a number nobody has: a registration has no user. */
+    registration: Flows.Setup,
+):
 
   /** A client and user nobody has used yet. */
   def nextSetup: Task[Flows.Setup] =
@@ -83,10 +92,34 @@ final case class AntifraudFixture(a: AntifraudInstance, b: AntifraudInstance, pr
       case Nil => (ZIO.fail(RuntimeException("AntifraudFixture ran out of setups; raise AntifraudFixture.Setups")), Nil)
     .flatten
 
+  private def takeOne[A](refs: Ref[List[A]], what: String): Task[A] =
+    refs.modify:
+      case head :: tail => (ZIO.succeed(head), tail)
+      case Nil => (ZIO.fail(RuntimeException(s"AntifraudFixture ran out of $what; raise the count in AntifraudFixture")), Nil)
+    .flatten
+
+  /** A phone user whose client's flow can ask for a passkey and who has enrolled one. */
+  def nextPasskeyUser: Task[AntifraudFixture.PasskeyUser] = takeOne(withPasskey, "users with a passkey")
+
+  /** A phone user whose client's flow can ask for a passkey and who has none. */
+  def nextUserWithoutPasskey: Task[Flows.Setup] = takeOne(withoutPasskey, "users without a passkey")
+
+  /** A phone user who has enrolled a passkey, whose client's flow cannot ask for one. */
+  def nextPasskeyUserOfFlowWithoutPasskey: Task[AntifraudFixture.PasskeyUser] =
+    takeOne(withPasskeyButNoFlow, "users with a passkey and a flow without one")
+
 object AntifraudFixture:
 
   /** How many setups are registered up front. */
   val Setups = 40
+
+  /** A user, and the passkey they enrolled (the authenticator that signs their assertions). */
+  final case class PasskeyUser(setup: Flows.Setup, credential: TestAuthenticator.Credential)
+
+  /** How many of each kind of user of the code-alternatives specs are registered up front (see [[AntifraudFixture.nextPasskeyUser]]). */
+  val PasskeyUsers = 8
+  val UsersWithoutPasskey = 4
+  val PasskeyUsersOfFlowWithoutPasskey = 2
 
   /** Limit on codes to one number in an hour (a request over it is refused), and on requests from one address. Low
     * enough for a spec to reach, high enough that the cases of a spec that each use a number of their own do not. */
@@ -247,6 +280,22 @@ object AntifraudFixture:
         // With a limit nothing can reach (1000 in an hour), so that the steps of it a request takes are recorded and can be counted.
         _ <- oauth.upsertChallengeSettings(otpRequestLimits = """[{"maxAttempts":1000,"windowSeconds":3600}]""")
         setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
+        // Users for the cases about a passkey in place of the code: they sign in once with the code on the running stack (which
+        // has no antifraud in the way) and enroll a passkey, which the instances then find in the one database.
+        passkeyRegistered <- ZIO.foreach(List.range(0, PasskeyUsers))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
+        withoutPasskey <- ZIO.foreach(List.range(0, UsersWithoutPasskey))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
+        noFlowRegistered <-
+          ZIO.foreach(List.range(0, PasskeyUsersOfFlowWithoutPasskey))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
+        registration <- Flows.setupPhoneRegistration(authFlow = Flows.phoneOtpPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth))
+        _ <- oauth.flushUserOutbox()
+        // The running auth learns the clients on a sync, and central's own cache catches up with a registration on a
+        // notification of its own: a sign-in that finds the client unknown is made again after another sync.
+        enroll = (s: Flows.Setup) =>
+          (oauth.syncConfiguration() *> Flows.enrollPasskeyAfterCode(s, oauth))
+            .retry(Schedule.spaced(1.second) && Schedule.recurs(15))
+            .map(PasskeyUser(s, _))
+        passkeyUsers <- ZIO.foreach(passkeyRegistered)(enroll)
+        passkeyButNoFlow <- ZIO.foreach(noFlowRegistered)(enroll)
         _ <- tuned
         // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
         // is when they first read it.
@@ -254,7 +303,10 @@ object AntifraudFixture:
         geo <- geoFile
         instances <- launch("antifraud-a", config, client, APorts, asn, geo) <&> launch("antifraud-b", config, client, BPorts, asn, geo)
         unused <- Ref.make(setups)
-      yield AntifraudFixture(instances._1, instances._2, unused)
+        passkeyRef <- Ref.make(passkeyUsers)
+        withoutRef <- Ref.make(withoutPasskey)
+        noFlowRef <- Ref.make(passkeyButNoFlow)
+      yield AntifraudFixture(instances._1, instances._2, unused, passkeyRef, withoutRef, noFlowRef, registration)
 
   private def database[A](use: Connection => A): Task[A] =
     for
@@ -334,6 +386,8 @@ object AntifraudFixture:
       value: String,
       expiresAt: Option[Instant] = None,
       shadow: Boolean = false,
+      /** For a `phone_hash` entry through the API: the number, which auth hashes (see [[seedThroughApi]]); `value` is then not used. */
+      phone: Option[String] = None,
   )
 
   /** How many steps of the limit on codes asked for `credential` have been taken, as the throttle table has them. */
@@ -390,7 +444,7 @@ object AntifraudFixture:
         Chunk(
           "listType" -> Json.Str(entry.listType),
           "valueType" -> Json.Str(entry.valueType),
-          "value" -> Json.Str(entry.value),
+          entry.phone.fold("value" -> Json.Str(entry.value))(phone => "phone" -> Json.Str(phone)),
           "shadow" -> Json.Bool(entry.shadow),
           "reason" -> Json.Str("e2e"),
         ) ++ entry.expiresAt.map(at => "expiresAt" -> Json.Str(at.toString)),

@@ -142,6 +142,9 @@ object ConversationRouter:
         case (submitted: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
           conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex, submitted.proof)
 
+        case (submitted: OtpAlternativeSubmission, ConversationRecord.Otp(otp, _)) =>
+          conversationService.useAlternative(authId, conversation, otp, submitted.alternative)
+
         case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
           conversationService.checkPassword(conversation, password, submitted.password, authId)
             .tap(observeDecision("password"))
@@ -159,6 +162,21 @@ object ConversationRouter:
                 afterFactor(authId, updated, nextFactorIndex = 0)
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
+
+        // A passkey chosen in place of the code satisfies the factor the code was for, and the conversation goes on from
+        // there as it would after the code: a passkey that proves the user is not a reason to skip what comes after.
+        case (submitted: PasskeyAssertionSubmission, ConversationRecord.PasskeyAlternative(_, code)) =>
+          conversationService.checkPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
+            .tap(observeDecision("passkey"))
+            .flatMap:
+              case ConversationResult.StepPassed(updated) =>
+                afterFactor(authId, updated, code.factorIndex + 1)
+              case other: ConversationResult.Render =>
+                ZIO.succeed(other)
+
+        // Going back, or a prompt the browser could not show or the person dismissed: there is the code to use.
+        case (_: CodeInsteadSubmission | _: PasskeyUnavailableSubmission, ConversationRecord.PasskeyAlternative(_, code)) =>
+          conversationService.returnToCode(authId, conversation, code)
 
         case (submitted: PasskeyAssertionSubmission, _) =>
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)

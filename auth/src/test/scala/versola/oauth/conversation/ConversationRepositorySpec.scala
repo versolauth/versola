@@ -168,6 +168,21 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found <- env.repository.find(authId1)
         yield assertTrue(found.contains(sensitive))
       },
+      test("the passkey step chosen in place of the code keeps the code step it came from, what was sent and when included") {
+        val sentAt = java.time.Instant.parse("2026-11-03T10:00:00Z")
+        val code = realOtp.copy(lastSentAt = Some(sentAt), switched = 2)
+        val passkey = ConversationStep.Credential(
+          primaryCredentials = List(PrimaryCredential.phone),
+          inlinePassword = false,
+          passkey = true,
+          passkeyOnly = true,
+          codeStep = Some(code),
+        )
+        for
+          _ <- env.repository.create(authId1, record1.copy(step = passkey), ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(found.step == passkey)
+      },
       test("a conversation that fixed no factors reads back with none") {
         for
           _ <- env.repository.create(authId1, record1, ttl)

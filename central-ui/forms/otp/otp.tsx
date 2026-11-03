@@ -4,8 +4,9 @@ import { PageBrand, ClientBadge } from '../shared/brand';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
 import { canSubmitInline, submitInline, type InlineStep } from '../shared/inline';
+import { passkeysSupported } from '../passkey/webauthn';
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean; resendInterval?: number };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean; resendInterval?: number; alternatives?: string[] };
 
 interface FormConfig extends BaseFormConfig {
   step: OtpStep;
@@ -129,6 +130,17 @@ function OtpForm(props: { config: FormConfig }) {
         </button>
       </form>
       <div class="divider"><span>{t().divider}</span></div>
+      {/* Another way to pass this step, as the server says it may be passed now and this browser can: chosen by a plain post, which the server checks again. */}
+      <Show when={props.config.step.alternatives?.includes('passkey') && passkeysSupported()}>
+        <form method="post" action={`/challenge/otp/alternative?ui_locale=${currentLocale()}`} class="otp-alternative" data-alternative="passkey">
+          <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
+          <input type="hidden" name="alternative" value="passkey" />
+          <button type="submit" class="btn btn-secondary">
+            <span class="passkey-icon" aria-hidden="true" />
+            <span>{t().passkey_instead_button}</span>
+          </button>
+        </form>
+      </Show>
       <Show
         when={remaining() <= 0}
         fallback={

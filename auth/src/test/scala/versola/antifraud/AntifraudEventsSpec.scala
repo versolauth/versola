@@ -1022,6 +1022,25 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written(0).tenantId.isEmpty,
           )
       },
+      test("a code page left for a passkey is written as a verification event with its own outcome, of the number it was asked for") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(None)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.faked)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.passkey_alternative)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.outcome) == List(AntifraudOutcome.faked, AntifraudOutcome.passkey_alternative),
+            written(1).action == AntifraudAction.otp_verify,
+            written(1).conversationId == authId,
+            written(1).subjectHash == written(0).subjectHash,
+          )
+      },
       test("a secret of its own keys the hash; without one the sessions secret does, so a config that predates it still works") {
         val own = TestEnvConfig.coreConfig.copy(
           security = TestEnvConfig.coreConfig.security.copy(antifraudSubjectSecret = Some(versola.util.Secret.Bytes32(Array.fill(32)(7.toByte)))),

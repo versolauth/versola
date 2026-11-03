@@ -139,6 +139,8 @@ trait AntifraudEventRepositorySpec extends DatabaseSpecBase[AntifraudEventReposi
               at(8, AntifraudOutcome.challenged),
               at(9, AntifraudOutcome.challenge_failed),
               at(10, AntifraudOutcome.challenge_passed),
+              // a code page left for a passkey is neither a request nor a verification: no statistic counts it
+              at(11, AntifraudOutcome.passkey_alternative, AntifraudAction.otp_verify),
               // an address, and a minute outside the window
               event(minute.plusSeconds(7), AntifraudOutcome.sent).copy(channel = AntifraudChannel.email, destPrefix = None),
               at(70, AntifraudOutcome.sent),

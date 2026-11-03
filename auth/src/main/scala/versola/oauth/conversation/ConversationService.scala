@@ -33,7 +33,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, UserAgentData}
@@ -80,6 +80,21 @@ trait ConversationService:
       submittedCode: OtpCode,
       authId: AuthId,
   ): Task[ConversationResult]
+
+  /** Moves the conversation from its code step to `alternative`, when that is one of the ways the step may be passed now
+    * (see [[CodeAlternativeService]]; the choice is a request, and what is offered is worked out again here). The
+    * conversation, its user and its target factors are kept, and nothing is sent. Anything else is a bad request.
+    */
+  def useAlternative(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      otp: ConversationStep.Otp,
+      alternative: CodeAlternative,
+  ): Task[ConversationResult.Render]
+
+  /** Goes back from the passkey page that was chosen in place of the code to the code step as it was left: what was sent
+    * and when is kept, and no code is sent (asking for another is the page's resend). */
+  def returnToCode(authId: AuthId, conversation: ConversationRecord, code: ConversationStep.Otp): Task[ConversationResult.Render]
 
   def preparePasswordStep(
       authId: AuthId,
@@ -171,6 +186,17 @@ trait ConversationService:
       ipAddress: Option[String],
   ): Task[ConversationResult.Render]
 
+  /** Verifies the assertion as [[finishPasskeyAssertion]] does, but stops there: a passed passkey is `StepPassed`, with the
+    * passkey recorded as passed, and the caller decides what follows. A passkey that was chosen in place of the code is
+    * checked this way, since the conversation goes on from where the code would have led and not to the end.
+    */
+  def checkPasskeyAssertion(
+      authId: AuthId,
+      record: ConversationRecord,
+      response: String,
+      ipAddress: Option[String],
+  ): Task[ConversationResult]
+
   /** After all primary auth factors pass: if the tenant has passkey settings and the user has no
     * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
     * Otherwise, finishes immediately.
@@ -226,7 +252,7 @@ object ConversationService:
   private val SmsBudgetRule = "sms_budget"
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -250,6 +276,7 @@ object ConversationService:
       consentService: ConsentService,
       antifraudEvents: AntifraudEvents,
       challengeVerifier: ChallengeVerifier,
+      codeAlternatives: CodeAlternativeService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -321,6 +348,8 @@ object ConversationService:
     private def sentOutcome(step: ConversationStep.Otp, decision: Decision): AntifraudOutcome =
       if !step.isFake then AntifraudOutcome.sent
       else if decision.action == DecisionAction.Fake then AntifraudOutcome.faked
+      // A refused request that was answered as a send (see `withheld`): the event says what the decision was.
+      else if decision.action == DecisionAction.Block then AntifraudOutcome.blocked
       else AntifraudOutcome.suppressed
 
     private def sendInitialOtp(
@@ -329,6 +358,10 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
         decision: Decision,
+        // A `Block` whose answer is the code page, nothing sent, because the person has a way past the code (see
+        // [[CodeAlternativeService]]): a fake send for a refused request, so that the page cannot be told from the page of
+        // a request that was let through.
+        withheld: Boolean = false,
     ): Task[ConversationResult.Render] =
       for
         effectiveUserId = conversation.userId
@@ -338,7 +371,7 @@ object ConversationService:
           userId = effectiveUserId,
           clientId = conversation.clientId,
           isRegistering = conversation.isRegistering,
-          forceFake = decision.action == DecisionAction.Fake,
+          forceFake = decision.action == DecisionAction.Fake || withheld,
         )
         // Asked for every phone number, a code that stands in for an unknown user included, and answered the same:
         // were a closed range to refuse only the numbers that get a real code, the refusal would tell which
@@ -370,7 +403,7 @@ object ConversationService:
                 restore:
                   for
                     now <- Clock.instant
-                    sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
+                    sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now), switched = switchedSoFar(conversation))
                     updatedConversation = conversation.copy(
                       userId = effectiveUserId,
                       // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
@@ -444,7 +477,11 @@ object ConversationService:
         // sending the same token again.
         verdict <- proof match
           case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
-            challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
+            challengeSubject(
+              authId,
+              conversation,
+              credential,
+            ).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
           case _ => ZIO.none
         // The ask of a request left pending (after its pause, or a script's, which is given a proof to solve) is that request
         // made again: it took its step and was counted when it was left, and one code is one step and one count.
@@ -505,7 +542,13 @@ object ConversationService:
         decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = paid)
         result <-
           if decision.action == DecisionAction.Block then
-            otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
+            // A person who has a passkey is not left at a dead end by a refused send: the page is the code page and
+            // nothing is sent, as for a `Fake`, and the way past the code is on it. Nobody else is given anything more
+            // than the access page.
+            codeAlternatives.available(conversation, switchedSoFar(conversation)).flatMap:
+              case Nil =>
+                otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
+              case _ => sendInitialOtp(authId, conversation, credential, factorIndex, decision, withheld = true)
           else if decision.action != DecisionAction.Challenge then
             sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else if solved then
@@ -513,10 +556,24 @@ object ConversationService:
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           // A challenge paid by waiting: the code goes out, as the ask of a request that did the work would have sent it.
           else if waited then
-            challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None, kind = ChallengeVerifier.PauseKind) *>
+            challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenge_passed,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ) *>
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
       yield result
+
+    /** The switches the conversation's code step has made so far, which a step made anew (a resend, a pending ask) keeps. */
+    private def switchedSoFar(conversation: ConversationRecord): Int =
+      conversation.step match
+        case otp: ConversationStep.Otp => otp.switched
+        case _ => 0
 
     private def pending(conversation: ConversationRecord): Boolean =
       conversation.step match
@@ -544,13 +601,22 @@ object ConversationService:
           lockedSeconds = 0,
           lastSentAt = None,
           pendingUntil = Some(now.plusMillis(challengeVerifier.pause.toMillis)),
+          switched = switchedSoFar(conversation),
         )
         _ <- ZIO.foreachDiscard(conversation.userId)(uid => Observability.setUserId(uid.toString))
         written <- conversationRepository.overwrite(authId, conversation.copy(credential = Some(credential), step = step))
         result <-
           if written then
             // Asked for again by the page, it is the same request: recorded once.
-            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None, kind = ChallengeVerifier.PauseKind))
+            ZIO.unless(pending(conversation))(challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenged,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ))
               .as(ConversationResult.RenderStep(step): ConversationResult.Render)
           else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result
@@ -718,6 +784,44 @@ object ConversationService:
                         .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
                     else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
                 yield result
+
+    override def useAlternative(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        otp: ConversationStep.Otp,
+        alternative: CodeAlternative,
+    ): Task[ConversationResult.Render] =
+      codeAlternatives.available(conversation, otp.switched).flatMap: offered =>
+        if !offered.contains(alternative) then
+          // Not offered now (the page was stale, or the choice was made up): nothing changes, as for any other submission
+          // that does not match the conversation.
+          Observability.setError("alternative_unavailable").as(ConversationResult.BadRequest)
+        else
+          alternative match
+            case CodeAlternative.Passkey =>
+              ZIO.foreachDiscard(conversation.userId)(uid => Observability.setUserId(uid.toString)) *>
+                renderPasskeyInstead(authId, conversation, otp.copy(switched = otp.switched + 1))
+
+    /** The passkey-only step, with the code step it stands in for kept on it. The user is the conversation's own, so the
+      * assertion is asked of that user's passkeys only (see [[startPasskeyAssertion]]). */
+    private def renderPasskeyInstead(authId: AuthId, conversation: ConversationRecord, code: ConversationStep.Otp): Task[ConversationResult.Render] =
+      val step = ConversationStep.Credential(
+        primaryCredentials = conversation.authFlow.primary.credentials,
+        inlinePassword = false,
+        passkey = true,
+        passkeyOnly = true,
+        codeStep = Some(code),
+      )
+      conversationRepository.overwrite(authId, conversation.copy(step = step)).flatMap:
+        case true =>
+          // Written first, so that a lost race leaves no event for a switch that did not happen.
+          otpChecked(authId, conversation, AntifraudOutcome.passkey_alternative).as(ConversationResult.RenderStep(step): ConversationResult.Render)
+        case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+
+    override def returnToCode(authId: AuthId, conversation: ConversationRecord, code: ConversationStep.Otp): Task[ConversationResult.Render] =
+      // What was sent and when, and the wait for another, are as they were. What the page said of the last attempt is not
+      // carried back: a wrong code or a lock was of a moment that has passed, and the next submission is judged afresh.
+      renderStep(authId, conversation, code.copy(timesSubmitted = 0, rateLimitExceeded = false, lockedSeconds = 0))
 
     override def preparePasswordStep(
         authId: AuthId,
@@ -1138,13 +1242,15 @@ object ConversationService:
       )
 
     /** A failed assertion offers another try on the ordinary credential card; a passkey-only step has nothing
-      * else to offer and would only start the same prompt again, so it denies. */
+      * else to offer and would only start the same prompt again, so it denies. The one that was chosen in place of a
+      * code has: the code, which the person may still use (the failures are counted by the limits of the assertion). */
     private def passkeyAssertionFailed(
         authId: AuthId,
         conversation: ConversationRecord,
         cred: ConversationStep.Credential,
     ): Task[ConversationResult.Render] =
-      if cred.passkeyOnly then accessDenied(authId, conversation)
+      if cred.passkeyOnly then
+        cred.codeStep.fold(accessDenied(authId, conversation))(code => returnToCode(authId, conversation, code))
       else renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
 
     override def promptPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
@@ -1170,6 +1276,16 @@ object ConversationService:
         response: String,
         ipAddress: Option[String],
     ): Task[ConversationResult.Render] =
+      checkPasskeyAssertion(authId, conversation, response, ipAddress).flatMap:
+        case ConversationResult.StepPassed(passed) => offerPasskeyEnroll(authId, passed)
+        case render: ConversationResult.Render => ZIO.succeed(render)
+
+    override def checkPasskeyAssertion(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        response: String,
+        ipAddress: Option[String],
+    ): Task[ConversationResult] =
       conversation.step match
         case cred: ConversationStep.Credential if conversation.authFlow.passkey.isDefined =>
           cred.passkeyRequest match
@@ -1254,7 +1370,7 @@ object ConversationService:
                                           amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
                                         )
                                         conversationRepository.overwrite(authId, updated).flatMap:
-                                          case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
+                                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
                                           case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
                           )
         case _ =>

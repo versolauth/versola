@@ -16,6 +16,7 @@ import versola.oauth.client.model.{
   PrimaryCredential,
   ScopeToken,
 }
+import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -96,6 +97,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       consentService,
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
+      stub[CodeAlternativeService],
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -156,6 +158,34 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       _ <- env.service.offerPasskeyEnroll(authId, record.copy(userId = Some(userId)))
       call = env.webAuthnService.startRegistration.calls.head
     yield (call._3, call._4)
+
+  // The conversation of Alt.userId on the passkey step it reached from its code page, the ceremony started.
+  private val altCode = Alt.sentCode.copy(switched = 1)
+  private val altStep = Alt.passkeyInsteadOf(altCode, request = Some("req-state"))
+  private val altRecord = Alt.onCode.copy(step = altStep)
+  private val altOutcome = AssertionOutcome(Alt.userId, CredentialId.fromString("id"), 1L)
+
+  private def altPassing(env: Env, stored: Option[PasskeyRecord]) =
+    for
+      _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+      _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+      _ <- env.submissionLimiter.reset.succeedsWith(())
+      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+      _ <- env.webAuthnService.finishAssertion.succeedsWith(altOutcome)
+      _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(Alt.userId)))
+      _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(stored)
+      _ <- env.conversationRepository.overwrite.succeedsWith(true)
+    yield ()
+
+  private def altFailing(env: Env, error: versola.oauth.challenge.passkey.WebAuthnError) =
+    for
+      _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+      _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+      _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+      _ <- env.webAuthnService.finishAssertion.failsWith(error)
+      _ <- env.conversationRepository.overwrite.succeedsWith(true)
+    yield ()
 
   def spec = suite("PasskeyConversationServiceSpec")(
     suite("startPasskeyAssertion")(
@@ -587,6 +617,74 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.WriteConflict,
           overwriteCalls.head._2.amr(PassedAuthFactor.passkey).methods.contains(AuthMethodRef.hwk),
         )
+      },
+    ),
+    suite("a passkey chosen in place of the code")(
+      test(
+        "a passed passkey is recorded as passed, with the methods the passkey step records, and is handed on without offering to enrol or finishing",
+      ) {
+        val env = Env()
+        for
+          _ <- altPassing(env, Some(Alt.aPasskey.copy(deviceType = CredentialDeviceType.SingleDevice)))
+          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
+        yield result match
+          case ConversationResult.StepPassed(passed) =>
+            assertTrue(
+              passed.amr(PassedAuthFactor.passkey).methods == Set(AuthMethodRef.hwk, AuthMethodRef.user, AuthMethodRef.mfa),
+              passed.userId == Some(Alt.userId),
+              passed.version == altRecord.version + 1,
+              written.map(_.amr.keySet) == List(Set(PassedAuthFactor.passkey)),
+              env.webAuthnService.startRegistration.calls.isEmpty,
+            )
+          case _ => assertNever("the passkey did not pass")
+      },
+      test("a synced passkey is recorded as a software-secured key, as it is everywhere") {
+        val env = Env()
+        for
+          _ <- altPassing(env, Some(Alt.aPasskey))
+          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+        yield result match
+          case ConversationResult.StepPassed(passed) => assertTrue(passed.amr(PassedAuthFactor.passkey).methods.contains(AuthMethodRef.swk))
+          case _ => assertNever("the passkey did not pass")
+      },
+      test("a failed assertion goes back to the code, as it was left, and not to the access page: the code is still a way in") {
+        val env = Env()
+        for
+          _ <- altFailing(env, versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
+          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(
+          result == ConversationResult.RenderStep(altCode),
+          // ... and the failure is counted by the limits of the assertion, for both subjects, as any other.
+          env.submissionLimiter.recordLimit.calls.map(_._2).toSet == Set("ip:1.2.3.4", "cred-123"),
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
+      test("an assertion that resolves to another user is denied, not taken back to the code, and no passkey is recorded") {
+        val env = Env()
+        val stranger = AssertionOutcome(UserId(UUID.randomUUID()), CredentialId.fromString("id"), 1L)
+        for
+          _ <- altPassing(env, None)
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(stranger)
+          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
+      test("a banned credential or address is denied, as it is on any passkey step") {
+        val env = Env()
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("an assertion with no ceremony pending is a bad request, as on any passkey step") {
+        val env = Env()
+        for result <- env.service.checkPasskeyAssertion(authId, altRecord.copy(step = Alt.passkeyInsteadOf(altCode)), assertionResponse, None)
+        yield assertTrue(result == ConversationResult.BadRequest)
       },
     ),
     suite("offerPasskeyEnroll")(

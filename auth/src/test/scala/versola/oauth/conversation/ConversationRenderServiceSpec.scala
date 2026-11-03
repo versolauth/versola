@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.auth.model.OtpCode
 import versola.oauth.authorize.AuthorizationResponseService
 import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
@@ -142,7 +143,23 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     val configuration = stub[OAuthConfigurationService]
     val jwksService = stub[JwksService]
     val responseService = AuthorizationResponseService.Impl(TestEnvConfig.coreConfig, configuration, jwksService)
-    val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService)
+    // Nothing offered unless a case says so, which is how every page was drawn before there were alternatives.
+    val codeAlternatives = stub[CodeAlternativeService]
+    codeAlternatives.available.returns((_, _) => ZIO.succeed(Nil))
+    val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService, codeAlternatives)
+
+  private def renderOtp(env: Env, record: ConversationRecord) =
+    for
+      _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+      _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+      _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getTenantLogo.succeedsWith(None)
+      _ <- env.configuration.getOtpSettings.succeedsWith(OtpSettings(6, 60))
+      response <- env.service.renderStep(record, None)
+      body <- response.body.asString
+    yield body
+  private val sentStep = ConversationStep.Otp(None, 1, 0, 0, false, 0, None)
 
   // The page rendered with the client's theme set to the given one and the default theme as the base.
   private def rendered(tokenTheme: ThemeRecord, client: OAuthClientRecord = clientRecord) =
@@ -729,6 +746,88 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           sent <- render(ConversationStep.Otp(None, 1, 0, 0, false, 0, None))
         yield assertTrue(pending.contains("\"pending\":true"), sent.contains("\"pending\":false"))
       },
+      suite("the code step's alternatives")(
+        test("the step view carries what the service offers, asked for this conversation and the switches its step has made") {
+          val env = Env()
+          val record = conversationRecord.copy(step = sentStep.copy(switched = 2))
+          env.codeAlternatives.available.returns((_, _) => ZIO.succeed(List(CodeAlternative.Passkey)))
+          for body <- renderOtp(env, record)
+          yield assertTrue(
+            body.contains("\"alternatives\":[\"passkey\"]"),
+            env.codeAlternatives.available.calls == List((record, 2)),
+          )
+        },
+        test("the step view has none when the service offers none") {
+          val env = Env()
+          for body <- renderOtp(env, conversationRecord.copy(step = sentStep))
+          yield assertTrue(body.contains("\"alternatives\":[]"))
+        },
+        test("they are worked out at each render: a passkey added between two renders is on the second page") {
+          val env = Env()
+          val record = conversationRecord.copy(step = sentStep)
+          for
+            before <- renderOtp(env, record)
+            _ = env.codeAlternatives.available.returns((_, _) => ZIO.succeed(List(CodeAlternative.Passkey)))
+            after <- renderOtp(env, record)
+          yield assertTrue(
+            before.contains("\"alternatives\":[]"),
+            after.contains("\"alternatives\":[\"passkey\"]"),
+            env.codeAlternatives.available.calls.size == 2,
+          )
+        },
+        test("they are offered the same on the page of a fake or a pending step as on a sent one, and the page says nothing else of it") {
+          val env = Env()
+          env.codeAlternatives.available.returns((_, _) => ZIO.succeed(List(CodeAlternative.Passkey)))
+          for
+            fake <- renderOtp(env, conversationRecord.copy(step = sentStep.copy(real = None)))
+            real <- renderOtp(env, conversationRecord.copy(step = sentStep.copy(real = Some(ConversationStep.Otp.Real(OtpCode("482913"))))))
+            pending <- renderOtp(env, conversationRecord.copy(step = sentStep.copy(real = None, timesRequested = 0)))
+          yield assertTrue(
+            fake.contains("\"alternatives\":[\"passkey\"]"),
+            real.contains("\"alternatives\":[\"passkey\"]"),
+            pending.contains("\"alternatives\":[\"passkey\"]"),
+            // The code the step holds is never in the page.
+            !real.contains("482913"),
+          )
+        },
+        test("a step that is not the code step is not asked about") {
+          val env = Env()
+          val step = ConversationStep.Credential(List(PrimaryCredential.phone), false, false)
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+            _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
+            _ <- env.configuration.getLocales.succeedsWith(locales)
+            _ <- env.configuration.getTenantLogo.succeedsWith(None)
+            _ <- env.configuration.getPhoneRegions.succeedsWith(List.empty)
+            _ <- env.service.renderStep(conversationRecord.copy(step = step), None)
+          yield assertTrue(env.codeAlternatives.available.calls.isEmpty)
+        },
+        test("the passkey step chosen in place of the code tells the page it can go back to the code, and an ordinary passkey-only step does not") {
+          def render(step: ConversationStep.Credential) =
+            val env = Env()
+            for
+              _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+              _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+              _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
+              _ <- env.configuration.getLocales.succeedsWith(locales)
+              _ <- env.configuration.getTenantLogo.succeedsWith(None)
+              response <- env.service.renderStep(conversationRecord.copy(step = step), None)
+              body <- response.body.asString
+            yield body
+          val code = sentStep.copy(real = Some(ConversationStep.Otp.Real(OtpCode("482913"))))
+          for
+            instead <- render(ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true, codeStep = Some(code)))
+            only <- render(ConversationStep.Credential(List(PrimaryCredential.phone), false, true, passkeyOnly = true))
+          yield assertTrue(
+            instead.contains("\"backToCode\":true"),
+            only.contains("\"backToCode\":false"),
+            // What the step keeps of the code is for the server: the page is not given it.
+            !instead.contains("482913"),
+            !instead.contains("codeStep"),
+          )
+        },
+      ),
       test("renders a masked destination for the OTP recipient") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")

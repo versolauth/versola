@@ -17,6 +17,8 @@ type CredentialStep = {
   passkey: boolean;
   // Only a passkey of the already identified user is asked for (a step-up); the form starts it by itself.
   passkeyOnly?: boolean;
+  // The passkey was chosen in place of a one-time code: the code page it came from is one post away, as it was left.
+  backToCode?: boolean;
   phoneRegions?: PhoneRegion[];
   passwordRegex?: string;
 };
@@ -239,6 +241,12 @@ function CredentialForm(props: { config: FormConfig }) {
         }
       >
         <p class="passkey-only-hint" role="status">{t().passkey_only_hint}</p>
+        <Show when={step.backToCode}>
+          <form method="post" action={`/challenge/passkey/code?ui_locale=${currentLocale()}`} class="code-instead">
+            <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
+            <button type="submit" class="btn btn-secondary">{t().code_instead_button}</button>
+          </form>
+        </Show>
       </Show>
 
       <Show when={passkeyErrorKey()}>

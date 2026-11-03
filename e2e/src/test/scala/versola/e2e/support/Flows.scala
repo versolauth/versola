@@ -1,9 +1,11 @@
 package versola.e2e.support
 
 import zio.*
+import zio.json.*
 import zio.json.ast.Json
 
-import java.util.UUID
+import java.nio.charset.StandardCharsets
+import java.util.{Base64, UUID}
 
 /** Reusable e2e flow helpers shared across specs.
   *
@@ -34,6 +36,21 @@ object Flows:
       "credentials" -> Json.Arr(Json.Str("login")),
       "inlinePassword" -> Json.Bool(true),
       "factors" -> Json.Arr(),
+    ),
+    "passkey" -> Json.Obj("factors" -> Json.Arr()),
+    "equivalents" -> Json.Obj(),
+    "otpType" -> Json.Str("sms"),
+  )
+
+  /** Phone credential with the OTP factor, and a passkey the flow can ask for: what a user who has one may use in place of
+    * the code. Nothing says a passkey counts as the code (`equivalents` is empty): there is no class of authentication
+    * being pursued that would ask for one.
+    */
+  val phoneOtpPasskeyAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials" -> Json.Arr(Json.Str("phone")),
+      "inlinePassword" -> Json.Bool(false),
+      "factors" -> Json.Arr(Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true))),
     ),
     "passkey" -> Json.Obj("factors" -> Json.Arr()),
     "equivalents" -> Json.Obj(),
@@ -163,6 +180,63 @@ object Flows:
       _ <- oauthClient.flushUserOutbox()
       _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+
+  /** Register a client (phone + OTP, plus a passkey the flow can ask for) and a matching user. */
+  def setupPhoneOtpPasskey(redirectUri: String = "http://localhost:3000", authFlow: Json = phoneOtpPasskeyAuthFlow): RIO[OAuthClient, Setup] =
+    val uid = UUID.randomUUID()
+    val uidStr = uid.toString.replace("-", "")
+    val phone = f"+49151${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
+    val password = s"Pass-${uidStr.take(8)}-1!"
+    val clientId = s"phone-passkey-client-${uidStr.take(8)}"
+    for
+      oauthClient <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Phone OTP and Passkey Test Client",
+        Set(redirectUri),
+        allowedScopes = Set("openid", "phone"),
+        authFlow = Some(authFlow),
+      ).success
+      userId <- oauthClient.registerUser(phone = Some(phone))
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
+    yield Setup(clientId, clientResult.secret, redirectUri, userId, None, None, Some(phone), password)
+
+  /** The origin the seeded challenge settings trust for passkeys (see `OAuthClient.upsertChallengeSettings`). */
+  val passkeyOrigin = "http://localhost:3000"
+
+  /** Signs the phone user of `s` in with the code (always "123456" outside production), as a person does the first time,
+    * and enrolls a passkey for them through the Account Settings API. The sign-in is made on `auth`, which is the running
+    * stack's own instance and has no antifraud in the way.
+    */
+  def enrollPasskeyAfterCode(s: Setup, auth: OAuthClient): Task[TestAuthenticator.Credential] =
+    for
+      authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      first <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      _ <- auth.submitPhone(cookie, s.phone.get, first.csrf)
+      otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+      code <- auth.submitOtp(cookie, "123456", otp.csrf).assertRedirect(auth, cookie)
+      token <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
+      idToken <- ZIO.fromOption(token.idToken).orElseFail(RuntimeException("token response carries no id_token"))
+      claims <- ZIO.attempt(String(Base64.getUrlDecoder.decode(idToken.split('.')(1)), StandardCharsets.UTF_8))
+      sid <- ZIO.fromEither(claims.fromJson[PasskeySid]).mapError(error => RuntimeException(s"no sid [$error]: $claims")).map(_.sid)
+      caller = AccountCaller(s.userId, s.clientId, sid)
+      started <- auth.startPasskeyEnrollment(caller)
+      ceremony <- ZIO.fromEither(started.body.fromJson[PasskeyEnrollmentStart])
+        .mapError(error => RuntimeException(s"Unexpected enrollment start response [$error]: ${started.body}"))
+      credential <- TestAuthenticator.create(ceremony.publicKeyOptions, passkeyOrigin)
+      _ <- auth.finishPasskeyEnrollment(caller, ceremony.ticket, credential.responseJson, "E2E Passkey")
+    yield credential
+
+  private case class PasskeySid(sid: String) derives JsonDecoder
+  private case class PasskeyEnrollmentStart(publicKeyOptions: String, ticket: String) derives JsonDecoder
 
   /** Register a client (email + OTP) and a matching user with a permanent password. */
   def setupEmailOtp(

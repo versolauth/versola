@@ -15,7 +15,8 @@
     "otp_wrong": "Invalid verification code. Please try again.",
     "rate_limit_exceeded": "Too many attempts. Please wait before trying again.",
     "locked_for": "Too many attempts. Try again in {seconds}s.",
-    "service_unavailable": "Service temporarily unavailable. Please try again later"
+    "service_unavailable": "Service temporarily unavailable. Please try again later",
+    "passkey_instead_button": "Sign in with a passkey instead"
   },
   "ru": {
     "page_title": "Вход",
@@ -33,6 +34,7 @@
     "otp_wrong": "Неверный код подтверждения. Попробуйте ещё раз.",
     "rate_limit_exceeded": "Превышено количество попыток. Пожалуйста, подождите перед следующей попыткой.",
     "locked_for": "Слишком много попыток. Попробуйте через {seconds} с.",
-    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
+    "passkey_instead_button": "Войти по ключу доступа"
   }
 }

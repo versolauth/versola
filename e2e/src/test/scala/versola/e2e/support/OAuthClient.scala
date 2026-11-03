@@ -749,6 +749,18 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/passkey/unavailable", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/otp/alternative — what the code page posts to pass the step another way than with the code
+    * (`alternative` is `passkey`).
+    */
+  def submitOtpAlternative(cookie: String, alternative: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/otp/alternative", Map("alternative" -> alternative, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/passkey/code — what the passkey page chosen in place of the code posts to go back to the code. */
+  def submitCodeInstead(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/code", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(

@@ -20,6 +20,10 @@ object ConversationStep:
       /** The card asks for nothing but a passkey of the user the conversation already identifies: a
         * step-up whose ACR needs `passkey`. The form starts the assertion by itself. */
       passkeyOnly: Boolean = false,
+      /** Set when this passkey-only step was chosen from the code page in place of the code: the code step to go back
+        * to, as it was left (what was sent, and when, is kept; nothing is sent again by going back). A passkey passed
+        * here satisfies the factor the code was for, and the conversation goes on from where the code would have led. */
+      codeStep: Option[Otp] = None,
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(
@@ -34,6 +38,9 @@ object ConversationStep:
         * `antifraud.challenge.pause`). The pause is what a request that answers no proof of work pays instead. A step
         * stored without it (before it existed) is honoured at once. */
       pendingUntil: Option[Instant] = None,
+      /** How many times the person has gone from this code step to an alternative (see [[CodeAlternative]]). It bounds
+        * the going back and forth for the life of the conversation, and is kept by the step a resend makes. */
+      switched: Int = 0,
   ) extends ConversationStep(StepId.Otp):
     def isFake: Boolean = real.isEmpty
 
@@ -48,6 +55,13 @@ object ConversationStep:
 
   object Otp:
     case class Real(code: OtpCode)
+
+    /** Most times a conversation may move from its code step to an alternative. A switch writes the conversation and
+      * sends nothing, so nothing but this bounds a page that only ever flips. It is a count of the conversation and not
+      * a submission of the code limiter: that one bans the number from asking for codes, and a count of switches on
+      * it would let anyone who starts a conversation for a number lock its owner out of the code without a single
+      * code sent. */
+    val MaxSwitches: Int = 5
 
   case class Password(
       timesSubmitted: Int,

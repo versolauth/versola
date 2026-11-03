@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
+import { CSRF, expectSubmissions, renderForm, translations, type FormConfig } from './form-harness';
 
 /**
  * The login forms in central-ui/forms, rendered from source with their real strings (see
@@ -153,6 +153,64 @@ test.describe('otp', () => {
     const { t } = await renderForm(page, 'otp', { step, error: 'otp_wrong' });
 
     await expect(page.getByText(t.otp_wrong)).toBeVisible();
+  });
+
+  test('offers a passkey in place of the code when the server says it may, and posts the choice with the CSRF value', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+
+    // Next to the code, not instead of it: the field and the resend stay.
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: t.resend_button })).toBeVisible();
+    await page.getByRole('button', { name: t.passkey_instead_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].method).toBe('POST');
+    expect(submitted[0].path).toBe('/challenge/otp/alternative');
+    expect(submitted[0].query.get('ui_locale')).toBe('en');
+    expect(submitted[0].fields.get('alternative')).toBe('passkey');
+    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+  });
+
+  test('offers no passkey when the step lists no alternative, or one this form does not know', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step });
+    await expect(page.getByRole('button', { name: t.passkey_instead_button })).toHaveCount(0);
+    await expect(page.locator('[data-alternative]')).toHaveCount(0);
+
+    const { t: again } = await renderForm(page, 'otp', { step: { ...step, alternatives: [] } });
+    await expect(page.getByRole('button', { name: again.passkey_instead_button })).toHaveCount(0);
+
+    const { t: unknown } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['telegram'] } });
+    await expect(page.getByRole('button', { name: unknown.passkey_instead_button })).toHaveCount(0);
+  });
+
+  test('does not offer a passkey in a browser that cannot make one, whatever the server says', async ({ page }) => {
+    await page.addInitScript(() => { delete (window as unknown as { PublicKeyCredential?: unknown }).PublicKeyCredential; });
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: t.passkey_instead_button })).toHaveCount(0);
+  });
+
+  test('says it in Russian too, and sends the chosen language with the choice', async ({ page }) => {
+    const { submitted, all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+
+    await page.getByRole('button', { name: all.ru.passkey_instead_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+  });
+
+  test('the passkey choice stays inside the card at 320px, in the longer language', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const { all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+
+    const button = page.getByRole('button', { name: all.ru.passkey_instead_button });
+    const box = (await button.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    // The label is not cut off by the button's fixed height.
+    expect(await button.evaluate((b) => b.scrollHeight - b.clientHeight)).toBeLessThanOrEqual(1);
   });
 });
 
@@ -582,6 +640,39 @@ test.describe('credential', () => {
     expect(denied.fields.get('csrf')).toBe(CSRF);
   });
 
+  test('a passkey chosen in place of the code offers the code instead, and posts it with the CSRF value', async ({ page }) => {
+    await page.addInitScript(() => { window.fetch = () => new Promise(() => {}); });
+    const { submitted, t } = await renderForm(page, 'credential', {
+      step: { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true, backToCode: true },
+    });
+
+    await expect(page.getByText(t.passkey_only_hint)).toBeVisible();
+    await page.getByRole('button', { name: t.code_instead_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].method).toBe('POST');
+    expect(submitted[0].path).toBe('/challenge/passkey/code');
+    expect(submitted[0].query.get('ui_locale')).toBe('en');
+    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`the passkey page chosen in place of the code has no axe violations in the ${scheme} scheme and reflows at 320px, in both languages`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.setViewportSize({ width: 320, height: 640 });
+      await page.addInitScript(() => { window.fetch = () => new Promise(() => {}); });
+      const step = { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true, backToCode: true };
+      for (const locale of ['en', 'ru']) {
+        const all = await translations('credential');
+        await renderForm(page, 'credential', { step, locale, t: all[locale] });
+        await expect(page.getByRole('button', { name: all[locale].code_instead_button })).toBeVisible();
+        const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+        expect(results.violations.map(v => v.id)).toEqual([]);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+      }
+    });
+  }
+
   test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
     const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';
     await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: { light: logo, dark: logo } });
@@ -947,8 +1038,9 @@ test.describe('terminal screens', () => {
  * One axe scan per form, in a typical configuration. axe covers part of WCAG; the screenshots and
  * the behaviour tests above cover the rest.
  */
-const accessibilityCases: Array<[string, FormConfig]> = [
+const accessibilityCases: Array<[string, FormConfig, string?]> = [
   ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' } }],
+  ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com', alternatives: ['passkey'] } }, 'otp with a passkey alternative'],
   ['password', { step: { type: 'password' } }],
   ['set-password', { step: { type: 'set-password' } }],
   ['credential', { step: { type: 'credential', primaryCredentials: ['login'], passkey: true } }],
@@ -961,8 +1053,8 @@ const accessibilityCases: Array<[string, FormConfig]> = [
   ['signed-out', { step: { type: 'signed-out', logoutUris: [], redirectUri: 'https://app.example' } }],
 ];
 
-for (const [id, config] of accessibilityCases) {
-  test(`${id} has no axe violations`, async ({ page }) => {
+for (const [id, config, label] of accessibilityCases) {
+  test(`${label ?? id} has no axe violations`, async ({ page }) => {
     await renderForm(page, id, config);
 
     const results = await new AxeBuilder({ page })
@@ -1003,8 +1095,8 @@ test('credential phone field reflows at 320px with the selector open', async ({ 
   expect(await overflow()).toBeLessThanOrEqual(0);
 });
 
-for (const [id, config] of accessibilityCases) {
-  test(`${id} has no axe violations in the dark colour scheme`, async ({ page }) => {
+for (const [id, config, label] of accessibilityCases) {
+  test(`${label ?? id} has no axe violations in the dark colour scheme`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await renderForm(page, id, config);
 
@@ -1015,7 +1107,7 @@ for (const [id, config] of accessibilityCases) {
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 
-  test(`${id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
+  test(`${label ?? id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await renderForm(page, id, config);
 

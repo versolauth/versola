@@ -182,6 +182,13 @@ object ConversationRecord:
         case step: ConversationStep.Credential if step.passkeyOnly => Some(step)
         case _ => None
 
+  /** The passkey step a person went to from the code page, with the code step it came from. */
+  object PasskeyAlternative:
+    def unapply(record: ConversationRecord): Option[(ConversationStep.Credential, ConversationStep.Otp)] =
+      record.step match
+        case step: ConversationStep.Credential if step.passkeyOnly => step.codeStep.map(step -> _)
+        case _ => None
+
   object Consent:
     def unapply(record: ConversationRecord): Option[ConversationStep.Consent] =
       record.step match
