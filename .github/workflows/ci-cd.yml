@@ -93,6 +93,35 @@ jobs:
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
 
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
+
       # The built forms are needed before the first sbt step, not only before staging: the base
       # stylesheet every theme is composed on (forms/common.css) is copied by `build:forms` into
       # util's resources, and util, auth and central read it when they run (their tests too).
@@ -131,7 +160,7 @@ jobs:
       # it's still not part of the default `compile`/`test` loop for
       # everyone else, just guaranteed to be checked on every run.
       - name: Compile
-        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile"
+        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile" "migrateTool/compile"
 
       # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
       # does not (and a service container cannot take the server flags or certificates it
@@ -171,6 +200,27 @@ jobs:
         if: github.event_name != 'release'
         run: sbt "tools/test"
 
+      # The state worth keeping is the plain one: `sbt coverage test` below instruments and rewrites the
+      # classes, so this saves before it, after compiling every test source (the root `sbt test` would
+      # do that only after). `build` needs impl classes and e2e test classes from here as well.
+      - name: Compile all test sources for the cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sbt Test/compile "tools/Test/compile"
+
+      - name: Save compile cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+
       - name: Run tests
         if: github.event_name != 'push'
         env:
@@ -192,6 +242,28 @@ jobs:
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
         run: scala-cli run --server=false .github/scripts/coverage-badge.scala
+
+  # Every push to main saves a compile cache of its own (see "Save compile cache" in `unit-tests`), a few
+  # hundred MB each, and the repository's 10 GB Actions cache quota is shared with the sbt and npm
+  # dependency caches, which are evicted oldest-first when it fills. Only the newest two are of any use
+  # (a restore takes the latest), so the rest are deleted. Its own job so `actions: write` is held by
+  # nothing but these few lines.
+  compile-cache-prune:
+    needs: unit-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the two newest compile caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --key compile-v1- --sort created_at --order desc \
+            --limit 100 --json id --jq '.[2:][].id' |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; done
 
   # Stages the services and runs e2e against them (and, on release/workflow_dispatch, produces the stage
   # artifacts the docker-* jobs ship). The unit specs live in `unit-tests`, beside this job; every docker-*
@@ -287,6 +359,35 @@ jobs:
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
+
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
 
       - name: Enforce measured DB access in production code
         shell: bash
