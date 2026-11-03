@@ -739,6 +739,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   | `V0027` | `af_settings.version BIGINT NOT NULL DEFAULT 1` | constant default |
   | `V0028` | `af_event.asn INTEGER` and `asn_class TEXT`, nullable, no default, no index | a catalog change on the partitioned table, no rewrite; the `ALTER` runs under `lock_timeout = 5s`, and if it fails the migration is run again |
   | `V0029` | `af_event.country TEXT`, nullable, no default, no index | as `V0028` |
+  | `V0030` | `af_event_default`, the default partition of `af_event`: an event of a day that has no partition goes there instead of being refused | `CREATE TABLE ... PARTITION OF af_event DEFAULT` takes `ACCESS EXCLUSIVE` on `af_event` once, for an instant, under `lock_timeout = 5s`: if it fails, run the migration again, outside a long query on the table |
 
   Upgrade: before this version an administrator who changed the settings or reset them with `antifraud:manage` now needs
   `antifraud:operate` (below).
@@ -759,10 +760,16 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     A full queue or a failed write drops events and counts them, never delaying a sign-in; under an attack the log is a
     lower estimate.
   - The partition upkeep of `af_event`: today and seven days ahead are created at start and every six hours, and partitions
-    older than `antifraud.retention` are dropped, in separate transactions, both retried after a minute if they fail. The
+    older than `antifraud.retention` are dropped, in separate phases, both retried after a minute if they fail. The
     rows of the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 under their
-    own statement timeout, at most 200 batches a run. The upkeep waits at most 5 seconds for its lock (`lock_timeout`), and
-    the writer's inserts queue behind that request meanwhile.
+    own statement timeout, at most 200 batches a run. Since `V0030` a day is made as a table of its own and attached
+    (`ATTACH PARTITION`: `SHARE UPDATE EXCLUSIVE` on `af_event`, which stops neither reads nor inserts, and `ACCESS EXCLUSIVE`
+    on `af_event_default` only, waited for up to 5 seconds), and an old day is detached (`DETACH PARTITION`: `ACCESS
+    EXCLUSIVE` on `af_event`, tried with a `lock_timeout` of 500 ms, so inserts queue behind it for that long at most) and then
+    dropped on its own. `DETACH ... CONCURRENTLY` is not used, PostgreSQL refuses it with a default partition; the minimum
+    PostgreSQL version is 12. Before a day's partition is attached its rows are moved out of `af_event_default` (where an
+    event of a day without a partition is written, instead of being dropped as before `V0030`), with a warning naming the
+    count; the default partition is never dropped and the retention prune deletes from it too.
   - The rollup of `af_event` into `af_dest_stats` every `stats-interval`, one instance at a time (a marker row in
     `af_rollup_state` under the advisory lock), recomputing the last 2 minutes (or twice the interval); rows older than
     `antifraud.stats-retention` are removed.
@@ -800,9 +807,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   client's only when the proxies in front set the header as expected. A partition can be created or dropped only by the
   role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which read the same
   `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a different role must run
-  `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot keep the partitions and every
-  write fails. Antifraud and the secrets are also described in `antifraud/overview` and `operations/secrets` of the
-  documentation.
+  `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`. The service checks this at start and before every
+  upkeep run: when its role neither owns the table nor is a member of the owner, it logs an ERROR naming the owner, the role
+  and that statement, sets the gauge `antifraud_partition_owner_mismatch` to 1 and does not attempt the DDL (the partitions
+  that exist, `af_event_default` included, stay owned by whoever created them). Antifraud and the secrets are also
+  described in `antifraud/overview` and `operations/secrets` of the documentation.
 
 - **Who may change what.** Three permissions on the `central` resource guard the routes: `antifraud:read` (the reads: the
   settings, the rule catalogue, the status, a tenant's lists and their audit), `antifraud:manage` (a tenant's lists) and
@@ -880,7 +889,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud_rules_fired_total{rule,shadow}`, `antifraud_evaluation_failed_total{reason}` (`timeout`, `error`,
   `tuning_unavailable`), `antifraud_challenges_total{kind,outcome}`. Event log: `antifraud_events_enqueued_total`,
   `antifraud_events_written_total`, `antifraud_events_dropped_total{reason}` (`queue_full`, `write_failed`, `throttled_shed`),
-  `antifraud_event_queue_size`, `antifraud_partition_days_ahead` (7 when healthy), `antifraud_partition_maintenance_failed_total`,
+  `antifraud_event_queue_size`, `antifraud_partition_days_ahead` (7 when healthy; the default partition is not counted),
+  `antifraud_partition_maintenance_failed_total`, `antifraud_partition_owner_mismatch` (1 when the role cannot keep the
+  partitions), `antifraud_events_moved_from_default_total` (a day ran without a partition; its events are safe),
   `antifraud_stats_rollup_failed_total`. Settings and lists: `antifraud_tuning_refresh_failed_total`,
   `antifraud_tuning_refreshed_timestamp_seconds`, `antifraud_list_refresh_failed_total`,
   `antifraud_lists_refreshed_timestamp_seconds`, `antifraud_list_hit_flush_failed_total`,

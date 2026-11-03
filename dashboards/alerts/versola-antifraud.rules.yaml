@@ -14,7 +14,7 @@ groups:
           severity: warning
         annotations:
           summary: "Antifraud event partitions are not being maintained in {{ $labels.namespace }}"
-          description: "Creating or dropping the daily partitions of the antifraud event log has failed for 15 minutes (it is retried every minute). When the days ahead run out the events are dropped. Check antifraud_partition_days_ahead and the auth log: 'could not maintain the antifraud event partitions'."
+          description: "Creating or dropping the daily partitions of the antifraud event log has failed for 15 minutes (it is retried every minute). When the days ahead run out the events are written to the default partition (af_event_default) and moved into the day's partition once it exists. Check antifraud_partition_days_ahead and the auth log: 'could not maintain the antifraud event partitions'."
 
       - alert: AntifraudPartitionsRunningOut
         expr: min by (namespace) (antifraud_partition_days_ahead) < 2
@@ -23,7 +23,24 @@ groups:
           severity: critical
         annotations:
           summary: "Antifraud event log has fewer than 2 days of partitions ahead in {{ $labels.namespace }}"
-          description: "Only {{ $value }} days of the antifraud event log have a partition. At 0 the writer has nowhere to write and every event is dropped (reason write_failed). Fix the maintenance failure (see AntifraudPartitionMaintenanceFailed) or create the partitions by hand."
+          description: "Only {{ $value }} days of the antifraud event log have a partition. At 0 the events of the day go to the default partition (af_event_default) until the day's partition is made. Fix the maintenance failure (see AntifraudPartitionMaintenanceFailed and AntifraudPartitionOwnerMismatch)."
+
+      - alert: AntifraudPartitionOwnerMismatch
+        expr: max by (namespace) (antifraud_partition_owner_mismatch) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The antifraud service does not own the event log table in {{ $labels.namespace }}"
+          description: "The role auth connects as neither owns af_event nor is a member of its owner, so no partition is created or dropped (checked every six hours). The auth log has the statement to run: ALTER TABLE af_event OWNER TO <role>."
+
+      - alert: AntifraudEventsMovedFromDefault
+        expr: sum by (namespace) (increase(antifraud_events_moved_from_default_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud events were written to the default partition in {{ $labels.namespace }}"
+          description: "A day ran without its partition: its events were held in af_event_default and have been moved into the partition now. Find why the maintenance was late (AntifraudPartitionMaintenanceFailed, AntifraudPartitionOwnerMismatch)."
 
       - alert: AntifraudTuningRefreshFailed
         expr: sum by (namespace) (increase(antifraud_tuning_refresh_failed_total[5m])) > 0
