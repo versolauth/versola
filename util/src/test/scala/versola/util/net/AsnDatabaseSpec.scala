@@ -43,7 +43,7 @@ object AsnDatabaseSpec extends ZIOSpecDefault:
   def spec = suite("AsnDatabase")(
     suite("reading")(
       test("holds the announced ranges of both families and counts the rows of AS 0 apart") {
-        assertTrue(db.ranges == 7, loaded.notAnnounced == 2, loaded.malformed == 0)
+        assertTrue(db.ranges == 7, loaded.ignored == 2, loaded.malformed == 0)
       },
       test("reads the same database from a gzipped file as from a plain one, by the first bytes") {
         val packed = AsnDatabase.read(ByteArrayInputStream(gzip(bytes(sample))))
