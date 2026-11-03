@@ -5,7 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
-import versola.util.net.AsnResolver
+import versola.util.net.{AsnClass, AsnMatch, AsnResolver, GeoResolver}
 import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -197,14 +197,14 @@ object AntifraudEvents:
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written
     * once more on the way out, within a bound. */
   val live: ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & GeoResolver & Scope,
     Nothing,
     AntifraudEvents,
   ] =
     liveWith(Sizing.standard)
 
   def liveWith(sizing: Sizing): ZLayer[
-    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & Scope,
+    AntifraudEventRepository & Settings & Antifraud & AntifraudTuning & VelocityCounters & SecurityService & SecureRandom & CoreConfig & OAuthConfigurationService & AsnResolver & GeoResolver & Scope,
     Nothing,
     AntifraudEvents,
   ] =
@@ -220,6 +220,7 @@ object AntifraudEvents:
         config <- ZIO.service[CoreConfig]
         configService <- ZIO.service[OAuthConfigurationService]
         asn <- ZIO.service[AsnResolver]
+        geo <- ZIO.service[GeoResolver]
         queue <- Queue.dropping[AntifraudEvent](sizing.queueCapacity)
         // The key of the destinations' hash, run through a fixed label so that what an event stores of a number
         // cannot be matched against a hash made anywhere else with the same secret. A config without a secret of
@@ -241,6 +242,7 @@ object AntifraudEvents:
           configService,
           subjectKey,
           asn,
+          geo,
         )
         _ <- (ZIO.sleep(10.minutes) *> Clock.instant.map(budget.evict)).forever.forkScoped
         _ <- Rollup(repository, settings, sizing).run
@@ -263,6 +265,7 @@ object AntifraudEvents:
       configService: OAuthConfigurationService,
       subjectKey: Secret,
       asn: AsnResolver,
+      geo: GeoResolver,
   ) extends AntifraudEvents:
 
     override def allowSms(clientId: ClientId, phone: Phone, at: Instant, charge: Boolean): UIO[SmsBudget.Decision] =
@@ -306,6 +309,8 @@ object AntifraudEvents:
           ip <- Observability.currentIp
           // The one lookup of the request: from the database in memory, never a call outside the process.
           network <- ip.fold(ZIO.none)(asn.resolve)
+          located <- ip.fold(ZIO.none)(geo.resolve)
+          country = countryOf(located, network)
           context = AntifraudContext(
             tenantId = client.map(_.tenantId),
             clientId = clientId,
@@ -320,7 +325,8 @@ object AntifraudEvents:
             ja4 = None,
             signals =
               credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap ++
-                network.map(found => AsnRules.ClassSignal -> found.asnClass.toString),
+                network.map(found => AsnRules.ClassSignal -> found.asnClass.toString) ++
+                country.map(GeoRules.CountrySignal -> _),
           )
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged
@@ -338,6 +344,7 @@ object AntifraudEvents:
               rules = decision.firedRules,
               asn = network.map(_.info.asn),
               asnClass = network.map(_.asnClass.toString),
+              country = country,
             ),
           )
         yield decision).catchAllCause: cause =>
@@ -357,7 +364,15 @@ object AntifraudEvents:
         challengeLevel = None,
         asn = None,
         asnClass = None,
+        country = None,
       )
+
+    /** The country of the address: the country database's where it has one; else the country the AS is registered in, but
+      * only for a network that is not `hosting` (a data centre's registration says where its owner is, not its customers),
+      * and not the `ZZ` the source writes for none. */
+    private def countryOf(located: Option[String], network: Option[AsnMatch]): Option[String] =
+      located.orElse:
+        network.filter(_.asnClass == AsnClass.other).map(_.info.country).filter(_ != "ZZ")
 
     override def resetBudget(prefix: Option[String]): UIO[Unit] = ZIO.succeed(budget.forget(prefix))
 
@@ -479,12 +494,14 @@ object AntifraudEvents:
       for
         // Looked up before (by `decideOtpRequest`, which counted it); here it is only read again, from memory.
         network <- Observability.currentIp.flatMap(_.fold(ZIO.none)(asn.peek))
+        country <- Observability.currentIp.flatMap(_.fold(ZIO.none)(geo.peek)).map(countryOf(_, network))
         // How the step ended goes on the `receive-http` line of the request too, with the network it came from.
         _ <- Observability.updateAntifraud(details(action, credential))(d =>
           d.copy(
             outcome = Some(outcome.toString),
             asn = network.map(_.info.asn).orElse(d.asn),
             asnClass = network.map(_.asnClass.toString).orElse(d.asnClass),
+            country = country.orElse(d.country),
           ),
         )
         // Whatever goes wrong while describing the step is the log's problem and not the sign-in's.
@@ -512,6 +529,7 @@ object AntifraudEvents:
               wouldAction = decision.map(_.wouldAction.toString),
               asn = network.map(_.info.asn),
               asnClass = network.map(_.asnClass.toString),
+              country = country,
             ),
           )
         yield ()).catchAllCause(cause =>
