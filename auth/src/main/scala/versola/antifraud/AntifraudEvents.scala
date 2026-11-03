@@ -635,19 +635,47 @@ object AntifraudEvents:
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
         // The gauge is read after every run, a failed one included: it is what says how long the writer can still go on.
-        repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
-          cause =>
-            AntifraudMetrics.partitionMaintenanceFailed *>
-              ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
-              daysAhead(today) *>
-              ZIO.fail(()),
-          _ => daysAhead(today),
-        )
+        ownsTable.flatMap:
+          case false => daysAhead(today)
+          case true =>
+            repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
+              cause =>
+                AntifraudMetrics.partitionMaintenanceFailed *>
+                  ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
+                  daysAhead(today) *>
+                  ZIO.fail(()),
+              moved => AntifraudMetrics.movedFromDefault(moved) *> daysAhead(today),
+            )
+
+    /** Whether the service may alter `af_event`: without it every create and drop fails, so none is tried and the operator is told
+      * once per run what to run, instead of a warning each minute that says only "must be owner". A check that itself fails (the
+      * database is down) says nothing, and the run goes on and reports its own failure. */
+    private val ownsTable: UIO[Boolean] =
+      repository.ownership.foldZIO(
+        cause => ZIO.logDebugCause("could not read the owner of af_event", Cause.fail(cause)).as(true),
+        ownership =>
+          if ownership.mayAlter then AntifraudMetrics.partitionOwnerMismatch(false).as(true)
+          else
+            AntifraudMetrics.partitionOwnerMismatch(true) *>
+              ZIO.logError(
+                s"the antifraud event partitions are not maintained: the table af_event is owned by ${ownership.owner} and the service " +
+                  s"connects as ${ownership.role}, which is neither that role nor a member of it. Run as ${ownership.owner} or a superuser: " +
+                  s"ALTER TABLE af_event OWNER TO ${quoted(ownership.role)}. Until then no partition is created or dropped, and " +
+                  "the events of a day without a partition are written to af_event_default (an owner change does not reach the partitions " +
+                  "that exist: change the owner of af_event_default as well). Checked again at the next run, in 6 hours, or at a restart",
+              ).as(false),
+      )
 
     private def daysAhead(today: LocalDate): UIO[Unit] =
       repository.partitionDaysAhead(today).flatMap(AntifraudMetrics.partitionDaysAhead).catchAllCause(cause =>
         ZIO.logDebugCause("could not count the antifraud partitions ahead", cause),
       )
+
+    private val plainIdentifier = "[a-z_][a-z0-9_]*".r
+
+    /** A role name as an identifier in a statement the operator copies: bare when it is plain, double-quoted otherwise. */
+    private def quoted(name: String): String =
+      if plainIdentifier.matches(name) then name else "\"" + name.replace("\"", "\"\"") + "\""
 
     /** Once before the writer starts, so its first batch finds a partition, then every six hours. A run that failed
       * (a lock that could not be had in time, a database that was down) is tried again after a minute, not six
@@ -760,6 +788,18 @@ object AntifraudMetrics:
   def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
+
+  private val partitionOwnerMismatchGauge = Metric.gauge("antifraud_partition_owner_mismatch")
+
+  /** 1 while the service's role is not the owner of `af_event` (nor a member of its role): no partition can be created or
+    * dropped, as of the last run. Alert on it being 1; the log line says what to run. */
+  def partitionOwnerMismatch(mismatch: Boolean): UIO[Unit] = partitionOwnerMismatchGauge.set(if mismatch then 1.0 else 0.0)
+
+  private val eventsMovedFromDefaultTotal = Metric.counter("antifraud_events_moved_from_default_total")
+
+  /** Events that were written to the default partition, since their day had no partition, and moved into it once it had. More than
+    * 0 means a day ran without a partition: the maintenance was late, or could not run. */
+  def movedFromDefault(count: Long): UIO[Unit] = ZIO.when(count > 0)(eventsMovedFromDefaultTotal.incrementBy(count)).unit
 
   private val partitionDaysAheadGauge = Metric.gauge("antifraud_partition_days_ahead")
 

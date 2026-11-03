@@ -835,21 +835,41 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, and the rows of
   the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 rows each under its own
   statement timeout and at most 200 batches a run, so the log keeps the retention to the minute and no longer, and the
-  first run after an upgrade on a busy deployment makes progress instead of timing out on a day of rows). The migration creates the parent only, and a partition can be created or dropped
-  only by the role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which
-  read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a
-  different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`, or the service cannot
-  keep the partitions and every write fails. Creating or dropping a partition takes a lock on `af_event` that the
-  writer's inserts queue behind: the service waits at most 5 seconds for it (`lock_timeout`), so a long query on
-  `af_event` makes the **maintenance** give up after that, but the writes do queue behind the lock request meanwhile:
-  they wait for it, up to those same 5 seconds (and in any case under the writer's 30-second statement timeout, after
-  which a batch fails and is dropped). The partitions are created ahead in one transaction and the old
-  ones dropped in another, so a drop that cannot get its lock (a long read of an old day) never takes the new
-  partitions with it; both are retried after a minute. **Alert on the gauge `antifraud_partition_days_ahead` (days after
-  today that have a partition; 7 when healthy) falling below 3, and on `antifraud_partition_maintenance_failed_total`
-  increasing**: a failed run is only a warning in the log, and once the days ahead are used up the events are dropped
-  (`antifraud_events_dropped_total{reason="write_failed"}`); the gauge says how long there is left, the counter says
-  that it is going wrong. Migration `V0026` drops the two indexes of `af_event` that nothing read
+  first run after an upgrade on a busy deployment makes progress instead of timing out on a day of rows). A partition can be
+  created or dropped only by the role that owns the parent `af_event`: that is the role `versola migrate` and the Helm
+  migration Job use, which read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that
+  migrates as a different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`. The service
+  checks this at start and before every maintenance run (every six hours): when its role neither owns the table nor is a
+  member of the owner, it logs an ERROR with the owner, the role and that statement, sets the gauge
+  `antifraud_partition_owner_mismatch` to 1 (0 otherwise) and does not attempt the DDL. The owner change does not reach the
+  partitions that exist: `af_event_default` (below) and the day tables are owned by whoever created them.
+  Since V0030 the partitions are attached and detached without a lock that stops the writer, as far as PostgreSQL allows. A
+  day is made as a table of its own (`CREATE TABLE af_event_YYYYMMDD (LIKE af_event INCLUDING ALL)` with a `CHECK` that
+  carries the day's bounds, so that the attach does not scan it) and then `ALTER TABLE af_event ATTACH PARTITION`, which takes
+  SHARE UPDATE EXCLUSIVE on `af_event` (conflicts with neither reads nor inserts) and ACCESS EXCLUSIVE on `af_event_default`
+  only, for the check that no row there belongs to the new day (so it waits, up to `lock_timeout`, 5 seconds, behind a read of
+  `af_event`, and reads that start meanwhile wait behind it; the writer does not, unless it is writing to the default
+  partition). An old day is `ALTER TABLE af_event DETACH PARTITION` (ACCESS EXCLUSIVE on `af_event`, instantly when nothing
+  reads it; tried with a `lock_timeout` of 500 ms, so the writer's inserts queue behind it for that long at most, and the
+  next run, a minute later, tries again) and then `DROP TABLE` of the detached table (ACCESS EXCLUSIVE on that table alone,
+  `lock_timeout` 5 seconds). `DETACH ... CONCURRENTLY` (PostgreSQL 14 and later) is not used: PostgreSQL refuses it while the
+  table has a default partition. A table named `af_event_YYYYMMDD` that is no partition and is of a day older than the
+  retention (what a run cut off between the detach and the drop leaves) is dropped by the next run. The minimum PostgreSQL
+  version is 12 (the weaker attach); the project's own images and tests use 18. The partitions are created ahead in one phase and the old
+  ones dropped in another, so a drop that cannot get its lock never takes the new
+  partitions with it; both are retried after a minute.
+  **Migration `V0030` adds the default partition `af_event_default`**: an event of a day that has no partition is written
+  there instead of being refused, and when maintenance creates the day's partition it moves that day's rows out of the default
+  first (in batches of 5000 when there are more, then the rest in the transaction that attaches; `ATTACH` fails while the
+  default holds a row of the new day) and logs a warning with the count. Rows older than the retention are deleted from the
+  default by the same 5-minute prune; it is never dropped and the days-ahead gauge ignores it. `CREATE TABLE af_event_default
+  PARTITION OF af_event DEFAULT` takes ACCESS EXCLUSIVE on `af_event` once, for an instant, in the migration (which sets
+  `lock_timeout` to 5 seconds and fails, to be run again, rather than stall the writer's inserts behind it): run `versola migrate`
+  outside a long query on the table. **Alert on the gauge `antifraud_partition_days_ahead` (days after today that have a
+  partition; 7 when healthy) falling below 3, on `antifraud_partition_maintenance_failed_total` increasing, on
+  `antifraud_partition_owner_mismatch` being 1, and on `antifraud_events_moved_from_default_total` increasing** (a day ran
+  without a partition; its events are safe in the default partition, which a query on `af_event` reads like any other). Before
+  V0030 the events of such a day were dropped (`antifraud_events_dropped_total{reason="write_failed"}`). Migration `V0026` drops the two indexes of `af_event` that nothing read
   (`af_event_subject_idx`, `af_event_dest_idx`, and with them the same index of every partition): the single writer
   inserts into one B-tree fewer per event, and nothing that reads the table changes (a preview of a phone or a user
   agent scans the day under its timeout, a preview of a prefix reads `af_dest_stats`). `DROP INDEX` takes a brief

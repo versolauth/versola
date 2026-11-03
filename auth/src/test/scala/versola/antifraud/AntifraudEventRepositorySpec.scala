@@ -10,7 +10,7 @@ import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
 import java.util.UUID
 
 /** What every [[AntifraudEventRepository]] promises: the partitions it keeps (made on request, made again without error, dropped
-  * when old, a write that finds none refused), the batch it writes, the pruning of the log, and the rollup of the log into
+  * when old, a write that finds none kept for the day's partition and moved into it when it is made), the batch it writes, the pruning of the log, and the rollup of the log into
   * per-minute statistics that runs once per interval. What it wrote is read back through [[AntifraudEventRepositorySpec.Fixtures]],
   * which the storage's runner implements; the storage adds in `implementationCases` what it alone promises (the names of its
   * partitions, a lock timeout, batched deletes, its indexes). */
@@ -92,12 +92,65 @@ trait AntifraudEventRepositorySpec extends DatabaseSpecBase[AntifraudEventReposi
           left <- f.rows.map(_.map(_.id))
         yield assertTrue(left == List(dayBefore.id, atLimit.id, newer.id))
       },
-      test("an event of a day with no partition fails the write, so a late maintenance run is visible") {
+      test("an event of a day with no partition is written, and moved into the day's partition when that is created") {
         for
           _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
-          result <- repository.insertBatch(List(event(utc(today.plusDays(5).atStartOfDay())))).exit
-          rows <- f.countEvents
-        yield assertTrue(result.isFailure, rows == 0L)
+          late = event(utc(today.plusDays(5).atTime(8, 0)))
+          _ <- repository.insertBatch(List(late))
+          held <- f.countUnpartitioned
+          // A day without a partition is not a day ahead, however many events it holds.
+          ahead <- repository.partitionDaysAhead(today)
+          moved <- repository.maintainPartitions(from = today, days = 7, keepFrom = today.minusDays(30))
+          heldAfter <- f.countUnpartitioned
+          rows <- f.rows.map(_.map(_.id))
+          again <- repository.maintainPartitions(from = today, days = 7, keepFrom = today.minusDays(30))
+          partitionsAhead <- repository.partitionDaysAhead(today)
+        yield assertTrue(
+          held == 1L,
+          ahead == 0,
+          moved == 1L,
+          heldAfter == 0L,
+          rows == List(late.id),
+          again == 0L,
+          partitionsAhead == 6,
+        )
+      },
+      test("counts the events it moves, over every day it creates, and leaves those of a day it does not create") {
+        for
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          events = List(
+            event(utc(today.plusDays(1).atTime(9, 0))),
+            event(utc(today.plusDays(1).atTime(9, 1))),
+            event(utc(today.plusDays(2).atTime(9, 0))),
+            event(utc(today.plusDays(30).atTime(9, 0))),
+          )
+          _ <- repository.insertBatch(events)
+          moved <- repository.maintainPartitions(from = today, days = 4, keepFrom = today.minusDays(30))
+          heldAfter <- f.countUnpartitioned
+          rows <- f.rows.map(_.size)
+        yield assertTrue(moved == 3L, heldAfter == 1L, rows == 4)
+      },
+      test("an event of a day gone by, written without a partition, stays where it is and does not stop the days after it") {
+        for
+          _ <- repository.insertBatch(List(event(utc(today.minusDays(2).atTime(9, 0)))))
+          moved <- repository.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(30))
+          days <- partitions
+          held <- f.countUnpartitioned
+        yield assertTrue(moved == 0L, days.size == 3, held == 1L)
+      },
+      test("deletes what the day without a partition holds once it is older than the retention, whatever its day") {
+        for
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          limit = utc(today.minusDays(14).atTime(10, 0))
+          old = event(utc(today.minusDays(20).atTime(9, 0)))
+          justOld = event(utc(today.minusDays(14).atTime(9, 59)))
+          kept = event(utc(today.minusDays(14).atTime(10, 1)))
+          future = event(utc(today.plusDays(30).atTime(9, 0)))
+          _ <- repository.insertBatch(List(old, justOld, kept, future))
+          before <- f.countUnpartitioned
+          _ <- repository.pruneEvents(limit)
+          left <- f.rows.map(_.map(_.id).toSet)
+        yield assertTrue(before == 4L, left == Set(kept.id, future.id))
       },
       test("drops the partitions of days older than the retention, and only those") {
         for
@@ -247,6 +300,9 @@ object AntifraudEventRepositorySpec:
     def rows: Task[List[EventRow]]
 
     def countEvents: Task[Long]
+
+    /** How many events are held for a day that has no partition (the default partition's rows). */
+    def countUnpartitioned: Task[Long]
 
     /** Every row of the rollup, ordered by prefix. */
     def stats: Task[List[StatRow]]
