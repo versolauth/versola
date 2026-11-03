@@ -1941,7 +1941,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |}
        |
        |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
-       |# kept, and the intervals. All keys are required, except the `asn` block, which a config written before it existed
+       |# kept, and the intervals. All keys are required, except the `asn` and `geo` blocks, which a config written before they existed
        |# may leave out. Everything is off: thresholds, weights and limits are not here,
        |# they are tuned through central's admin API (`/antifraud/settings`) without a restart.
        |antifraud {
@@ -1988,6 +1988,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    url              = ""          # where to download a fresher one to `file` (empty: none; the file is reread when it changes)
        |    refresh-interval = "24 hours"
        |    # hosting-keywords = ["hosting", "cloud", "datacenter"]   # optional: the words of an AS name that make it `hosting`; default list in deploy.md
+       |  }
+       |  # The country of a client address, from a local DB-IP "IP to Country Lite" CSV (deploy.md, "Country signal"). Empty `file` is off.
+       |  geo {
+       |    file             = ""          # path of dbip-country-lite-YYYY-MM.csv (or .csv.gz); empty switches the signal off
+       |    url              = ""          # where to download a fresher one to `file`, `{yyyy}` and `{mm}` being the year and month (empty: none; the file is reread when it changes)
+       |    refresh-interval = "7 days"
        |  }
        |}
        |$authMutualTlsBlock$authEstBlock

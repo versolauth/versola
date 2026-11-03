@@ -233,7 +233,7 @@ object AntifraudShadowSpec extends UnitSpecBase:
       test("the catalogue is the rules the engine's sources contribute: one per key and window, one per kind of list and of value") {
         val names = Antifraud.ruleNames
         assertTrue(
-          names.size == 5 * 4 + 1 + 9 * 5 + 1,
+          names.size == 5 * 4 + 1 + 10 * 5 + 1,
           names.contains("velocity_prefix_24h"),
           names.contains("velocity_known_user"),
           names.contains("fake_list:prefix"),

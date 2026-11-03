@@ -53,6 +53,10 @@ enum AntifraudValueType derives JsonCodec:
   /** The domain of an address, from the context signal [[AntifraudLists.EmailDomainSignal]]. */
   case email_domain
 
+  /** An ISO 3166-1 alpha-2 country code (`KZ`), against the context signal [[GeoRules.CountrySignal]]: the country the
+    * address of the request is in. */
+  case country
+
 object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
 

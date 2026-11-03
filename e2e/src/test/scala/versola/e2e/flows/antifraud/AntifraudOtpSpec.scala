@@ -1,6 +1,6 @@
 package versola.e2e.flows.antifraud
 
-import versola.e2e.support.AntifraudFixture.{AsnDatabase, ListEntry}
+import versola.e2e.support.AntifraudFixture.{AsnDatabase, GeoDatabase, ListEntry}
 import versola.e2e.support.AntifraudInstance.Decision
 import versola.e2e.support.{*, given}
 import zio.*
@@ -292,11 +292,11 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
 
   private def carrierIp(): String = s"${AsnDatabase.CarrierNetwork}.${1 + scala.util.Random.nextInt(250)}"
 
-  /** Takes the seeded `asn` entries out and waits until both instances have reloaded the lists, so that the case that follows meets none. A request
-    * the entry refuses takes no step of its number's limit, so the polls can use one number. */
-  private def removed(f: AntifraudFixture, s: Flows.Setup): UIO[Unit] =
-    (AntifraudFixture.unseedAsn *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
-      awaited(s"${instance.name} to drop the asn entry")(attempt(instance, s, hostingIp()).map(a => Option.when(!a.refused)(()))),
+  /** Takes the seeded entries of `valueType` (`asn`, `country`) out and waits until both instances have reloaded the lists, so that the case that follows
+    * meets none. A request the entry refuses takes no step of its number's limit, so the polls can use one number. */
+  private def removed(f: AntifraudFixture, s: Flows.Setup, valueType: String): UIO[Unit] =
+    (AntifraudFixture.unseed(valueType) *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
+      awaited(s"${instance.name} to drop the $valueType entry")(attempt(instance, s, hostingIp()).map(a => Option.when(!a.refused)(()))),
     )).orDie
 
   private def asnSuite = suite("the ASN of the address")(
@@ -345,7 +345,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           carrier.decision.decision == "Allow",
           carrier.decision.rules.isEmpty,
           carrier.decision.outcome.contains("sent"),
-        )).ensuring(removed(f, gone))
+        )).ensuring(removed(f, gone, "asn"))
       yield result
     },
     test("the event log has the AS and its class of each step, and none for an address that is in no AS") {
@@ -361,8 +361,61 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           ("sent", None, None),
         )
         // The writer takes a batch about every second.
-        rows <- awaited("the events to be written")(AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.toSet == expected)(r)))
-      yield assertTrue(rows.toSet == expected, rows.size == 3)
+        rows <- awaited("the events to be written")(
+          AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.map((o, a, c, _) => (o, a, c)).toSet == expected)(r)),
+        )
+      yield assertTrue(rows.map((outcome, asn, asnClass, _) => (outcome, asn, asnClass)).toSet == expected, rows.size == 3)
+    },
+    test("the event log has the country of each step, from the country database, and none for an address it does not know") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        hosting <- attempt(f.a, s, hostingIp())
+        carrier <- attempt(f.a, s, carrierIp())
+        _ <- attempt(f.a, s, randomIp())
+        expected = Set[(String, Option[String])](
+          ("challenged", Some(GeoDatabase.HostingCountry)),
+          ("sent", Some(GeoDatabase.CarrierCountry)),
+          ("sent", None),
+        )
+        // The writer takes a batch about every second.
+        rows <- awaited("the events to be written")(
+          AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.map((outcome, _, _, country) => (outcome, country)).toSet == expected)(r)),
+        )
+      yield assertTrue(
+        // The country is on the request's line too, and the registration country of the hosting AS is not what it says.
+        hosting.decision.country.contains(GeoDatabase.HostingCountry),
+        carrier.decision.country.contains(GeoDatabase.CarrierCountry),
+        rows.map((outcome, _, _, country) => (outcome, country)).toSet == expected,
+        rows.size == 3,
+      )
+    },
+    test("a deny entry for the country of the hosting range refuses a request from it on the other instance too, and leaves the carrier's alone") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        // The polls that wait for the entry take steps of a number's limit: they use a number of their own.
+        probe <- f.nextSetup
+        gone <- f.nextSetup
+        result <- (for
+          until <- Clock.instant.map(_.plusSeconds(120))
+          _ <- seeded(f.a, probe)(ListEntry("deny", "country", GeoDatabase.HostingCountry, expiresAt = Some(until)))
+          denied <- attempt(f.a, s, hostingIp())
+          onB <- awaited("instance B to reload the lists")(attempt(f.b, s, hostingIp()).map(a => Option.when(a.refused)(a)))
+          carrier <- attempt(f.a, s, carrierIp())
+        yield assertTrue(
+          denied.refused,
+          denied.decision.decision == "Block",
+          denied.decision.rules.contains("deny_list:country"),
+          denied.decision.outcome.contains("blocked"),
+          denied.decision.country.contains(GeoDatabase.HostingCountry),
+          onB.decision.rules.contains("deny_list:country"),
+          carrier.answeredWithCodeStep,
+          carrier.decision.decision == "Allow",
+          carrier.decision.rules.isEmpty,
+          carrier.decision.outcome.contains("sent"),
+        )).ensuring(removed(f, gone, "country"))
+      yield result
     },
   )
 

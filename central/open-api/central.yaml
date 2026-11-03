@@ -2648,7 +2648,7 @@ paths:
         `/antifraud/global/lists`. This instance of auth applies it at once, the others within
         `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
 
-        Auth refuses (`400`, with the reason as text) a value that does not fit its kind (and an ASN, a device id or a JA4
+        Auth refuses (`400`, with the reason as text) a value that does not fit its kind (and a device id or a JA4
         hash, which no request carries yet); an `allow` for anything but an exact subject; an entry that
         names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
         an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
@@ -2711,8 +2711,8 @@ paths:
         nothing stored, as the admin's tenant's entry (it is previewed as the entry `POST /antifraud/lists` would make; a body
         that names another tenant is `403`). `matched` is `null` for a kind of value the event log has no column for (an
         address, a network, a mail domain): the share guard cannot judge those, so give them an expiry and add
-        them as `shadow` first. For an ASN it is the events of that AS, which the event log has once `antifraud.asn.file` is set
-        (events written before, or without the database, have none). The count is over every tenant's events until the guard is made per tenant. Needs
+        them as `shadow` first. For an ASN or a country it is the events of that AS or country, which the event log has once `antifraud.asn.file` or
+        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over every tenant's events until the guard is made per tenant. Needs
         `antifraud:manage`.
       operationId: previewAntifraudListEntry
       requestBody:
@@ -7094,10 +7094,12 @@ components:
         subject only, and never overrides a deny of the same specificity.
     AntifraudValueType:
       type: string
-      enum: [phone_hash, prefix, ip, cidr, ua_hash, email_domain]
+      enum: [phone_hash, prefix, ip, cidr, asn, ua_hash, email_domain, country]
       description: |
-        What an entry's `value` is compared with. An ASN, a device id and a JA4 hash are not offered: no request carries one
-        yet, so an entry of those kinds would match nothing, and auth refuses it (`400`).
+        What an entry's `value` is compared with. A device id and a JA4 hash are not offered: no request carries one yet, so
+        an entry of those kinds would match nothing, and auth refuses it (`400`). An `asn` and a `country` entry match nothing
+        while the database that gives the request's AS (`antifraud.asn.file`) or country (`antifraud.geo.file`) is off.
+        Neither is ever an `allow`, and a `country` entry always needs `expiresAt`.
     AntifraudListEntryRequest:
       type: object
       description: Give `value`, or for a `phone_hash` entry `phone` instead.
@@ -7109,7 +7111,7 @@ components:
           description: |
             What is matched, up to 256 characters: the keyed hash (`phone_hash`), digits of a number without the `+`
             (`prefix`, at most 6), an address, a network `address/length`, an AS number (`64500` or `AS64500`), the lower-case hex
-            SHA-256 of a user agent or a domain name.
+            SHA-256 of a user agent, a domain name or an ISO 3166-1 alpha-2 country code (`kz` is stored as `KZ`).
         phone:
           type: string
           description: |

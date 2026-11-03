@@ -69,6 +69,7 @@ final class ListSnapshot private (
       exactly(AntifraudValueType.device_id, ctx.deviceId)
       exactly(AntifraudValueType.ja4_hash, ctx.ja4)
       exactly(AntifraudValueType.email_domain, ctx.signals.get(AntifraudLists.EmailDomainSignal).map(_.trim.toLowerCase))
+      exactly(AntifraudValueType.country, ctx.signals.get(GeoRules.CountrySignal).map(_.trim.toUpperCase))
       if exact.contains(AntifraudValueType.ua_hash) then exactly(AntifraudValueType.ua_hash, ctx.userAgent.map(sha256Hex))
       ctx.destPrefix.foreach: dest =>
         if prefixes.nonEmpty then
@@ -95,7 +96,7 @@ object ListSnapshot:
     * Specificity, from the most to the least: an exact address, destination, or device (1000; a network of one address,
     * `/32` or `/128`, is that address, so a deny on it ties with an allow on the address and wins), a network (500 plus
     * its prefix length), a JA4 fingerprint (450), a user agent (400), a number prefix (300 plus its length), an
-    * autonomous system (200), a mail domain (100). A fingerprint and a user agent rank below any network: they are
+    * autonomous system (200), a country (150), a mail domain (100). A fingerprint and a user agent rank below any network: they are
     * easily copied and one value covers many real clients, so they must not outvote an address. Only entries of one request are compared, so the numbers say
     * "this value names fewer clients than that one", nothing more.
     */
@@ -158,6 +159,7 @@ object ListSnapshot:
                 case AntifraudValueType.ja4_hash => 450
                 case AntifraudValueType.ua_hash => 400
                 case AntifraudValueType.email_domain => 100
+                case AntifraudValueType.country => 150
                 case _ => 1000
               add(exactIndex.getOrElseUpdate(other, mutable.Map.empty), value, Indexed(v, specificity))
 
@@ -204,6 +206,11 @@ object ListValues:
             .toRight("an asn is a number up to 4294967295")
         case AntifraudValueType.email_domain =>
           Option.when(domain.matches(value.toLowerCase))(value.toLowerCase).toRight("not a domain name")
+        case AntifraudValueType.country =>
+          // `ZZ` is what the sources write for "no country": no address has it, and an entry for it would match nothing.
+          Option.when(value.length == 2 && value.forall(c => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && !value.equalsIgnoreCase("ZZ"))(
+            value.toUpperCase,
+          ).toRight("a country is an ISO 3166-1 alpha-2 code, such as KZ")
         case AntifraudValueType.ip =>
           ListSnapshot.parseIp(value).map(canonical(_, None)).toRight("not an IP address")
         case AntifraudValueType.cidr =>
@@ -226,7 +233,9 @@ object ListValues:
 
   /** The kinds of value some request carries today, so that an entry of the kind can match. A `device_id` or `ja4_hash`
     * entry would be accepted, audited and shown in a dry run, and match nothing, until P1-1 fills the signal; such an
-    * entry is refused instead. An `asn` entry matches the AS of the request's address when the ASN database is on. */
+    * entry is refused instead. An `asn` entry matches the AS of the request's address when the ASN database is on, and a `country`
+    * entry the country of it when the country database is on (or the ASN one gives the registration country of a network that
+    * is not `hosting`). */
   val live: Set[AntifraudValueType] = Set(
     AntifraudValueType.phone_hash,
     AntifraudValueType.prefix,
@@ -235,6 +244,7 @@ object ListValues:
     AntifraudValueType.asn,
     AntifraudValueType.ua_hash,
     AntifraudValueType.email_domain,
+    AntifraudValueType.country,
   )
 
   /** Entries that name many clients (anything but an exact subject, and a network wider than /24 or /48) must
@@ -260,10 +270,11 @@ object ListValues:
     .flatten
 
   /** The entries that have a longest life ([[AntifraudLists.Settings.maxBroadTtl]]): a `cidr` wider than /24 or /48, a mail
-    * domain or a prefix, which name many clients with one value. A network of one address or a narrow one is an exact
+    * domain, a prefix or a country, which name many clients with one value. A network of one address or a narrow one is an exact
     * subject and is held to nothing here, as before. */
   def expiresAtMost(valueType: AntifraudValueType, normalized: String): Boolean =
-    (valueType == AntifraudValueType.cidr || valueType == AntifraudValueType.email_domain || valueType == AntifraudValueType.prefix) &&
+    (valueType == AntifraudValueType.cidr || valueType == AntifraudValueType.email_domain || valueType == AntifraudValueType.prefix ||
+      valueType == AntifraudValueType.country) &&
       broad(valueType, normalized)
 
   /** The address with the bits beyond the prefix cleared, as text. */

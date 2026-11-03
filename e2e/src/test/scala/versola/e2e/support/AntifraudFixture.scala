@@ -37,6 +37,7 @@ object AntifraudInstance:
       outcome: Option[String],
       asn: Option[Int] = None,
       asnClass: Option[String] = None,
+      country: Option[String] = None,
   )
 
   private def decision(line: String): Option[Decision] =
@@ -56,6 +57,7 @@ object AntifraudInstance:
       outcome = text(antifraud, "outcome"),
       asn = antifraud.get("asn").collect { case Json.Num(n) => n.intValue },
       asnClass = text(antifraud, "asn_class"),
+      country = text(antifraud, "country"),
       rules = antifraud.get("rules").collect { case Json.Arr(items) => items.toList.collect { case Json.Str(s) => s } }.getOrElse(Nil),
     )
 
@@ -84,7 +86,7 @@ final case class AntifraudFixture(a: AntifraudInstance, b: AntifraudInstance, pr
 object AntifraudFixture:
 
   /** How many setups are registered up front. */
-  val Setups = 24
+  val Setups = 28
 
   /** Limit on codes to one number in an hour (a request over it is refused), and on requests from one address. Low
     * enough for a spec to reach, high enough that the cases of a spec that each use a number of their own do not. */
@@ -102,9 +104,11 @@ object AntifraudFixture:
 
   /** Appended to the running auth's `env.conf`, which has the whole `antifraud` block (every key is required; see gen-env), so these only change what the specs need. `timeout` is lengthened from the 20 ms a production evaluation is held
     * to, so that a busy CI machine does not turn a decision into `antifraud_error` (a fail-open `Challenge`). */
-  private def antifraudConfig(sync: Duration, asnFile: Path): String =
+  private def antifraudConfig(sync: Duration, asnFile: Path, geoFile: Path): String =
     // A path as a HOCON string: backslashes and quotes escaped.
-    val quoted = asnFile.toString.replace("\\", "\\\\").replace("\"", "\\\"")
+    def quote(path: Path): String = path.toString.replace("\\", "\\\\").replace("\"", "\\\"")
+    val quoted = quote(asnFile)
+    val quotedGeo = quote(geoFile)
     s"""
        |antifraud {
        |  decision { enabled = true, timeout = "5 seconds" }
@@ -125,6 +129,10 @@ object AntifraudFixture:
        |  asn {
        |    file = "$quoted"
        |  }
+       |  # The country database the same addresses are looked up in: the two ranges of [[AntifraudFixture.GeoDatabase]].
+       |  geo {
+       |    file = "$quotedGeo"
+       |  }
        |}
        |""".stripMargin
 
@@ -142,17 +150,32 @@ object AntifraudFixture:
       s"$HostingNetwork.0\t$HostingNetwork.255\t$HostingAsn\tDE\tExample Hosting GmbH\n" +
         s"$CarrierNetwork.0\t$CarrierNetwork.255\t$CarrierAsn\tKZ\tExample Mobile\n"
 
+  /** The country database of the instances, in DB-IP's CSV format: the ranges of the ASN database, the hosting one in `DE` and the
+    * carrier's in `KZ`, so that a hosting address has a country only from here (the registration country of a hosting network is
+    * never the signal). Nothing else is in it, so any other address has none. */
+  object GeoDatabase:
+    val HostingCountry = "DE"
+    val CarrierCountry = "KZ"
+    val contents: String =
+      s"${AsnDatabase.HostingNetwork}.0,${AsnDatabase.HostingNetwork}.255,$HostingCountry\n" +
+        s"${AsnDatabase.CarrierNetwork}.0,${AsnDatabase.CarrierNetwork}.255,$CarrierCountry\n"
+
+  private val geoFile: ZIO[Scope, Throwable, Path] =
+    ZIO.acquireRelease(
+      ZIO.attemptBlocking(Files.writeString(Files.createTempFile("e2e-af-geo-", ".csv").nn, GeoDatabase.contents).nn),
+    )(file => ZIO.attemptBlocking(Files.deleteIfExists(file)).ignore)
+
   private val asnFile: ZIO[Scope, Throwable, Path] =
     ZIO.acquireRelease(
       ZIO.attemptBlocking(Files.writeString(Files.createTempFile("e2e-af-asn-", ".tsv").nn, AsnDatabase.contents).nn),
     )(file => ZIO.attemptBlocking(Files.deleteIfExists(file)).ignore)
 
-  private def launch(name: String, config: E2EConfig, client: Client, ports: Ports, asn: Path): ZIO[Scope, Throwable, AntifraudInstance] =
+  private def launch(name: String, config: E2EConfig, client: Client, ports: Ports, asn: Path, geo: Path): ZIO[Scope, Throwable, AntifraudInstance] =
     ZIO.acquireRelease(
       ZIO.attemptBlocking:
         val conf = Files.createTempFile(s"e2e-af-$name-", ".conf").nn
         val log = Files.createTempFile(s"e2e-af-$name-", ".log").nn
-        Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + antifraudConfig(SyncInterval, asn))
+        Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + antifraudConfig(SyncInterval, asn, geo))
         val builder = ProcessBuilder(config.authLauncher, s"-Denv.path=$conf")
           .redirectErrorStream(true)
           .redirectOutput(log.toFile)
@@ -220,7 +243,8 @@ object AntifraudFixture:
         // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
         // is when they first read it.
         asn <- asnFile
-        instances <- launch("antifraud-a", config, client, APorts, asn) <&> launch("antifraud-b", config, client, BPorts, asn)
+        geo <- geoFile
+        instances <- launch("antifraud-a", config, client, APorts, asn, geo) <&> launch("antifraud-b", config, client, BPorts, asn, geo)
         unused <- Ref.make(setups)
       yield AntifraudFixture(instances._1, instances._2, unused)
 
@@ -320,25 +344,27 @@ object AntifraudFixture:
         finally connection.close()
     yield steps
 
-  /** What the event log holds for `clientId`: the outcome of each step and the AS and class it was recorded with. */
-  def eventsOf(clientId: String): Task[List[(String, Option[Int], Option[String])]] =
+  /** What the event log holds for `clientId`: the outcome of each step and the AS, class and country it was recorded with. */
+  def eventsOf(clientId: String): Task[List[(String, Option[Int], Option[String], Option[String])]] =
     database: connection =>
-      val query = connection.prepareStatement("SELECT outcome, asn, asn_class FROM af_event WHERE client_id = ?").nn
+      val query = connection.prepareStatement("SELECT outcome, asn, asn_class, country FROM af_event WHERE client_id = ?").nn
       query.setString(1, clientId)
       val rows = query.executeQuery().nn
-      val found = List.newBuilder[(String, Option[Int], Option[String])]
+      val found = List.newBuilder[(String, Option[Int], Option[String], Option[String])]
       while rows.next() do
         val asn = rows.getInt(2)
         // `wasNull` speaks of the column read last.
         val present = !rows.wasNull()
-        found += ((rows.getString(1).nn, Option.when(present)(asn), Option(rows.getString(3))))
+        found += ((rows.getString(1).nn, Option.when(present)(asn), Option(rows.getString(3)), Option(rows.getString(4))))
       found.result()
 
-  /** Removes the `asn` entries the specs seeded, so that a rerun, and the cases of the suite that follow, meet none. */
-  def unseedAsn: Task[Unit] =
+  /** Removes the entries of `valueType` (`asn`, `country`) the specs seeded, so that a rerun, and the cases of the suite that follow, meet none. */
+  def unseed(valueType: String): Task[Unit] =
     database: connection =>
       connection.setAutoCommit(false)
-      connection.createStatement().nn.executeUpdate("DELETE FROM af_list_entry WHERE value_type = 'asn' AND source = 'e2e'")
+      val delete = connection.prepareStatement("DELETE FROM af_list_entry WHERE value_type = ? AND source = 'e2e'").nn
+      delete.setString(1, valueType)
+      delete.executeUpdate()
       connection.createStatement().nn.executeUpdate("UPDATE af_list_version SET version = version + 1 WHERE id = 1")
       connection.commit()
 

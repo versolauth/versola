@@ -5,6 +5,9 @@ import zio.*
 import zio.config.typesafe.*
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
+import java.util.Arrays
+
 object AsnSettingsSpec extends ZIOSpecDefault:
 
   /** As the services read it: the block under `antifraud.asn`, from a kebab-case config. */
@@ -14,12 +17,17 @@ object AsnSettingsSpec extends ZIOSpecDefault:
       .flatMap(ConfigProvider.fromTypesafeConfigZIO(_))
       .flatMap(_.kebabCase.load(Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config))))
 
+  /** The url is a `Secret`, an array, which a case class does not compare by content. */
+  private def urlOf(settings: AsnSettings): String = String(settings.url, StandardCharsets.UTF_8)
+
+  private def same(a: AsnSettings, b: AsnSettings): Boolean = Arrays.equals(a.url, b.url) && a.copy(url = b.url) == b
+
   def spec = suite("AsnSettings")(
     test("a config with no antifraud block at all, or no asn block, means the feature is off, so an existing config keeps loading") {
       for
         none <- load("env = \"test\"")
         withoutAsn <- load("antifraud { retention = \"14 days\" }")
-      yield assertTrue(none == AsnSettings.off, withoutAsn == AsnSettings.off, !none.enabled)
+      yield assertTrue(same(none, AsnSettings.off), same(withoutAsn, AsnSettings.off), !none.enabled)
     },
     test("reads the keys of the block, and the keywords are the default ones until the block names its own") {
       for
@@ -28,14 +36,13 @@ object AsnSettingsSpec extends ZIOSpecDefault:
         )
         fileOnly <- load("""antifraud.asn { file = "/var/lib/versola/asn.tsv" }""")
       yield assertTrue(
-        full == AsnSettings(
-          file = "/var/lib/versola/asn.tsv.gz",
-          url = "https://iptoasn.com/data/ip2asn-combined.tsv.gz",
-          refreshInterval = 6.hours,
-          hostingKeywords = List("hosting", "Cloud"),
-        ),
+        full.file == "/var/lib/versola/asn.tsv.gz",
+        urlOf(full) == "https://iptoasn.com/data/ip2asn-combined.tsv.gz",
+        full.refreshInterval == 6.hours,
+        full.hostingKeywords == List("hosting", "Cloud"),
         full.enabled,
-        fileOnly == AsnSettings.off.copy(file = "/var/lib/versola/asn.tsv"),
+        fileOnly.file == "/var/lib/versola/asn.tsv",
+        urlOf(fileOnly).isEmpty,
         fileOnly.enabled,
         fileOnly.refreshInterval == 24.hours,
         fileOnly.hostingKeywords == AsnClassifier.defaultKeywords,

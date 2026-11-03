@@ -82,7 +82,7 @@ import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyn
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
-import versola.util.net.{AsnResolver, AsnSettings}
+import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
@@ -302,6 +302,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config))))
 
+  /** `antifraud.geo`: the same, for the country database. */
+  private val antifraudGeoSettings: ZLayer[ConfigProvider, Config.Error, GeoSettings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("geo", GeoSettings.config))))
+
   /** `antifraud.challenge` */
   private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
     ZLayer.fromZIO:
@@ -401,6 +406,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       // background, nothing at all while the block is absent.
       antifraudAsnSettings >++>
       AsnResolver.live >++>
+      // The same for the country of the address, from `antifraud.geo.file`.
+      antifraudGeoSettings >++>
+      GeoResolver.live >++>
       AntifraudEvents.live >++>
       AntifraudCounters.live >++>
       antifraudDetectorSettings >++>
