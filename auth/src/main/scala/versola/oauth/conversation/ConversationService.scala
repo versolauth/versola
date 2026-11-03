@@ -543,9 +543,9 @@ object ConversationService:
         decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = paid)
         result <-
           if decision.action == DecisionAction.Block then
-            // A person who has a passkey is not left at a dead end by a refused send: the page is the code page and
-            // nothing is sent, as for a `Fake`, and the way past the code is on it. Nobody else is given anything more
-            // than the access page.
+            // Where the code page offers a passkey, a refused send is answered as a send: the code page, nothing sent, as
+            // for a `Fake`, so that the page is the same for every number and the way past the code is on it. Where the
+            // page offers nothing, there is nothing more than the access page.
             codeAlternatives.available(conversation).flatMap:
               case Nil =>
                 otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
