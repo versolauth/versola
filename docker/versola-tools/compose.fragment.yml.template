@@ -75,11 +75,25 @@ services:
       POSTGRES_USER: versola
       POSTGRES_PASSWORD: versola
       POSTGRES_DB: auth
+      # A path with no major version in it, as compose.fragment.vps.yml.template's bundled Postgres
+      # has: the image's default (/var/lib/postgresql/<major>/docker) would make a release that moves
+      # the tag to a newer major start on an empty directory and initialise a blank database next to
+      # the developer's. Here the newer server finds the old files and refuses to start ("database
+      # files are incompatible with server") until they are dumped and restored.
+      PGDATA: /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U versola -d auth"]
       interval: 5s
       timeout: 5s
       retries: 10
+    # The database has to outlive the container: `versola down` removes the container, and the image's
+    # own anonymous volume is not attached to the one `versola up` creates next, which then initialised
+    # an empty cluster (central: "Schema central doesn't exist", versolauth/versola#891). Mounted at
+    # /var/lib/postgresql, the image's declared VOLUME (PostgreSQL 18 moved its data below it).
+    # An ordinary managed volume, like the diagnostics ones below and unlike OpenBao's: a plain
+    # `down` keeps it, `down --volumes` and `versola uninstall` delete it, as their help says.
+    volumes:
+      - versola-postgres-data-local:/var/lib/postgresql
     # No host port published -- nothing outside this compose project needs
     # to reach Postgres directly, and publishing 5432 is exactly what
     # caused a real "port already allocated" conflict during manual
@@ -432,6 +446,8 @@ volumes:
   versola-central-diagnostics-local:
   versola-auth-diagnostics-local:
   versola-edge-diagnostics-local:
+  # Postgres' data directory (see the postgres service above).
+  versola-postgres-data-local:
   # step-ca's state, auth's
   # listener certificate (mtls-init writes it; auth and edge mount it), and central's access to the CA.
   versola-step-ca-local:
