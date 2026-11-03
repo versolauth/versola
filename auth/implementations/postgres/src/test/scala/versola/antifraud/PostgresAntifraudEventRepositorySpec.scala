@@ -67,6 +67,9 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
     override def countEvents: Task[Long] =
       xa.connect(sql"SELECT COUNT(*) FROM af_event".query[Long].run().head)
 
+    override def countUnpartitioned: Task[Long] =
+      xa.connect(sql"SELECT COUNT(*) FROM af_event_default".query[Long].run().head)
+
     override def stats: Task[List[StatRow]] =
       xa.connect:
         sql"""SELECT tenant_id, dest_prefix, minute, requests, sent, throttled, verified, wrong_codes, fake_verifies
@@ -95,10 +98,25 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
       val age = SqlLiteral(s"${by.toMillis} * interval '1 millisecond'")
       xa.connect(sql"UPDATE af_rollup_state SET last_run = clock_timestamp() - $age".update.run()).unit
 
+  /** The tables of the days that are partitions of the log, not the default partition. */
   private def partitions(xa: TransactorZIO): Task[List[String]] =
     xa.connect:
       sql"""SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
-            JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname = 'af_event' ORDER BY c.relname""".query[String].run().toList
+            JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname = 'af_event' AND c.relname <> 'af_event_default'
+            ORDER BY c.relname""".query[String].run().toList
+
+  /** Every table named for a day, partition or not. */
+  private def dayTables(xa: TransactorZIO): Task[List[String]] =
+    xa.connect:
+      sql"""SELECT relname FROM pg_class WHERE relkind = 'r' AND relname ~ '^af_event_[0-9]{8}' AND relnamespace = current_schema()::text::regnamespace
+            ORDER BY relname""".query[String].run().toList
+
+  /** A read, as a long report or a preview is: ACCESS SHARE on `table` and, for the parent, on every partition, until `hold` has passed. */
+  private def reader(xa: TransactorZIO, table: String, hold: Duration) =
+    val relation = SqlLiteral(table)
+    xa.transact:
+      sql"SELECT COUNT(*) FROM $relation".query[Long].run()
+      Thread.sleep(hold.toMillis)
 
   override lazy val environment =
     ZLayer:
@@ -112,6 +130,7 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
       // Everything older than a date far ahead goes, partitions this suite made included.
       _ <- env.repository.maintainPartitions(from = farFuture, days = 0, keepFrom = farFuture.plusYears(1))
       _ <- xa.connect:
+        sql"TRUNCATE af_event_default".update.run()
         sql"DELETE FROM af_dest_stats".update.run()
         sql"DELETE FROM af_rollup_state".update.run()
     yield ()
@@ -150,7 +169,9 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
           _ <- xa.connect(sql"DROP TABLE af_event_20200101_old".update.run())
         yield assertTrue(names.contains("af_event_20200101_old"))
       },
-      test("gives up on a lock it cannot get in time and leaves no partition behind, then succeeds once it is free") {
+      test(
+        "gives up on the lock it cannot get in time (a read holds the default partition) and leaves no partition behind, then succeeds once it is free",
+      ) {
         for
           xa <- ZIO.service[TransactorZIO]
           impatient = PostgresAntifraudEventRepository(xa, lockTimeout = 200.millis)
@@ -195,21 +216,183 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
           scanned == (1L, 1L),
         )
       },
-      test("the creates are one transaction and the drops another: a drop that fails leaves the partitions made ahead") {
+      test("the creates and the drops are separate: a drop that fails leaves the partitions made ahead, and is finished by the next run") {
         for
           xa <- ZIO.service[TransactorZIO]
           _ <- repository.maintainPartitions(from = today.minusDays(5), days = 1, keepFrom = today.minusDays(30))
-          // Anything that depends on the old partition makes its drop fail.
+          // Anything that depends on the old table makes its drop fail (the detach before it does not mind).
           _ <- xa.connect(sql"CREATE VIEW af_event_blocker AS SELECT id FROM af_event_20261016".update.run())
           blocked <- repository.maintainPartitions(from = today, days = 3, keepFrom = today).exit
           during <- partitions(xa)
+          leftover <- dayTables(xa)
           _ <- xa.connect(sql"DROP VIEW af_event_blocker".update.run())
           _ <- repository.maintainPartitions(from = today, days = 3, keepFrom = today)
           after <- partitions(xa)
+          tables <- dayTables(xa)
         yield assertTrue(
           blocked.isFailure,
-          during == List("af_event_20261016", "af_event_20261021", "af_event_20261022", "af_event_20261023"),
+          during == List("af_event_20261021", "af_event_20261022", "af_event_20261023"),
+          // Detached, so no partition and no longer read through af_event, but not yet dropped.
+          leftover.contains("af_event_20261016"),
           after == List("af_event_20261021", "af_event_20261022", "af_event_20261023"),
+          tables == after,
+        )
+      },
+      test("the default partition is there, takes no day, and is never dropped") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- repository.maintainPartitions(from = today, days = 2, keepFrom = today.minusDays(30))
+          _ <- repository.maintainPartitions(from = farFuture, days = 0, keepFrom = farFuture.plusYears(1))
+          isPartition <- xa.connect(
+            sql"""SELECT COUNT(*) FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+                  WHERE c.relname = 'af_event_default' AND i.inhparent = 'af_event'::regclass""".query[Long].run().head,
+          )
+          ahead <- repository.partitionDaysAhead(today.minusDays(1))
+        yield assertTrue(isPartition == 1L, ahead == 0)
+      },
+      test("a day's table is attached without a scan, and leaves no constraint behind, and keeps the indexes of the parent") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          constraints <- xa.connect(
+            sql"SELECT conname FROM pg_constraint WHERE conrelid = 'af_event_20261021'::regclass AND contype = 'c'".query[String].run().toList,
+          )
+          indexes <- xa.connect(
+            sql"""SELECT COUNT(*), COUNT(*) FILTER (WHERE i.relispartition) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+                  WHERE x.indrelid = 'af_event_20261021'::regclass""".query[(Long, Long)].run().head,
+          )
+        // The primary key and the BRIN index, each the parent's own and not a second one built by the attach.
+        yield assertTrue(constraints.isEmpty, indexes == (2L, 2L))
+      },
+      test("attaching a day does not hold up the writer behind a long read, and gives up when the read has the default partition") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          // Waits longer than the writer is tried for, so that the writer's insert falls into the wait.
+          patient = PostgresAntifraudEventRepository(xa, lockTimeout = 2.seconds)
+          _ <- patient.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          read <- reader(xa, "af_event", 3.seconds).fork
+          _ <- Live.live(ZIO.sleep(500.millis))
+          attach <- patient.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(30)).exit.fork
+          _ <- Live.live(ZIO.sleep(300.millis))
+          started <- Live.live(Clock.nanoTime)
+          _ <- patient.insertBatch(List(event(utc(today.atTime(10, 0)))))
+          took <- Live.live(Clock.nanoTime).map(now => (now - started).nanos)
+          result <- attach.join
+          during <- partitions(xa)
+          _ <- read.join
+          _ <- patient.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(30))
+          after <- partitions(xa)
+        yield assertTrue(
+          // The insert did not queue behind the attach, which was still waiting for the default partition's lock.
+          took < 1.second,
+          // PostgreSQL takes ACCESS EXCLUSIVE on the default partition to attach, and a read of af_event holds it.
+          result.isFailure,
+          during == List("af_event_20261021"),
+          after.size == 3,
+        )
+      },
+      test("an old day is detached under the short lock timeout: the writer is held up for that long at most, and the next run does it") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          hasty = PostgresAntifraudEventRepository(xa, lockTimeout = 2.seconds, detachLockTimeout = 200.millis)
+          _ <- repository.maintainPartitions(from = today.minusDays(5), days = 1, keepFrom = today.minusDays(30))
+          old = event(utc(today.minusDays(5).atTime(9, 0)))
+          _ <- repository.insertBatch(List(old))
+          read <- reader(xa, "af_event", 3.seconds).fork
+          _ <- Live.live(ZIO.sleep(500.millis))
+          started <- Live.live(Clock.nanoTime)
+          blocked <- hasty.maintainPartitions(from = today, days = 0, keepFrom = today).exit
+          took <- Live.live(Clock.nanoTime).map(now => (now - started).nanos)
+          during <- partitions(xa)
+          rowsDuring <- env.fixtures.countEvents
+          _ <- read.join
+          _ <- hasty.maintainPartitions(from = today, days = 0, keepFrom = today)
+          after <- dayTables(xa)
+        yield assertTrue(
+          blocked.isFailure,
+          took < 1500.millis,
+          // Nothing is half done: still a partition, with its row, until a run gets its lock.
+          during == List("af_event_20261016"),
+          rowsDuring == 1L,
+          after.isEmpty,
+        )
+      },
+      test("a day that was detached and not dropped (a run cut off between the two) is dropped by the next run") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- repository.maintainPartitions(from = today.minusDays(5), days = 2, keepFrom = today.minusDays(30))
+          _ <- xa.connect(sql"ALTER TABLE af_event DETACH PARTITION af_event_20261016".update.run())
+          cut <- dayTables(xa)
+          cutPartitions <- partitions(xa)
+          // A table of a day that is not old is not touched by the drops, and the creates attach it.
+          _ <- xa.connect(sql"CREATE TABLE af_event_20261022 (LIKE af_event INCLUDING ALL)".update.run())
+          moved <- repository.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(1))
+          after <- dayTables(xa)
+          afterPartitions <- partitions(xa)
+          again <- repository.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(1))
+        yield assertTrue(
+          cut == List("af_event_20261016", "af_event_20261017"),
+          cutPartitions == List("af_event_20261017"),
+          moved == 0L,
+          again == 0L,
+          after == List("af_event_20261021", "af_event_20261022", "af_event_20261023"),
+          afterPartitions == after,
+        )
+      },
+      test("the drop of a table that is being read fails on the lock timeout and is done by the next run") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          impatient = PostgresAntifraudEventRepository(xa, lockTimeout = 300.millis)
+          _ <- repository.maintainPartitions(from = today.minusDays(5), days = 1, keepFrom = today.minusDays(30))
+          // A run that detached it and was cut off before the drop; a read that started before the detach still holds it.
+          _ <- xa.connect(sql"ALTER TABLE af_event DETACH PARTITION af_event_20261016".update.run())
+          read <- reader(xa, "af_event_20261016", 2.seconds).fork
+          _ <- Live.live(ZIO.sleep(500.millis))
+          blocked <- impatient.maintainPartitions(from = today, days = 0, keepFrom = today).exit
+          during <- dayTables(xa)
+          _ <- read.join
+          _ <- impatient.maintainPartitions(from = today, days = 0, keepFrom = today)
+          after <- dayTables(xa)
+        yield assertTrue(blocked.isFailure, during == List("af_event_20261016"), after.isEmpty)
+      },
+      test("a day's rows beyond a batch are moved in batches, and all of them, counted, are in its partition") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          batched = PostgresAntifraudEventRepository(xa, pruneBatch = 2)
+          _ <- batched.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          day = (1 to 7).toList.map(i => event(utc(today.plusDays(1).atTime(9, i))))
+          other = event(utc(today.plusDays(2).atTime(9, 0)))
+          _ <- batched.insertBatch(other :: day)
+          moved <- batched.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(30))
+          held <- env.fixtures.countUnpartitioned
+          inPartition <- xa.connect(sql"SELECT COUNT(*) FROM af_event_20261022".query[Long].run().head)
+          rows <- env.fixtures.rows.map(_.map(_.id).toSet)
+        yield assertTrue(moved == 8L, held == 0L, inPartition == 7L, rows == (other :: day).map(_.id).toSet)
+      },
+      test("the owner of the table is read, with the role the service connects as") {
+        val owner = "af_owner_test"
+        for
+          xa <- ZIO.service[TransactorZIO]
+          own <- repository.ownership
+          // The test role is a superuser and may alter anything, so only the name of the owner can be told apart here; whether a role
+          // that does not own the table is refused is the unit spec's, with a stub, since that needs a connection of another role.
+          changed <- (for
+            _ <- xa.connect(sql"DROP ROLE IF EXISTS af_owner_test".update.run())
+            _ <- xa.connect(sql"CREATE ROLE af_owner_test".update.run())
+            _ <- xa.connect(sql"ALTER TABLE af_event OWNER TO af_owner_test".update.run())
+            read <- repository.ownership
+          yield read).ensuring(
+            xa.connect:
+              sql"ALTER TABLE af_event OWNER TO ${SqlLiteral(own.owner)}".update.run()
+              sql"DROP ROLE IF EXISTS af_owner_test".update.run()
+            .orDie,
+          )
+        yield assertTrue(
+          own.role == own.owner,
+          own.mayAlter,
+          changed.owner == owner,
+          changed.role == own.role,
+          changed.mayAlter,
         )
       },
       test("a minute that did not change is not rewritten, and one that did is") {
