@@ -16,8 +16,9 @@ import java.util.concurrent.TimeUnit
   * the running ones use, with central pointed at a port nothing listens on. Without central they
   * load nothing live: whatever they serve comes from the snapshot.
   *
-  * Starting takes one full wait for central (`ReloadingCache.DependencyWait`, two minutes) per
-  * service, so auth and edge are started together.
+  * Starting takes one full wait for central (`ReloadingCache.DependencyWait`, two minutes unless
+  * `CACHE_DEPENDENCY_WAIT_SECONDS` shortens it, as it does here) per service, so auth and edge are
+  * started together.
   */
 object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeFixture & E2EConfig & Client]:
 
@@ -59,6 +60,9 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
         // target, and edge's calls to auth are mutual-TLS handshakes the terminator closes when 128
         // arrive at once -- `/complete` then answers 500 (see 6c9b7b10). The default is 128.
         builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
+        // Central is unreachable by construction, so the full two-minute wait for it (twice, one per
+        // test) would only be paid to learn that. What is under test starts after the wait ends.
+        builder.environment().nn.putIfAbsent("CACHE_DEPENDENCY_WAIT_SECONDS", "10")
         (builder.start().nn, conf, log),
     )((process, conf, log) =>
       ZIO.attemptBlocking {
