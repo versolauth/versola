@@ -781,7 +781,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`, `country`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
+  `email_domain`, `country`; for example `deny_list:cidr`), `asn_hosting` (the ASN signal, see "ASN signal"), and `country_mismatch` and `country_outside_regions` (the country signal, see "Country signal"). The two stand-ins of a
   failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
@@ -804,7 +804,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
       },
       "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
       "ruleWeights": {},
-      "shadowRules": ["asn_hosting"]
+      "shadowRules": ["asn_hosting", "country_mismatch", "country_outside_regions"]
     }
   }
   ```
@@ -1161,8 +1161,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     unchanged.
   - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer and nothing
     else: without the geo file it is absent, whatever the ASN database knows (the country an AS is registered in is not where
-    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
-    `country` list entries.
+    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. It is read by the
+    `country` list entries and by two rules that add 20 to the score and force nothing: `country_mismatch` (the country differs from the
+    country of the number's calling code) and `country_outside_regions` (the tenant restricts `phoneRegions` and the country is not
+    among them), both silent for a request from a hosting-class network; start both in `shadowRules`.
   - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
     `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The
     dry run counts the events of the last 24 hours with that `af_event.country`. Without a database a `country` entry

@@ -311,6 +311,8 @@ object AntifraudEvents:
           network <- ip.fold(ZIO.none)(asn.resolve)
           // From the country database alone: the country an AS is registered in is not where its subscribers are.
           country <- ip.fold(ZIO.none)(geo.resolve)
+          // A cache read, like the client's: what `country_outside_regions` compares the country with.
+          regions <- configService.getPhoneRegions(clientId)
           context = AntifraudContext(
             tenantId = client.map(_.tenantId),
             clientId = clientId,
@@ -326,7 +328,11 @@ object AntifraudEvents:
             signals =
               credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap ++
                 network.map(found => AsnRules.ClassSignal -> found.asnClass.toString) ++
-                country.map(GeoRules.CountrySignal -> _),
+                country.map(GeoRules.CountrySignal -> _) ++
+                // From the country calling code of the number, which says nothing of an email address and, for a number
+                // whose region cannot be told, nothing either.
+                credential.toOption.flatMap(Phone.regionCode).map(GeoRules.PhoneCountrySignal -> _) ++
+                GeoRules.regionsSignal(regions.map(_.region)).map(GeoRules.TenantRegionsSignal -> _),
           )
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged

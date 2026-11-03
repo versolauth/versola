@@ -86,12 +86,15 @@ final case class AntifraudFixture(a: AntifraudInstance, b: AntifraudInstance, pr
 object AntifraudFixture:
 
   /** How many setups are registered up front. */
-  val Setups = 28
+  val Setups = 40
 
   /** Limit on codes to one number in an hour (a request over it is refused), and on requests from one address. Low
     * enough for a spec to reach, high enough that the cases of a spec that each use a number of their own do not. */
   val PhoneLimitPerHour = 10
   val IpLimitPerHour = 4
+
+  /** The rules on the country of the address, which the fixture lists as shadow rules. */
+  val CountryRules: List[String] = List("country_mismatch", "country_outside_regions")
 
   /** The flush and load intervals of the velocity counters: what the cross-instance case waits for. */
   val SyncInterval = 500.millis
@@ -152,12 +155,17 @@ object AntifraudFixture:
 
   /** The country database of the instances, in DB-IP's CSV format: the ranges of the ASN database, the hosting one in `NL` and the
     * carrier's in `UZ`, which are not the countries the ASN database registers the two networks in (`DE`, `KZ`), so that a
-    * country that shows is the one this file gave. Nothing else is in it, so any other address has none. */
+    * country that shows is the one this file gave, and a range in no AS (`192.0.2.0/24`, a documentation range) in `DE`, the
+    * country of the suite's phone numbers and of its tenant's `phoneRegions`: an address at home. Nothing else is in it, so
+    * any other address has none. */
   object GeoDatabase:
     val HostingCountry = "NL"
     val CarrierCountry = "UZ"
+    val HomeCountry = "DE"
+    val HomeNetwork = "192.0.2"
     val contents: String =
-      s"${AsnDatabase.HostingNetwork}.0,${AsnDatabase.HostingNetwork}.255,$HostingCountry\n" +
+      s"$HomeNetwork.0,$HomeNetwork.255,$HomeCountry\n" +
+        s"${AsnDatabase.HostingNetwork}.0,${AsnDatabase.HostingNetwork}.255,$HostingCountry\n" +
         s"${AsnDatabase.CarrierNetwork}.0,${AsnDatabase.CarrierNetwork}.255,$CarrierCountry\n"
 
   private val geoFile: ZIO[Scope, Throwable, Path] =
@@ -309,6 +317,9 @@ object AntifraudFixture:
           .add("mode", Json.Str("enforce"))
           .add("challengeAt", Json.Num(15))
           .add("blockAt", Json.Num(50))
+          // The two rules on the country start as shadow rules, as an operator starts them: the carrier's range is in another
+          // country than the suite's numbers, and the cases that are not about the country must not meet a rule of it.
+          .add("shadowRules", Json.Arr(CountryRules.map(Json.Str(_))*))
           .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
         _ <- writeSettings(tuned.toJson)
       yield ()
