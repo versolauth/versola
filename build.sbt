@@ -48,6 +48,9 @@ lazy val `auth-postgres-impl` = project.in(implementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresOAuthApp"),
+    // Every spec in here resets the tables it uses between tests (the antifraud ones drop every partition of
+    // `af_event` and empty `af_counter_reset`), so two of them running at once would clear each other's rows.
+    Test / parallelExecution := false,
     sbtForkSettings,
   ).dependsOn(
     auth % CompileTest,
