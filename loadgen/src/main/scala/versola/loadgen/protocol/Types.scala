@@ -2,6 +2,7 @@ package versola.loadgen.protocol
 
 import zio.Duration
 import zio.http.{Method, Status, URL}
+import zio.json.*
 
 // Opaque wrappers over the handful of protocol-level strings that must never be interchanged by
 // accident (a CSRF token passed where a conversation cookie was expected fails silently as a
@@ -106,7 +107,13 @@ case class ChallengePage(
     html: String,
     step: Option[ConversationStep],
     csrf: Option[Csrf],
-)
+):
+  /** Whether this is a code page on which **no code was sent**: the request was challenged and left pending, and the code
+    * is asked for again (by the page's script, or after `antifraud.challenge.pause`). The form state names it
+    * (`"pending": true` in `window.__VERSOLA_FORM__`); false for any other page, and for one that does not say.
+    */
+  def otpPending: Boolean =
+    step.contains(ConversationStep.Otp) && ChallengePage.pendingField.matcher(html).find()
 
 object ChallengePage:
   /** The form state auth inlines into the page as `window.__VERSOLA_FORM__ = {...}` carries the
@@ -119,6 +126,10 @@ object ChallengePage:
     * never scanned.
     */
   private val csrfField = java.util.regex.Pattern.compile("\"csrf\"\\s*:\\s*\"([^\"]+)\"")
+
+  /** The pending flag of the code step in the same blob. Found in the head of the document like the token, so the script
+    * bundle behind it is not scanned when the page names it (it does, true or false, on every code page). */
+  private[protocol] val pendingField = java.util.regex.Pattern.compile("\"pending\"\\s*:\\s*true")
 
   def parse(conversation: ConversationCookie, html: String): ChallengePage =
     val matcher = csrfField.matcher(html)
@@ -156,6 +167,24 @@ case class LogoutConfirmation(url: URL, csrf: Csrf, postLogoutRedirectUri: Optio
 enum SubmitOutcome:
   case Redirected(location: String, ssoSession: Option[SsoSession])
   case Rendered(page: ChallengePage)
+
+/** The proof of work a challenge asked for: the signed `token` it came with, and the nonce that solves it. Sent back with
+  * the same request (`proof_token`, `proof_solution`). */
+case class PowAnswer(token: String, solution: String)
+
+/** A challenge `auth` put to a request sent from script (`proof_inline`): `kind` says what is asked (`pow`), `params` the
+  * work (`seed`, `difficulty`), `token` is returned with the answer. */
+case class InlineChallenge(kind: String, token: String, params: Map[String, String]) derives JsonDecoder
+
+/** What `auth` answers a request for a code that was sent from script: the challenge to answer (and nothing was sent), or
+  * where a plain submit would have redirected, with `otp` set when that is the code step and a code was just sent. The
+  * shape of `InlineStep` in `auth`. */
+case class InlineStep(next: Option[String], challenge: Option[InlineChallenge], otp: Boolean) derives JsonDecoder
+
+/** An answer to a request sent from script: in the inline shape, or a page (what an error renders as). */
+enum InlineOutcome:
+  case Step(step: InlineStep)
+  case Page(page: ChallengePage)
 
 /** What `GET {edge}/login/{presetId}` leaves the driver holding (§8.4 hop 1): where edge sent it
   * next, and the `state` edge minted for the login it just recorded.

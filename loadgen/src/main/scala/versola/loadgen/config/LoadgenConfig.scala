@@ -151,7 +151,12 @@ case class TargetsConfig(
     mockUrl: String,
     /** WebAuthn `rp.origin` the software authenticator signs against (§4, §8.3). */
     origin: String,
-)
+    /** The `auth` instances, when there is more than one (`role = antifraud` only: a session is given one of them in
+      * turn and stays on it). Empty: just [[authUrl]], which every role still needs. */
+    authUrls: List[String] = Nil,
+):
+  /** Every `auth` instance addressed: `auth-urls` when it is set, else `auth-url` alone. */
+  def allAuthUrls: List[String] = if authUrls.nonEmpty then authUrls else List(authUrl)
 
 case class CoordinatorClientConfig(url: String, pollInterval: Duration)
 
