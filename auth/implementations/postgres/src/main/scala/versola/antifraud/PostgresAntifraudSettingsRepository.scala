@@ -3,6 +3,7 @@ package versola.antifraud
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.postgres.BasicCodecs
+import zio.json.JsonEncoder
 import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
@@ -16,7 +17,7 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO, statementTimeout: D
     BasicCodecs:
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
-  private given DbCodec[Tuning] = jsonBCodec[Tuning]
+  private given DbCodec[Tuning] = jsonBCodec[Tuning](using Tuning.storedDecoder, JsonEncoder[Tuning])
 
   /** `SET LOCAL` lasts for the transaction, so a read is made in one as well. */
   private def timed()(using DbCon): Unit =

@@ -709,8 +709,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   that adds a key never makes the row of the version before it unreadable. The migration creates the table empty and
   `auth` writes the first row, everything off, at start if there is none (a row an operator saved is never
   overwritten). They are changed through central's `GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings` (see
-  `central/open-api/central.yaml`; `GET` needs `antifraud:read`, the others `antifraud:operate`), and `PUT` and `PATCH`
-  may name the version they were read at, in `If-Match`, and are answered `412` if the row has moved on. Every instance
+  `central/open-api/central.yaml`; `GET` needs `antifraud:read`, the others `antifraud:operate`). `PATCH` is a typed
+  settings patch (`AntifraudSettingsPatch` in that file, the members of the settings and no others): it changes what it
+  names, and `null` puts a setting back to its default (everything off) and removes a `byPrefix` or `ruleWeights` entry.
+  **An unknown key is refused**: a `PUT` or `PATCH` with a key the settings do not have (a misspelt `blokAt`) is `400`, and a
+  stored row with one fails to read, so an instance keeps the tuning it has (or, starting, decides as `failure-action`
+  says) until the row is corrected; the three keys that builds before the removal of the Delay step wrote (`delayAt`,
+  `delayMillis`, `fakeSendDelayMillis`) are still read and ignored. `PUT` and `PATCH` may name the version they were
+  read at, in `If-Match`, and are answered `412` if the row has moved on. Every instance
   holds the row in memory and rereads it when `af_settings_version` changes, checked every
   `antifraud.tuning.refresh-interval`, and in full once a minute; a change made by hand in SQL has to bump `version` and
   `af_settings_version` too. An instance that starts with the database unreadable decides every request as
@@ -866,7 +872,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   asks for a visible credit, "IP Geolocation by DB-IP" with a link to https://db-ip.com, on the site or product that uses the
   data (the sign-in form footer, say, or the deployment's own site); a paid DB-IP licence lifts it. The signal is the
   database's answer and nothing else (the country an AS is registered in is not used), it is in `af_event.country` and on
-  the `receive-http` line, and no rule reads it: only `country` list entries do. See `antifraud/geo` of the documentation.
+  the `receive-http` line, and it is read by the `country` list entries and by two rules, `country_mismatch` and
+  `country_outside_regions` (rule names that `ruleWeights` and `shadowRules` accept, with `asn_hosting`). What they fire on
+  is on the Country signal page of the documentation (`antifraud/geo`).
 
 - **Antifraud metrics** (all in `auth`; none has a tenant or a value as a label). Decisions: `antifraud_decisions_total{action,would_action}`,
   `antifraud_rules_fired_total{rule,shadow}`, `antifraud_evaluation_failed_total{reason}` (`timeout`, `error`,

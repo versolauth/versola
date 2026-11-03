@@ -99,11 +99,15 @@ object Antifraud:
       fakeSendDelay: Duration,
   )
 
-  /** The engine over the rules of the components that add them: the lists, the velocity limits and the ASN signal. A component that adds
+  /** The engine over the rules of the components that add them: the lists, the velocity limits, the ASN signal and the country signal. A component that adds
     * rules is added here, where the engine is, not in the application's wiring. */
   val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists, Antifraud] =
     ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists) =>
-      Impl(settings.decision, List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning), AsnRules.ruleSet), tuning): Antifraud
+      Impl(
+        settings.decision,
+        List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning), AsnRules.ruleSet, GeoRules.ruleSet),
+        tuning,
+      ): Antifraud
 
   /** The rule a decision made of a failed evaluation names. */
   val ErrorRule = "antifraud_error"
@@ -140,9 +144,9 @@ object Antifraud:
     yield s"$kind:$valueType"
 
   /** The names of the rules there are, which `ruleWeights` and `shadowRules` of the tuning may name: the lists' (one rule
-    * per kind of list and of value), the velocity ones (one per key and window) and the ASN signal's. A name that is not
+    * per kind of list and of value), the velocity ones (one per key and window), the ASN signal's and the country signal's. A name that is not
     * here would never match, which is what a typo looks like; the settings are refused for it. */
-  val ruleNames: Set[String] = (velocityRuleNames ++ listRuleNames ++ AsnRules.ruleNames).toSet
+  val ruleNames: Set[String] = (velocityRuleNames ++ listRuleNames ++ AsnRules.ruleNames ++ GeoRules.ruleNames).toSet
 
   val off: Antifraud = _ => ZIO.succeed(Decision.allow)
 

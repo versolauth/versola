@@ -14,7 +14,7 @@ trait AntifraudSettingsService:
   /** `request.version` is the version the change is made on, when one was named; without it the settings are replaced. */
   def put(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
-  /** Changes the settings by a merge patch, on `request.version` if the caller named one; answers all of them. */
+  /** Changes the settings by a patch, on `request.version` if the caller named one; answers all of them. */
   def patch(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
   /** Puts everything off, on `expectedVersion` if the caller named one. */

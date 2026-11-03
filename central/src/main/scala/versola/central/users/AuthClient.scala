@@ -113,7 +113,7 @@ trait AuthClient:
   /** `request.version` is the version the change is made on, when the caller named one; without it the settings are replaced. */
   def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
-  /** A merge patch of the settings (see [[PatchAntifraudSettingsRequest]]); auth merges, validates and answers all of them. */
+  /** A typed patch of the settings (see [[PatchAntifraudSettingsRequest]]); auth applies it, validates and answers all of them. */
   def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
 
   /** Puts everything off; on `expectedVersion` if the caller named one. */
@@ -481,11 +481,7 @@ object AuthClient:
       antifraud[VersionedAntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
 
     override def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      val fields = Chunk("patch" -> request.patch, "userId" -> Json.Str(request.userId.toString)) ++
-        request.version.map(version => "version" -> Json.Num(version))
-      antifraud[VersionedAntifraudSettings](
-        Request(method = Method.PATCH, url = antifraudSettingsUrl, body = Body.fromString(Json.Obj(fields).toJson)),
-      )
+      antifraud[VersionedAntifraudSettings](Request(method = Method.PATCH, url = antifraudSettingsUrl, body = Body.from(request)))
 
     override def deleteAntifraudSettings(
         request: DeleteAntifraudSettingsRequest,

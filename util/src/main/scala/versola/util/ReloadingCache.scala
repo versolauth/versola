@@ -37,8 +37,16 @@ object ReloadingCache:
     * central still has a JVM, a connection pool and a schema validation ahead of it before it
     * binds a port (#378). Still bounded: a hostname that will never resolve fails startup loudly
     * rather than leaving a pod Running, never Ready, with nothing saying why.
+    *
+    * `CACHE_DEPENDENCY_WAIT_SECONDS` replaces the two minutes, for a harness that starts a
+    * service against a source it knows is not there and would otherwise sit out the whole wait
+    * (the e2e cold-start spec). Anything that is not a positive whole number is ignored.
     */
-  private val DependencyWait: Duration = 2.minutes
+  private val DependencyWait: Duration =
+    Option(java.lang.System.getenv("CACHE_DEPENDENCY_WAIT_SECONDS"))
+      .flatMap(_.trim.toIntOption)
+      .filter(_ > 0)
+      .fold(2.minutes)(_.seconds)
 
   /** Ceiling on a single backoff step while waiting for a source to come up. Without it the
     * exponential reaches minutes, and a source that becomes reachable early in a long sleep is

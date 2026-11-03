@@ -2949,7 +2949,8 @@ paths:
         `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
         the reason as text) a negative or out-of-range value, a prefix that is not 1 to 15 digits, a rule name that names no rule,
         and combinations that can only be a mistake (`challengeAt` above `blockAt`, `blockAt` under 10, `pow.maxDifficulty` over
-        24, a limit on codes of 1 to 19).
+        24, a limit on codes of 1 to 19). A member that is not one of the settings' (at any depth) is refused with `400` as
+        well, not dropped, so a misspelt key is not answered with a new version.
       operationId: putAntifraudSettings
       parameters:
         - name: If-Match
@@ -2981,7 +2982,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
         '400':
-          description: The body is not valid, `If-Match` is not a version or differs from `version`, or auth refused the settings (text body with the reason).
+          description: The body is not valid (a member the settings do not have included), `If-Match` is not a version or differs from `version`, or auth refused the settings (text body with the reason).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '412':
@@ -2993,11 +2994,20 @@ paths:
       tags: [Antifraud settings]
       summary: Change some of the settings
       description: |
-        A JSON merge patch (RFC 7396) of the settings: the body is a partial settings document. Members it names are changed,
-        objects merge recursively, a member that is `null` is removed (a `smsLimits.byPrefix` or `ruleWeights` entry goes; a
-        member every settings document has reads as its default again: `mode` as `shadow`, the thresholds as 0 and so on, and
-        that is written), and a string, number or array replaces what is there
-        (`shadowRules` is replaced as a whole). Everything it does not name is left as it is. Auth applies the patch to the stored
+        A JSON merge patch (RFC 7396) of the settings, with a fixed schema (`AntifraudSettingsPatch`): the body names only the
+        settings it changes, and a member that is not one of the settings' (at any depth, `userId` and `version` apart) is `400`,
+        not dropped. Per member:
+
+        - **absent**: left as it is;
+        - **a value**: set to it; a nested object (`pow`, `thresholds` and its keys, `smsLimits`) is changed member by member, and
+          `shadowRules` is replaced as a whole;
+        - **`null`**: the setting is put back to its default, which is what it is when everything is off (`mode` as `shadow`, a
+          score or a limit as 0, a velocity key with the weight it has by default, a group and `shadowRules` as they are in that
+          state), and that is written. In `ruleWeights` and `smsLimits.byPrefix` a `null` entry removes that entry (a
+          `null` map empties it) and a value replaces the entry whole, so an entry of `byPrefix` names all three members of an
+          `AntifraudSmsLimit`.
+
+        Everything the body does not name is left as it is. Auth applies the patch to the stored
         settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
         valid), and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
         member: it names only what it changes. The body is `application/merge-patch+json`;
@@ -3042,7 +3052,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
         '400':
-          description: The body is not a JSON object, `If-Match` is not a version or differs from `version`, or the settings with the patch applied are not valid (text body with the reason).
+          description: The body is not a JSON object or names a member the settings do not have or a value of the wrong type, `If-Match` is not a version or differs from `version`, or the settings with the patch applied are not valid (text body with the reason).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '412':
@@ -7209,10 +7219,87 @@ components:
     AntifraudSettingsPatch:
       type: object
       description: |
-        A partial settings document, a JSON merge patch (RFC 7396): any members of `AntifraudSettings` (none is required, `mode`
-        included), nested objects with only the members to change, `null` for a member to remove (it then reads as its default).
-        `userId` is added by edge and is not part of the patch.
-      additionalProperties: true
+        A patch of `AntifraudSettings`, a JSON merge patch (RFC 7396) with these members and no others: none is required (`mode`
+        included). Each member is absent (left as it is), a value (set; objects are changed member by member), or `null` (put back
+        to its default, everything off). `userId` is added by edge and `version` may be named; neither is part of the patch.
+      additionalProperties: false
+      properties:
+        mode:
+          type: [string, 'null']
+          enum: [shadow, enforce, null]
+        challengeAt: { type: [integer, 'null'], minimum: 0 }
+        blockAt: { type: [integer, 'null'], minimum: 0 }
+        pow:
+          oneOf:
+            - $ref: '#/components/schemas/AntifraudPowDifficultyPatch'
+            - type: 'null'
+        thresholds:
+          oneOf:
+            - $ref: '#/components/schemas/AntifraudVelocityThresholdsPatch'
+            - type: 'null'
+        smsLimits:
+          oneOf:
+            - $ref: '#/components/schemas/AntifraudSmsLimitsPatch'
+            - type: 'null'
+        ruleWeights:
+          type: [object, 'null']
+          description: The weight of a rule by its name. An entry that is `null` removes that rule's weight; a value sets it. `null` empties the map.
+          additionalProperties: { type: [integer, 'null'] }
+        shadowRules:
+          type: [array, 'null']
+          description: Replaces the set as a whole; `null` empties it.
+          items: { type: string }
+      example: { blockAt: 80, ruleWeights: { 'watch_list:cidr': null }, smsLimits: { byPrefix: { '49': null } } }
+    AntifraudVelocityLimitPatch:
+      type: object
+      additionalProperties: false
+      description: Members of `AntifraudVelocityLimit`; `null` puts one back to the default of that key (its own weight included).
+      properties:
+        perMinute: { type: [integer, 'null'], minimum: 0 }
+        perTenMinutes: { type: [integer, 'null'], minimum: 0 }
+        perHour: { type: [integer, 'null'], minimum: 0 }
+        perDay: { type: [integer, 'null'], minimum: 0 }
+        weight: { type: [integer, 'null'] }
+    AntifraudVelocityThresholdsPatch:
+      type: object
+      additionalProperties: false
+      description: Members of `AntifraudVelocityThresholds`; a key that is `null` is put back to the default limit of that key.
+      properties:
+        phone: { oneOf: [{ $ref: '#/components/schemas/AntifraudVelocityLimitPatch' }, { type: 'null' }] }
+        ip: { oneOf: [{ $ref: '#/components/schemas/AntifraudVelocityLimitPatch' }, { type: 'null' }] }
+        device: { oneOf: [{ $ref: '#/components/schemas/AntifraudVelocityLimitPatch' }, { type: 'null' }] }
+        asn: { oneOf: [{ $ref: '#/components/schemas/AntifraudVelocityLimitPatch' }, { type: 'null' }] }
+        prefix: { oneOf: [{ $ref: '#/components/schemas/AntifraudVelocityLimitPatch' }, { type: 'null' }] }
+        trustedDiscount: { type: [integer, 'null'], minimum: 0 }
+    AntifraudPowDifficultyPatch:
+      type: object
+      additionalProperties: false
+      description: Members of `AntifraudPowDifficulty`; `null` puts one back to its default.
+      properties:
+        minDifficulty: { type: [integer, 'null'], minimum: 0, maximum: 32 }
+        maxDifficulty: { type: [integer, 'null'], minimum: 0, maximum: 32 }
+        scoreStep: { type: [integer, 'null'], minimum: 0 }
+    AntifraudSmsLimitPatch:
+      type: object
+      additionalProperties: false
+      description: Members of `AntifraudSmsLimit`; `null` puts one back to its default.
+      properties:
+        sentPerHour: { type: [integer, 'null'], minimum: 0 }
+        minVolume: { type: [integer, 'null'], minimum: 0 }
+        minConversion: { type: [number, 'null'], minimum: 0, maximum: 1 }
+    AntifraudSmsLimitsPatch:
+      type: object
+      additionalProperties: false
+      description: Members of `AntifraudSmsLimits`.
+      properties:
+        default: { oneOf: [{ $ref: '#/components/schemas/AntifraudSmsLimitPatch' }, { type: 'null' }] }
+        byPrefix:
+          type: [object, 'null']
+          description: Changes the entries it names and leaves the others. An entry that is `null` removes that prefix; a value replaces the entry whole (all three members of `AntifraudSmsLimit`). `null` empties the map.
+          additionalProperties:
+            oneOf:
+              - $ref: '#/components/schemas/AntifraudSmsLimit'
+              - type: 'null'
     AntifraudCountersResetRequest:
       type: object
       properties:

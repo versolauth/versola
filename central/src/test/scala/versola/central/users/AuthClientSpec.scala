@@ -6,7 +6,7 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
-import versola.util.{PageLimit, PageOffset}
+import versola.util.{PageLimit, PageOffset, Patch}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -370,6 +370,12 @@ object AuthClientSpec extends ZIOSpecDefault:
         shadowRules = Set.empty,
       )
       val versioned = VersionedAntifraudSettings(settings, 3)
+      // a removal is `null` on the wire: Deleted is written out, not left out
+      val patch = AntifraudSettingsPatch.empty.copy(
+        blockAt = Some(Patch.Modified(90)),
+        pow = Some(Patch.Deleted),
+        ruleWeights = Some(Patch.Modified(Map("watch_list:cidr" -> Patch.Deleted, "velocity_ip_1m" -> Patch.Modified(7)))),
+      )
       for
         seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.json(versioned.toJson))).toRoutes)
@@ -377,10 +383,10 @@ object AuthClientSpec extends ZIOSpecDefault:
         got <- client.getAntifraudSettings
         put <- client.putAntifraudSettings(PutAntifraudSettingsRequest(settings, userId, Some(3)))
         patched <- client.patchAntifraudSettings(
-          PatchAntifraudSettingsRequest(patch = Json.Obj("blockAt" -> Json.Num(90)), userId = userId, version = Some(3)),
+          PatchAntifraudSettingsRequest(patch = patch, userId = userId, version = Some(3)),
         )
         patchedWithoutVersion <- client.patchAntifraudSettings(
-          PatchAntifraudSettingsRequest(patch = Json.Obj("blockAt" -> Json.Num(90)), userId = userId),
+          PatchAntifraudSettingsRequest(patch = patch, userId = userId),
         )
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), None)
@@ -402,7 +408,13 @@ object AuthClientSpec extends ZIOSpecDefault:
         patched == versioned,
         patchedWithoutVersion == versioned,
         requests(2).method == Method.PATCH && requests(2).url.path.segments == Chunk("antifraud", "settings"),
-        patchSent.flatMap(_.get("patch")).contains(Json.Obj("blockAt" -> Json.Num(90))),
+        patchSent.flatMap(_.get("patch")).contains(
+          Json.Obj(
+            "blockAt" -> Json.Num(90),
+            "pow" -> Json.Null,
+            "ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Null, "velocity_ip_1m" -> Json.Num(7)),
+          ),
+        ),
         patchSent.flatMap(_.get("userId")).contains(Json.Str(userId.toString)),
         patchSent.flatMap(_.get("version")).contains(Json.Num(3)),
         patchSentWithoutVersion.exists(!_.fields.exists(_._1 == "version")),
