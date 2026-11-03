@@ -8,7 +8,9 @@
 #   - every list entry is an exact version (0.7.5, 0.8.0-rc1) or a prefix glob (0.7.*): no other
 #     pattern syntax, no semver ranges, so the CLI's matcher stays one line;
 #   - no version is claimed both rolling and fresh-database (that would be a release saying "you can
-#     roll from 0.7.x" and "0.7.x has no way in" at once), and the release does not list itself;
+#     roll from 0.7.x" and "0.7.x has no way in" at once); freshDatabaseFrom does not match the release's
+#     own version (rollingFrom may: `0.7.*` for a 0.7.x release is the natural way to say "any earlier 0.7",
+#     and rolling from the version already running is a redeploy, not a contradiction);
 #   - with an argument, `version` equals it. CI passes the release tag; run it by hand with the
 #     tag you are about to publish (release.md): a published tag cannot be reused, so a manifest
 #     that does not match must be found before Publish, not by the tag build.
@@ -68,11 +70,9 @@ if [[ ${#lists[@]} -eq 2 ]]; then
       if overlap "$r" "$f"; then fail "rollingFrom '$r' and freshDatabaseFrom '$f' name the same version"; fi
     done < <(jq -r '.freshDatabaseFrom[]' "$file")
   done < <(jq -r '.rollingFrom[]' "$file")
-  for list in "${lists[@]}"; do
-    while IFS= read -r p; do
-      if [[ -n "$version" ]] && overlap "$p" "$version"; then fail "$list '$p' matches this release's own version $version"; fi
-    done < <(jq -r --arg l "$list" '.[$l][]' "$file")
-  done
+  while IFS= read -r p; do
+    if [[ -n "$version" ]] && overlap "$p" "$version"; then fail "freshDatabaseFrom '$p' matches this release's own version $version"; fi
+  done < <(jq -r '.freshDatabaseFrom[]' "$file")
 fi
 
 if [[ -n "$tag" && "$(jq -r ".notes | strings" "$file")" != */"$tag" ]]; then

@@ -20,7 +20,7 @@ fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 
 mkdir -p "$work/app/central-ui" "$work/bin"
 for f in entrypoint.sh compose.fragment.vps.yml.template compose.fragment.yml.template openbao.hcl.vps.template openbao.hcl.template \
-  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh release.json; do
+  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh postgres-init-schemas.sh release.json; do
   cp "$tools/$f" "$work/app/$f"
 done
 cat > "$work/bin/java" <<STUB
@@ -79,14 +79,15 @@ if command -v jq >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
   check() { (cd "$repo" && bash .github/scripts/check-release-manifest.sh "$@" > "$work/check.out" 2>&1); }
   expect_ok() { label=$1; shift; if check "$@"; then pass "$label"; else cat "$work/check.out" >&2; fail "$label"; fi; }
   expect_bad() { label=$1; shift; if check "$@"; then fail "$label"; else pass "$label"; fi; }
-  manifest() { # manifest <rollingFrom> <freshDatabaseFrom> [version]
+  # No `sed -i` below: BSD sed (macOS) reads its expression as the backup suffix, GNU sed does not.
+  manifest() { # manifest <rollingFrom> <freshDatabaseFrom> [version] [notes tag] [schemaVersion]
     cat > "$work/m.json" <<JSON
 {
-  "schemaVersion": 1,
+  "schemaVersion": ${5:-1},
   "version": "${3:-1.2.3}",
   "rollingFrom": [$1],
   "freshDatabaseFrom": [$2],
-  "notes": "https://example.com/tag/1.2.3"
+  "notes": "https://example.com/tag/${4:-1.2.3}"
 }
 JSON
   }
@@ -95,15 +96,18 @@ JSON
   manifest '"1.2.0"' '"1.0.*"'; expect_ok "the tag equals the version" 1.2.3 "$work/m.json"
   expect_bad "a tag that differs from the version" 1.2.4 "$work/m.json"
   manifest '"1.2.0"' '' 1.2.4; expect_bad "notes copied from another release" 1.2.4 "$work/m.json"
-  sed -i 's|/tag/1.2.3"|/tag/1.2.4"|' "$work/m.json"; expect_ok "notes ending in the tag" 1.2.4 "$work/m.json"
+  manifest '"1.2.0"' '' 1.2.4 1.2.4; expect_ok "notes ending in the tag" 1.2.4 "$work/m.json"
   manifest '"1.2.*"' '"1.2.1"'; expect_bad "a glob and an exact version that overlap" "" "$work/m.json"
   manifest '"1.2.*"' '"1.*"'; expect_bad "two globs that overlap" "" "$work/m.json"
   manifest '"1.2.1"' '"1.2.1"'; expect_bad "the same exact version in both lists" "" "$work/m.json"
-  manifest '"1.2.1", "1.2.3"' ''; expect_bad "the release rolling from itself" "" "$work/m.json"
+  manifest '"1.2.1", "1.2.3"' ''; expect_ok "the release rolling from itself is a redeploy" "" "$work/m.json"
+  manifest '"1.2.*"' ''; expect_ok "a glob of the release's own line in rollingFrom" "" "$work/m.json"
+  manifest '' '"1.2.*"'; expect_bad "the release needing a fresh database from its own line" "" "$work/m.json"
   manifest '"^1.2.0"' ''; expect_bad "a semver range" "" "$work/m.json"
   manifest '"1.2.x"' ''; expect_bad "a glob that is not a prefix glob" "" "$work/m.json"
-  manifest '"1.2.0"' ''; sed -i 's/"schemaVersion": 1/"schemaVersion": 2/' "$work/m.json"; expect_bad "an unknown schemaVersion" "" "$work/m.json"
-  manifest '"1.2.0"' ''; sed -i 's|  "version": "1.2.3",|  "version":\n "1.2.3",|' "$work/m.json"; expect_bad "version not on one line" "" "$work/m.json"
+  manifest '"1.2.0"' '' 1.2.3 1.2.3 2; expect_bad "an unknown schemaVersion" "" "$work/m.json"
+  printf '{\n  "schemaVersion": 1,\n  "version":\n "1.2.3",\n  "rollingFrom": ["1.2.0"],\n  "freshDatabaseFrom": [],\n  "notes": "https://example.com/tag/1.2.3"\n}\n' > "$work/m.json"
+  expect_bad "version not on one line" "" "$work/m.json"
   echo '{' > "$work/m.json"; expect_bad "invalid JSON" "" "$work/m.json"
   expect_bad "a missing file" "" "$work/missing.json"
 else

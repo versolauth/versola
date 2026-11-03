@@ -303,9 +303,9 @@ cp .local/env/"$TARGET"/secrets.schema.json "$OUT_DIR"/secrets.schema.json
 # claims to be a release. Rewritten line by line, no jq in this image: the "version" entry sits on a
 # line of its own, which the check script enforces. VERSION goes into JSON as it is, so only what
 # cannot break a string is accepted. The rm first: a reused OUT_DIR must not keep a stale copy.
-case "$VERSION" in
+case "${VERSION:-}" in
   ''|*[!A-Za-z0-9._+-]*)
-    echo "versola-tools: VERSION '$VERSION' cannot go into release.json (letters, digits, '.', '_', '+' and '-' only: it is also an image tag)" >&2
+    echo "versola-tools: VERSION '${VERSION:-}' cannot go into release.json (letters, digits, '.', '_', '+' and '-' only: it is also an image tag)" >&2
     exit 1
     ;;
 esac

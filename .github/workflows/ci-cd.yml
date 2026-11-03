@@ -213,6 +213,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The manifest's `version` has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). It is the first step of `build` so that a
+      # wrong manifest fails in seconds, before any image is pushed: every docker-* job needs this job, so
+      # auth, central, edge and the rest are not published under a tag whose versola-tools image never
+      # gets built (a release the CLI cannot configure, and a tag that cannot be reused). The operator
+      # deletes the release and the tag, fixes release.json and publishes again.
+      # The tag goes through env:, like the "Extract version from tag" step in the docker-* jobs.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
+
       # test_tag's own description says it must never be "latest" or a real
       # version number, but a text input on the manual-run form doesn't
       # enforce that by itself -- someone could still type "latest" or an
@@ -1347,12 +1360,16 @@ jobs:
 
       # The compatibility manifest versola-tools ships (release.json, versolauth/versola#823): well-formed,
       # no version both "rolling" and "fresh database". The entrypoint tests next to it run
-      # entrypoint.sh with a stub java (no JVM, no docker). jq is on the runner image.
+      # entrypoint.sh with a stub java (no JVM, no docker needed; the postgres-mode one also uses
+      # Docker when the runner has it). jq is on the runner image. A loop over the glob, not a list
+      # of names: a new entrypoint-*.test.sh is run without anyone remembering to add it here.
       - name: Check the release manifest and the tools entrypoint
         run: |
           bash .github/scripts/check-release-manifest.sh
-          sh docker/versola-tools/test/entrypoint-release-manifest.test.sh
-          sh docker/versola-tools/test/entrypoint-registry.test.sh
+          for t in docker/versola-tools/test/entrypoint-*.test.sh; do
+            echo "== $t"
+            sh "$t"
+          done
 
   # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
   # global values reach every pod, that a component's own value replaces them

@@ -20,8 +20,11 @@ If one item fails, the release does not go out.
 - [ ] A secret was added or changed: `SecretSchema.Revision` in `scripts/gen-env.scala` is raised.
 - [ ] `docker/versola-tools/release.json` is filled in for this version: `version` is the tag,
       `rollingFrom` lists the versions whose running services work on this schema (additive
-      migrations, see above; when in doubt leave a version out, the CLI then asks the operator),
-      `freshDatabaseFrom` the versions with no in-place way in (`0.6.*`), `notes` the release page.
+      migrations, see above, and the old and new services side by side during a rollout, e.g. old auth
+      against the new central's API: not "migrations only"; when in doubt leave a version out, the CLI
+      then asks the operator; a version of this release's own line may be matched by a glob),
+      `freshDatabaseFrom` the versions with no in-place way in (the glob syntax cannot say "below 0.7.0":
+      list every earlier minor, `0.1.*` ... `0.6.*`), `notes` the release page.
       Then run `bash .github/scripts/check-release-manifest.sh <tag>` with the tag you are about to
       publish; the tag build runs the same script and a published tag cannot be reused.
 - [ ] No critical or high scanner finding is open past its SLA in `SECURITY.md`.
