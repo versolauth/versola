@@ -20,6 +20,7 @@ trait AntifraudProposalRepositorySpec extends DatabaseSpecBase[AntifraudProposal
     val repository = env.repository
     val f = env.fixtures
     def prefixes = f.proposals.map(_.map(p => s"${p.tenantId}/${p.value}"))
+
     /** Ten requests a minute over the window, nearly all sent and almost none verified, after a quiet day that converted. */
     def attacked(tenant: String, prefix: String, verified: Int = 2): Task[Unit] =
       f.stats(tenant, prefix, baselineStart, windowStart, requests = 1, sent = 1, verified = 1) *>
