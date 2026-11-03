@@ -168,6 +168,10 @@ object RangeDatabaseSpec extends ZIOSpecDefault:
         },
       ),
       suite("bad input")(
+        test("a comment, a blank line and then rows are read the same whether or not the format has a header, with nothing malformed") {
+          val result = read(List("# a comment", "", sample(0), "# another", sample(1)))
+          assertTrue(result.database.ranges == 2, result.malformed == 0)
+        },
         test("a line longer than the format allows is left out and counted, wherever it is") {
           val long = d.row("1.0.0.0", "1.0.0.255", 9) + ("x" * 10000)
           val result = read(List(sample(1), long, sample(2)))

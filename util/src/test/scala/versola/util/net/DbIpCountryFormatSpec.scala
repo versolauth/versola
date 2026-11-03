@@ -63,6 +63,10 @@ object DbIpCountryFormatSpec extends ZIOSpecDefault:
         read("1.0.0.0,1.0.0.255,US", "10.0.0.0,10.255.255.255,ZZ", "11.0.0.0,11.0.0.255,", "12.0.0.0,12.0.0.255,USA", "13.0.0.0,13.0.0.255,U1")
       assertTrue(loaded.database.ranges == 1, loaded.ignored == 4, loaded.malformed == 0, country(loaded, "10.0.0.1").isEmpty)
     },
+    test("a comment before the header, then the header, then rows: the header is a header, not a malformed line") {
+      val loaded = read("# dbip-country-lite", "", "ip_start,ip_end,country", "1.0.0.0,1.0.0.255,US", "5.45.64.0,5.45.79.255,DE")
+      assertTrue(loaded.database.ranges == 2, loaded.malformed == 0, country(loaded, "5.45.64.1").contains("DE"))
+    },
     test("a line that is not a range is left out and counted, and the others are read") {
       val loaded = read(
         "1.0.0.0,1.0.0.255,US",

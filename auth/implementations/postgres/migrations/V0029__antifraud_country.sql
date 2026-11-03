@@ -1,8 +1,7 @@
 -- The country of the address a step came from, as the DB-IP country database gave it when the step was recorded
--- (antifraud.geo.file), or, for a network that is not hosting, the country its AS is registered in (antifraud.asn.file): an
--- ISO 3166-1 alpha-2 code in upper case. The address itself is not stored.
+-- (antifraud.geo.file): an ISO 3166-1 alpha-2 code in upper case. The address itself is not stored.
 --
--- Nullable and without a default: both databases are optional, so most deployments have none to write, and the previous
+-- Nullable and without a default: the database is optional, so most deployments have none to write, and the previous
 -- release's inserts do not name the column; adding a nullable column to the partitioned table is a catalog change on every
 -- partition, not a rewrite. No index: the one reader is the dry run of a `country` list entry, which reads a day of the log
 -- in full like the others.

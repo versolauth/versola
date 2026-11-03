@@ -1096,8 +1096,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     IP address it was derived from is **not stored**: not in `af_event`, not in `af_velocity` (which keeps its keyed hash of the
     network, as before), not in the `receive-http` line beyond the `auth.ip` it already carries. The ASN and its class are
     on that line under `antifraud` (`asn`, `asn_class`) next to the decision. The database file holds public registry data
-    only. The country of the AS is used only as the fallback of the country signal, for a network that is not `hosting` (see
-    "Country signal"): it says where the network is registered, not where a user is.
+    only. The country in it is where the AS is registered, not where a user is, and it is not used as a signal (see "Country
+    signal").
   - *Where it does not apply.* The sign-in forms and the OTP request go to `auth` directly, through the deployment's proxy,
     not through `edge`; `auth` already has the client address (the tenant's `ipHeader`), so the lookup is in `auth`. The
     code that does it is in `util` (`versola.util.net`), so that `edge` can use it for policies later; `edge` does not use it today.
@@ -1117,12 +1117,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   - *Source.* DB-IP IP to Country Lite, CC BY 4.0, attribution required; one file, gzip or plain, CSV with the first
     address, the last address and the ISO 3166-1 alpha-2 code of each range, IPv4 and IPv6 together. A range with `ZZ`
     (or no code) is not held.
+  - *Attribution.* DB-IP asks for a visible credit, "IP Geolocation by DB-IP" with a link to https://db-ip.com, on the site or
+    product that uses the data (the sign-in form footer, say, or the deployment's own site); a paid DB-IP licence lifts it.
   - *Metrics.* `antifraud_geo_lookups_total{result}` (`hit`, `miss`, `unavailable`), `antifraud_geo_database_loaded_timestamp_seconds`,
     `antifraud_geo_database_ranges` and `antifraud_geo_database_refresh_failed_total`; the `antifraud_asn_*` series are
     unchanged.
-  - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer; where it has
-    none, the country the AS is registered in (`antifraud.asn`), but only for a network whose class is `other`; else it is
-    absent. It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
+  - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer and nothing
+    else: without the geo file it is absent, whatever the ASN database knows (the country an AS is registered in is not where
+    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
     `country` list entries.
   - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
     `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The

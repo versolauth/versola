@@ -7098,7 +7098,7 @@ components:
       description: |
         What an entry's `value` is compared with. A device id and a JA4 hash are not offered: no request carries one yet, so
         an entry of those kinds would match nothing, and auth refuses it (`400`). An `asn` and a `country` entry match nothing
-        while the database that gives the request's AS (`antifraud.asn.file`) or country (`antifraud.geo.file`) is off.
+        while the database that gives the request's AS (`antifraud.asn.file`) or country (`antifraud.geo.file`, the geolocation of the address, not the country its AS is registered in) is off.
         Neither is ever an `allow`, and a `country` entry always needs `expiresAt`.
     AntifraudListEntryRequest:
       type: object

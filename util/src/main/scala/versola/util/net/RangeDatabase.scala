@@ -159,9 +159,16 @@ object RangeDatabase:
     def reject(): Unit = malformed += 1
 
     def add(line: String): Unit =
-      val first = !started && !line.isBlank
-      if first then started = true
-      format.parse(line, first) match
+      // `first` is true for the first line the format does not skip anyway (a comment before the header is a Skip with or
+      // without it, and must not use up the chance of the header to be taken for one): that line is read once without it, to
+      // see whether it is one, and again with it.
+      val row =
+        if started || line.isBlank then format.parse(line, false)
+        else if format.parse(line, false) == RangeFormat.Row.Skip then RangeFormat.Row.Skip
+        else
+          started = true
+          format.parse(line, true)
+      row match
         case RangeFormat.Row.Skip => ()
         case RangeFormat.Row.Malformed => malformed += 1
         case RangeFormat.Row.Ignored => ignored += 1

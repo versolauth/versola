@@ -105,9 +105,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
   )
 
   /** The two databases of the country signal: ASN ranges (a hosting provider registered in DE, a carrier in KZ, a second carrier
-    * in AM that the country database knows nothing of, and a cloud registered in US that it knows nothing of either), and country
+    * in AM and a cloud in US that the country database knows nothing of, and one with no registration country), and country
     * ranges that disagree with the carrier's registration (UZ for the KZ one, in lower case, as a file may spell it) and cover
-    * an address that no AS announces (TR). `100.64.0.1` is in neither. */
+    * an address that no AS announces (TR). `100.64.0.1` is in neither country range. */
   private val countryAsn: AsnResolver = AsnResolver(
     AsnDatabaseLoader.fixed(
       AsnDatabase
@@ -1296,7 +1296,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       },
     ),
     suite("the country signal")(
-      test("the context carries the country of the address: the country database's, else the AS registration's for a network that is not hosting") {
+      test("the context carries the country the country database gives, whatever the AS is registered in, and none where it has none") {
         val e = env
         val seen = new AtomicReference[Option[AntifraudContext]](None)
         val engine = new Antifraud:
@@ -1315,29 +1315,28 @@ object AntifraudEventsSpec extends UnitSpecBase:
               asn = countryAsn,
               geo = countries,
             )
-            // The country database wins over the registration of the AS (KZ), and its lower-case code is the upper-case one.
+            // The country database's answer, not the registration of the AS (KZ); its lower-case code is the upper-case one.
             overRegistration <- country("203.0.113.7", events)
-            // A hosting network gets the country database's answer, never the registration's (not the DE of the AS).
+            // A hosting network gets the country database's answer too (not the DE of the AS).
             hostingWithGeo <- country("5.45.64.1", events)
             // No AS announces the address, and the country database knows it.
             noAs <- country("198.51.100.9", events)
-            // The country database has nothing: a carrier falls back on its registration, a hosting network on nothing.
-            carrierFallback <- country("192.0.2.5", events)
-            hostingWithout <- country("198.18.0.1", events)
-            // The registration is `ZZ` (none): no country, not a country called ZZ.
+            // The country database has nothing: no country, whatever the AS is registered in (AM for a carrier, US for a cloud).
+            carrierRegistered <- country("192.0.2.5", events)
+            hostingRegistered <- country("198.18.0.1", events)
             noCountry <- country("100.64.0.1", events)
             unknown <- country("172.31.0.1", events)
           yield assertTrue(
             overRegistration.contains("UZ"),
             hostingWithGeo.contains("FR"),
             noAs.contains("TR"),
-            carrierFallback.contains("AM"),
-            hostingWithout.isEmpty,
+            carrierRegistered.isEmpty,
+            hostingRegistered.isEmpty,
             noCountry.isEmpty,
             unknown.isEmpty,
           )
       },
-      test("a hosting network's registration country is never the signal, whatever the country database says of other addresses") {
+      test("with the ASN database alone, whatever it knows of the AS and its country, there is no country signal") {
         val e = env
         val seen = new AtomicReference[Option[AntifraudContext]](None)
         val engine = new Antifraud:
@@ -1350,9 +1349,17 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- Observability.setIp("5.45.64.1")
             _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
             hosting = seen.get
-          yield assertTrue(hosting.flatMap(_.asn).contains(24940), hosting.exists(c => !c.signals.contains(GeoRules.CountrySignal)))
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            carrier = seen.get
+          yield assertTrue(
+            hosting.flatMap(_.asn).contains(24940),
+            hosting.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
+            carrier.flatMap(_.asn).contains(64500),
+            carrier.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
+          )
       },
-      test("without the databases there is no country signal, and with the ASN database alone it is the registration of a carrier") {
+      test("without the databases there is no country signal, with only the ASN database none either, and the AS is still found") {
         val e = env
         val seen = new AtomicReference[Option[AntifraudContext]](None)
         val engine = new Antifraud:
@@ -1370,7 +1377,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             carrier = seen.get
           yield assertTrue(
             withoutDatabases.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
-            carrier.flatMap(_.signals.get(GeoRules.CountrySignal)).contains("KZ"),
+            carrier.exists(c => c.asn.contains(64500) && !c.signals.contains(GeoRules.CountrySignal)),
           )
       },
       test("a request that has no address has no country, and the lookups are not made") {
@@ -1411,11 +1418,14 @@ object AntifraudEventsSpec extends UnitSpecBase:
             _ <- events.otpRequested(authId, clientId, None, Left(Email("a@example.com")), AntifraudOutcome.suppressed)
             _ <- Observability.setIp("198.18.0.1")
             _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            // In an AS registered in AM, which the country database has no range for: no country, not AM.
+            _ <- Observability.setIp("192.0.2.5")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
             _ <- TestClock.adjust(0.seconds)
             _ <- TestClock.adjust(1.second)
             written = e.repository.insertBatch.calls.flatten
           yield assertTrue(
-            written.map(_.country) == List(Some("FR"), Some("FR"), None, Some("UZ"), None),
+            written.map(_.country) == List(Some("FR"), Some("FR"), None, Some("UZ"), None, None),
             written.forall(w => !w.toString.contains("5.45.64.1") && !w.toString.contains("203.0.113.7")),
           )
       },
