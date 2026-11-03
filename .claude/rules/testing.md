@@ -19,13 +19,35 @@ CLAUDE.md's "Test Coverage Rules" say *what* must be tested. This file says *how
   audience, expired, replayed, malformed. A rule with only a passing test is not tested.
 - Shared constants (ids, secrets, clients) go at the top of the object, like the neighbouring specs.
 
-## Repository specs (Postgres)
+## Repository specs (one behaviour spec, one runner per storage)
 
-- The behaviour lives in an abstract `XRepositorySpec` trait; `PostgresXRepositorySpec extends
-  PostgresSpec, XRepositorySpec` supplies the real repository (see `PostgresSessionRepositorySpec`).
-  New repository behaviour is added to the abstract spec so every implementation is held to it.
+A repository is a trait with a storage behind it, and the storage may change. So the spec of a
+repository is written once, against the trait, and a storage only runs it. **Never write
+`object PostgresXRepositorySpec extends PostgresSpec` with the tests inside**: that spec cannot
+be run against another storage, and the next storage would have to copy it.
+
+- The behaviour lives in `trait XRepositorySpec extends DatabaseSpecBase[XRepositorySpec.Env]`
+  in the service module's `src/test` next to the trait it specifies (`auth/src/test/.../
+  VelocityRepositorySpec.scala`). `Env(repository: XRepository, ...)` is what a case gets;
+  `testCases(env)` returns the cases, written against the trait only (see
+  `ChallengeThrottleRepositorySpec`, `VelocityRepositorySpec`).
+- The runner lives in the storage module: `object PostgresXRepositorySpec extends PostgresSpec,
+  XRepositorySpec` supplies `environment` (the real repository) and `beforeEach` (reset the tables,
+  insert nothing the case does not ask for). It has no test bodies of its own beyond the two kinds
+  below.
+- A case that needs rows the repository under test does not write (the rollup's statistics, an
+  earlier proposal, a list entry) asks for them through a `Fixtures` trait in `Env`, which the
+  runner implements with SQL (see `AntifraudProposalRepositorySpec.Fixtures`). The case never
+  holds a transactor and never writes SQL.
+- What only one storage promises (a `statement_timeout`, giving way to an advisory lock, a
+  partition kept ahead, a row of an unknown kind skipped) goes in the runner's
+  `implementationCases(env)`, which may use the transactor. Everything else is behaviour and goes
+  in the trait.
+- New repository behaviour is added to the trait, so every storage is held to it; a new storage
+  is a new runner of a few lines, not a new spec.
 - `PostgresSpec` connects to `POSTGRES_HOST` (default `localhost:5432`) and runs migrations; each
-  test resets state in `beforeEach` with `TRUNCATE ... CASCADE` and inserts only what it needs.
+  test resets state in `beforeEach` with `TRUNCATE ... CASCADE` or `DELETE` and inserts only what
+  it needs.
 - Migrations run for real in these specs, so a broken migration fails here first.
 
 ## E2E specs
