@@ -156,16 +156,6 @@ function OtpForm(props: { config: FormConfig }) {
         </button>
       </form>
       <div class="divider"><span>{t().divider}</span></div>
-      {/* Another way to pass this step, as the server says it may be passed now and this browser can: from this page, with no
-          page in between, and the code field and the resend stay as they are. */}
-      <Show when={passkeyOffered()}>
-        <div class="otp-alternative" data-alternative="passkey">
-          <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
-            <span class="passkey-icon" aria-hidden="true" />
-            <span>{t().passkey_button}</span>
-          </button>
-        </div>
-      </Show>
       <Show
         when={remaining() <= 0}
         fallback={
@@ -192,6 +182,17 @@ function OtpForm(props: { config: FormConfig }) {
             {t().resend_button}
           </button>
         </form>
+      </Show>
+      {/* Another way to pass this step, as the server says it may be passed now and this browser can: last, under the code
+          and its resend, which stay the way in; from this page, with no page in between. */}
+      <Show when={passkeyOffered()}>
+        <div class="divider"><span>{t().divider}</span></div>
+        <div class="otp-alternative" data-alternative="passkey">
+          <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
+            <span class="passkey-icon" aria-hidden="true" />
+            <span>{t().passkey_button}</span>
+          </button>
+        </div>
       </Show>
       <Show when={passkeyErrorShown()}>
         <div class="passkey-dialog-overlay" onClick={() => setPasskeyErrorShown(false)}>
