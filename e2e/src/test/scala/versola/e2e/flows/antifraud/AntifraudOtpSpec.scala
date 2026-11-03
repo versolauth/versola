@@ -355,6 +355,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         removed <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Null)))
         removedJson <- removed.obj
         invalid <- operator.patch("/antifraud/settings", Json.Obj("blockAt" -> Json.Num(-1)))
+        unknownKey <- operator.patch("/antifraud/settings", Json.Obj("blokAt" -> Json.Num(10)))
         after <- operator.get("/antifraud/settings").flatMap(_.obj)
         others = (json: Json.Obj) => json.fields.filterNot(f => f._1 == "ruleWeights" || f._1 == "version").toMap
         v = before.int("version").getOrElse(0)
@@ -368,6 +369,8 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         removedJson.obj("ruleWeights") == before.obj("ruleWeights"),
         // a patch the settings would not survive is refused and writes nothing
         invalid.status == Status.BadRequest,
+        // a member the settings do not have is refused, not dropped and answered with a new version
+        unknownKey.status == Status.BadRequest,
         after.int("version").contains(v + 2),
         others(after) == others(before),
       )

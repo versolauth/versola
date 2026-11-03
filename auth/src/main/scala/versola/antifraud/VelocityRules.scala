@@ -1,7 +1,7 @@
 package versola.antifraud
 
 import zio.*
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, jsonNoExtraFields}
 
 import java.time.Instant
 
@@ -35,6 +35,7 @@ object VelocityRules:
 
   /** The most requests a key may have in each window; 0 means no limit. A count above the limit fires the rule.
     * @param weight what a fired rule of this key adds to the score */
+  @jsonNoExtraFields
   case class Limit(
       perMinute: Int = 0,
       perTenMinutes: Int = 0,
@@ -51,6 +52,7 @@ object VelocityRules:
   /** @param trustedDiscount taken off the score of a request of a known user that has fired a velocity rule (a rule
     *                        of its own, `velocity_known_user`); 0 for none
     */
+  @jsonNoExtraFields
   case class Thresholds(
       phone: Limit = Limit(weight = 50),
       ip: Limit = Limit(weight = 20),

@@ -103,6 +103,29 @@ object AntifraudSettingsApiSpec extends CentralApiSpec:
         anonymous <- central.anonymous.asAdmin(adminId).get(settings)
       yield assertTrue(noUser.status == Status.BadRequest, noUserPatch.status == Status.BadRequest, anonymous.status == Status.Unauthorized)
     },
+    test("a PATCH or a PUT with a member the settings do not have is 400, and nothing changes") {
+      for
+        central <- api
+        operator = central.asAdmin(adminId)
+        read <- central.get(settings)
+        version = read.response.headers.get("ETag")
+        current <- settingsOf(read)
+        typo <- operator.patch(settings, Json.Obj("blokAt" -> Json.Num(10)))
+        nested <- operator.patch(settings, Json.Obj("pow" -> Json.Obj("minDificulty" -> Json.Num(3))))
+        entry <- operator.patch(
+          settings,
+          Json.Obj("smsLimits" -> Json.Obj("byPrefix" -> Json.Obj("49" -> Json.Obj("sentPerHur" -> Json.Num(30))))),
+        )
+        putTypo <- operator.put(settings, body(Json.Obj(current.fields :+ ("blokAt" -> Json.Num(10)))))
+        after <- central.get(settings)
+      yield assertTrue(
+        typo.status == Status.BadRequest,
+        nested.status == Status.BadRequest,
+        entry.status == Status.BadRequest,
+        putTypo.status == Status.BadRequest,
+        after.response.headers.get("ETag") == version,
+      )
+    },
     test("the rule catalogue and the status are read through central") {
       for
         central <- api

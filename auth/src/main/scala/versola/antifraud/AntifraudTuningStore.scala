@@ -1,9 +1,6 @@
 package versola.antifraud
 
-import versola.util.JsonMergePatch
 import zio.*
-import zio.json.*
-import zio.json.ast.Json
 
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -45,12 +42,12 @@ trait AntifraudTuningStore extends AntifraudTuning:
     * it holds: for a caller that has the whole desired state and takes responsibility for what it overwrites. */
   def put(tuning: Tuning, actor: String, expectedVersion: Option[Long]): Task[Long]
 
-  /** Changes the row by a JSON merge patch (RFC 7396, see [[JsonMergePatch]]) of the settings as stored (everything off where
-    * there is no row), validates the result as [[put]] does, and writes it on the version it was made from. Fails with
-    * [[InvalidTuning]] for a result that does not decode or is not valid (nothing is written), and with [[VersionMismatch]]
+  /** Changes the row by a [[TuningPatch]] applied to the settings as stored (everything off where there is no row), validates
+    * the result as [[put]] does, and writes it on the version it was made from. Fails with
+    * [[InvalidTuning]] for a result that is not valid (nothing is written), and with [[VersionMismatch]]
     * when `expectedVersion` is given and the row is at another one. Without one a change made by someone else between the read
     * and the write makes the patch be made again on what they wrote, once; if that fails too, so does the call. */
-  def patch(patch: Json, actor: String, expectedVersion: Option[Long]): Task[StoredTuning]
+  def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long]): Task[StoredTuning]
 
   /** Puts everything off ([[Tuning.off]]), as [[put]] does: it moves the version too. */
   def reset(actor: String, expectedVersion: Option[Long]): Task[Long]
@@ -169,14 +166,12 @@ object AntifraudTuningStore:
           case None => stored.flatMap(row => ZIO.fail(VersionMismatch(row.version)))
       yield version
 
-    override def patch(patch: Json, actor: String, expectedVersion: Option[Long]): Task[StoredTuning] =
+    override def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long]): Task[StoredTuning] =
       def attempt(retriesLeft: Int): Task[StoredTuning] =
         for
           current <- stored
           _ <- ZIO.fail(VersionMismatch(current.version)).when(expectedVersion.exists(_ != current.version))
-          merged = JsonMergePatch(current.tuning.toJsonAST.getOrElse(Json.Null), patch)
-          tuning <-
-            ZIO.fromEither(merged.as[Tuning]).mapError(message => InvalidTuning(s"the settings with the patch applied are not valid: $message"))
+          tuning = patch.applyTo(current.tuning)
           // The write is made on the version the patch was made from, so a change in between is not overwritten.
           written <- put(tuning, actor, Some(current.version)).map(StoredTuning(tuning, _)).catchSome:
             case _: VersionMismatch if expectedVersion.isEmpty && retriesLeft > 0 => attempt(retriesLeft - 1)

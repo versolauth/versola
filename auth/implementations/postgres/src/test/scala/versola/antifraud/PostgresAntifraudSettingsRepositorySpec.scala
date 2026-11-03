@@ -83,6 +83,22 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
         stored.exists(_.tuning.mode == TuningMode.shadow),
       )
     },
+    test("a row that names a key retired by an earlier build still reads; one that names a key nothing knows fails the read") {
+      for
+        repository <- clean
+        xa <- ZIO.service[TransactorZIO]
+        _ <- xa.connect(
+          sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "delayAt": 3, "delayMillis": 2000}'::jsonb, 'old', $at)""".update.run(),
+        )
+        retired <- repository.find
+        _ <- xa.connect(sql"""UPDATE af_settings SET settings = '{"blokAt": 80}'::jsonb WHERE id = 1""".update.run())
+        unknown <- repository.find.flip
+      yield assertTrue(
+        retired.map(_.tuning).contains(Tuning.off.copy(blockAt = 80)),
+        unknown.isInstanceOf[SqlException],
+        unknown.getMessage.contains("invalid extra field"),
+      )
+    },
     test("a put replaces the row as a whole and moves both versions") {
       for
         repository <- clean

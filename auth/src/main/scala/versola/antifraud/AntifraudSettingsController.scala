@@ -59,12 +59,12 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
-  /** Changes the settings by the merge patch in the body (see [[AntifraudTuningStore.patch]]); answers them all. */
+  /** Changes the settings by the patch in the body (see [[AntifraudTuningStore.patch]]); answers them all. */
   val patchEndpoint =
     Method.PATCH / "antifraud" / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        body <- request.bodyAs[PatchPayload]
+        body <- request.bodyAs[PatchAntifraudSettingsPayload]
         tuning <- ZIO.service[AntifraudTuningStore]
         response <- guarded:
           withVersion(request, body.version): expected =>
@@ -107,5 +107,6 @@ object AntifraudSettingsController extends Controller:
   /** `version` is the version the settings were read at, for a client that does not send `If-Match`. */
   case class SettingsPayload(settings: Tuning, userId: UserId, version: Option[Long] = None) derives JsonCodec
 
-  /** `patch` is a JSON merge patch of the settings: central takes it from its own request body, without `userId` and `version`. */
-  case class PatchPayload(patch: Json.Obj, userId: UserId, version: Option[Long] = None) derives JsonCodec
+  /** `patch` is the typed settings patch ([[TuningPatch]], a JSON merge patch whose members are fixed, so an unknown one is a
+    * 400): central takes it from its own request body, without `userId` and `version`. */
+  case class PatchAntifraudSettingsPayload(patch: TuningPatch, userId: UserId, version: Option[Long] = None) derives JsonCodec
