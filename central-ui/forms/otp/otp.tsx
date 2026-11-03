@@ -155,7 +155,6 @@ function OtpForm(props: { config: FormConfig }) {
           {t().verify_button}
         </button>
       </form>
-      <div class="divider"><span>{t().divider}</span></div>
       <Show
         when={remaining() <= 0}
         fallback={
