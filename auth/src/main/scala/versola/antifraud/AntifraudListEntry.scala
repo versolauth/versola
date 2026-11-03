@@ -39,7 +39,8 @@ enum AntifraudValueType derives JsonCodec:
   /** A network, `address/length`. */
   case cidr
 
-  /** An autonomous system number. */
+  /** An autonomous system number (`64500` or `AS64500`), against [[AntifraudContext.asn]]: the AS the ASN database gives the
+    * request's address. */
   case asn
   case device_id
 
@@ -51,6 +52,10 @@ enum AntifraudValueType derives JsonCodec:
 
   /** The domain of an address, from the context signal [[AntifraudLists.EmailDomainSignal]]. */
   case email_domain
+
+  /** An ISO 3166-1 alpha-2 country code (`KZ`), against the context signal [[GeoRules.CountrySignal]]: the country the
+    * address of the request is in. */
+  case country
 
 object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
@@ -111,7 +116,7 @@ object ListEntrySource:
   val Manual = "manual"
 
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
-  * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
+  * column for (an address, a device, a fingerprint, a mail domain). */
 case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec
 
 enum AntifraudListAction derives JsonCodec:

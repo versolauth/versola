@@ -75,6 +75,7 @@ then `auth` and `edge`, and waits for the whole proxy last.
 | `~/.versola/openbao/vps.json` | AppRole credentials `versola-cli` uses to read/write secrets |
 | `~/.versola/openbao/vps-admin.json` | OpenBao root token + unseal key. **Keep a copy off the host** — neither is recoverable if lost |
 | Volume `versola-openbao-file-vps` | OpenBao's data (all secrets). Survives `down` |
+| Volume `versola-postgres-data-vps` | the bundled Postgres' data ([bundled mode](#bundled-postgres) only). Declared `external`, so `compose down --volumes` and uninstall leave it |
 | Volume `versola-acme-vps` | Let's Encrypt state (`--proxy nginx`) |
 | Volumes `versola-step-ca-vps`, `versola-central-ca-vps`, `versola-mtls-vps` | the internal CA's keys, central's access to it, auth's mTLS certificate. Not in OpenBao or the database |
 
@@ -92,7 +93,8 @@ For a **fresh** server; routine releases are [3](#3-releases-and-recovery).
 - Docker and the Compose plugin (Debian: Docker CE from Docker's apt repository — `docker.io` has no
   Compose plugin; add the deploy user to the `docker` group). `versola doctor --target vps` checks
   them, plus memory and disk.
-- The managed PostgreSQL 18 cluster and the CA file that signed its certificate.
+- PostgreSQL 18: either the managed cluster and the CA file that signed its certificate, or, in
+  [bundled mode](#bundled-postgres), nothing: the bundle runs the database in a container.
 - A DNS record for the `--auth-url` host pointing at the host's public IP **before `versola up`**
   (Let's Encrypt validates over port 80). Behind Cloudflare it must be *DNS only* while the
   certificate is issued.
@@ -193,6 +195,41 @@ for s in auth central edge; do psql -c "CREATE SCHEMA IF NOT EXISTS $s AUTHORIZA
 
 The file is written only on that first run; the password itself is kept in OpenBao and in the bundle's
 `auth.secrets.env`.
+
+<a id="bundled-postgres"></a>
+**Bundled Postgres.** With `POSTGRES_MODE=bundled` (a `versola-tools` input; the default `external` is
+everything above, unchanged) the compose file also runs the database, so none of the SQL above is run by
+hand. The `postgres` service is the pinned `postgres:<major>.<minor>` image (the PostgreSQL release the
+project is verified against; a release can move the tag to a newer minor, never to a newer major: the data
+directory is `/var/lib/postgresql/data`, with no major in its path, so a newer major finds the old files and
+refuses to start, "database files are incompatible with server", until they are dumped and restored), on the host network and
+listening on `127.0.0.1:5432` only, never on a public interface. Its healthcheck gates `migrate` and the
+three services. The first start with an empty data directory creates the role (the user in the configs),
+a plain role and not a superuser, the database (`--postgres-db`, `auth` by default) owned by it and the
+three schemas owned by it; a later start finds the data directory and initialises nothing. The cluster's
+superuser is `postgres`, with no password: it logs in over the container's socket only (`docker exec`),
+never over TCP, and connections to `127.0.0.1:5432` need the role's password (`scram-sha-256`), so no other
+process on the VM gets in without it. The password reaches the container through
+`postgres.secrets.env` (`POSTGRES_PASSWORD` only), written by `versola-cli` from the same value it stores
+in OpenBao. `env_file` makes it part of the container's configuration, so `docker inspect` shows it to
+anyone who can use Docker on the VM; it is in no image layer, log line or generator output. The services
+connect with `sslmode=disable`, which is what the loopback rule above writes.
+
+The data lives in the external Docker volume `versola-postgres-data-vps` on the VM, created by
+`versola-cli` before the first start, so it survives container recreation, `compose down --volumes`,
+uninstall and a redeploy. Nothing but a backup protects it: the volume is not in OpenBao and not in a
+managed cluster's snapshots, so take `pg_dump` backups ([3](#3-releases-and-recovery)) and keep a copy off
+the host. A dump goes through the container, since there is no native server to `sudo -u postgres`
+into: `(umask 077; docker exec versola-postgres-vps pg_dump -U versola_app -Fc auth > ~/versola-backup-$(date +%Y%m%d-%H%M%S).dump)`
+(`auth` is `--postgres-db`; `-U` is the role in the configs). Like the external role, the password is
+read once, at initialisation: changing it later in OpenBao does not change the role's.
+
+One thing to know: the container uses the host network, so port 5432 on the VM must be free: a native
+Postgres already listening there stops the container from starting.
+
+Sizing: `max_connections` is 150 and `shared_buffers` 256 MB, for a server with 4 GB of RAM; the services'
+pools (auth 10, central 15, edge 10 per replica; central and edge add one `LISTEN` connection each) and a
+rollout's stand-ins fit in it.
 
 <a id="postgres-tls"></a>
 **Postgres TLS.** Every connection (the pool and the `LISTEN` connection) uses `sslmode=verify-full`
@@ -645,10 +682,15 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
                   max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
        challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
+       asn      { file = "", url = "", refresh-interval = "24 hours" }   # optional block, see "ASN signal": empty file is off
+       geo      { file = "", url = "", refresh-interval = "7 days" }     # optional block, see "Country signal": empty file is off
      }
      ```
      `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
      given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
+
+     The `asn` and `geo` blocks are the only ones that may be left out (and so is each of their keys, `hosting-keywords`
+     included): a config written before they existed keeps loading, with the signal off.
   3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
      queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
      `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
@@ -743,7 +785,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`; for example `deny_list:cidr`). The two stand-ins of a failed evaluation are not rules.
+  `email_domain`, `country`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
+  failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
   (`PUT` replaces every key, so read the settings first, and send the `ETag` of that read back as `If-Match`, or use `PATCH` for just the keys you change):
@@ -765,12 +808,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
       },
       "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
       "ruleWeights": {},
-      "shadowRules": []
+      "shadowRules": ["asn_hosting"]
     }
   }
   ```
 
-  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. Size `smsLimits` from the range statistics first.)
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `asn_hosting` starts as a shadow rule: see how much
+  honest traffic comes through hosting-class networks (consumer relays and VPNs) before it counts. Size `smsLimits` from the range statistics first.)
   Run it for at least a week and read what it says it would do: `would_action` in `af_event` against traffic you know to be
   good, `antifraud_decisions_total{action="Allow",would_action!="Allow"}`, `antifraud_rules_fired_total` for the rules
   that carry it, `antifraud_sms_budget_refused_total{mode="shadow"}` for the ranges the budget would have closed, the proposals of the detectors. Raise a
@@ -831,7 +875,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
   recognise at once (a destination hash, a number prefix, an IP or network, a user-agent hash, the mail domain of an
-  address a code is asked for; an ASN, a device or a JA4 hash is refused until a request carries one, P1-1 and P1-3,
+  address a code is asked for, an ASN; a device or a JA4 hash is refused until a request carries one, P1-1,
   since such an entry would match nothing): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
   outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
   are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
@@ -950,8 +994,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
   prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
   rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
-  subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
-  once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
+  subscribers share one IPv4 address; a device key outweighs them. The `asn` key is filled from the ASN database (see
+  "ASN signal" below) and counts nothing while it is off. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
   context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
   *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
   JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
@@ -1007,6 +1051,129 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   complete on every instance **within two refresh intervals plus one flush-and-load cycle**; the instance that took the
   request forgets at once. An instance that starts later does not replay old resets. Metrics:
   `antifraud_counters_reset_total{scope}` and `antifraud_counters_reset_failed_total{what="poll"|"delete"}`.
+- **ASN signal (`af_event.asn` and `asn_class`, migration `V0028`).** The autonomous system (AS) that announces the client's
+  IP address is a signal the rules use: a data centre or a hosting provider is where scripts, proxies and VPN exits live, a
+  carrier or a broadband provider is where people live, and a flood from one AS is a campaign. **Off by default**, and
+  nothing changes until it is turned on. The lookup is made by `auth` in memory, from a database it holds; **no request
+  ever calls anything outside the process**, so the signal costs a binary search (about a microsecond) and cannot fail
+  or wait.
+  - *Source.* The free `ip2asn-combined.tsv.gz` of [iptoasn.com](https://iptoasn.com) (a public-domain dedication, PDDL;
+    check the terms of whatever mirror you use): one range per line, `range_start`, `range_end`, `AS_number`,
+    `country_code`, `AS_description`, tab-separated, IPv4 and IPv6 together, gzipped or plain (told by the first bytes, not
+    by the name). A range of AS 0 is the space nobody announces and is not held. `auth` reads it with no new dependency;
+    a file in this format from another source works as well.
+  - *Switching it on.* `antifraud.asn.file` is where the database is: put the file there (or let `url` fetch it) and restart.
+    The service reads it before it starts serving, in about half a second for the 500 thousand ranges the real file has,
+    and holds some 30 MB for them. An empty `file` (the default, and what a config without the block means) is off: the
+    signals are absent, every lookup counts as `unavailable`, no rule of it fires and no `asn` entry matches. A file that is
+    missing or is not a database is a warning in the log and the same as off; it never stops the service from starting.
+    A line that is not a range (a wrong address, too few columns, a range that overlaps the one before) is left out and
+    counted in a warning; a file with more than a tenth of its lines wrong is taken for a wrong file (an error page, another
+    format) and is not used at all. An AS number above 2147483647 (private use, never in the public table) is left out, and a file of
+    more than 4 million ranges (the real one has about half a million) or that unpacks to more than 1 GiB fails to read.
+  - *Refresh.* The file is written by a download from `antifraud.asn.url` (`https` preferred; an `http` mirror inside the
+    network is accepted; a redirect is not followed, so the URL must serve the file itself) at the start if there is no
+    file yet, and then every `antifraud.asn.refresh-interval` (24 hours; the source is updated daily). The download goes
+    to a temporary file next to `file` (so that directory must be writable by `auth`), is read as a database, and only then
+    moved over `file` in one atomic step: a half-written or wrong download never replaces a good database, and the one in
+    use is never changed under a request. **On any failure (an unreachable server, an error status, a download over
+    5 minutes or 256 MB, a file that is not a database) the previous database stays in use**, the failure is a warning in
+    the log (naming the host, never the whole URL, which may carry a token) and
+    `antifraud_asn_database_refresh_failed_total` counts it: **alert on it increasing**, and on
+    `time() - antifraud_asn_database_loaded_timestamp_seconds` growing past a few intervals. Without a `url` the file is
+    looked at every `refresh-interval` and read again when its modification time has changed, so an operator (or a cron
+    job) can replace it; replace it by writing a new file and renaming it over the old one. With several instances,
+    each downloads for itself; point them at a shared mirror rather than the public site if there are many. A download
+    is one `send-http` line at `INFO` (the peer is external).
+  - *Metrics.* `antifraud_asn_lookups_total{result}` with `hit` (the address is in an announced range), `miss` (it is in
+    none, or the text is no address) and `unavailable` (no database is loaded: the feature is off, or the file is not
+    there yet); `antifraud_asn_database_loaded_timestamp_seconds` (when the file in use was written, not when it was read:
+    a stale file shows its age) and `antifraud_asn_database_ranges` (a database that suddenly holds a fraction of its usual
+    size is a wrong file). The request is looked up once, when the antifraud decision is made on an OTP request; the
+    events that follow read it again from memory and are not counted again. With `antifraud.decision.enabled = false`
+    nothing is looked up.
+  - *The class.* An AS is `hosting` when its description contains one of `antifraud.asn.hosting-keywords`, compared
+    case-insensitively as a whole word or phrase (between characters that are not letters or digits, runs of white space
+    counting as one), and `other` otherwise. The default list is: `hosting`, `cloud`, `datacenter`,
+    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google cloud`, `google-cloud`,
+    `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `vultr`, `choopa`, `alibaba`, `oracle`,
+    `contabo`, `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent`, `huawei cloud`.
+    Setting `hosting-keywords` replaces the list (an empty list classifies nothing as hosting). **A name is a guess:** a
+    keyword is never found inside a longer word (`cloud` is not in `Cloudy`, `dedicated` not in `Undedicated`), but a
+    provider with a plain name is `other`, and a carrier with one of the words in its name (`Cloud` in a mobile brand) is
+    `hosting`. And people sit behind hosting-class addresses too: Apple's Private Relay egresses through CDN space
+    (Akamai, Cloudflare, Fastly), corporate VPNs exit in clouds, a cloud company's residential arm shares its name
+    (`GOOGLE-FIBER`); the default list therefore names cloud arms (`google cloud`), not the company, and leaves Akamai
+    out (Linode, its hosting arm, is listed). That is why the rule is weighed low, starts as a shadow rule, and why the
+    exact tool is the list: an `asn` entry corrects one network, whatever its name says.
+  - *What a request carries.* For an OTP request with an address the context gets the AS number (`asn`, which the
+    `asn` velocity key and the `asn` list entries read) and the signal `asn_class` (`hosting` or `other`). An address that
+    is no literal (the proxy sent a name) or is in no AS carries neither. The address is the request's `auth.ip`, with the caveat
+    of the velocity counters: it is the client's only if the proxy in front sets the header as configured.
+  - *Rules.* The rule `asn_hosting` fires when `asn_class` is `hosting`. It is not forcing: it adds its weight, **20 by
+    default**, to the score, and a score alone turns into an action through the tuned `challengeAt` and `blockAt`. Its
+    weight is tuned by name in `ruleWeights` (`{"asn_hosting": 40}`) and it can run as a `shadowRules` entry first (listed
+    as `shadow:asn_hosting`, no weight), the way to see how much honest traffic comes from a VPN before it counts. The
+    per-AS velocity limit is the existing `thresholds.asn` (`perMinute`, `perTenMinutes`, `perHour`, `perDay`, `weight`; all
+    limits 0, weight 20). **A limit on an AS is a limit on everyone in it.** A mobile carrier's AS is millions of
+    subscribers behind a handful of gateways, so it is a hard number to set and a limit low enough for a hosting provider
+    refuses a town; leave the limits 0 and the weight low until the traffic shows one AS that sends a campaign, and set
+    the limit for that. Like the other counts it counts the requests of the AS that were let through (a refused request is
+    not counted), per minute, 10 minutes, hour and day, in memory per instance and shared through `af_velocity` like the
+    others; the AS number is stored there as plain digits.
+  - *List entries.* `asn` is now an accepted `valueType` of the lists (`64500` or `AS64500`, stored as `64500`): `deny`
+    blocks, `fake` fakes, `watch` adds the watch weight. It is **not allowable**: an `allow` on an AS is refused, as it
+    would exempt a whole network from the score (allow an exact `ip` instead, which outranks an `asn` deny). An `asn` entry
+    names many clients, so it needs `expiresAt`, and the share-of-traffic guard applies: the dry run
+    (`/antifraud/lists/preview`) now counts the events of the last 24 hours with that AS (`af_event.asn`), so an entry for
+    a carrier that would have matched most of the traffic is refused unless it is a shadow entry. Without a database an
+    `asn` entry matches nothing. By specificity an `asn` entry outranks only a mail domain: an address, a network, a number
+    prefix, a fingerprint and a user agent all decide over it.
+  - *The migration.* `V0028` adds two nullable columns to `af_event`, `asn INTEGER` and `asn_class TEXT`, with no default and
+    no index: a catalog change on the partitioned table, no rewrite, compatible with the previous release (whose inserts do
+    not name them), and not undoable except by a dump (like every migration). Events written without the signal have both
+    empty.
+  - *Personal data.* An AS number names a network of thousands to millions of subscribers and is not personal data. The
+    IP address it was derived from is **not stored**: not in `af_event`, not in `af_velocity` (which keeps its keyed hash of the
+    network, as before), not in the `receive-http` line beyond the `auth.ip` it already carries. The ASN and its class are
+    on that line under `antifraud` (`asn`, `asn_class`) next to the decision. The database file holds public registry data
+    only. The country in it is where the AS is registered, not where a user is, and it is not used as a signal (see "Country
+    signal").
+  - *Where it does not apply.* The sign-in forms and the OTP request go to `auth` directly, through the deployment's proxy,
+    not through `edge`; `auth` already has the client address (the tenant's `ipHeader`), so the lookup is in `auth`. The
+    code that does it is in `util` (`versola.util.net`), so that `edge` can use it for policies later; `edge` does not use it today.
+
+- **Country signal (`af_event.country`, migration `V0029`).** The country of the client's IP address, from a database `auth` holds
+  in memory like the ASN one (no request calls anything outside the process). **Off by default.**
+  - *Config.* An optional block, each key with its default:
+    ```
+    antifraud {
+      geo { file = "", url = "", refresh-interval = "7 days" }   # empty file is off; the block may be left out
+    }
+    ```
+    `url` is held as a secret in memory and only its host is logged (the same now holds for `antifraud.asn.url`, whose
+    config keys and values are unchanged). It may hold `{yyyy}` and `{mm}`, the year and the month (UTC) of the download:
+    a month with no file yet (a 404) is retried once with the month before. Refresh, failure handling and the writable
+    directory next to `file` are as for the ASN database.
+  - *Source.* DB-IP IP to Country Lite, CC BY 4.0, attribution required; one file, gzip or plain, CSV with the first
+    address, the last address and the ISO 3166-1 alpha-2 code of each range, IPv4 and IPv6 together. A range with `ZZ`
+    (or no code) is not held.
+  - *Attribution.* DB-IP asks for a visible credit, "IP Geolocation by DB-IP" with a link to https://db-ip.com, on the site or
+    product that uses the data (the sign-in form footer, say, or the deployment's own site); a paid DB-IP licence lifts it.
+  - *Metrics.* `antifraud_geo_lookups_total{result}` (`hit`, `miss`, `unavailable`), `antifraud_geo_database_loaded_timestamp_seconds`,
+    `antifraud_geo_database_ranges` and `antifraud_geo_database_refresh_failed_total`; the `antifraud_asn_*` series are
+    unchanged.
+  - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer and nothing
+    else: without the geo file it is absent, whatever the ASN database knows (the country an AS is registered in is not where
+    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
+    `country` list entries.
+  - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
+    `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The
+    dry run counts the events of the last 24 hours with that `af_event.country`. Without a database a `country` entry
+    matches nothing.
+  - *The migration.* `V0029` adds one nullable column to `af_event`, `country TEXT`, with no default and no index; compatible
+    with the previous release and not undoable except by a dump. Its `ALTER` runs under `lock_timeout = 5s`: if it fails,
+    run the migration again.
 
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it

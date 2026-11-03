@@ -115,6 +115,21 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
             WHERE minute >= $since AND (NOT $scoped OR tenant_id = $tenant)
           """.query[Counts].run().head
           ListPreview(matched = Some(c.matched), total = c.total)
+        case AntifraudValueType.asn =>
+          // The AS number is normalised to digits; compared as a bigint so that a number above Int.MaxValue (no AS in use)
+          // matches nothing instead of wrapping.
+          val c = sql"""
+            SELECT COUNT(*) FILTER (WHERE asn = ${value.toLong}), COUNT(*) FROM af_event
+            WHERE at >= $since AND (NOT $scoped OR tenant_id = $tenant)
+          """.query[Counts].run().head
+          ListPreview(matched = Some(c.matched), total = c.total)
+        case AntifraudValueType.country =>
+          // Normalised to upper case, as the column is written.
+          val c = sql"""
+            SELECT COUNT(*) FILTER (WHERE country = $value), COUNT(*) FROM af_event
+            WHERE at >= $since AND (NOT $scoped OR tenant_id = $tenant)
+          """.query[Counts].run().head
+          ListPreview(matched = Some(c.matched), total = c.total)
         case AntifraudValueType.ua_hash =>
           val c = sql"""
             SELECT COUNT(*) FILTER (WHERE encode(sha256(convert_to(user_agent, 'UTF8')), 'hex') = $value), COUNT(*) FROM af_event

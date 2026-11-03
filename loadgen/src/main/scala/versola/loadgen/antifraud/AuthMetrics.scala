@@ -32,6 +32,17 @@ case class AuthAntifraudMetrics(
       queueSize = queueSize,
     )
 
+  /** Two instances' figures as one: counters and the queues' sizes (a backlog is the sum of the instances') added. */
+  def plus(other: AuthAntifraudMetrics): AuthAntifraudMetrics =
+    AuthAntifraudMetrics(
+      enqueued = enqueued + other.enqueued,
+      written = written + other.written,
+      dropped = (dropped.keySet ++ other.dropped.keySet).map(reason => reason -> (dropped.getOrElse(reason, 0.0) + other.dropped.getOrElse(reason, 0.0))).toMap,
+      smsRefused = smsRefused + other.smsRefused,
+      smsBudgetFull = smsBudgetFull + other.smsBudgetFull,
+      queueSize = queueSize + other.queueSize,
+    )
+
   def droppedTotal: Double = dropped.values.sum
 
 object AuthAntifraudMetrics:
@@ -66,21 +77,26 @@ object AuthAntifraudMetrics:
   def read(client: Client, url: String): ZIO[Any, Throwable, AuthAntifraudMetrics] =
     ZIO.scoped(client.request(Request.get(url)).flatMap(_.body.asString)).map(parse)
 
+  /** Every instance's metrics, summed: the counters are the deployment's, not one instance's. A url that cannot be read
+    * fails the whole read, so that a figure is never the sum of fewer instances than were asked for. */
+  def readAll(client: Client, urls: List[String]): ZIO[Any, Throwable, AuthAntifraudMetrics] =
+    ZIO.foreach(urls)(read(client, _)).map(_.foldLeft(empty)(_.plus(_)))
+
 /** Samples the queue's size at an interval while a scenario runs. */
 final class QueueSampler(max: Ref[Double]):
-  def sampleOnce(client: Client, url: String): UIO[Unit] =
-    AuthAntifraudMetrics.read(client, url).flatMap(metrics => max.update(math.max(_, metrics.queueSize))).ignore
+  def sampleOnce(client: Client, urls: List[String]): UIO[Unit] =
+    AuthAntifraudMetrics.readAll(client, urls).flatMap(metrics => max.update(math.max(_, metrics.queueSize))).ignore
 
   def maxSeen: UIO[Double] = max.get
 
 object QueueSampler:
   /** Runs `body` while sampling; the sampler is stopped with it. */
-  def around[R, E, A](client: Client, url: String, every: Duration)(body: ZIO[R, E, A]): ZIO[R, E, (A, Double)] =
+  def around[R, E, A](client: Client, urls: List[String], every: Duration)(body: ZIO[R, E, A]): ZIO[R, E, (A, Double)] =
     for
       max <- Ref.make(0.0)
       sampler = QueueSampler(max)
-      fiber <- sampler.sampleOnce(client, url).repeat(Schedule.spaced(every)).forkDaemon
+      fiber <- sampler.sampleOnce(client, urls).repeat(Schedule.spaced(every)).forkDaemon
       result <- body.ensuring(fiber.interrupt)
-      _ <- sampler.sampleOnce(client, url)
+      _ <- sampler.sampleOnce(client, urls)
       peak <- sampler.maxSeen
     yield (result, peak)

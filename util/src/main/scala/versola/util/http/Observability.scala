@@ -748,6 +748,12 @@ object Observability:
       challengeLevel: Option[Int],
       /** What the engine decided, which is not what `decision` says in `shadow` mode. */
       wouldAction: Option[String] = None,
+      /** The autonomous system the request's address belongs to, and the class of its network (`hosting`, `other`), when
+        * the ASN database is on and has the address. The AS number is no personal data; the address is not repeated. */
+      asn: Option[Int] = None,
+      asnClass: Option[String] = None,
+      /** The ISO 3166-1 alpha-2 country of the request's address, when the country database is on and has one. Not personal data; the address is not repeated. */
+      country: Option[String] = None,
   ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key

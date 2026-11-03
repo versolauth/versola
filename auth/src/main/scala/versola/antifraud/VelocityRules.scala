@@ -21,7 +21,8 @@ import java.time.Instant
   *   - `ip`: `ip`, which the caller reads from the request's log context (`Observability.currentIp`, the `auth.ip` of
   *     the `receive-http` line): the client's address only when the proxy in front sets the header and no client can
   *     choose its value. It is counted as its network, `/32` for IPv4 and `/64` for IPv6 (see [[network]]),
-  *   - `device`, `asn`: `deviceId` and `asn` (both empty until P1-1 and P1-3 fill them),
+  *   - `device`, `asn`: `deviceId` (empty until P1-1 fills it) and `asn`, the autonomous system of the request's address from the
+  *     ASN database (empty while it is off; see [[AsnRules]] for what a limit on an AS means),
   *   - `prefix`: the tenant and `destPrefix` (the leading digits of the number), so a tenant's ranges are its own.
   *
   * Mind what is counted. A count is of the steps the caller counts, and a rule on a phone that fires on the attempts

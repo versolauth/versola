@@ -35,6 +35,26 @@ trait AuthClient:
 
   def submitOtp(conversation: ConversationCookie, code: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome]
 
+  /** `POST /challenge/otp/resend`, as a plain form post (no script): the ask for a code from a code page, which a request
+    * that was challenged and left pending makes again once its pause is over. */
+  def submitResend(conversation: ConversationCookie, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
+    ZIO.fail(ProtocolError.Misconfigured("this client has no plain resend"))
+
+  /** `POST /challenge/phone` as the forms with script send it (`proof_inline=1`): the answer is a challenge to solve or
+    * the redirect as data, in the shape of `InlineStep`. With `proof` it is the same request again with the answer to
+    * the challenge it was given (`proof_token`, `proof_solution`). */
+  def submitPhoneInline(
+      conversation: ConversationCookie,
+      phone: String,
+      csrf: Csrf,
+      proof: Option[PowAnswer],
+  ): IO[ProtocolError, InlineOutcome] =
+    ZIO.fail(ProtocolError.Misconfigured("this client has no inline submit"))
+
+  /** `POST /challenge/otp/resend` from script, as [[submitPhoneInline]] is sent. */
+  def resendInline(conversation: ConversationCookie, csrf: Csrf, proof: Option[PowAnswer]): IO[ProtocolError, InlineOutcome] =
+    ZIO.fail(ProtocolError.Misconfigured("this client has no inline resend"))
+
   /** `POST /challenge/password` -- the inline password factor of §8.2's `mobile-otp-password`
     * client, and the Argon2 path the campaign measures separately. Distinct from
     * [[submitSetPassword]] (`/challenge/set-password`, which enrolls a password the account does

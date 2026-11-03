@@ -224,6 +224,7 @@ object AntifraudShadowSpec extends UnitSpecBase:
           refused(enforcing.copy(ruleWeights = Map("velocity_phone_1h" -> 10))).isEmpty,
           refused(enforcing.copy(ruleWeights = Map("deny_list:ip" -> 10, "watch_list:email_domain" -> 5))).isEmpty,
           refused(enforcing.copy(shadowRules = Set("velocity_known_user", "shadow_list:ua_hash"))).isEmpty,
+          refused(enforcing.copy(ruleWeights = Map("asn_hosting" -> 40), shadowRules = Set("asn_hosting"))).isEmpty,
           refused(enforcing.copy(ruleWeights = Map("velocity_phone_2h" -> 10))).exists(_.contains("velocity_phone_2h")),
           refused(enforcing.copy(shadowRules = Set("velocity_fone_1h"))).exists(_.contains("velocity_fone_1h")),
           refused(enforcing.copy(shadowRules = Set(Antifraud.ErrorRule))).isDefined,
@@ -232,10 +233,11 @@ object AntifraudShadowSpec extends UnitSpecBase:
       test("the catalogue is the rules the engine's sources contribute: one per key and window, one per kind of list and of value") {
         val names = Antifraud.ruleNames
         assertTrue(
-          names.size == 5 * 4 + 1 + 9 * 5,
+          names.size == 5 * 4 + 1 + 10 * 5 + 1,
           names.contains("velocity_prefix_24h"),
           names.contains("velocity_known_user"),
           names.contains("fake_list:prefix"),
+          names.contains("asn_hosting"),
           VelocityRules.rules(VelocityRules.Thresholds().copy(
             phone = VelocityRules.Limit(1, 1, 1, 1, 1),
             ip = VelocityRules.Limit(1, 1, 1, 1, 1),
