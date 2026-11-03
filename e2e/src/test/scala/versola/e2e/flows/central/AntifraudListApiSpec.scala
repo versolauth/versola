@@ -10,14 +10,21 @@ import java.util.UUID
 
 /** The antifraud lists' admin API: central passes the request to auth, which owns the lists and validates the entries.
   *
-  * Central is called directly, so these specs play the part of edge and send the `userId` it would add from the verified
-  * token (`asAdmin`: a query parameter of a `GET`, a body field of the rest); the injection itself is covered by the unit
-  * specs of `BootstrapService`. What is proven here is the round trip through central, auth and Postgres: the status codes and the audit. What an
-  * entry does to a sign-in is not: the lists are off by default (`antifraud.lists.enabled`).
+  * Central is called directly, so these specs play the part of edge and send what it would add from the verified token:
+  * `asAdmin` the `userId`, `asTenantAdmin` also the `callerTenantId` of the tenant routes (a query parameter of a `GET`, a body
+  * field of the rest); the injection itself, and which permission carries which route, are covered by the unit specs of
+  * `BootstrapService`. What is proven here is the round trip through central, auth and Postgres: the status codes, the audit,
+  * and the two scopes: the operator's `/antifraud/global/lists` (any entry) and a tenant admin's `/antifraud/lists` (its own
+  * tenant's entries and the global ones to read, only its own to change). What an entry does to a sign-in is proven by
+  * `AntifraudOtpSpec`.
   */
 object AntifraudListApiSpec extends CentralApiSpec:
 
-  private val lists = "/antifraud/lists"
+  /** The operator's routes: every tenant's entries and the global ones, no restriction. */
+  private val lists = "/antifraud/global/lists"
+
+  /** A tenant admin's routes: its own tenant's entries and the global ones. */
+  private val tenantLists = "/antifraud/lists"
 
   /** The user id edge would add from the token. */
   private val adminId = "00000000-0000-0000-0000-0000000e2e01"
@@ -58,12 +65,21 @@ object AntifraudListApiSpec extends CentralApiSpec:
     yield result
 
   def spec = suite("Central API: antifraud lists")(
-    test("a call that carries no user id is a bad request, and one without the central credentials is 401") {
+    test("a change that carries no user id is a bad request, a read needs none, and a call without the central credentials is 401") {
       for
         central <- api
-        anonymousAdmin <- central.get(lists, "global" -> "true")
+        value <- address
+        change <- central.post(lists, entry("ip", value))
+        read <- central.get(lists, "global" -> "true", "limit" -> "1")
         noCredentials <- central.anonymous.asAdmin(adminId).get(lists)
-      yield assertTrue(anonymousAdmin.status == Status.BadRequest, noCredentials.status == Status.Unauthorized)
+        tenantRead <- central.get(tenantLists)
+      yield assertTrue(
+        change.status == Status.BadRequest,
+        read.status == Status.Ok,
+        noCredentials.status == Status.Unauthorized,
+        // a tenant route that edge did not tell the tenant of is a bad request, never an operator's
+        tenantRead.status == Status.BadRequest,
+      )
     },
     test("an admin adds a global entry, lists it, finds it in the audit, and removes it") {
       for
@@ -176,5 +192,96 @@ object AntifraudListApiSpec extends CentralApiSpec:
         counts.has("total"),
         !listed.exists(_.str("value").contains(value)),
       )
+    },
+    test("a tenant admin's entry is its tenant's: another tenant's admin neither sees nor removes it, and the operator sees it") {
+      for
+        central <- api
+        a <- CentralApi.id("af-tenant-a")
+        b <- CentralApi.id("af-tenant-b")
+        adminA = central.asTenantAdmin(adminId, a)
+        adminB = central.asTenantAdmin(adminId, b)
+        operator = central.asAdmin(adminId)
+        value <- address
+        // names no tenant: it is the admin's own
+        created <- adminA.post(tenantLists, entry("ip", value))
+        json <- created.obj
+        id = json.str("id").getOrElse("")
+        seenByA <- adminA.get(tenantLists, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        seenByB <- adminB.get(tenantLists, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        seenByOperator <-
+          operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        auditByB <- adminB.get(s"$tenantLists/audit", "entryId" -> id).flatMap(_.items("records"))
+        auditByA <- adminA.get(s"$tenantLists/audit", "entryId" -> id).flatMap(_.items("records"))
+        removedByB <- adminB.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(id)))
+        stillThere <-
+          operator.get(lists, "tenantId" -> a, "valueType" -> "ip", "limit" -> "500").flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        removedByA <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(id)))
+      yield assertTrue(
+        created.status == Status.Created,
+        json.str("tenantId").contains(a),
+        seenByA.contains(value),
+        !seenByB.contains(value),
+        seenByOperator.contains(value),
+        auditByB.isEmpty,
+        auditByA.exists(_.str("action").contains("create")),
+        removedByB.status == Status.Forbidden,
+        stillThere.contains(value),
+        removedByA.status == Status.NoContent,
+      )
+    },
+    test("a tenant admin cannot add an entry of another tenant, narrow a listing to one, or remove a global entry") {
+      for
+        central <- api
+        a <- CentralApi.id("af-tenant-a")
+        b <- CentralApi.id("af-tenant-b")
+        adminA = central.asTenantAdmin(adminId, a)
+        operator = central.asAdmin(adminId)
+        value <- address
+        other <- adminA.post(tenantLists, entry("ip", value, tenantId = Some(b)))
+        otherPreview <- adminA.post(s"$tenantLists/preview", entry("ip", value, tenantId = Some(b)))
+        narrowed <- adminA.get(tenantLists, "tenantId" -> b)
+        // a global entry is the operator's: a tenant admin reads it and may not remove it
+        global <- operator.post(lists, entry("ip", value))
+        globalJson <- global.obj
+        globalId = globalJson.str("id").getOrElse("")
+        readByA <- adminA.get(
+          tenantLists,
+          "global" -> "true",
+          "valueType" -> "ip",
+          "limit" -> "500",
+        ).flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        removedByA <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(globalId)))
+        stillThere <- operator.get(
+          lists,
+          "global" -> "true",
+          "valueType" -> "ip",
+          "limit" -> "500",
+        ).flatMap(_.items("entries")).map(_.flatMap(_.str("value")).toSet)
+        missing <- adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(UUID.randomUUID().toString)))
+        removed <- operator.deleteWithBody(lists, Json.Obj("id" -> Json.Str(globalId)))
+      yield assertTrue(
+        other.status == Status.Forbidden,
+        otherPreview.status == Status.Forbidden,
+        narrowed.status == Status.Forbidden,
+        global.status == Status.Created,
+        readByA.contains(value),
+        removedByA.status == Status.Forbidden,
+        stillThere.contains(value),
+        missing.status == Status.NotFound,
+        removed.status == Status.NoContent,
+      )
+    },
+    test("a caller of the tenant routes cannot widen its scope: the callerTenantId it sent is the token's") {
+      for
+        central <- api
+        a <- CentralApi.id("af-tenant-a")
+        b <- CentralApi.id("af-tenant-b")
+        adminA = central.asTenantAdmin(adminId, a)
+        value <- address
+        // edge overwrites what the client sent, as `asTenantAdmin` does; the entry is `a`'s whatever the body said
+        created <- adminA.post(tenantLists, entry("ip", value, extra = Map("callerTenantId" -> Json.Str(b))))
+        json <- created.obj
+        _ <- ZIO.foreachDiscard(json.str("id"))(id => adminA.deleteWithBody(tenantLists, Json.Obj("id" -> Json.Str(id))).ignore)
+      yield assertTrue(created.status == Status.Created, json.str("tenantId").contains(a))
     },
   )

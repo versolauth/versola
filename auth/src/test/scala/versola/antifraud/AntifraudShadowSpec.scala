@@ -250,13 +250,13 @@ object AntifraudShadowSpec extends UnitSpecBase:
       },
       test("the store refuses them when put, and stores nothing") {
         val store = AntifraudTuningStore.Impl(new AntifraudSettingsRepository:
-          def put(tuning: Tuning, actor: String, at: Instant) = ZIO.unit
+          def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) = ZIO.some(1L)
           def seed(tuning: Tuning, actor: String, at: Instant) = ZIO.succeed(true)
           def find = ZIO.none
           def version = ZIO.succeed(0L))
         for
-          typo <- store.put(enforcing.copy(ruleWeights = Map("nope" -> 3)), "alice").either
-          order <- store.put(enforcing.copy(challengeAt = 90, blockAt = 50), "alice").either
+          typo <- store.put(enforcing.copy(ruleWeights = Map("nope" -> 3)), "alice", None).either
+          order <- store.put(enforcing.copy(challengeAt = 90, blockAt = 50), "alice", None).either
         yield assertTrue(typo.left.exists(_.isInstanceOf[InvalidTuning]), order.left.exists(_.isInstanceOf[InvalidTuning]))
       },
     ),

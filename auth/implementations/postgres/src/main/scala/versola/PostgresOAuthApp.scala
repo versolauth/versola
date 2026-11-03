@@ -15,6 +15,7 @@ import versola.antifraud.{
   AntifraudProposalRepository,
   AntifraudSettingsController,
   AntifraudSettingsRepository,
+  AntifraudStatusController,
   AntifraudTuning,
   AntifraudTuningStore,
   ChallengeVerifier,
@@ -150,6 +151,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudSettingsRepository &
       AntifraudTuning &
       AntifraudTuningStore &
+      AntifraudEvents.Settings &
       AntifraudDetectors &
       ConversationRenderService &
       OtpService &
@@ -194,6 +196,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudListController.routes,
       AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
+      AntifraudStatusController.routes,
       ServiceController.routes,
       LogoutController.routes,
       EstController.routes,

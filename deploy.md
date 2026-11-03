@@ -659,8 +659,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
      the detectors' pace and analytics. Where the items below name one of them with its value, that is the constant.
 
   **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
-  through central's admin API (`GET`/`PUT`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; permissions
-  `antifraud:read` and `antifraud:manage`) with no restart, so no loss of the in-memory velocity counters. The
+  through central's admin API (`GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; `GET` needs
+  `antifraud:read`, `PUT`, `PATCH` and `DELETE` the operator's `antifraud:operate`) with no restart, so no loss of the in-memory velocity counters. The
   configuration has no key for any of them: they are the `mode` (`shadow` or `enforce`, below), the score thresholds (`challengeAt`, `blockAt`), the
   proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
   rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
@@ -679,8 +679,23 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
   own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
   weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
-  everything off. `PUT`
-  replaces it as a whole (every key), `GET` reads it and `DELETE` puts everything off again. Every instance holds it in
+  everything off. `GET` reads it, `DELETE` puts everything off again, and there are two ways to change it. `PUT` is the
+  **declarative replace** (every key): the mode for service-to-service clients and tooling that hold the desired state
+  themselves. `PATCH` is the **point tuning** (a JSON merge patch, RFC 7396, `application/merge-patch+json`): it changes what it
+  names and leaves the rest, which is what the console and a script want during an attack, and `null` removes a `byPrefix` or
+  `ruleWeights` entry. Auth merges the patch into the stored settings and validates the result as a whole, so the same rules
+  apply to both. **The row is versioned**
+  (`af_settings.version`, migration `V0027`; 1 for a row that exists, so the first row is version 1 and "no row" is 0): `GET`
+  answers the settings with `version` next to them and the same number as the `ETag`; `PUT` and `PATCH` may be made on the version they were
+  read at, in `If-Match` (preferred) or as `version` in the body (both given must agree), and then answer `412` (with the current
+  version as the `ETag`) when the row has moved on. **Naming the version is optional, and what it buys is that check**: with it, two
+  admins tuning during the same attack cannot silently overwrite each other; without it a `PUT` replaces whatever is there and
+  the caller takes responsibility for that, and a `PATCH` is applied to what is stored when it is written (once more, on what
+  a concurrent writer left, if it lost a race), so it never overwrites a key it does not name. `DELETE` may name a version
+  and need not. Every change moves the version. A
+  change made by hand in SQL should bump `version` too (and `af_settings_version`, which is what makes the instances
+  reload). Every method of the settings repository runs under a statement timeout (10 s), so a read the refresh fiber waits
+  on cannot hang without `antifraud_tuning_refresh_failed_total` moving. Every instance holds it in
   memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
   full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
   that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the
@@ -723,8 +738,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     counted in `antifraud_evaluation_failed_total{reason}`: **alert on it increasing**, since a rollout that quietly
     fails open measures nothing.
 
-  *The rule catalogue*, the names `ruleWeights` and `shadowRules` accept (`GET /antifraud/rules` lists them once it is
-  exposed; the code has them as `Antifraud.ruleNames`): `velocity_<key>_<window>` for the key `phone`, `ip`, `device`,
+  *The rule catalogue*, the names `ruleWeights` and `shadowRules` accept (`GET /antifraud/rules` lists them; the code has them as
+  `Antifraud.ruleNames`): `velocity_<key>_<window>` for the key `phone`, `ip`, `device`,
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
@@ -732,10 +747,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
-  (`PUT` replaces every key, so read the settings first):
+  (`PUT` replaces every key, so read the settings first, and send the `ETag` of that read back as `If-Match`, or use `PATCH` for just the keys you change):
 
   ```json
-  PUT /antifraud/settings
+  PUT /antifraud/settings        (If-Match: "1")
   {
     "settings": {
       "mode": "shadow",
@@ -829,13 +844,32 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
   an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
   `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
-  `/antifraud/lists`; the console has no screen for them yet. Every statement of the list repository runs under a
-  10-second `statement_timeout`, so a refresh or a flush that hangs fails (`antifraud_list_refresh_failed_total`) instead of
-  stopping for good. Entries added by SQL skip the audit and the version bump (an
-  instance still picks them up within a minute). The endpoints are new central resource endpoints with two permissions,
-  `antifraud:read` and `antifraud:manage`: every start registers them on the `central` resource and gives them to `oauth-admin`
-  (all permissions), `security` (both), and the read-only roles (`antifraud:read`, except `viewer`, which sees no PII), and nothing
-  else changes for a deployment that is upgraded. Edge tells central who the admin is (an inject rule for `userId`, a query parameter of a `GET` and a body field of any other call, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`), and auth records that user id as who made each change (`created_by`, the audit). There is no per-tenant admin: whoever holds the permissions may change every entry, global ones included. A call to central with the resource secret but no `userId` is `400`. A `phone_hash` entry is made from a phone number (`phone`); the
+  `/antifraud/lists`; the console has no screen for them yet. A `prefix` entry is 1 to 6 digits (the event log keeps six),
+  not the 4 of the statistics range below. Every statement of the list repository runs under a 10-second `statement_timeout`, so a
+  refresh or a flush that hangs fails (`antifraud_list_refresh_failed_total`) instead of stopping for good. Entries added by SQL skip the audit and the version bump (an
+  instance still picks them up within a minute). The endpoints are central resource endpoints with three permissions:
+  `antifraud:read` (the reads, the rule catalogue and the status), `antifraud:manage` (a tenant's lists) and
+  `antifraud:operate` (the operator's routes, below): every start registers them on the `central` resource and gives them to
+  `oauth-admin` (all permissions), `security` (`read` and `manage`), and the read-only roles (`antifraud:read`, except `viewer`,
+  which sees no PII). `antifraud:operate` is seeded into the default tenant's administrator role (`oauth-admin`) only. Edge tells central who the admin is (an inject rule for `userId` on the calls that change something: a body field, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`; a request to such an endpoint whose body is not JSON (`application/json`, or `application/merge-patch+json`) is refused by edge with `415` rather than forwarded unrewritten, which would let a client choose the field edge overwrites), and auth records that user id as who made each change (`created_by`, the audit). Reads of the settings, the rules, the status and the operator's lists need no caller and are told nothing. A change sent to central with the resource secret but no `userId` is `400`.
+
+  **Who may change what.** A tenant's admin (`antifraud:manage`) acts through `/antifraud/lists/...` in the scope of **the tenant
+  of its access token**: edge adds it (`callerTenantId`, from the token's `tenant_id`, overwriting what a client sent; on the
+  reads too) and central sets the scope from the route it was called on and passes it to auth, which decides in one place
+  (`AntifraudScope`); nothing in a body can widen it. Such an admin lists the global entries and its own tenant's, adds entries
+  of its tenant only (an entry that names no tenant is the tenant's; naming another is `403`), removes its tenant's entries only
+  (another tenant's or a global one is `403`, an entry that does not exist `404`), and reads the audit of the entries it can see.
+  The operator (`antifraud:operate`) uses the twin routes `/antifraud/global/lists/...`: global entries and any tenant's, no
+  restriction, plus `PUT`/`PATCH`/`DELETE /antifraud/settings` and `POST /antifraud/counters/reset`. Do not grant `antifraud:operate` to a role of any other tenant: it carries the deployment-wide routes, and a role is
+  all that decides which tenant's admin may use them. Upgrade: an administrator who changed the settings or reset them with `antifraud:manage`
+  now needs `antifraud:operate`.
+
+  *Reading the state.* `GET /antifraud/rules` lists the names a rule can be fired under (what `ruleWeights` and `shadowRules`
+  are made of) and `GET /antifraud/status` says, for the auth instance that answers, whether `decision` and `lists` are on, the
+  version of the settings it holds and how long ago it last checked them, the age, size and skipped entries of the lists'
+  snapshot and the last refresh error. Both need `antifraud:read`. `POST /antifraud/counters/reset` clears velocity counters
+  or the SMS budget, all or for one phone, address or range of numbers (the support path for "my number gets no code"); it
+  answers `202` with the generation number every instance picks up (see "Resetting the counters" below). A `phone_hash` entry is made from a phone number (`phone`); the
   number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
   Safety rules the service enforces: `allow` only for an exact subject (phone hash, address, /32 or /128; a network of
   one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);

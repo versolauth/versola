@@ -141,11 +141,13 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
       val (scoped, tenant) = filter.tenantId match
         case None => (false, Option.empty[String])
         case Some(t) => (true, t.map(identity[String]))
+      val (limited, visible) = visibility(filter.visibleTo)
       sql"""
         SELECT $EntryColumns FROM af_list_entry
         WHERE (${listType.isEmpty} OR type = ${listType.getOrElse("")})
           AND (${valueType.isEmpty} OR value_type = ${valueType.getOrElse("")})
           AND (NOT $scoped OR tenant_id IS NOT DISTINCT FROM $tenant)
+          AND (NOT $limited OR tenant_id IS NULL OR tenant_id = $visible)
         ORDER BY created_at DESC, id
         LIMIT $limit OFFSET $offset
       """.query[EntryRow].run().map(_.toEntry).toList
@@ -205,20 +207,27 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
         """.update.run()
 
   // Two statements, not one with `$x IS NULL OR entry_id = $x`: a cached generic plan would have to serve both.
-  override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
+  override def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]] =
     xa.transactMeasured("list-antifraud-list-audit"):
       timed()
+      val (limited, visible) = visibility(visibleTo)
       entryId match
         case Some(id) =>
           sql"""
             SELECT $AuditColumns
-            FROM af_list_audit WHERE entry_id = $id ORDER BY at DESC, id LIMIT $limit
+            FROM af_list_audit WHERE entry_id = $id AND (NOT $limited OR tenant_id IS NULL OR tenant_id = $visible)
+            ORDER BY at DESC, id LIMIT $limit
           """.query[AuditRow].run().map(_.toAudit).toList
         case None =>
           sql"""
             SELECT $AuditColumns
-            FROM af_list_audit ORDER BY at DESC, id LIMIT $limit
+            FROM af_list_audit WHERE (NOT $limited OR tenant_id IS NULL OR tenant_id = $visible)
+            ORDER BY at DESC, id LIMIT $limit
           """.query[AuditRow].run().map(_.toAudit).toList
+
+  /** A parameter that is never null: whether to limit to the global entries and one tenant's, and that tenant. */
+  private def visibility(visibleTo: Option[TenantId]): (Boolean, String) =
+    (visibleTo.isDefined, visibleTo.fold("")(identity[String]))
 
   // Read with the instant codec in scope, so the rows are defined here and not in the companion.
   private case class EntryRow(
