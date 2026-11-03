@@ -81,6 +81,7 @@ final case class AntifraudFixture(
     private val withPasskey: Ref[List[AntifraudFixture.PasskeyUser]],
     private val withoutPasskey: Ref[List[Flows.Setup]],
     private val withPasskeyButNoFlow: Ref[List[AntifraudFixture.PasskeyUser]],
+    private val withPasskeyAndPassword: Ref[List[AntifraudFixture.PasskeyUser]],
     /** A client of the passkey flow whose tenant lets a new number register, and a number nobody has: a registration has no user. */
     registration: Flows.Setup,
 ):
@@ -104,6 +105,10 @@ final case class AntifraudFixture(
   /** A phone user whose client's flow can ask for a passkey and who has none. */
   def nextUserWithoutPasskey: Task[Flows.Setup] = takeOne(withoutPasskey, "users without a passkey")
 
+  /** A phone user who has enrolled a passkey, whose client's flow asks for a password after the code (and can ask for a passkey). */
+  def nextPasskeyUserWithPassword: Task[AntifraudFixture.PasskeyUser] =
+    takeOne(withPasskeyAndPassword, "users with a passkey and a password after the code")
+
   /** A phone user who has enrolled a passkey, whose client's flow cannot ask for one. */
   def nextPasskeyUserOfFlowWithoutPasskey: Task[AntifraudFixture.PasskeyUser] =
     takeOne(withPasskeyButNoFlow, "users with a passkey and a flow without one")
@@ -120,6 +125,7 @@ object AntifraudFixture:
   val PasskeyUsers = 8
   val UsersWithoutPasskey = 4
   val PasskeyUsersOfFlowWithoutPasskey = 2
+  val PasskeyUsersWithPassword = 2
 
   /** Limit on codes to one number in an hour (a request over it is refused), and on requests from one address. Low
     * enough for a spec to reach, high enough that the cases of a spec that each use a number of their own do not. */
@@ -286,6 +292,9 @@ object AntifraudFixture:
         withoutPasskey <- ZIO.foreach(List.range(0, UsersWithoutPasskey))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
         noFlowRegistered <-
           ZIO.foreach(List.range(0, PasskeyUsersOfFlowWithoutPasskey))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
+        passwordRegistered <- ZIO.foreach(List.range(0, PasskeyUsersWithPassword))(_ =>
+          Flows.setupPhoneOtpPasskey(authFlow = Flows.phoneOtpPasswordPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth)),
+        )
         registration <- Flows.setupPhoneRegistration(authFlow = Flows.phoneOtpPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth))
         _ <- oauth.flushUserOutbox()
         // The running auth learns the clients on a sync, and central's own cache catches up with a registration on a
@@ -296,6 +305,10 @@ object AntifraudFixture:
             .map(PasskeyUser(s, _))
         passkeyUsers <- ZIO.foreach(passkeyRegistered)(enroll)
         passkeyButNoFlow <- ZIO.foreach(noFlowRegistered)(enroll)
+        passkeyAndPassword <- ZIO.foreach(passwordRegistered): s =>
+          (oauth.syncConfiguration() *> Flows.enrollPasskeyAfterCode(s, oauth, thenPassword = true))
+            .retry(Schedule.spaced(1.second) && Schedule.recurs(15))
+            .map(PasskeyUser(s, _))
         _ <- tuned
         // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
         // is when they first read it.
@@ -306,7 +319,8 @@ object AntifraudFixture:
         passkeyRef <- Ref.make(passkeyUsers)
         withoutRef <- Ref.make(withoutPasskey)
         noFlowRef <- Ref.make(passkeyButNoFlow)
-      yield AntifraudFixture(instances._1, instances._2, unused, passkeyRef, withoutRef, noFlowRef, registration)
+        passwordRef <- Ref.make(passkeyAndPassword)
+      yield AntifraudFixture(instances._1, instances._2, unused, passkeyRef, withoutRef, noFlowRef, passwordRef, registration)
 
   private def database[A](use: Connection => A): Task[A] =
     for

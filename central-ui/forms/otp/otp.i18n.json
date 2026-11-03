@@ -16,7 +16,10 @@
     "rate_limit_exceeded": "Too many attempts. Please wait before trying again.",
     "locked_for": "Too many attempts. Try again in {seconds}s.",
     "service_unavailable": "Service temporarily unavailable. Please try again later",
-    "passkey_instead_button": "Sign in with a passkey instead"
+    "passkey_button": "Use a passkey",
+    "passkey_error_title": "Passkey sign-in",
+    "close": "Close",
+    "passkey_failed": "Passkey sign-in failed. Please try again or enter the code"
   },
   "ru": {
     "page_title": "Вход",
@@ -35,6 +38,9 @@
     "rate_limit_exceeded": "Превышено количество попыток. Пожалуйста, подождите перед следующей попыткой.",
     "locked_for": "Слишком много попыток. Попробуйте через {seconds} с.",
     "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
-    "passkey_instead_button": "Войти по ключу доступа"
+    "passkey_button": "Войти по ключу доступа",
+    "passkey_error_title": "Вход по ключу доступа",
+    "close": "Закрыть",
+    "passkey_failed": "Не удалось войти по ключу доступа. Повторите попытку или введите код"
   }
 }

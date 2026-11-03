@@ -12,8 +12,8 @@ import zio.test.*
 import java.nio.charset.StandardCharsets
 import java.util.{Base64, UUID}
 
-/** The passkey in place of the one-time code, over HTTP: what the code page offers, what choosing it does, and what the
-  * antifraud decision leaves of it.
+/** The passkey submitted from the code page itself in place of the code, over HTTP: what the page offers, what using it does,
+  * and what the antifraud decision leaves of it.
   *
   * The unit specs prove the rules against stubs; this proves them through the wiring: a passkey enrolled through the
   * Account Settings API and found by an `auth` instance of the antifraud fixture (the same database, a decision that
@@ -68,16 +68,24 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
   private def claimsOf(idToken: String): Task[String] =
     ZIO.attempt(String(Base64.getUrlDecoder.decode(idToken.split('.')(1)), StandardCharsets.UTF_8))
 
-  /** Answers the passkey page with the user's passkey, and returns the id token's claims of the sign-in it completes. */
-  private def passWithPasskey(instance: AntifraudInstance, user: PasskeyUser, on: OnPage): Task[(TokenResult.Success, String)] =
-    val auth = instance.auth
-    val s = user.setup
+  /** The options of the ceremony the code page asks for, as the page's script does: no allow list, whoever the number belongs to. */
+  private def optionsOf(instance: AntifraudInstance, on: OnPage): Task[String] =
+    instance.auth.getPasskeyOptions(on.cookie).flatMap(_.body.asString)
+
+  /** Asks for the options from the code page `on`, answers them with `holder`'s passkey, and posts the assertion to the passkey route. */
+  private def assertWith(instance: AntifraudInstance, holder: PasskeyUser, on: OnPage, csrf: Option[String] = None): Task[SubmitResult] =
     for
-      passkeyPage <- auth.getChallenge(on.cookie).assertStep(ConversationStep.Credential)
-      options <- auth.getPasskeyOptions(on.cookie).flatMap(_.body.asString)
-      response <- TestAuthenticator.get(user.credential, options, Flows.passkeyOrigin, s.userId)
-      code <- auth.submitPasskeyAssertion(on.cookie, response.toJson, passkeyPage.csrf).assertRedirect(auth, on.cookie)
-      token <- signedIn(instance, s, on, code)
+      options <- optionsOf(instance, on)
+      response <- TestAuthenticator.get(holder.credential, options, Flows.passkeyOrigin, holder.setup.userId)
+      posted <- instance.auth.submitPasskeyAssertion(on.cookie, response.toJson, csrf.getOrElse(on.page.csrf))
+    yield posted
+
+  /** Signs in from the code page with `user`'s own passkey: the token and the claims of the id token. */
+  private def passWithPasskey(instance: AntifraudInstance, user: PasskeyUser, on: OnPage): Task[(TokenResult.Success, String)] =
+    for
+      posted <- assertWith(instance, user, on)
+      code <- ZIO.succeed(posted).assertRedirect(instance.auth, on.cookie)
+      token <- signedIn(instance, user.setup, on, code)
       claims <- claimsOf(token.idToken.get)
     yield (token, claims)
 
@@ -89,13 +97,6 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
       clientSecret = Some(s.clientSecret),
       redirectUri = Some(s.redirectUri),
     ).success
-
-  /** Chooses the passkey on the code page `on`, and returns the page that follows. */
-  private def choosePasskey(instance: AntifraudInstance, on: OnPage): Task[ChallengeResult] =
-    for
-      _ <- instance.auth.submitOtpAlternative(on.cookie, "passkey", on.page.csrf)
-      next <- instance.auth.getChallenge(on.cookie)
-    yield next
 
   /** What the options of a ceremony say besides the challenge, which is different every time. */
   private def withoutChallenge(options: String): Option[Json.Obj] =
@@ -150,51 +151,81 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
           enterNumber(instance, probe, ip) *> decisionOf(instance, ip).map(d => Option.when(d.rules.contains("deny_list:cidr"))(()))
     yield ()
 
-  def spec = suite("The passkey in place of the code")(
-    test("a user who has a passkey and is asked for a code is offered it, chooses it, and signs in with it") {
+  def spec = suite("The passkey from the code page")(
+    test("a user who has a passkey and is asked for a code signs in with it from the code page, with no page in between") {
       for
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUser
+        before <- outcomesOf(user.setup.clientId)
         ip = randomIp()
         on <- enterNumber(f.a, user.setup, ip)
         decision <- decisionOf(f.a, ip)
-        passkeyPage <- choosePasskey(f.a, on)
         (token, claims) <- passWithPasskey(f.a, user, on)
         userinfo <- f.a.auth.userinfo(token.accessToken).success
+        added <- outcomesSince(user.setup.clientId, before)(_.contains("passkey_alternative"))
       yield assertTrue(
         decision.outcome.contains("sent"),
         on.page.step.contains(ConversationStep.Otp),
         on.page.html.contains(PasskeyOffered),
-        // The passkey page asks for nothing but the user's own passkey, and can go back to the code.
-        passkeyPage.step.contains(ConversationStep.Credential),
-        passkeyPage.html.contains("\"passkeyOnly\":true"),
-        passkeyPage.html.contains("\"backToCode\":true"),
         userinfo.sub == user.setup.userId,
         // What the passkey step records when it is passed.
         claims.contains("swk") || claims.contains("hwk"),
         claims.contains("\"user\""),
+        // One code was sent and never entered, and the event says the passkey was used instead of it: no `verified`.
+        added == Map("sent" -> 1, "passkey_alternative" -> 1),
       )
     },
-    test("going back to the code keeps what was sent: the code still passes, no second code is sent, and the switch is in the event log") {
+    test("the conversation goes on as after the code: a flow that asks for a password after it asks for it after the passkey") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        user <- f.nextPasskeyUserWithPassword
+        auth = f.a.auth
+        on <- enterNumber(f.a, user.setup, randomIp())
+        posted <- assertWith(f.a, user, on)
+        // Not finished by the passkey: the password step follows, as it follows a code.
+        next <- auth.getChallenge(on.cookie)
+        code <- auth.submitPassword(on.cookie, user.setup.password, next.csrf).assertRedirect(auth, on.cookie)
+        token <- signedIn(f.a, user.setup, on, code)
+      yield assertTrue(
+        on.page.html.contains(PasskeyOffered),
+        posted.response.status == Status.SeeOther,
+        !posted.response.location.contains("code="),
+        next.step.contains(ConversationStep.Password),
+        token.idToken.isDefined,
+      )
+    },
+    test("a passkey that fails leaves the code page as it was, and the code that was sent still passes") {
       for
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUser
-        s = user.setup
         auth = f.a.auth
-        before <- outcomesOf(s.clientId)
-        on <- enterNumber(f.a, s, randomIp())
-        passkeyPage <- choosePasskey(f.a, on)
-        _ <- auth.submitCodeInstead(on.cookie, passkeyPage.csrf)
-        back <- auth.getChallenge(on.cookie)
-        code <- auth.submitOtp(on.cookie, "123456", back.csrf).assertRedirect(auth, on.cookie)
-        token <- signedIn(f.a, s, on, code)
-        added <- outcomesSince(s.clientId, before)(_.get("verified").exists(_ >= 1))
+        before <- outcomesOf(user.setup.clientId)
+        on <- enterNumber(f.a, user.setup, randomIp())
+        options <- optionsOf(f.a, on)
+        stray <- TestAuthenticator.create(
+          s"""{"publicKey":{"challenge":"AAAA","rp":{"id":"localhost"}}}""",
+          Flows.passkeyOrigin,
+        )
+        strayResponse <- TestAuthenticator.get(stray, options, Flows.passkeyOrigin, user.setup.userId)
+        failed <- auth.submitPasskeyAssertion(on.cookie, strayResponse.toJson, on.page.csrf)
+        after <- auth.getChallenge(on.cookie)
+        // A prompt the person closed, or a browser that could not make one: the page again, nothing else.
+        unavailable <- auth.submitPasskeyUnavailable(on.cookie, after.csrf)
+        again <- auth.getChallenge(on.cookie)
+        code <- auth.submitOtp(on.cookie, "123456", again.csrf).assertRedirect(auth, on.cookie)
+        token <- signedIn(f.a, user.setup, on, code)
+        added <- outcomesSince(user.setup.clientId, before)(_.get("verified").exists(_ >= 1))
       yield assertTrue(
-        back.step.contains(ConversationStep.Otp),
-        back.html.contains(PasskeyOffered),
+        failed.response.status == Status.SeeOther,
+        after.step.contains(ConversationStep.Otp),
+        after.html.contains("\"error\":\"passkey_failed\""),
+        unavailable.response.status == Status.SeeOther,
+        again.step.contains(ConversationStep.Otp),
+        // Left as it was: what the page said before is still said.
+        again.html.contains("\"error\":\"passkey_failed\""),
         token.idToken.isDefined,
-        // One code was sent, for the first request, and the switch and the return sent none; the switch is in the log.
-        added == Map("sent" -> 1, "passkey_alternative" -> 1, "verified" -> 1),
+        // The one code sent is the one that passed: nothing was sent again, and no passkey is recorded.
+        added == Map("sent" -> 1, "verified" -> 1),
       )
     },
     test("a number on the fake list gets the code page with nothing sent, and a user with a passkey still signs in with it") {
@@ -206,13 +237,12 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         ip = randomIp()
         on <- enterNumber(f.a, user.setup, ip)
         decision <- decisionOf(f.a, ip)
-        _ <- choosePasskey(f.a, on)
         (token, _) <- passWithPasskey(f.a, user, on)
         userinfo <- f.a.auth.userinfo(token.accessToken).success
       yield assertTrue(
         decision.decision == "Fake",
         decision.outcome.contains("faked"),
-        // The page is the code page, as it is of a send, and offers what any code page of this user offers.
+        // The page is the code page, as it is of a send, and offers what any code page of this client offers.
         on.page.step.contains(ConversationStep.Otp),
         on.page.html.contains(PasskeyOffered),
         userinfo.sub == user.setup.userId,
@@ -241,7 +271,7 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         onWithout <- enterNumber(f.a, without, withoutIp)
         decisionWithout <- decisionOf(f.a, withoutIp)
         onNoFlow <- enterNumber(f.a, noPasskeyFlow, flowIp)
-        (token, _) <- choosePasskey(f.a, onWith) *> passWithPasskey(f.a, user, onWith)
+        (token, _) <- passWithPasskey(f.a, user, onWith)
         userinfo <- f.a.auth.userinfo(token.accessToken).success
         added <- outcomesSince(user.setup.clientId, before)(_.contains("passkey_alternative"))
       yield assertTrue(
@@ -250,7 +280,7 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         onWith.page.step.contains(ConversationStep.Otp),
         onWith.page.html.contains(PasskeyOffered),
         userinfo.sub == user.setup.userId,
-        // What the event log says is the decision that was taken, and then the switch.
+        // What the event log says is the decision that was taken, and then the passkey.
         added == Map("blocked" -> 1, "passkey_alternative" -> 1),
         // A user with no passkey is given the same page: a refusal that told them apart would tell which numbers are accounts.
         decisionWithout.decision == "Block",
@@ -261,7 +291,7 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         onNoFlow.page.step.contains(ConversationStep.AccessDenied),
       )
     },
-    test("the page is the same for a user without a passkey, a user with one and an unknown number, and the ceremony fails closed") {
+    test("the page and the options are the same for a user without a passkey, a user with one and an unknown number, and the passkey fails closed") {
       for
         f <- ZIO.service[AntifraudFixture]
         holder <- f.nextPasskeyUser
@@ -271,95 +301,69 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         onWithout <- enterNumber(f.a, without, randomIp())
         onWith <- enterNumber(f.a, withPasskey.setup, randomIp())
         onUnknown <- enterNumber(f.a, f.registration, randomIp())
-        pagesWithout <- choosePasskey(f.a, onWithout)
-        pagesWith <- choosePasskey(f.a, onWith)
-        pagesUnknown <- choosePasskey(f.a, onUnknown)
-        optionsWithout <- auth.getPasskeyOptions(onWithout.cookie).flatMap(_.body.asString)
-        optionsWith <- auth.getPasskeyOptions(onWith.cookie).flatMap(_.body.asString)
-        optionsUnknown <- auth.getPasskeyOptions(onUnknown.cookie).flatMap(_.body.asString)
+        optionsWithout <- optionsOf(f.a, onWithout)
+        optionsWith <- optionsOf(f.a, onWith)
+        optionsUnknown <- optionsOf(f.a, onUnknown)
         // Somebody else's passkey, which is a valid one: refused where the conversation is not that user's, as a stranger's.
-        strangerOnWithout <- assertion(f.a, holder, onWithout, pagesWithout)
-        strangerOnUnknown <- assertion(f.a, holder, onUnknown, pagesUnknown)
-        // A passkey no one enrolled: the assertion fails, and the person is back at the code.
-        stray <- TestAuthenticator.create(
-          s"""{"publicKey":{"challenge":"AAAA","rp":{"id":"localhost"}}}""",
-          Flows.passkeyOrigin,
-        )
-        strayResponse <- TestAuthenticator.get(stray, optionsWith, Flows.passkeyOrigin, withPasskey.setup.userId)
-        strayOnWith <- auth.submitPasskeyAssertion(onWith.cookie, strayResponse.toJson, pagesWith.csrf)
-        afterStray <- auth.getChallenge(onWith.cookie)
+        strangerOnWithout <- assertWith(f.a, holder, onWithout)
+        strangerOnUnknown <- assertWith(f.a, holder, onUnknown)
+        afterWithout <- auth.getChallenge(onWithout.cookie)
+        afterUnknown <- auth.getChallenge(onUnknown.cookie)
       yield assertTrue(
         List(onWithout, onWith, onUnknown).forall(_.page.step.contains(ConversationStep.Otp)),
         List(onWithout, onWith, onUnknown).forall(_.page.html.contains(PasskeyOffered)),
-        List(pagesWithout, pagesWith, pagesUnknown).forall(_.step.contains(ConversationStep.Credential)),
-        List(pagesWithout, pagesWith, pagesUnknown).forall(_.html.contains("\"backToCode\":true")),
         // The options of the ceremony, apart from the challenge, are the same for all three: no list of the user's passkeys.
         withoutChallenge(optionsWith).isDefined,
         withoutChallenge(optionsWithout) == withoutChallenge(optionsWith),
         withoutChallenge(optionsUnknown) == withoutChallenge(optionsWith),
         !optionsWith.contains(withPasskey.credential.id),
-        strangerOnWithout.step.contains(ConversationStep.AccessDenied),
-        strangerOnUnknown.step.contains(ConversationStep.AccessDenied),
-        strayOnWith.response.status == Status.SeeOther,
-        afterStray.step.contains(ConversationStep.Otp),
+        strangerOnWithout.response.status == Status.SeeOther,
+        strangerOnUnknown.response.status == Status.SeeOther,
+        afterWithout.step.contains(ConversationStep.AccessDenied),
+        afterUnknown.step.contains(ConversationStep.AccessDenied),
       )
     },
-    test("a passkey the user has is not offered when the client's flow cannot ask for one") {
+    test(
+      "where the client's flow cannot ask for a passkey the page offers none, the options are refused, and an assertion posted all the same changes nothing",
+    ) {
       for
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUserOfFlowWithoutPasskey
         auth = f.a.auth
         on <- enterNumber(f.a, user.setup, randomIp())
-        forged <- auth.submitOtpAlternative(on.cookie, "passkey", on.page.csrf)
+        options <- auth.getPasskeyOptions(on.cookie)
+        forged <- auth.submitPasskeyAssertion(on.cookie, """{"id":"abc"}""", on.page.csrf)
         after <- auth.getChallenge(on.cookie)
       yield assertTrue(
         on.page.step.contains(ConversationStep.Otp),
         on.page.html.contains(NothingOffered),
+        options.status == Status.BadRequest,
         forged.response.status == Status.SeeOther,
         after.step.contains(ConversationStep.Otp),
       )
     },
-    test("a choice with the wrong CSRF value is refused, and the conversation stays on the code step") {
+    test("an assertion with the wrong CSRF value is refused, and the conversation stays on the code page") {
       for
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUser
         auth = f.a.auth
         on <- enterNumber(f.a, user.setup, randomIp())
-        refused <- auth.submitOtpAlternative(on.cookie, "passkey", "not-the-token")
-        unknown <- auth.submitOtpAlternative(on.cookie, "telegram", on.page.csrf)
+        refused <- assertWith(f.a, user, on, csrf = Some("not-the-token"))
         after <- auth.getChallenge(on.cookie)
-      yield assertTrue(
-        refused.response.status == Status.BadRequest,
-        unknown.response.status == Status.BadRequest,
-        after.step.contains(ConversationStep.Otp),
-      )
+      yield assertTrue(refused.response.status == Status.BadRequest, after.step.contains(ConversationStep.Otp))
     },
-    test("the going back and forth is bounded: after the fifth switch the code page offers nothing, and a sixth is refused") {
+    test("an assertion posted with no ceremony asked for is refused, and the page does not change") {
       for
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUser
         auth = f.a.auth
         on <- enterNumber(f.a, user.setup, randomIp())
-        pages <- ZIO.foreach(1 to 5): _ =>
-          for
-            current <- auth.getChallenge(on.cookie)
-            passkeyPage <- choosePasskey(f.a, on.copy(page = current))
-            _ <- auth.submitCodeInstead(on.cookie, passkeyPage.csrf)
-            back <- auth.getChallenge(on.cookie)
-          yield (current, passkeyPage, back)
-        exhausted = pages.last._3
-        sixth <- auth.submitOtpAlternative(on.cookie, "passkey", exhausted.csrf)
+        posted <- auth.submitPasskeyAssertion(on.cookie, """{"id":"abc"}""", on.page.csrf)
         after <- auth.getChallenge(on.cookie)
-        code <- auth.submitOtp(on.cookie, "123456", after.csrf).assertRedirect(auth, on.cookie)
       yield assertTrue(
-        pages.forall(_._1.html.contains(PasskeyOffered)),
-        pages.forall(_._2.step.contains(ConversationStep.Credential)),
-        pages.init.forall(_._3.html.contains(PasskeyOffered)),
-        exhausted.step.contains(ConversationStep.Otp),
-        exhausted.html.contains(NothingOffered),
-        sixth.response.status == Status.SeeOther,
+        posted.response.status == Status.SeeOther,
         after.step.contains(ConversationStep.Otp),
-        code.nonEmpty,
+        !after.html.contains("\"error\":\"passkey_failed\""),
       )
     },
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(10.minutes)

@@ -8,7 +8,7 @@ import versola.oauth.authorize.AuthorizationResponseService
 import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PhoneRegion, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep, Error}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.user.model.Login
@@ -454,22 +454,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
       ).addHeader(conversationCookie),
       submission = (authId, PasskeySkipSubmission(""), None, None),
-    ),
-    successfulSubmitTestCase(
-      description = "submit the choice of a passkey in place of the code",
-      request = Request.post(
-        url = URL.empty / "challenge" / "otp" / "alternative",
-        body = Body.fromURLEncodedForm(Form.fromStrings("alternative" -> "passkey", "csrf" -> "")),
-      ).addHeader(conversationCookie),
-      submission = (authId, OtpAlternativeSubmission(CodeAlternative.Passkey, ""), None, None),
-    ),
-    successfulSubmitTestCase(
-      description = "submit the return from the passkey chosen in place of the code to the code",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "code",
-        body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
-      ).addHeader(conversationCookie),
-      submission = (authId, CodeInsteadSubmission(""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit set-password",
@@ -1033,20 +1017,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
       yield assertTrue(response.status == Status.BadRequest)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-    rejectedSubmitTestCase(
-      description = "reject the choice of an alternative the server does not know",
-      request = Request.post(
-        url = URL.empty / "challenge" / "otp" / "alternative",
-        body = Body.fromURLEncodedForm(Form.fromStrings("alternative" -> "telegram", "csrf" -> "")),
-      ).addHeader(conversationCookie),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject the choice of an alternative that names none",
-      request = Request.post(
-        url = URL.empty / "challenge" / "otp" / "alternative",
-        body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
-      ).addHeader(conversationCookie),
-    ),
     rejectedSubmitTestCase(
       description = "reject login-password violating configured password regex",
       request = Request.post(

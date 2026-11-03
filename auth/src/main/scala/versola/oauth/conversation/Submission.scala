@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.model.ScopeToken
-import versola.oauth.conversation.model.CodeAlternative
 import versola.user.model.Login
 import versola.util.{Email, Phone}
 import zio.http.Form
@@ -40,11 +39,6 @@ case class OtpResendSubmission(proof: ProofInput, csrf: String)
 case class OtpSubmission(code: OtpCode, csrf: String)
   extends Submission derives Schema
 
-/** From the code page: pass the step another way than with the code. Which ways there are is the server's to say, so the
-  * choice is checked against what the page may offer now. */
-case class OtpAlternativeSubmission(alternative: CodeAlternative, csrf: String)
-  extends Submission derives Schema
-
 case class PasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
 
@@ -63,10 +57,6 @@ case class PasskeySkipSubmission(csrf: String)
 /** The browser could not produce a passkey for a passkey-only step: none on this device, or the prompt was
   * dismissed. Nothing else is offered in its place, so the conversation is denied. */
 case class PasskeyUnavailableSubmission(csrf: String)
-  extends Submission derives Schema
-
-/** From the passkey page that was reached from the code page: go back to the code. */
-case class CodeInsteadSubmission(csrf: String)
   extends Submission derives Schema
 
 case class SetPasswordSubmission(password: Password, csrf: String)

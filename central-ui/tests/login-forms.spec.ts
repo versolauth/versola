@@ -155,32 +155,58 @@ test.describe('otp', () => {
     await expect(page.getByText(t.otp_wrong)).toBeVisible();
   });
 
-  test('offers a passkey in place of the code when the server says it may, and posts the choice with the CSRF value', async ({ page }) => {
+  // What a browser gives for a passkey: the options the server answers, and an authenticator that answers them.
+  const options = JSON.stringify({ publicKey: { challenge: 'AAAA', rpId: 'localhost', allowCredentials: [], userVerification: 'required' } });
+  const givesPasskey = async (page: Page) => {
+    await page.addInitScript(() => {
+      (navigator.credentials as { get: unknown }).get = async () => ({
+        type: 'public-key',
+        id: 'abc',
+        rawId: new ArrayBuffer(4),
+        response: { clientDataJSON: new ArrayBuffer(1), authenticatorData: new ArrayBuffer(1), signature: new ArrayBuffer(1), userHandle: null },
+        getClientExtensionResults: () => ({}),
+      });
+    });
+  };
+  // After the form is rendered: the harness answers every `/challenge` request with a page, and the last route set is the first asked.
+  const optionsAre = async (page: Page, answer: { status: number; body?: string }) => {
+    const asked: string[] = [];
+    await page.route('**/challenge/passkey/options*', (route) => {
+      asked.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
+      return route.fulfill({ status: answer.status, contentType: 'application/json', body: answer.body ?? '' });
+    });
+    return asked;
+  };
+
+  test('offers a passkey from the code page itself: asks for the options, and posts the authenticator\'s answer with the CSRF value', async ({ page }) => {
+    await givesPasskey(page);
     const { submitted, t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    const asked = await optionsAre(page, { status: 200, body: options });
 
     // Next to the code, not instead of it: the field and the resend stay.
     await expect(page.locator('input[name="code"]')).toBeVisible();
     await expect(page.getByRole('button', { name: t.resend_button })).toBeVisible();
-    await page.getByRole('button', { name: t.passkey_instead_button }).click();
+    await page.getByRole('button', { name: t.passkey_button }).click();
 
     await expectSubmissions(submitted, 1);
-    expect(submitted[0].method).toBe('POST');
-    expect(submitted[0].path).toBe('/challenge/otp/alternative');
+    // The options were asked for with a GET, and the answer went to the passkey route: no route of its own for the code page.
+    expect(asked).toEqual(['GET /challenge/passkey/options']);
+    expect(`${submitted[0].method} ${submitted[0].path}`).toBe('POST /challenge/passkey');
     expect(submitted[0].query.get('ui_locale')).toBe('en');
-    expect(submitted[0].fields.get('alternative')).toBe('passkey');
     expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+    expect(JSON.parse(submitted[0].fields.get('response')!).id).toBe('abc');
   });
 
   test('offers no passkey when the step lists no alternative, or one this form does not know', async ({ page }) => {
     const { t } = await renderForm(page, 'otp', { step });
-    await expect(page.getByRole('button', { name: t.passkey_instead_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.passkey_button })).toHaveCount(0);
     await expect(page.locator('[data-alternative]')).toHaveCount(0);
 
     const { t: again } = await renderForm(page, 'otp', { step: { ...step, alternatives: [] } });
-    await expect(page.getByRole('button', { name: again.passkey_instead_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: again.passkey_button })).toHaveCount(0);
 
     const { t: unknown } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['telegram'] } });
-    await expect(page.getByRole('button', { name: unknown.passkey_instead_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: unknown.passkey_button })).toHaveCount(0);
   });
 
   test('does not offer a passkey in a browser that cannot make one, whatever the server says', async ({ page }) => {
@@ -188,23 +214,61 @@ test.describe('otp', () => {
     const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
 
     await expect(page.locator('input[name="code"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: t.passkey_instead_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.passkey_button })).toHaveCount(0);
   });
 
-  test('says it in Russian too, and sends the chosen language with the choice', async ({ page }) => {
-    const { submitted, all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+  test('a prompt the person closes closes quietly: nothing is posted, no dialog, and the button works again', async ({ page }) => {
+    await page.addInitScript(() => {
+      (navigator.credentials as { get: unknown }).get = async () => { throw new DOMException('dismissed', 'NotAllowedError'); };
+    });
+    const { submitted, t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    const asked = await optionsAre(page, { status: 200, body: options });
 
-    await page.getByRole('button', { name: all.ru.passkey_instead_button }).click();
+    await page.getByRole('button', { name: t.passkey_button }).click();
+    await expect.poll(() => asked.length).toBe(1);
+
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.passkey_button })).toBeEnabled();
+    expect(submitted).toHaveLength(0);
+  });
+
+  test('a ceremony that cannot be started is told in the passkey dialog, which can be closed, and the code is still there', async ({ page }) => {
+    await givesPasskey(page);
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    await optionsAre(page, { status: 400 });
+
+    await page.getByRole('button', { name: t.passkey_button }).click();
+
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText(t.passkey_failed);
+    await dialog.getByRole('button', { name: t.close }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+  });
+
+  test('a passkey the server refused comes back as the same dialog, and not as a line of text besides', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, error: 'passkey_failed' });
+
+    await expect(page.getByRole('alertdialog')).toContainText(t.passkey_failed);
+    await expect(page.locator('.error-text')).toHaveCount(0);
+  });
+
+  test('says it in Russian too, and sends the chosen language with the answer', async ({ page }) => {
+    await givesPasskey(page);
+    const { submitted, all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+    await optionsAre(page, { status: 200, body: options });
+
+    await page.getByRole('button', { name: all.ru.passkey_button }).click();
 
     await expectSubmissions(submitted, 1);
     expect(submitted[0].query.get('ui_locale')).toBe('ru');
   });
 
-  test('the passkey choice stays inside the card at 320px, in the longer language', async ({ page }) => {
+  test('the passkey button stays inside the card at 320px, in the longer language', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     const { all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
 
-    const button = page.getByRole('button', { name: all.ru.passkey_instead_button });
+    const button = page.getByRole('button', { name: all.ru.passkey_button });
     const box = (await button.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(320);
@@ -639,39 +703,6 @@ test.describe('credential', () => {
     expect(denied.method).toBe('POST');
     expect(denied.fields.get('csrf')).toBe(CSRF);
   });
-
-  test('a passkey chosen in place of the code offers the code instead, and posts it with the CSRF value', async ({ page }) => {
-    await page.addInitScript(() => { window.fetch = () => new Promise(() => {}); });
-    const { submitted, t } = await renderForm(page, 'credential', {
-      step: { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true, backToCode: true },
-    });
-
-    await expect(page.getByText(t.passkey_only_hint)).toBeVisible();
-    await page.getByRole('button', { name: t.code_instead_button }).click();
-
-    await expectSubmissions(submitted, 1);
-    expect(submitted[0].method).toBe('POST');
-    expect(submitted[0].path).toBe('/challenge/passkey/code');
-    expect(submitted[0].query.get('ui_locale')).toBe('en');
-    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
-  });
-
-  for (const scheme of ['light', 'dark'] as const) {
-    test(`the passkey page chosen in place of the code has no axe violations in the ${scheme} scheme and reflows at 320px, in both languages`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: scheme });
-      await page.setViewportSize({ width: 320, height: 640 });
-      await page.addInitScript(() => { window.fetch = () => new Promise(() => {}); });
-      const step = { type: 'credential', primaryCredentials: ['phone'], passkey: true, passkeyOnly: true, backToCode: true };
-      for (const locale of ['en', 'ru']) {
-        const all = await translations('credential');
-        await renderForm(page, 'credential', { step, locale, t: all[locale] });
-        await expect(page.getByRole('button', { name: all[locale].code_instead_button })).toBeVisible();
-        const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
-        expect(results.violations.map(v => v.id)).toEqual([]);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
-      }
-    });
-  }
 
   test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
     const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';

@@ -12,7 +12,6 @@ import versola.oauth.client.model.{
   PassedFactorRecord,
   PasskeyAuthFlow,
   PasskeySettings,
-  PrimaryCredential,
   ScopeToken,
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
@@ -117,15 +116,8 @@ object CodeAlternativeFixtures:
     dpopJkt = None,
   )
 
-  /** The passkey step a person is on after choosing it from `code`. */
-  def passkeyInsteadOf(code: ConversationStep.Otp, request: Option[String] = None) = ConversationStep.Credential(
-    primaryCredentials = List(PrimaryCredential.phone),
-    inlinePassword = false,
-    passkey = true,
-    passkeyRequest = request,
-    passkeyOnly = true,
-    codeStep = Some(code),
-  )
+  /** The code step of a person who has asked for the options of a passkey from the code page. */
+  def asking(code: ConversationStep.Otp, request: String = "req-state"): ConversationStep.Otp = code.copy(passkeyRequest = Some(request))
 
   def passedPasskey(at: Instant = now): (PassedAuthFactor, PassedFactorRecord) =
     PassedAuthFactor.passkey -> PassedFactorRecord(at, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa))

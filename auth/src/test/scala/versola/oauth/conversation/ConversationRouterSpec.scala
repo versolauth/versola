@@ -24,7 +24,7 @@ import versola.oauth.client.model.{
   ScopeToken,
 }
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
-import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep, Error}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
@@ -831,149 +831,87 @@ object ConversationRouterSpec extends UnitSpecBase:
         yield assertTrue(onlyResult == poDenied, ordinaryResult == ConversationResult.BadRequest)
       },
     ),
-    suite("alternatives to the code")(
-      // The conversation of a user whose passkey is chosen from the code page, and the passkey step that follows.
-      test("choosing the passkey on the code page asks the service to switch, with the step the page was on") {
-        val env = Env()
-        val switched = ConversationResult.RenderStep(Alt.passkeyInsteadOf(Alt.sentCode.copy(switched = 1)))
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode))
-          _ <- env.otpConversationService.useAlternative.succeedsWith(switched)
-          (result, _) <- env.router.submit(Alt.authId, OtpAlternativeSubmission(CodeAlternative.Passkey, "test-csrf"), None, None)
-        yield assertTrue(
-          result == switched,
-          env.otpConversationService.useAlternative.calls == List((Alt.authId, Alt.onCode, Alt.sentCode, CodeAlternative.Passkey)),
-        )
-      },
-      test("a choice of an alternative is refused from any step but the code step, and the service is not asked") {
-        val env = Env()
-        val submission = OtpAlternativeSubmission(CodeAlternative.Passkey, "test-csrf")
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
-          (credential, _) <- env.router.submit(authId, submission, None, None)
-          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
-          (passkey, _) <- env.router.submit(authId, submission, None, None)
-          // A code step with nothing to say who it is for (no credential on the conversation) is not the code step either.
-          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode.copy(credential = None)))
-          (anonymous, _) <- env.router.submit(authId, submission, None, None)
-        yield assertTrue(
-          credential == ConversationResult.BadRequest,
-          passkey == ConversationResult.BadRequest,
-          anonymous == ConversationResult.BadRequest,
-          env.otpConversationService.useAlternative.calls.isEmpty,
-        )
-      },
-      test("a choice that carries the wrong CSRF value is refused before anything is looked at") {
-        val env = Env()
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode))
-          exit <- env.router.submit(Alt.authId, OtpAlternativeSubmission(CodeAlternative.Passkey, "wrong-csrf"), None, None).exit
-        yield assertTrue(exit == Exit.fail(Error.BadRequest), env.otpConversationService.useAlternative.calls.isEmpty)
-      },
-      test("going back to the code is asked of the service with the code step the passkey step keeps") {
-        val env = Env()
-        val code = Alt.sentCode.copy(switched = 1)
-        val onPasskey = Alt.onCode.copy(step = Alt.passkeyInsteadOf(code))
-        val back = ConversationResult.RenderStep(code)
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(onPasskey))
-          _ <- env.otpConversationService.returnToCode.succeedsWith(back)
-          (result, _) <- env.router.submit(Alt.authId, CodeInsteadSubmission("test-csrf"), None, None)
-        yield assertTrue(result == back, env.otpConversationService.returnToCode.calls == List((Alt.authId, onPasskey, code)))
-      },
-      test("going back is refused from a passkey step that was not chosen in place of a code, and from any other step") {
-        val env = Env()
-        for
-          _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
-          (passkeyOnly, _) <- env.router.submit(authId, CodeInsteadSubmission("test-csrf"), None, None)
-          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode))
-          (code, _) <- env.router.submit(authId, CodeInsteadSubmission("test-csrf"), None, None)
-        yield assertTrue(
-          passkeyOnly == ConversationResult.BadRequest,
-          code == ConversationResult.BadRequest,
-          env.otpConversationService.returnToCode.calls.isEmpty,
-        )
-      },
+    suite("a passkey from the code page")(
       test(
-        "a passkey that cannot be produced, or a prompt that was dismissed, takes a passkey chosen in place of the code back to the code, and not to the access page",
+        "is checked as a passkey of the conversation's user, and the conversation goes on as after the code: the passkey is not what finishes it",
       ) {
         val env = Env()
-        val code = Alt.sentCode.copy(switched = 1)
-        val back = ConversationResult.RenderStep(code)
+        val onCode = Alt.onCode.copy(step = Alt.asking(Alt.sentCode), authFlow = Alt.flowWherePasskeyIsTheCode)
+        val passed = onCode.copy(amr = Map(Alt.passedPasskey()), version = 1)
+        val done = ConversationResult.RenderStep(ConversationStep.AccessDenied)
         for
-          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode.copy(step = Alt.passkeyInsteadOf(code))))
-          _ <- env.otpConversationService.returnToCode.succeedsWith(back)
-          (result, _) <- env.router.submit(Alt.authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
-        yield assertTrue(result == back, env.otpConversationService.accessDenied.calls.isEmpty)
+          _ <- env.otpConversationService.find.succeedsWith(Some(onCode))
+          _ <- env.otpConversationService.checkPasskeyOnCode.succeedsWith(ConversationResult.StepPassed(passed))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.finish.succeedsWith(done)
+          (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, Some("1.2.3.4"))
+        yield assertTrue(
+          result == done,
+          env.otpConversationService.checkPasskeyOnCode.calls == List((Alt.authId, onCode, Alt.asking(Alt.sentCode), "{}", Some("1.2.3.4"))),
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+          env.otpConversationService.finish.calls.map(_._2) == List(passed),
+          env.otpConversationService.prepareInitialOtp.calls.isEmpty,
+        )
       },
-      suite("a passkey chosen in place of the code")(
-        test(
-          "satisfies the code and the conversation finishes where the code would have led: the passkey is checked, the conversation is not finished by it",
-        ) {
-          val env = Env()
-          val code = Alt.sentCode.copy(switched = 1)
-          val onPasskey = Alt.onCode.copy(step = Alt.passkeyInsteadOf(code, request = Some("req")), authFlow = Alt.flowWherePasskeyIsTheCode)
-          val passed = onPasskey.copy(amr = Map(Alt.passedPasskey()), version = 1)
-          val done = ConversationResult.RenderStep(ConversationStep.AccessDenied)
-          for
-            _ <- env.otpConversationService.find.succeedsWith(Some(onPasskey))
-            _ <- env.otpConversationService.checkPasskeyAssertion.succeedsWith(ConversationResult.StepPassed(passed))
-            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-            _ <- env.otpConversationService.finish.succeedsWith(done)
-            (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, Some("1.2.3.4"))
-          yield assertTrue(
-            result == done,
-            env.otpConversationService.checkPasskeyAssertion.calls == List((Alt.authId, onPasskey, "{}", Some("1.2.3.4"))),
-            env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
-            env.otpConversationService.finish.calls.map(_._2) == List(passed),
-            env.otpConversationService.prepareInitialOtp.calls.isEmpty,
-          )
-        },
-        test("does not skip what follows the code: a flow that asks for a password after the code asks for it after the passkey") {
-          val env = Env()
-          val code = Alt.sentCode.copy(switched = 1)
-          val flow = Alt.flowWherePasskeyIsTheCode.copy(
-            primary = Alt.flowWherePasskeyIsTheCode.primary.copy(
-              factors = List(AuthFactor(AuthFactorType.otp, required = true), AuthFactor(AuthFactorType.password, required = true)),
-            ),
-          )
-          val onPasskey = Alt.onCode.copy(step = Alt.passkeyInsteadOf(code, request = Some("req")), authFlow = flow)
-          val passed = onPasskey.copy(amr = Map(Alt.passedPasskey()), version = 1)
-          val asked = ConversationResult.RenderStep(ConversationStep.Password(0, None, 1, false))
-          for
-            _ <- env.otpConversationService.find.succeedsWith(Some(onPasskey))
-            _ <- env.otpConversationService.checkPasskeyAssertion.succeedsWith(ConversationResult.StepPassed(passed))
-            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-            _ <- env.otpConversationService.preparePasswordStep.succeedsWith(asked)
-            (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
-          yield assertTrue(
-            result == asked,
-            env.otpConversationService.preparePasswordStep.calls == List((Alt.authId, passed, 1)),
-            env.otpConversationService.finish.calls.isEmpty,
-          )
-        },
-        test("a passkey that did not pass is handed back as the service answered: the code page again, or the access page") {
-          val env = Env()
-          val code = Alt.sentCode.copy(switched = 1)
-          val onPasskey = Alt.onCode.copy(step = Alt.passkeyInsteadOf(code, request = Some("req")))
-          val back = ConversationResult.RenderStep(code)
-          for
-            _ <- env.otpConversationService.find.succeedsWith(Some(onPasskey))
-            _ <- env.otpConversationService.checkPasskeyAssertion.succeedsWith(back)
-            (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
-          yield assertTrue(result == back, env.otpConversationService.finish.calls.isEmpty)
-        },
-        test("a passkey chosen in place of the code that still has a conversation to finish is not finished by the plain passkey path") {
-          // The plain assertion is `finishPasskeyAssertion` (it ends the conversation or offers to enrol); this one is not it.
-          val env = Env()
-          val onPasskey = Alt.onCode.copy(step = Alt.passkeyInsteadOf(Alt.sentCode, request = Some("req")))
-          for
-            _ <- env.otpConversationService.find.succeedsWith(Some(onPasskey))
-            _ <- env.otpConversationService.checkPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
-            _ <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
-          yield assertTrue(env.otpConversationService.finishPasskeyAssertion.calls.isEmpty)
-        },
-      ),
+      test("does not skip what follows the code: a flow that asks for a password after the code asks for it after the passkey") {
+        val env = Env()
+        val flow = Alt.flowWherePasskeyIsTheCode.copy(
+          primary = Alt.flowWherePasskeyIsTheCode.primary.copy(
+            factors = List(AuthFactor(AuthFactorType.otp, required = true), AuthFactor(AuthFactorType.password, required = true)),
+          ),
+        )
+        val onCode = Alt.onCode.copy(step = Alt.asking(Alt.sentCode), authFlow = flow)
+        val passed = onCode.copy(amr = Map(Alt.passedPasskey()), version = 1)
+        val asked = ConversationResult.RenderStep(ConversationStep.Password(0, None, 1, false))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(onCode))
+          _ <- env.otpConversationService.checkPasskeyOnCode.succeedsWith(ConversationResult.StepPassed(passed))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.preparePasswordStep.succeedsWith(asked)
+          (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
+        yield assertTrue(
+          result == asked,
+          env.otpConversationService.preparePasswordStep.calls == List((Alt.authId, passed, 1)),
+          env.otpConversationService.finish.calls.isEmpty,
+        )
+      },
+      test("that did not pass is handed back as the service answered: the same code page, or the access page") {
+        val env = Env()
+        val onCode = Alt.onCode.copy(step = Alt.asking(Alt.sentCode))
+        val again = ConversationResult.RenderStep(Alt.sentCode.copy(passkeyFailed = true))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(onCode))
+          _ <- env.otpConversationService.checkPasskeyOnCode.succeedsWith(again)
+          (result, _) <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
+        yield assertTrue(result == again, env.otpConversationService.finish.calls.isEmpty)
+      },
+      test("is posted with the wrong CSRF value: refused before anything is looked at") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode.copy(step = Alt.asking(Alt.sentCode))))
+          exit <- env.router.submit(Alt.authId, PasskeyAssertionSubmission("{}", "wrong-csrf"), None, None).exit
+        yield assertTrue(exit == Exit.fail(Error.BadRequest), env.otpConversationService.checkPasskeyOnCode.calls.isEmpty)
+      },
+      test("from any other step is still the plain passkey path, and never the one of the code page") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, PasskeyAssertionSubmission("{}", "test-csrf"), None, None)
+        yield assertTrue(result == ConversationResult.BadRequest, env.otpConversationService.checkPasskeyOnCode.calls.isEmpty)
+      },
+      test("that the browser could not produce, or a prompt that was dismissed, leaves the code page as it was, writes nothing and denies nothing") {
+        val env = Env()
+        val onCode = Alt.onCode.copy(step = Alt.asking(Alt.sentCode))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(onCode))
+          (result, _) <- env.router.submit(Alt.authId, PasskeyUnavailableSubmission("test-csrf"), None, None)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(Alt.asking(Alt.sentCode)),
+          env.otpConversationService.accessDenied.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
     ),
     suite("advance")(
       test("asks for the passkey straight away, before any other factor, when the target ACR needs one") {
@@ -1363,12 +1301,37 @@ object ConversationRouterSpec extends UnitSpecBase:
           result <- env.router.startPasskeyOptions(authId)
         yield assertTrue(result.isEmpty)
       },
-      test("fail when called outside the credential step") {
+      test("fail when called outside the credential and code steps") {
         val env = Env()
+        val password = otpRecord.copy(step = ConversationStep.Password(0, None, 0, false))
         for
-          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          _ <- env.otpConversationService.find.succeedsWith(Some(password))
           exit <- env.router.startPasskeyOptions(authId).exit
         yield assertTrue(exit.isFailure)
+      },
+      test("start the assertion of a passkey from the code page, for the step the page is on") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode))
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.otpConversationService.startPasskeyOnCode.succeedsWith(Some("public-key-json"))
+          result <- env.router.startPasskeyOptions(Alt.authId)
+        yield assertTrue(
+          result.contains("public-key-json"),
+          env.otpConversationService.startPasskeyOnCode.calls == List((Alt.authId, Alt.onCode, Alt.sentCode, passkeySettings)),
+          env.otpConversationService.startPasskeyAssertion.calls.isEmpty,
+        )
+      },
+      test("answer as a passkey that cannot be had when the code page does not offer one, or the tenant has no passkey settings") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(Alt.onCode))
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.otpConversationService.startPasskeyOnCode.succeedsWith(None)
+          notOffered <- env.router.startPasskeyOptions(Alt.authId)
+          _ <- env.configService.getPasskeySettings.succeedsWith(None)
+          noSettings <- env.router.startPasskeyOptions(Alt.authId)
+        yield assertTrue(notOffered.isEmpty, noSettings.isEmpty, env.otpConversationService.startPasskeyOnCode.calls.size == 1)
       },
     ),
     suite("submit additional dispatch branches")(
@@ -1427,7 +1390,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           UserAgentData(None, testUserId, UserAgentDetails.parse(None)),
         )
         for
-          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(completeResult)
           (result, _) <- env.router.submit(authId, PasskeyAssertionSubmission("resp", "test-csrf"), None, None)
         yield assertTrue(result == completeResult)
@@ -1437,7 +1400,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val credStep = ConversationStep.Credential(List(PrimaryCredential.phone), inlinePassword = false, passkey = true, passkeyFailed = true)
         val renderResult = ConversationResult.RenderStep(credStep)
         for
-          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(renderResult)
           (result, _) <- env.router.submit(authId, PasskeyAssertionSubmission("resp", "test-csrf"), None, None)
         yield assertTrue(result == renderResult)

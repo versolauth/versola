@@ -107,8 +107,6 @@ object ConversationRenderService:
         registration: Boolean,
         /** Only a passkey of the identified user is asked for; the form starts it by itself. */
         passkeyOnly: Boolean,
-        /** The passkey was chosen in place of a code: the page offers to go back to the code, which is as it was left. */
-        backToCode: Boolean = false,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -273,7 +271,7 @@ object ConversationRenderService:
         // Worked out at each render and never kept on the step: what the user has enrolled moves, and a passkey added since
         // the page was last drawn is on the next one.
         alternatives <- record.step match
-          case otp: ConversationStep.Otp => codeAlternatives.available(record, otp.switched)
+          case otp: ConversationStep.Otp => codeAlternatives.available(record)
           case _ => ZIO.succeed(Nil)
         maybeInfo <-
           formFor(
@@ -642,6 +640,7 @@ object ConversationRenderService:
       }
 
     private def stepErrorKey(step: ConversationStep): Option[String] = step match
+      case s: ConversationStep.Otp if s.passkeyFailed => Some("passkey_failed")
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.temporaryExpired && s.timesSubmitted > 0 => Some("temporary_expired")
@@ -738,7 +737,7 @@ object ConversationRenderService:
         alternatives: List[CodeAlternative],
     ): Task[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly, codeStep) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
           for
             phoneRegions <-
               if primaryCredentials.contains(PrimaryCredential.phone) && !passkeyOnly then
@@ -756,7 +755,6 @@ object ConversationRenderService:
             passwordRegex,
             registration,
             passkeyOnly,
-            backToCode = passkeyOnly && codeStep.isDefined,
           )
 
         case _: ConversationStep.Password =>

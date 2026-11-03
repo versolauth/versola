@@ -788,15 +788,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             env.otpService.sendOtp.calls.isEmpty,
           )
         },
-        test("a Block decision for a user whose conversation has used its switches stays the access page") {
-          val blocked = Decision(DecisionAction.Block, 90, List("deny_list"))
-          val env = Env(decision = blocked)
-          val spent = knownUser.copy(step = Alt.sentCode.copy(switched = ConversationStep.Otp.MaxSwitches))
-          for
-            _ <- passkeyTenant(env)
-            result <- request(env, ProofInput.NoScript, conversation = spent)
-          yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
-        },
         test("a Fake decision gives the same code page whoever the number belongs to: nothing about it differs") {
           val fake = Decision(DecisionAction.Fake, 0, List("fake_list"))
           def run(conversation: ConversationRecord) =
@@ -815,171 +806,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             nobodyEnv.antifraud.steps.map(_.outcome) == List(AntifraudOutcome.faked),
             userEnv.otpService.prepareOtp.calls.forall(_._5),
           )
-        },
-        test("a resend keeps the count of the switches, so a resend is no way to have them back") {
-          val env = Env()
-          val switched = knownUser.copy(step = Alt.sentCode.copy(switched = 3))
-          for
-            _ <- passkeyTenant(env)
-            result <- request(env, ProofInput.NoScript, conversation = switched)
-          yield result match
-            case ConversationResult.RenderStep(otp: ConversationStep.Otp) => assertTrue(otp.switched == 3, otp.timesRequested == 1)
-            case _ => assertNever("a step was not rendered")
-        },
-      ),
-      suite("useAlternative")(
-        test("moves the conversation to the passkey step with the same conversation, user and code step, sends nothing and counts the switch") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            result <- env.service.useAlternative(authId, Alt.onCode, Alt.sentCode, CodeAlternative.Passkey)
-            (writtenId, writtenRecord) = env.conversationRepository.overwrite.calls.head
-          yield assertTrue(
-            result == ConversationResult.RenderStep(Alt.passkeyInsteadOf(Alt.sentCode.copy(switched = 1))),
-            writtenId == authId,
-            writtenRecord.step == Alt.passkeyInsteadOf(Alt.sentCode.copy(switched = 1)),
-            writtenRecord.userId == Alt.onCode.userId,
-            writtenRecord.credential == Alt.onCode.credential,
-            writtenRecord.targetFactors == Alt.onCode.targetFactors,
-            writtenRecord.amr == Alt.onCode.amr,
-            env.otpService.sendOtp.calls.isEmpty,
-            env.otpService.prepareOtp.calls.isEmpty,
-          )
-        },
-        test("tells antifraud that the code page was left for a passkey, as a check of the code that never was") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            _ <- env.service.useAlternative(authId, Alt.onCode, Alt.fakeCode, CodeAlternative.Passkey)
-            steps = env.antifraud.steps
-          yield assertTrue(
-            steps.map(s => (s.action, s.outcome)) == List((AntifraudAction.otp_verify, AntifraudOutcome.passkey_alternative)),
-            steps.map(_.authId) == List(authId),
-            steps.map(_.credential) == List(Right(Alt.phone)),
-          )
-        },
-        test("keeps the pending state of a step that was left before any code was sent: nothing is made up, and nothing is sent") {
-          val env = Env()
-          val pending = Alt.sentCode.copy(real = None, timesRequested = 0, lastSentAt = None, pendingUntil = Some(Alt.now.plusSeconds(20)))
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            result <- env.service.useAlternative(authId, Alt.onCode.copy(step = pending), pending, CodeAlternative.Passkey)
-          yield assertTrue(
-            result == ConversationResult.RenderStep(Alt.passkeyInsteadOf(pending.copy(switched = 1))),
-            env.otpService.sendOtp.calls.isEmpty,
-          )
-        },
-        test("switches the same for a user with no passkey, a number that is nobody's and a registration: the choice does not tell which they are") {
-          val env = Env()
-          val registering = Alt.onCode.copy(
-            userId = None,
-            registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
-            registrationStep = Some(0),
-          )
-          val nobody = Alt.onCode.copy(userId = None, userPhone = None)
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            user <- env.service.useAlternative(authId, Alt.onCode, Alt.sentCode, CodeAlternative.Passkey)
-            noUser <- env.service.useAlternative(authId, nobody, Alt.sentCode, CodeAlternative.Passkey)
-            registration <- env.service.useAlternative(authId, registering, Alt.sentCode, CodeAlternative.Passkey)
-          yield assertTrue(
-            user == ConversationResult.RenderStep(Alt.passkeyInsteadOf(Alt.sentCode.copy(switched = 1))),
-            noUser == user,
-            registration == user,
-          )
-        },
-        test("is a bad request, writing nothing and telling nothing, when the client's flow cannot ask for a passkey: the choice is only a request") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            result <- env.service.useAlternative(authId, Alt.onCode.copy(authFlow = AuthFlow.default), Alt.sentCode, CodeAlternative.Passkey)
-          yield assertTrue(
-            result == ConversationResult.BadRequest,
-            env.conversationRepository.overwrite.calls.isEmpty,
-            env.antifraud.steps.isEmpty,
-          )
-        },
-        test("is a bad request for a conversation that has passed a passkey already") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            result <- env.service.useAlternative(authId, Alt.onCode.copy(amr = Map(Alt.passedPasskey())), Alt.sentCode, CodeAlternative.Passkey)
-          yield assertTrue(result == ConversationResult.BadRequest, env.conversationRepository.overwrite.calls.isEmpty)
-        },
-        test("goes back and forth as many times as the bound says and no more: the next switch is refused") {
-          val env = Env()
-          def switchAfter(times: Int) =
-            val code = Alt.sentCode.copy(switched = times)
-            env.service.useAlternative(authId, Alt.onCode.copy(step = code), code, CodeAlternative.Passkey)
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            last <- switchAfter(ConversationStep.Otp.MaxSwitches - 1)
-            over <- switchAfter(ConversationStep.Otp.MaxSwitches)
-          yield assertTrue(
-            last == ConversationResult.RenderStep(Alt.passkeyInsteadOf(Alt.sentCode.copy(switched = ConversationStep.Otp.MaxSwitches))),
-            over == ConversationResult.BadRequest,
-            env.conversationRepository.overwrite.calls.size == 1,
-          )
-        },
-        test("does not touch the code limiter: a switch is not a submission of a code, and cannot lock a number out of its codes") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            _ <- env.service.useAlternative(authId, Alt.onCode, Alt.sentCode, CodeAlternative.Passkey)
-          yield assertTrue(
-            env.submissionLimiter.recordLimit.calls.isEmpty,
-            env.submissionLimiter.tryAcquire.calls.isEmpty,
-            env.submissionLimiter.statusFor.calls.isEmpty,
-            env.submissionLimiter.isBanned.calls.isEmpty,
-          )
-        },
-        test("reports a write conflict and tells antifraud nothing when the conversation moved on") {
-          val env = Env()
-          for
-            _ <- passkeyTenant(env)
-            _ <- env.conversationRepository.overwrite.succeedsWith(false)
-            result <- env.service.useAlternative(authId, Alt.onCode, Alt.sentCode, CodeAlternative.Passkey)
-          yield assertTrue(result == ConversationResult.WriteConflict, env.antifraud.steps.isEmpty)
-        },
-      ),
-      suite("returnToCode")(
-        test("restores the code step as it was left, what was sent and when included, and sends no code") {
-          val env = Env()
-          val code = Alt.sentCode.copy(switched = 2)
-          for
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            result <- env.service.returnToCode(authId, Alt.onCode.copy(step = Alt.passkeyInsteadOf(code)), code)
-          yield assertTrue(
-            result == ConversationResult.RenderStep(code),
-            env.conversationRepository.overwrite.calls.map(_._2.step) == List(code),
-            env.otpService.sendOtp.calls.isEmpty,
-            env.otpService.prepareOtp.calls.isEmpty,
-            env.submissionLimiter.tryAcquire.calls.isEmpty,
-            env.antifraud.steps.isEmpty,
-          )
-        },
-        test("restores a step with nothing sent as it was: the fake stays a fake, and the pending one pending") {
-          val env = Env()
-          val pending = Alt.fakeCode.copy(timesRequested = 0, lastSentAt = None, pendingUntil = Some(Alt.now.plusSeconds(20)))
-          for
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            fake <- env.service.returnToCode(authId, Alt.onCode, Alt.fakeCode)
-            waiting <- env.service.returnToCode(authId, Alt.onCode, pending)
-          yield assertTrue(fake == ConversationResult.RenderStep(Alt.fakeCode), waiting == ConversationResult.RenderStep(pending))
-        },
-        test("does not bring back what the page said of the last attempt: a wrong code, a lock") {
-          val env = Env()
-          val attempted = Alt.sentCode.copy(timesSubmitted = 2, rateLimitExceeded = true, lockedSeconds = 30)
-          for
-            _ <- env.conversationRepository.overwrite.succeedsWith(true)
-            result <- env.service.returnToCode(authId, Alt.onCode, attempted)
-          yield assertTrue(result == ConversationResult.RenderStep(Alt.sentCode))
         },
       ),
     ),
@@ -1533,6 +1359,20 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.RenderStep(
             submittedOtp.copy(timesSubmitted = 1, rateLimitExceeded = false),
           ),
+        )
+      },
+      test("a wrong code clears the ceremony and the passkey error a passkey asked from the page left, and keeps what was sent") {
+        val env = Env()
+        val asked = submittedOtp.copy(passkeyRequest = Some("ceremony"), passkeyFailed = true, lastSentAt = Some(Alt.now))
+        val record = otpRecord.copy(step = asked)
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkOtp(record, asked, OtpCode("000000"), authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(asked.copy(timesSubmitted = 1, passkeyRequest = None, passkeyFailed = false)),
         )
       },
       test("re-render step with rate limit flag on wrong code when rate limited") {

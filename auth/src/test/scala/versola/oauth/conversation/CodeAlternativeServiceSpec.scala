@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Acr, AuthFlow, PassedAuthFactor, RegistrationCredential, RegistrationFlow}
 import versola.oauth.conversation.CodeAlternativeFixtures.*
-import versola.oauth.conversation.model.{CodeAlternative, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{CodeAlternative, ConversationRecord}
 import versola.util.UnitSpecBase
 import zio.prelude.NonEmptyList
 import zio.test.*
@@ -21,8 +21,8 @@ object CodeAlternativeServiceSpec extends UnitSpecBase:
         _ <- configService.getAcrVocabulary.succeedsWith(vocabulary)
       yield ()
 
-  private def offered(env: Env, record: ConversationRecord = onCode, switched: Int = 0) =
-    env.given_ *> env.service.available(record, switched)
+  private def offered(env: Env, record: ConversationRecord = onCode) =
+    env.given_ *> env.service.available(record)
 
   private val registering = onCode.copy(
     userId = None,
@@ -67,12 +67,6 @@ object CodeAlternativeServiceSpec extends UnitSpecBase:
       test("is not offered when the conversation has passed a passkey already") {
         for offered <- offered(Env(), onCode.copy(amr = Map(passedPasskey())))
         yield assertTrue(offered.isEmpty)
-      },
-      test("is not offered once the conversation has gone to an alternative as often as it may") {
-        for
-          last <- offered(Env(), switched = ConversationStep.Otp.MaxSwitches - 1)
-          over <- offered(Env(), switched = ConversationStep.Otp.MaxSwitches)
-        yield assertTrue(last == List(CodeAlternative.Passkey), over.isEmpty)
       },
       test("is not offered when what the conversation pursues asks for the code itself and a passkey is not said to count as one") {
         val mfa = Acr("mfa")

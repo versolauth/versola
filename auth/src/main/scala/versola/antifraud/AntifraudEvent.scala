@@ -82,9 +82,9 @@ enum AntifraudOutcome:
   /** The client's solution was wrong. After too many of them the request is refused (`blocked`). */
   case challenge_failed
 
-  /** The person left the code page for a passkey: a code that will never be entered, whether one was sent or not. An
-    * `otp_verify` event, so it is no request and no verification and no statistic counts it; it is for whoever looks for
-    * codes that were sent and never used. */
+  /** The person passed the code step with a passkey from the code page, not with the code: a code that will never be entered,
+    * whether one was sent or not. An `otp_verify` event, so it is no request and no verification and no statistic counts it;
+    * it is for whoever looks for codes that were sent and never used. */
   case passkey_alternative
 
 enum AntifraudChannel:

@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.antifraud.{AntifraudAction, AntifraudOutcome, RecordingAntifraudEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
@@ -76,6 +77,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
+    val antifraud = RecordingAntifraudEvents()
 
     val service = ConversationService.Impl(
       otpService,
@@ -97,9 +99,9 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
-      versola.antifraud.AntifraudEvents.noop,
+      antifraud,
       versola.antifraud.ChallengeVerifier.off,
-      stub[CodeAlternativeService],
+      CodeAlternativeService.Impl(configService),
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -161,18 +163,29 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       call = env.webAuthnService.startRegistration.calls.head
     yield (call._3, call._4)
 
-  // The conversation of Alt.userId on the passkey step it reached from its code page, the ceremony started.
-  private val altCode = Alt.sentCode.copy(switched = 1)
-  private val altStep = Alt.passkeyInsteadOf(altCode, request = Some("req-state"))
-  private val altRecord = Alt.onCode.copy(step = altStep)
+  // The conversation of Alt.userId on its code page, with the options of a passkey asked for.
+  private val altOtp = Alt.asking(Alt.sentCode)
+  private val altRecord = Alt.onCode.copy(step = altOtp)
   private val altOutcome = AssertionOutcome(Alt.userId, CredentialId.fromString("id"), 1L)
+  private val altPageAgain = ConversationResult.RenderStep(Alt.sentCode.copy(passkeyFailed = true))
+  private val registeringRecord = altRecord.copy(
+    registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
+    registrationStep = Some(0),
+  )
+
+  /** The tenant has passkeys on and no class of authentication of its own. */
+  private def altTenant(env: Env) =
+    for
+      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+      _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+    yield ()
 
   private def altPassing(env: Env, stored: Option[PasskeyRecord]) =
     for
+      _ <- altTenant(env)
       _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
       _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
       _ <- env.submissionLimiter.reset.succeedsWith(())
-      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
       _ <- env.webAuthnService.finishAssertion.succeedsWith(altOutcome)
       _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(Alt.userId)))
       _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(stored)
@@ -181,10 +194,10 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
 
   private def altFailing(env: Env, error: versola.oauth.challenge.passkey.WebAuthnError) =
     for
+      _ <- altTenant(env)
       _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
       _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
       _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
-      _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
       _ <- env.webAuthnService.finishAssertion.failsWith(error)
       _ <- env.conversationRepository.overwrite.succeedsWith(true)
     yield ()
@@ -621,14 +634,52 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         )
       },
     ),
-    suite("a passkey chosen in place of the code")(
+    suite("startPasskeyOnCode")(
       test(
-        "a passed passkey is recorded as passed, with the methods the passkey step records, and is handed on without offering to enrol or finishing",
+        "starts a discoverable ceremony with no allow list, the same for a user, a number that is nobody's and a registration, and keeps it on the code step",
+      ) {
+        val env = Env()
+        val nobody = Alt.onCode.copy(userId = None, userPhone = None)
+        for
+          _ <- altTenant(env)
+          _ <- env.webAuthnService.startAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          user <- env.service.startPasskeyOnCode(authId, Alt.onCode, Alt.sentCode, passkeySettings)
+          noUser <- env.service.startPasskeyOnCode(authId, nobody, Alt.sentCode, passkeySettings)
+          registration <- env.service.startPasskeyOnCode(authId, registeringRecord, Alt.sentCode, passkeySettings)
+        yield assertTrue(
+          user == Some("{}"),
+          noUser == user,
+          registration == user,
+          env.webAuthnService.startAssertion.calls.size == 3,
+          // A ceremony restricted to the user's passkeys would list them for an account and nothing for a number with none.
+          env.webAuthnService.startUserAssertion.calls.isEmpty,
+          // What was sent, and when, is as it was: only the ceremony is added to the step.
+          env.conversationRepository.overwrite.calls.map(_._2.step).head == Alt.asking(Alt.sentCode),
+        )
+      },
+      test("answers None, starting nothing and writing nothing, when the page does not offer a passkey: no flow passkey, or one passed already") {
+        val env = Env()
+        for
+          _ <- altTenant(env)
+          noFlow <- env.service.startPasskeyOnCode(authId, Alt.onCode.copy(authFlow = AuthFlow.default), Alt.sentCode, passkeySettings)
+          passed <- env.service.startPasskeyOnCode(authId, Alt.onCode.copy(amr = Map(Alt.passedPasskey())), Alt.sentCode, passkeySettings)
+        yield assertTrue(
+          noFlow.isEmpty,
+          passed.isEmpty,
+          env.webAuthnService.startAssertion.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
+    ),
+    suite("checkPasskeyOnCode")(
+      test(
+        "a passed passkey is recorded as passed with the methods the passkey step records, the step is left without the ceremony, and the event says the code was not entered",
       ) {
         val env = Env()
         for
           _ <- altPassing(env, Some(Alt.aPasskey.copy(deviceType = CredentialDeviceType.SingleDevice)))
-          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, None)
           written = env.conversationRepository.overwrite.calls.map(_._2)
         yield result match
           case ConversationResult.StepPassed(passed) =>
@@ -636,8 +687,10 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
               passed.amr(PassedAuthFactor.passkey).methods == Set(AuthMethodRef.hwk, AuthMethodRef.user, AuthMethodRef.mfa),
               passed.userId == Some(Alt.userId),
               passed.version == altRecord.version + 1,
+              passed.step == Alt.sentCode,
               written.map(_.amr.keySet) == List(Set(PassedAuthFactor.passkey)),
               env.webAuthnService.startRegistration.calls.isEmpty,
+              env.antifraud.steps.map(s => (s.action, s.outcome)) == List((AntifraudAction.otp_verify, AntifraudOutcome.passkey_alternative)),
             )
           case _ => assertNever("the passkey did not pass")
       },
@@ -645,63 +698,59 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- altPassing(env, Some(Alt.aPasskey))
-          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, None)
         yield result match
           case ConversationResult.StepPassed(passed) => assertTrue(passed.amr(PassedAuthFactor.passkey).methods.contains(AuthMethodRef.swk))
           case _ => assertNever("the passkey did not pass")
       },
-      test("a failed assertion goes back to the code, as it was left, and not to the access page: the code is still a way in") {
+      test(
+        "a failed assertion re-renders the same code page with that said, what was sent and when untouched, and is counted by the limits of the assertion",
+      ) {
         val env = Env()
         for
           _ <- altFailing(env, versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
-          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, Some("1.2.3.4"))
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, Some("1.2.3.4"))
         yield assertTrue(
-          result == ConversationResult.RenderStep(altCode),
-          // ... and the failure is counted by the limits of the assertion, for both subjects, as any other.
+          result == altPageAgain,
           env.submissionLimiter.recordLimit.calls.map(_._2).toSet == Set("ip:1.2.3.4", "cred-123"),
           env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+          env.antifraud.steps.isEmpty,
         )
       },
-      test("an assertion that resolves to another user is denied, not taken back to the code, and no passkey is recorded") {
+      test("a credential that does not exist is the same: the code page again, and no access page") {
+        val env = Env()
+        for
+          _ <- altFailing(env, versola.oauth.challenge.passkey.WebAuthnError.CredentialNotFound)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, None)
+        yield assertTrue(result == altPageAgain)
+      },
+      test("a payload with no usable credential id is the same too") {
+        val env = Env()
+        for
+          _ <- altTenant(env)
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(None)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, "not json", None)
+        yield assertTrue(result == altPageAgain)
+      },
+      test("an assertion that resolves to another user is denied, and no passkey is recorded") {
         val env = Env()
         val stranger = AssertionOutcome(UserId(UUID.randomUUID()), CredentialId.fromString("id"), 1L)
         for
           _ <- altPassing(env, None)
           _ <- env.webAuthnService.finishAssertion.succeedsWith(stranger)
-          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, None)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
-        )
-      },
-      test(
-        "the ceremony is the same for a user, a number that is nobody's and a registration: discoverable, with no allow list, so the options tell nothing",
-      ) {
-        val env = Env()
-        val nobody = altRecord.copy(userId = None)
-        val registering = nobody.copy(
-          registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
-          registrationStep = Some(0),
-        )
-        for
-          _ <- env.webAuthnService.startAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
-          _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          user <- env.service.startPasskeyAssertion(authId, altRecord, altStep, passkeySettings)
-          noUser <- env.service.startPasskeyAssertion(authId, nobody, altStep, passkeySettings)
-          registration <- env.service.startPasskeyAssertion(authId, registering, altStep, passkeySettings)
-        yield assertTrue(
-          user == "{}",
-          noUser == user,
-          registration == user,
-          env.webAuthnService.startAssertion.calls.size == 3,
-          env.webAuthnService.startUserAssertion.calls.isEmpty,
+          env.antifraud.steps.isEmpty,
         )
       },
       test("a passkey asserted in a conversation with no user is refused as another user's is, and none is recorded") {
         val env = Env()
         for
           _ <- altPassing(env, None)
-          result <- env.service.checkPasskeyAssertion(authId, altRecord.copy(userId = None), assertionResponse, None)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord.copy(userId = None), altOtp, assertionResponse, None)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
@@ -709,13 +758,9 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       },
       test("a passkey asserted in a registration is refused, even the one of the user the number later becomes") {
         val env = Env()
-        val registering = altRecord.copy(
-          registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
-          registrationStep = Some(0),
-        )
         for
           _ <- altPassing(env, None)
-          result <- env.service.checkPasskeyAssertion(authId, registering, assertionResponse, None)
+          result <- env.service.checkPasskeyOnCode(authId, registeringRecord, altOtp, assertionResponse, None)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
@@ -724,16 +769,31 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       test("a banned credential or address is denied, as it is on any passkey step") {
         val env = Env()
         for
+          _ <- altTenant(env)
           _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, Some("1.2.3.4"))
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, Some("1.2.3.4"))
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
-      test("an assertion with no ceremony pending is a bad request, as on any passkey step") {
+      test("an assertion with no ceremony pending is a bad request, and nothing is looked at") {
         val env = Env()
-        for result <- env.service.checkPasskeyAssertion(authId, altRecord.copy(step = Alt.passkeyInsteadOf(altCode)), assertionResponse, None)
-        yield assertTrue(result == ConversationResult.BadRequest)
+        for
+          _ <- altTenant(env)
+          result <- env.service.checkPasskeyOnCode(authId, Alt.onCode, Alt.sentCode, assertionResponse, None)
+        yield assertTrue(result == ConversationResult.BadRequest, env.webAuthnService.finishAssertion.calls.isEmpty)
+      },
+      test("an assertion for a page that no longer offers a passkey is a bad request, whatever ceremony is pending") {
+        val env = Env()
+        for
+          _ <- altTenant(env)
+          passed <- env.service.checkPasskeyOnCode(authId, altRecord.copy(amr = Map(Alt.passedPasskey())), altOtp, assertionResponse, None)
+          noFlow <- env.service.checkPasskeyOnCode(authId, altRecord.copy(authFlow = AuthFlow.default), altOtp, assertionResponse, None)
+        yield assertTrue(
+          passed == ConversationResult.BadRequest,
+          noFlow == ConversationResult.BadRequest,
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
       },
     ),
     suite("offerPasskeyEnroll")(

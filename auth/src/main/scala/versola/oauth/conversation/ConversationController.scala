@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, ScopeToken}
-import versola.oauth.conversation.model.{CodeAlternative, ConversationStep, Error}
+import versola.oauth.conversation.model.{ConversationStep, Error}
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
@@ -25,13 +25,11 @@ object ConversationController extends Controller:
     submitLoginPasswordRoute,
     submitOtpRoute,
     submitResendOtpRoute,
-    submitOtpAlternativeRoute,
     getPasskeyOptionsRoute,
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
     submitPasskeyUnavailableRoute,
-    submitCodeInsteadRoute,
     submitSetPasswordRoute,
     submitConsentRoute,
     submitConsentDenyRoute,
@@ -88,9 +86,6 @@ object ConversationController extends Controller:
   val submitResendOtpRoute =
     submit[OtpResendSubmission](Method.POST / "challenge" / "otp" / "resend")
 
-  val submitOtpAlternativeRoute =
-    submit[OtpAlternativeSubmission](Method.POST / "challenge" / "otp" / "alternative")
-
   /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
     * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
     *
@@ -129,9 +124,6 @@ object ConversationController extends Controller:
 
   val submitPasskeyUnavailableRoute =
     submit[PasskeyUnavailableSubmission](Method.POST / "challenge" / "passkey" / "unavailable")
-
-  val submitCodeInsteadRoute =
-    submit[CodeInsteadSubmission](Method.POST / "challenge" / "passkey" / "code")
 
   val submitSetPasswordRoute =
     submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
@@ -306,12 +298,6 @@ object ConversationController extends Controller:
       csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield OtpSubmission(code, csrf)
 
-  given FormDecoder[OtpAlternativeSubmission] = (form: Form) =>
-    for
-      alternative <- FormDecoder.single[CodeAlternative](form, "alternative", CodeAlternative.parse)
-      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield OtpAlternativeSubmission(alternative, csrf)
-
   given FormDecoder[PasswordSubmission] = (form: Form) =>
     for
       password <- FormDecoder.single[String](form, "password", Right(_))
@@ -343,9 +329,6 @@ object ConversationController extends Controller:
 
   given FormDecoder[PasskeyUnavailableSubmission] = (form: Form) =>
     FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeyUnavailableSubmission(_))
-
-  given FormDecoder[CodeInsteadSubmission] = (form: Form) =>
-    FormDecoder.single[String](form, "csrf", Right(_)).map(CodeInsteadSubmission(_))
 
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
     for

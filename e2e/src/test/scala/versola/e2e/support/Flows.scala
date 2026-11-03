@@ -57,6 +57,21 @@ object Flows:
     "otpType" -> Json.Str("sms"),
   )
 
+  /** [[phoneOtpPasskeyAuthFlow]], and a password after the code: what follows the code follows a passkey used in its place. */
+  val phoneOtpPasswordPasskeyAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials" -> Json.Arr(Json.Str("phone")),
+      "inlinePassword" -> Json.Bool(false),
+      "factors" -> Json.Arr(
+        Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true)),
+        Json.Obj("type" -> Json.Str("password"), "required" -> Json.Bool(true)),
+      ),
+    ),
+    "passkey" -> Json.Obj("factors" -> Json.Arr()),
+    "equivalents" -> Json.Obj(),
+    "otpType" -> Json.Str("sms"),
+  )
+
   /** Email credential with OTP factor, no inline password. */
   val emailOtpAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
@@ -209,14 +224,20 @@ object Flows:
     * and enrolls a passkey for them through the Account Settings API. The sign-in is made on `auth`, which is the running
     * stack's own instance and has no antifraud in the way.
     */
-  def enrollPasskeyAfterCode(s: Setup, auth: OAuthClient): Task[TestAuthenticator.Credential] =
+  def enrollPasskeyAfterCode(s: Setup, auth: OAuthClient, thenPassword: Boolean = false): Task[TestAuthenticator.Credential] =
     for
       authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
       cookie = authorize.conversationCookie.get
       first <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
       _ <- auth.submitPhone(cookie, s.phone.get, first.csrf)
       otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-      code <- auth.submitOtp(cookie, "123456", otp.csrf).assertRedirect(auth, cookie)
+      afterCode <- auth.submitOtp(cookie, "123456", otp.csrf)
+      // A flow that asks for a password after the code is answered with it.
+      code <- if thenPassword then
+        auth.getChallenge(cookie).assertStep(ConversationStep.Password).flatMap(page =>
+          auth.submitPassword(cookie, s.password, page.csrf),
+        ).assertRedirect(auth, cookie)
+      else ZIO.succeed(afterCode).assertRedirect(auth, cookie)
       token <- auth.token(
         code,
         authorize.verifier,
