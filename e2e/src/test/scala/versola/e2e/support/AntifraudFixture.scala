@@ -150,12 +150,12 @@ object AntifraudFixture:
       s"$HostingNetwork.0\t$HostingNetwork.255\t$HostingAsn\tDE\tExample Hosting GmbH\n" +
         s"$CarrierNetwork.0\t$CarrierNetwork.255\t$CarrierAsn\tKZ\tExample Mobile\n"
 
-  /** The country database of the instances, in DB-IP's CSV format: the ranges of the ASN database, the hosting one in `DE` and the
-    * carrier's in `KZ`, so that a hosting address has a country only from here (the registration country of a hosting network is
-    * never the signal). Nothing else is in it, so any other address has none. */
+  /** The country database of the instances, in DB-IP's CSV format: the ranges of the ASN database, the hosting one in `NL` and the
+    * carrier's in `UZ`, which are not the countries the ASN database registers the two networks in (`DE`, `KZ`), so that a
+    * country that shows is the one this file gave. Nothing else is in it, so any other address has none. */
   object GeoDatabase:
-    val HostingCountry = "DE"
-    val CarrierCountry = "KZ"
+    val HostingCountry = "NL"
+    val CarrierCountry = "UZ"
     val contents: String =
       s"${AsnDatabase.HostingNetwork}.0,${AsnDatabase.HostingNetwork}.255,$HostingCountry\n" +
         s"${AsnDatabase.CarrierNetwork}.0,${AsnDatabase.CarrierNetwork}.255,$CarrierCountry\n"

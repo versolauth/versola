@@ -5,7 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
-import versola.util.net.{AsnClass, AsnMatch, AsnResolver, GeoResolver}
+import versola.util.net.{AsnResolver, GeoResolver}
 import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -309,8 +309,8 @@ object AntifraudEvents:
           ip <- Observability.currentIp
           // The one lookup of the request: from the database in memory, never a call outside the process.
           network <- ip.fold(ZIO.none)(asn.resolve)
-          located <- ip.fold(ZIO.none)(geo.resolve)
-          country = countryOf(located, network)
+          // From the country database alone: the country an AS is registered in is not where its subscribers are.
+          country <- ip.fold(ZIO.none)(geo.resolve)
           context = AntifraudContext(
             tenantId = client.map(_.tenantId),
             clientId = clientId,
@@ -366,13 +366,6 @@ object AntifraudEvents:
         asnClass = None,
         country = None,
       )
-
-    /** The country of the address: the country database's where it has one; else the country the AS is registered in, but
-      * only for a network that is not `hosting` (a data centre's registration says where its owner is, not its customers),
-      * and not the `ZZ` the source writes for none. */
-    private def countryOf(located: Option[String], network: Option[AsnMatch]): Option[String] =
-      located.orElse:
-        network.filter(_.asnClass == AsnClass.other).map(_.info.country).filter(_ != "ZZ")
 
     override def resetBudget(prefix: Option[String]): UIO[Unit] = ZIO.succeed(budget.forget(prefix))
 
@@ -494,7 +487,7 @@ object AntifraudEvents:
       for
         // Looked up before (by `decideOtpRequest`, which counted it); here it is only read again, from memory.
         network <- Observability.currentIp.flatMap(_.fold(ZIO.none)(asn.peek))
-        country <- Observability.currentIp.flatMap(_.fold(ZIO.none)(geo.peek)).map(countryOf(_, network))
+        country <- Observability.currentIp.flatMap(_.fold(ZIO.none)(geo.peek))
         // How the step ended goes on the `receive-http` line of the request too, with the network it came from.
         _ <- Observability.updateAntifraud(details(action, credential))(d =>
           d.copy(

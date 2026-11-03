@@ -103,7 +103,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
       central <- ZIO.service[CentralApi]
       _ <- AntifraudFixture.seedThroughApi(
         central,
-        ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))) :: entries.toList,
+        // The probe entry goes last: a reload that sees it has every entry made before it, whereas one that falls between two
+        // of the requests would show the probe's rule with the entries after it still missing.
+        entries.toList :+ ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))),
       )
       _ <- awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
         attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
@@ -383,7 +385,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.map((outcome, _, _, country) => (outcome, country)).toSet == expected)(r)),
         )
       yield assertTrue(
-        // The country is on the request's line too, and the registration country of the hosting AS is not what it says.
+        // The country is on the request's line too, and it is the geo file's, not the one the ASN database registers the AS in.
         hosting.decision.country.contains(GeoDatabase.HostingCountry),
         carrier.decision.country.contains(GeoDatabase.CarrierCountry),
         rows.map((outcome, _, _, country) => (outcome, country)).toSet == expected,

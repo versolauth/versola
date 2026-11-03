@@ -234,8 +234,7 @@ object ListValues:
   /** The kinds of value some request carries today, so that an entry of the kind can match. A `device_id` or `ja4_hash`
     * entry would be accepted, audited and shown in a dry run, and match nothing, until P1-1 fills the signal; such an
     * entry is refused instead. An `asn` entry matches the AS of the request's address when the ASN database is on, and a `country`
-    * entry the country of it when the country database is on (or the ASN one gives the registration country of a network that
-    * is not `hosting`). */
+    * entry the country of it when the country database is on. */
   val live: Set[AntifraudValueType] = Set(
     AntifraudValueType.phone_hash,
     AntifraudValueType.prefix,
