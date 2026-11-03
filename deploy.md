@@ -720,9 +720,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   everything off. `GET` reads it, `DELETE` puts everything off again, and there are two ways to change it. `PUT` is the
   **declarative replace** (every key): the mode for service-to-service clients and tooling that hold the desired state
   themselves. `PATCH` is the **point tuning** (a JSON merge patch, RFC 7396, `application/merge-patch+json`): it changes what it
-  names and leaves the rest, which is what the console and a script want during an attack, and `null` removes a `byPrefix` or
-  `ruleWeights` entry. Auth merges the patch into the stored settings and validates the result as a whole, so the same rules
-  apply to both. **The row is versioned**
+  names and leaves the rest, which is what the console and a script want during an attack; its body has the members of the
+  settings and no others (`AntifraudSettingsPatch` in `central/open-api/central.yaml`), `null` puts a setting back to its default
+  (everything off) and removes a `byPrefix` or `ruleWeights` entry. Auth applies the patch to the stored settings and validates the
+  result as a whole, so the same rules apply to both. **An unknown member is refused**: `PUT` and `PATCH` with a key the settings
+  do not have (a misspelt `blokAt`) are `400`, and a stored row with one fails to decode, so an instance keeps the tuning it
+  has (or, starting, decides as `failure-action` says) until the row is corrected; the keys that builds before the removal of the
+  Delay step wrote (`delayAt`, `delayMillis`, `fakeSendDelayMillis`) are still read and ignored. **The row is versioned**
   (`af_settings.version`, migration `V0027`; 1 for a row that exists, so the first row is version 1 and "no row" is 0): `GET`
   answers the settings with `version` next to them and the same number as the `ETag`; `PUT` and `PATCH` may be made on the version they were
   read at, in `If-Match` (preferred) or as `version` in the body (both given must agree), and then answer `412` (with the current

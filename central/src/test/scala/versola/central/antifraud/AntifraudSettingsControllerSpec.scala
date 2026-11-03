@@ -5,6 +5,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
 import versola.central.users.UserId
+import versola.util.Patch
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -99,7 +100,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
       yield assertTrue(
         response.status == Status.Ok,
-        body.fromJson[AntifraudSettings] == Right(settings),
+        body.fromJson[VersionedAntifraudSettings].map(_.settings) == Right(settings),
         json.get("version").contains(Json.Num(4)),
         response.headers.get("ETag").contains("\"4\""),
         service.put.calls == List(PutAntifraudSettingsRequest(settings, admin, Some(3))),
@@ -158,7 +159,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
       yield assertTrue(
         response.status == Status.Ok,
-        body.fromJson[AntifraudSettings] == Right(settings),
+        body.fromJson[VersionedAntifraudSettings].map(_.settings) == Right(settings),
         json.get("version").contains(Json.Num(3)),
         response.headers.get("ETag").contains("\"3\""),
         service.get.calls.size == 1,
@@ -198,7 +199,10 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.headers.get("ETag").contains("\"4\""),
         service.patch.calls == List(
           PatchAntifraudSettingsRequest(
-            patch = Json.Obj("blockAt" -> Json.Num(90), "smsLimits" -> Json.Obj("byPrefix" -> Json.Obj("49" -> Json.Null))),
+            patch = AntifraudSettingsPatch.empty.copy(
+              blockAt = Some(Patch.Modified(90)),
+              smsLimits = Some(Patch.Modified(SmsLimitsPatchDto.empty.copy(byPrefix = Some(Patch.Modified(Map("49" -> Patch.Deleted)))))),
+            ),
             userId = admin,
             version = Some(3),
           ),
@@ -262,6 +266,63 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         noUser.status == Status.BadRequest,
         unauthorized.status == Status.Unauthorized,
         service.patch.calls.size == 1,
+      )
+    },
+    test("a patch with a member the settings do not have is 400, at any depth, and never reaches the service") {
+      val service = stub[AntifraudSettingsService]
+      for
+        _ <- service.patch.succeedsWith(VersionedAntifraudSettings(settings, 4))
+        typo <- runAs(patch("""{"blokAt":10}"""), service)
+        reason <- typo.body.asString
+        nested <- runAs(patch("""{"pow":{"minDificulty":3}}"""), service)
+        limit <- runAs(patch("""{"thresholds":{"phone":{"perMinut":3}}}"""), service)
+        entry <- runAs(patch("""{"smsLimits":{"byPrefix":{"49":{"sentPerHur":30,"minVolume":0,"minConversion":0.1}}}}"""), service)
+        // an entry that is a value replaces the entry whole, as in a PUT: all of its members are named
+        partial <- runAs(patch("""{"smsLimits":{"byPrefix":{"49":{"sentPerHour":30}}}}"""), service)
+        wrongType <- runAs(patch("""{"blockAt":"high"}"""), service)
+        // not a setting, and not the envelope's: only `userId` and `version` are taken out
+        other <- runAs(patch("""{"blockAt":90,"settings":{}}"""), service)
+      yield assertTrue(
+        List(typo, nested, limit, entry, partial, wrongType, other).forall(_.status == Status.BadRequest),
+        reason.contains("invalid extra field"),
+        service.patch.calls.isEmpty,
+      )
+    },
+    test("a null in a patch is a removal: the service gets Deleted for the setting and for the map entry, an absent member is None") {
+      val service = stub[AntifraudSettingsService]
+      for
+        _ <- service.patch.succeedsWith(VersionedAntifraudSettings(settings, 4))
+        response <- runAs(
+          patch("""{"blockAt":null,"pow":null,"ruleWeights":{"watch_list:cidr":null,"velocity_ip_1m":7},"shadowRules":["velocity_ip_1m"]}"""),
+          service,
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.patch.calls == List(
+          PatchAntifraudSettingsRequest(
+            patch = AntifraudSettingsPatch.empty.copy(
+              blockAt = Some(Patch.Deleted),
+              pow = Some(Patch.Deleted),
+              ruleWeights = Some(Patch.Modified(Map("watch_list:cidr" -> Patch.Deleted, "velocity_ip_1m" -> Patch.Modified(7)))),
+              shadowRules = Some(Patch.Modified(Set("velocity_ip_1m"))),
+            ),
+            userId = admin,
+            version = None,
+          ),
+        ),
+      )
+    },
+    test("a put with a member the settings do not have is 400 and never reaches the service") {
+      val service = stub[AntifraudSettingsService]
+      for
+        typo <- runAs(put("""{"settings":{"blokAt":10}}"""), service)
+        nested <- runAs(put(s"""{"settings":${settings.toJson.replace("\"minDifficulty\"", "\"minDificulty\"")}}"""), service)
+        extra <- runAs(put(s"""{"settings":${settings.toJson.dropRight(1)},"extra":1}}"""), service)
+      yield assertTrue(
+        typo.status == Status.BadRequest,
+        nested.status == Status.BadRequest,
+        extra.status == Status.BadRequest,
+        service.put.calls.isEmpty,
       )
     },
     test("a put without a userId reaches nothing") {

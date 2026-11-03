@@ -2,7 +2,6 @@ package versola.central.antifraud
 
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.central.users.UserId
 import versola.util.http.{BadRequest, Controller, EntityVersion, Observability}
 import zio.*
 import zio.http.{Header, MediaType, Method, Request, Response, Routes, Status, handler}
@@ -21,9 +20,10 @@ import zio.json.ast.Json
   * desired state of a caller that holds it and takes responsibility for what it overwrites, a `DELETE` is the way back from a
   * bad state, a `PATCH` is made again once by auth on what a concurrent change wrote). Any change moves the version.
   *
-  * `PATCH` is a JSON merge patch (RFC 7396, `application/merge-patch+json`, `application/json` too): the body is a partial
-  * settings document, merged by auth into the stored one and validated as a whole. Edge adds `userId` to the body like any other
-  * change, so it is taken out of the patch here (as is `version`, which names the version the patch is made on).
+  * `PATCH` is a JSON merge patch on the wire (RFC 7396, `application/merge-patch+json`, `application/json` too) with a fixed
+  * schema, [[AntifraudSettingsPatch]]: a member the settings do not have is a 400, `null` puts a setting back to its default and
+  * removes a map entry. Auth applies it to the stored settings and validates the result as a whole. Edge adds `userId` to the
+  * body like any other change, so it is taken out of the patch here (as is `version`, which names the version the patch is made on).
   */
 object AntifraudSettingsController extends Controller:
   type Env = Tracing & ResourceService & AntifraudSettingsService
@@ -67,19 +67,22 @@ object AntifraudSettingsController extends Controller:
       yield response
     }
 
+  /** The body is read once as an object: `userId` and `version` are the request's own and are split off, and the rest is the
+    * patch, read with the DTO that refuses any member the settings do not have. */
   private def patch(request: Request): ZIO[AntifraudSettingsService, Throwable, Response] =
     for
       document <- request.bodyAs[Json.Obj]
-      userId <- ZIO.fromEither(
-        document.get("userId").toRight("userId is missing: edge adds it from the verified token").flatMap(_.as[UserId]),
-      ).mapError(BadRequest(_))
-      inBody <-
-        ZIO.fromEither(document.get("version").fold[Either[String, Option[Long]]](Right(None))(_.as[Long].map(Some(_)))).mapError(BadRequest(_))
-      expected <- expectedVersion(request, inBody)
-      patch = Json.Obj(document.fields.filterNot((name, _) => name == "userId" || name == "version"))
+      (own, rest) = document.fields.partition((name, _) => envelopeKeys.contains(name))
+      envelope <- ZIO.fromEither(Json.Obj(own).as[PatchEnvelope]).mapError(message =>
+        BadRequest(if own.exists(_._1 == "userId") then message else s"userId is missing: edge adds it from the verified token ($message)"),
+      )
+      patch <- ZIO.fromEither(Json.Obj(rest).as[AntifraudSettingsPatch]).mapError(BadRequest(_))
+      expected <- expectedVersion(request, envelope.version)
       service <- ZIO.service[AntifraudSettingsService]
-      response <- guarded(service.patch(PatchAntifraudSettingsRequest(patch = patch, userId = userId, version = expected)).map(versioned))
+      response <- guarded(service.patch(PatchAntifraudSettingsRequest(patch = patch, userId = envelope.userId, version = expected)).map(versioned))
     yield response
+
+  private val envelopeKeys = Set("userId", "version")
 
   /** RFC 7396 §3: `application/merge-patch+json`. `application/json` is taken too, for a client that does not know the type;
     * a body of any other type is not a patch. No type at all is taken as JSON, as for the other endpoints. */
